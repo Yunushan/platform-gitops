@@ -1,0 +1,28 @@
+# Forgejo default profile.
+# Configure real domains and secrets outside tracked files.
+
+replicaCount: 1
+
+image:
+  rootless: true
+
+ingress:
+  enabled: true
+  className: ingress-nginx
+  hosts:
+    - host: forgejo.<PLATFORM_DOMAIN>
+      paths:
+        - path: /
+          pathType: Prefix
+
+postgresql:
+  enabled: false
+
+redis-cluster:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: <FORGEJO_DATA_SIZE>
+
+# Database credentials must be supplied through private secret management.

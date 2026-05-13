@@ -1,0 +1,9 @@
+stages:
+  - test
+  - build
+
+test:
+  image: alpine:3.20
+  stage: test
+  script:
+    - echo "run tests here"

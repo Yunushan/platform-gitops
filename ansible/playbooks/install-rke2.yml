@@ -1,0 +1,8 @@
+---
+- name: Install RKE2 placeholder
+  hosts: rke2_servers
+  become: true
+  tasks:
+    - name: Show safe install command
+      ansible.builtin.debug:
+        msg: "Use scripts/bootstrap/install-rke2-first-server.sh on node 1 and install-rke2-server.sh on nodes 2 and 3."

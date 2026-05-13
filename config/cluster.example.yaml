@@ -1,0 +1,52 @@
+# Copy this file to config/cluster.local.yaml and edit the copy only.
+# Do not commit real IP addresses, real domains, real tokens, or private company data.
+
+project:
+  name: platform-gitops
+  owner: <ORGANIZATION_OR_USER>
+
+cluster:
+  name: rke2-main
+  mode: three-node-ha
+  api_vip: <VIP_ADDRESS>
+  api_dns: <VIP_DNS_NAME>
+  domain: <PLATFORM_DOMAIN>
+  timezone: <TIMEZONE>
+
+nodes:
+  - name: node-1
+    address: <NODE_1_IP>
+    role: server
+  - name: node-2
+    address: <NODE_2_IP>
+    role: server
+  - name: node-3
+    address: <NODE_3_IP>
+    role: server
+
+components:
+  kubernetes: rke2
+  git_forge: forgejo
+  ci: woodpecker
+  cd: argocd
+  registry: harbor
+  database: cloudnativepg
+  storage: longhorn
+  storage_alternative: rook-ceph
+  load_balancer: metallb
+  ingress: ingress-nginx
+  ingress_alternative: traefik
+  monitoring: prometheus-grafana
+  logging: loki
+  backups: velero
+  api_vip_provider: kube-vip
+  api_vip_alternative: haproxy-keepalived
+
+backup:
+  off_cluster_target: <OFF_CLUSTER_BACKUP_TARGET>
+  schedule: <BACKUP_CRON_EXPRESSION>
+
+security:
+  commit_plaintext_secrets: false
+  require_no_secret_scan_before_push: true
+  recommended_secret_store: sops-age-or-external-secrets

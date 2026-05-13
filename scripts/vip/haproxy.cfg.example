@@ -1,0 +1,23 @@
+# Example only. Copy to a private location and replace placeholders.
+# Do not commit real IP addresses.
+
+global
+  log /dev/log local0
+  maxconn 4096
+
+defaults
+  mode tcp
+  log global
+  timeout connect 10s
+  timeout client 1m
+  timeout server 1m
+
+frontend rke2_api
+  bind <VIP_ADDRESS>:6443
+  default_backend rke2_api_nodes
+
+backend rke2_api_nodes
+  balance roundrobin
+  server node-1 <NODE_1_IP>:6443 check
+  server node-2 <NODE_2_IP>:6443 check
+  server node-3 <NODE_3_IP>:6443 check

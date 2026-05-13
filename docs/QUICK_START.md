@@ -1,0 +1,44 @@
+# Quick Start
+
+This quick start creates a safe local workspace and prepares the 3-node platform plan.
+
+## 1. Clone and initialize
+
+```bash
+git clone <YOUR_REMOTE_URL> platform-gitops
+cd platform-gitops
+make init-local
+```
+
+## 2. Edit local-only files
+
+```bash
+${EDITOR:-vi} config/cluster.local.yaml
+${EDITOR:-vi} inventory/hosts.local.ini
+```
+
+Do not edit real IPs, tokens, or company data into tracked files.
+
+## 3. Validate before push
+
+```bash
+make validate
+make no-secrets
+```
+
+## 4. Bootstrap plan
+
+```bash
+make bootstrap-plan
+```
+
+## 5. Deploy order
+
+1. Prepare Linux nodes.
+2. Configure API VIP.
+3. Install RKE2 on three server nodes.
+4. Install Argo CD HA bootstrap.
+5. Apply `gitops/bootstrap/root-app.yaml` with your private repository URL substituted at runtime.
+6. Let Argo CD deploy the platform components.
+7. Configure off-cluster backups.
+8. Run a restore drill.

@@ -1,0 +1,8 @@
+profile: storage-rook-ceph
+summary: Use Rook/Ceph instead of Longhorn.
+components:
+  storage: rook-ceph
+remove:
+  - gitops/clusters/rke2-main/apps/longhorn
+include:
+  - gitops/clusters/rke2-main/alternatives/rook-ceph

@@ -1,0 +1,7 @@
+profile: vip-haproxy-keepalived
+summary: Use HAProxy + Keepalived instead of kube-vip for the Kubernetes API VIP.
+components:
+  api_vip_provider: haproxy-keepalived
+include:
+  - scripts/vip/haproxy.cfg.example
+  - scripts/vip/keepalived.conf.example

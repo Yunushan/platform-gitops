@@ -1,0 +1,15 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-postgres
+  namespace: database
+spec:
+  instances: 3
+  storage:
+    size: <POSTGRES_DATA_SIZE>
+  bootstrap:
+    initdb:
+      database: platform
+      owner: platform
+      secret:
+        name: platform-postgres-owner

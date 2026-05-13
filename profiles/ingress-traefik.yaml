@@ -1,0 +1,8 @@
+profile: ingress-traefik
+summary: Use Traefik instead of ingress-nginx.
+components:
+  ingress: traefik
+remove:
+  - gitops/clusters/rke2-main/apps/ingress-nginx
+include:
+  - gitops/clusters/rke2-main/alternatives/traefik

@@ -1,0 +1,17 @@
+# Example only. Copy to a private location and replace placeholders.
+# Do not commit real IP addresses.
+
+vrrp_instance RKE2_API {
+  state BACKUP
+  interface <NETWORK_INTERFACE>
+  virtual_router_id <VRID_NUMBER>
+  priority <NODE_PRIORITY>
+  advert_int 1
+  authentication {
+    auth_type PASS
+    auth_pass <GENERATE_WITH_PASSWORD_MANAGER>
+  }
+  virtual_ipaddress {
+    <VIP_ADDRESS>
+  }
+}

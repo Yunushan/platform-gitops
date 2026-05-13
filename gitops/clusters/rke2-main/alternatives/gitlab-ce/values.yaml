@@ -1,0 +1,2 @@
+# Alternative component: gitlab-ce
+# Configure real values through private overlays, encrypted secrets, or Argo CD parameters.

@@ -1,0 +1,13 @@
+# Velero default profile.
+# Provider credentials and bucket names must be configured through private secrets.
+
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: <BACKUP_PROVIDER>
+      bucket: <BACKUP_BUCKET>
+      config: {}
+
+credentials:
+  useSecret: true
+  existingSecret: velero-credentials

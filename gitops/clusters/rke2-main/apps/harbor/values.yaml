@@ -1,0 +1,15 @@
+# Harbor default profile.
+
+expose:
+  type: ingress
+  ingress:
+    className: ingress-nginx
+    hosts:
+      core: harbor.<PLATFORM_DOMAIN>
+
+externalURL: https://harbor.<PLATFORM_DOMAIN>
+
+persistence:
+  enabled: true
+
+# Use robot accounts for CI and store credentials outside git.

@@ -1,0 +1,2 @@
+# Alternative component: gitlab-runner
+# Configure real values through private overlays, encrypted secrets, or Argo CD parameters.

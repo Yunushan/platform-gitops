@@ -1,0 +1,22 @@
+# Argo CD HA profile.
+
+server:
+  replicas: 2
+  ingress:
+    enabled: true
+    ingressClassName: ingress-nginx
+    hosts:
+      - argocd.<PLATFORM_DOMAIN>
+
+repoServer:
+  replicas: 2
+
+applicationSet:
+  replicas: 2
+
+redis-ha:
+  enabled: true
+
+configs:
+  params:
+    server.insecure: false

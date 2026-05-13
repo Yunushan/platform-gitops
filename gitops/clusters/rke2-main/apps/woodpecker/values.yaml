@@ -1,0 +1,20 @@
+# Woodpecker default profile.
+# Real OAuth secrets and agent secrets must not be committed.
+
+server:
+  enabled: true
+  replicas: 2
+  env:
+    WOODPECKER_HOST: https://woodpecker.<PLATFORM_DOMAIN>
+    WOODPECKER_OPEN: "false"
+    WOODPECKER_FORGEJO: "true"
+    WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>
+
+agent:
+  enabled: true
+  replicas: 3
+  backend: kubernetes
+
+persistentVolume:
+  enabled: true
+  size: <WOODPECKER_DATA_SIZE>

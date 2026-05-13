@@ -1,0 +1,49 @@
+# Local/private platform configuration
+config/*.local.yaml
+config/*.local.yml
+inventory/*.local.ini
+inventory/*.local.yaml
+inventory/*.local.yml
+profiles/*.local.yaml
+profiles/*.local.yml
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.csr
+*.kubeconfig
+kubeconfig*
+*.agekey
+*.sops.yaml
+id_rsa*
+id_ed25519*
+secrets/*
+!secrets/README.md
+!secrets/.gitkeep
+
+# Terraform or infra local state
+auto.tfvars
+*.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Build/cache output
+.cache/
+dist/
+build/
+*.zip
+*.tar.gz

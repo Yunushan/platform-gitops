@@ -1,0 +1,15 @@
+profile: gitea-woodpecker-argocd
+summary: Replace Forgejo with Gitea while keeping Woodpecker and Argo CD.
+components:
+  git_forge: gitea
+  ci: woodpecker
+  cd: argocd
+  registry: harbor
+  database: cloudnativepg
+  storage: longhorn
+  ingress: ingress-nginx
+includes:
+  - gitops/clusters/rke2-main/alternatives/gitea
+  - gitops/clusters/rke2-main/apps/woodpecker
+  - gitops/clusters/rke2-main/apps/argocd-ha
+  - gitops/clusters/rke2-main/apps/harbor

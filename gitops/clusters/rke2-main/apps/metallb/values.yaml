@@ -1,0 +1,2 @@
+# MetalLB chart values.
+# Address pools are configured by manifests below using placeholders.

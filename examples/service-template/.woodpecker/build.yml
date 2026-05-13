@@ -1,0 +1,16 @@
+steps:
+  test:
+    image: alpine:3.20
+    commands:
+      - echo "run tests here"
+  build:
+    image: plugins/docker
+    settings:
+      registry: harbor.<PLATFORM_DOMAIN>
+      repo: harbor.<PLATFORM_DOMAIN>/apps/<SERVICE_NAME>
+      tags:
+        - ${CI_COMMIT_SHA}
+      username:
+        from_secret: harbor_robot_username
+      password:
+        from_secret: harbor_robot_password

@@ -1,0 +1,16 @@
+---
+- name: Prepare Linux nodes for RKE2
+  hosts: rke2_servers
+  become: true
+  tasks:
+    - name: Ensure required packages are present
+      ansible.builtin.package:
+        name:
+          - curl
+          - tar
+          - iptables
+        state: present
+
+    - name: Enable required kernel modules placeholder
+      ansible.builtin.debug:
+        msg: "Customize kernel modules and sysctl settings for your OS baseline."

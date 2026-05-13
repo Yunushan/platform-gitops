@@ -1,0 +1,2 @@
+# Alternative component: rook-ceph
+# Configure real values through private overlays, encrypted secrets, or Argo CD parameters.

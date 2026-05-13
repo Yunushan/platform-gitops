@@ -1,0 +1,9 @@
+stages:
+  - validate
+
+validate:
+  stage: validate
+  image: python:3.12-slim
+  script:
+    - python scripts/validate_project.py
+    - python scripts/validate_no_secrets.py

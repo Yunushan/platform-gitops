@@ -1,0 +1,16 @@
+profile: default-forgejo-woodpecker-argocd
+summary: Default zero-subscription modular CI/CD platform.
+components:
+  git_forge: forgejo
+  ci: woodpecker
+  cd: argocd
+  registry: harbor
+  database: cloudnativepg
+  storage: longhorn
+  ingress: ingress-nginx
+  api_vip_provider: kube-vip
+includes:
+  - gitops/clusters/rke2-main/apps/forgejo
+  - gitops/clusters/rke2-main/apps/woodpecker
+  - gitops/clusters/rke2-main/apps/argocd-ha
+  - gitops/clusters/rke2-main/apps/harbor

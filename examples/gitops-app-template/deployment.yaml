@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <SERVICE_NAME>
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: <SERVICE_NAME>
+  template:
+    metadata:
+      labels:
+        app: <SERVICE_NAME>
+    spec:
+      containers:
+        - name: app
+          image: harbor.<PLATFORM_DOMAIN>/apps/<SERVICE_NAME>:<IMAGE_TAG>
+          ports:
+            - containerPort: 8080

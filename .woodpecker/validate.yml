@@ -1,0 +1,6 @@
+steps:
+  validate:
+    image: python:3.12-slim
+    commands:
+      - python scripts/validate_project.py
+      - python scripts/validate_no_secrets.py
