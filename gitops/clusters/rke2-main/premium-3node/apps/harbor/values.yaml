@@ -1,0 +1,60 @@
+expose:
+  type: ingress
+  tls:
+    enabled: true
+    certSource: secret
+    secret: { secretName: "<HARBOR_TLS_SECRET_NAME>" }
+  ingress:
+    className: traefik
+    hosts:
+      core: harbor.<PLATFORM_DOMAIN>
+
+externalURL: https://harbor.<PLATFORM_DOMAIN>
+
+portal:
+  replicas: 2
+core:
+  replicas: 2
+jobservice:
+  replicas: 2
+registry:
+  replicas: 2
+trivy:
+  enabled: true
+  replicas: 2
+
+persistence:
+  enabled: true
+  persistentVolumeClaim:
+    registry:
+      storageClass: longhorn-critical
+      size: <HARBOR_REGISTRY_CACHE_SIZE>
+  imageChartStorage:
+    type: s3
+    s3:
+      region: <OBJECT_STORAGE_REGION>
+      bucket: <HARBOR_REGISTRY_BUCKET>
+      regionendpoint: <OBJECT_STORAGE_ENDPOINT>
+      encrypt: true
+      secure: true
+
+database:
+  type: external
+  external:
+    host: <HARBOR_DATABASE_HOST>
+    port: "5432"
+    username: <HARBOR_DATABASE_USER>
+    coreDatabase: <HARBOR_DATABASE_NAME>
+    existingSecret: harbor-database
+    sslmode: require
+
+redis:
+  type: external
+  external:
+    addr: <HARBOR_REDIS_HOST>:<HARBOR_REDIS_PORT>
+    existingSecret: harbor-redis
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true

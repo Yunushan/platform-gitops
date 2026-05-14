@@ -1,0 +1,25 @@
+installCRDs: true
+
+crds:
+  enabled: true
+
+replicaCount: 2
+
+webhook:
+  replicaCount: 2
+  timeoutSeconds: 10
+
+cainjector:
+  replicaCount: 2
+
+prometheus:
+  enabled: true
+  servicemonitor:
+    enabled: true
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi

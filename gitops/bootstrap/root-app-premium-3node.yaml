@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-root-premium-3node
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

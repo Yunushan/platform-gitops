@@ -3,6 +3,7 @@
 - [Quick Start](QUICK_START.md)
 - [Architecture](ARCHITECTURE.md)
 - [Installation](INSTALLATION.md)
+- [Premium 3-Node Profile](PREMIUM_3NODE.md)
 - [Component Switching](COMPONENT_SWITCHING.md)
 - [Secrets and Privacy](SECRETS_AND_PRIVACY.md)
 - [User Guide](USER_GUIDE.md)

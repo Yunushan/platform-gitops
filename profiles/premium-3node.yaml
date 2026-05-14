@@ -1,0 +1,39 @@
+profile: premium-3node
+summary: Hardened 3-node profile for private production-like platform deployments.
+inherits: default-forgejo-woodpecker-argocd
+components:
+  kubernetes: rke2
+  api_vip_provider: kube-vip
+  load_balancer: metallb
+  ingress: traefik
+  git_forge: forgejo
+  ci: woodpecker
+  cd: argocd-ha
+  registry: harbor-ha
+  database: cloudnativepg
+  storage: longhorn-production
+  monitoring: kube-prometheus-stack
+  logging: loki
+  backups: velero-plus-cnpg-longhorn-harbor-forgejo
+  secrets: sops-age-or-external-secrets
+remove:
+  - gitops/clusters/rke2-main/apps/ingress-nginx
+includes:
+  - gitops/clusters/rke2-main/premium-3node
+  - gitops/clusters/rke2-main/premium-3node/apps/traefik
+  - gitops/clusters/rke2-main/premium-3node/apps/argocd-ha
+  - gitops/clusters/rke2-main/premium-3node/apps/forgejo
+  - gitops/clusters/rke2-main/premium-3node/apps/woodpecker
+  - gitops/clusters/rke2-main/premium-3node/apps/harbor
+  - gitops/clusters/rke2-main/premium-3node/apps/longhorn
+  - gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg
+  - gitops/clusters/rke2-main/premium-3node/apps/monitoring
+  - gitops/clusters/rke2-main/premium-3node/apps/loki
+  - gitops/clusters/rke2-main/premium-3node/apps/velero
+operational_requirements:
+  - dedicated_disks_for_longhorn
+  - off_cluster_object_storage_for_backups
+  - tested_restore_drills
+  - private_secret_management
+  - resource_requests_limits_and_pdb_review
+  - node_anti_affinity_review

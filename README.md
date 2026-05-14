@@ -22,6 +22,7 @@
   <a href="docs/QUICK_START.md">Quick Start</a> •
   <a href="docs/ARCHITECTURE.md">Architecture</a> •
   <a href="docs/INSTALLATION.md">Launch</a> •
+  <a href="docs/PREMIUM_3NODE.md">Premium 3-Node</a> •
   <a href="docs/COMPONENT_SWITCHING.md">Change Components</a> •
   <a href="docs/SECRETS_AND_PRIVACY.md">Secrets & Privacy</a> •
   <a href="docs/USER_GUIDE.md">User Guide</a> •
@@ -48,6 +49,14 @@ Virtual IP / VIP for highly available access
 ```
 
 The project is intentionally modular. You can switch from **Forgejo** to **Gitea** or **GitLab CE**, from **Longhorn** to **Rook/Ceph**, and from **ingress-nginx** to **Traefik** by changing profile files and GitOps paths rather than redesigning the repository.
+
+For a hardened private deployment, use the **premium 3-node profile**:
+
+```text
+profiles/premium-3node.yaml
+gitops/bootstrap/root-app-premium-3node.yaml
+gitops/clusters/rke2-main/premium-3node
+```
 
 ## Privacy and secret-safety promise
 

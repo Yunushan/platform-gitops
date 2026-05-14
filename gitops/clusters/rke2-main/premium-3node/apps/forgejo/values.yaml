@@ -1,0 +1,66 @@
+# Forgejo remains single-replica until repository storage, SSH access, and restore
+# procedures are validated with shared storage or an external repository backend.
+replicaCount: 1
+
+strategy:
+  type: Recreate
+
+image:
+  rootless: true
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: forgejo.<PLATFORM_DOMAIN>
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: forgejo-tls
+      hosts:
+        - forgejo.<PLATFORM_DOMAIN>
+
+postgresql:
+  enabled: false
+
+redis-cluster:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: <FORGEJO_DATA_SIZE>
+  storageClass: longhorn-critical
+
+gitea:
+  config:
+    server:
+      DOMAIN: forgejo.<PLATFORM_DOMAIN>
+      ROOT_URL: https://forgejo.<PLATFORM_DOMAIN>/
+      SSH_DOMAIN: forgejo.<PLATFORM_DOMAIN>
+      START_SSH_SERVER: true
+    service:
+      DISABLE_REGISTRATION: true
+      REQUIRE_SIGNIN_VIEW: true
+    repository:
+      DEFAULT_BRANCH: main
+    database:
+      DB_TYPE: postgres
+      HOST: <FORGEJO_DATABASE_HOST>
+      NAME: <FORGEJO_DATABASE_NAME>
+      USER: <FORGEJO_DATABASE_USER>
+    session:
+      PROVIDER: db
+    cache:
+      ADAPTER: redis
+      HOST: <FORGEJO_REDIS_HOST>
+    queue:
+      TYPE: redis
+      CONN_STR: <FORGEJO_REDIS_URL>
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi

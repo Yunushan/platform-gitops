@@ -1,0 +1,72 @@
+prometheus:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - prometheus.<PLATFORM_DOMAIN>
+    tls:
+      - secretName: prometheus-tls
+        hosts:
+          - prometheus.<PLATFORM_DOMAIN>
+  prometheusSpec:
+    replicas: 2
+    retention: 15d
+    retentionSize: <PROMETHEUS_RETENTION_SIZE>
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn-standard
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: <PROMETHEUS_DATA_SIZE>
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    replicas: 3
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn-standard
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: <ALERTMANAGER_DATA_SIZE>
+
+grafana:
+  replicas: 2
+  grafana.ini:
+    database:
+      type: postgres
+      host: <GRAFANA_DATABASE_HOST>
+      name: <GRAFANA_DATABASE_NAME>
+      user: <GRAFANA_DATABASE_USER>
+      ssl_mode: require
+  persistence:
+    enabled: false
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - grafana.<PLATFORM_DOMAIN>
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.<PLATFORM_DOMAIN>
+
+defaultRules:
+  create: true
+
+kubeEtcd:
+  enabled: true
+
+kubeScheduler:
+  enabled: true
+
+kubeControllerManager:
+  enabled: true

@@ -1,0 +1,64 @@
+# Copy this file to config/cluster.local.yaml only if the premium profile is desired.
+# Do not commit real IP addresses, domains, tokens, credentials, or company data.
+
+project:
+  name: platform-gitops
+  owner: <ORGANIZATION_OR_USER>
+  profile: premium-3node
+
+cluster:
+  name: rke2-main
+  mode: three-node-ha
+  api_vip: <VIP_ADDRESS>
+  api_dns: <VIP_DNS_NAME>
+  domain: <PLATFORM_DOMAIN>
+  timezone: <TIMEZONE>
+
+nodes:
+  - name: node-1
+    address: <NODE_1_IP>
+    role: server
+    storage_disk: <NODE_1_LONGHORN_DISK>
+  - name: node-2
+    address: <NODE_2_IP>
+    role: server
+    storage_disk: <NODE_2_LONGHORN_DISK>
+  - name: node-3
+    address: <NODE_3_IP>
+    role: server
+    storage_disk: <NODE_3_LONGHORN_DISK>
+
+components:
+  kubernetes: rke2
+  git_forge: forgejo
+  ci: woodpecker
+  cd: argocd-ha
+  registry: harbor
+  database: cloudnativepg
+  storage: longhorn
+  load_balancer: metallb
+  ingress: traefik
+  monitoring: prometheus-grafana
+  logging: loki
+  backups: velero
+  api_vip_provider: kube-vip
+
+storage:
+  longhorn_data_path: /var/lib/longhorn
+  standard_replica_count: 2
+  critical_replica_count: 3
+  backup_target: <LONGHORN_BACKUP_TARGET>
+
+backup:
+  object_storage_endpoint: <OBJECT_STORAGE_ENDPOINT>
+  off_cluster_target: <OFF_CLUSTER_BACKUP_TARGET>
+  velero_bucket: <VELERO_BACKUP_BUCKET>
+  cnpg_bucket: <CNPG_BACKUP_BUCKET>
+  harbor_bucket: <HARBOR_REGISTRY_BUCKET>
+  schedule: <BACKUP_CRON_EXPRESSION>
+
+security:
+  commit_plaintext_secrets: false
+  require_no_secret_scan_before_push: true
+  recommended_secret_store: sops-age-or-external-secrets
+  require_restore_drill_before_production: true

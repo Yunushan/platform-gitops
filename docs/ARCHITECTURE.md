@@ -32,6 +32,12 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
   -> platform services and application namespaces
 ```
 
+## Premium 3-node profile
+
+The premium profile is available at `profiles/premium-3node.yaml` and deploys from `gitops/clusters/rke2-main/premium-3node`.
+
+It keeps RKE2, kube-vip, MetalLB, Forgejo, Woodpecker, Argo CD HA, Harbor, CloudNativePG, Longhorn, Prometheus, Grafana, Loki, and Velero, but switches ingress to Traefik and adds hardened values for storage, backups, observability, and HA dependencies.
+
 ## Security model
 
 - No production secret is committed to git.

@@ -1,0 +1,44 @@
+configuration:
+  features: EnableCSI
+  defaultVolumesToFsBackup: false
+  backupStorageLocation:
+    - name: default
+      provider: <BACKUP_PROVIDER>
+      bucket: <BACKUP_BUCKET>
+      config:
+        region: <OBJECT_STORAGE_REGION>
+        s3Url: <OBJECT_STORAGE_ENDPOINT>
+        s3ForcePathStyle: "true"
+  volumeSnapshotLocation:
+    - name: default
+      provider: <BACKUP_PROVIDER>
+      config:
+        region: <OBJECT_STORAGE_REGION>
+
+credentials:
+  useSecret: true
+  existingSecret: velero-credentials
+
+deployNodeAgent: true
+
+snapshotsEnabled: true
+
+schedules:
+  platform-daily:
+    disabled: false
+    schedule: <VELERO_DAILY_BACKUP_CRON>
+    template:
+      ttl: 720h0m0s
+      includedNamespaces:
+        - argocd
+        - cert-manager
+        - forgejo
+        - harbor
+        - logging
+        - monitoring
+        - velero
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true

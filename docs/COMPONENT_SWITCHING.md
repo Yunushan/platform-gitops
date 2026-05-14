@@ -2,6 +2,28 @@
 
 This project is designed to be changed without restructuring the repository.
 
+## Use the premium 3-node profile
+
+Use profile:
+
+```text
+profiles/premium-3node.yaml
+```
+
+Bootstrap with:
+
+```text
+gitops/bootstrap/root-app-premium-3node.yaml
+```
+
+This uses:
+
+```text
+gitops/clusters/rke2-main/premium-3node
+```
+
+The premium path switches ingress to Traefik and uses hardened values for Argo CD, Forgejo, Woodpecker, Harbor, Longhorn, CloudNativePG, monitoring, Loki, and Velero.
+
 ## Switch Forgejo to Gitea
 
 Use profile:

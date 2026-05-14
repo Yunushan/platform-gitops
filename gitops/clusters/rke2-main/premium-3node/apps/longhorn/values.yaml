@@ -1,0 +1,27 @@
+persistence:
+  defaultClass: false
+
+defaultSettings:
+  defaultDataPath: /var/lib/longhorn
+  backupTarget: <LONGHORN_BACKUP_TARGET>
+  backupTargetCredentialSecret: longhorn-backup-target
+  createDefaultDiskLabeledNodes: true
+  defaultReplicaCount: 2
+  defaultDataLocality: best-effort
+  replicaAutoBalance: best-effort
+  storageOverProvisioningPercentage: 100
+  storageMinimalAvailablePercentage: 10
+  orphanAutoDeletion: true
+  concurrentAutomaticEngineUpgradePerNodeLimit: 1
+
+longhornManager:
+  priorityClass: longhorn-critical
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+longhornDriver:
+  priorityClass: longhorn-critical

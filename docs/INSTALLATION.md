@@ -65,4 +65,11 @@ gitops/bootstrap/root-app.yaml
 gitops/clusters/rke2-main/platform-apps.yaml
 ```
 
+For the premium 3-node profile, use:
+
+```text
+gitops/bootstrap/root-app-premium-3node.yaml
+gitops/clusters/rke2-main/premium-3node/platform-apps.yaml
+```
+
 Review each platform application before enabling automatic sync in production.
