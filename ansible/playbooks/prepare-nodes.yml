@@ -2,15 +2,118 @@
 - name: Prepare Linux nodes for RKE2
   hosts: rke2_servers
   become: true
+  vars:
+    rke2_packages_by_os_family:
+      RedHat:
+        - curl
+        - tar
+        - iptables
+        - iscsi-initiator-utils
+        - nfs-utils
+        - chrony
+        - cryptsetup
+      Debian:
+        - curl
+        - tar
+        - iptables
+        - open-iscsi
+        - nfs-common
+        - chrony
+        - cryptsetup
+      Suse:
+        - curl
+        - tar
+        - iptables
+        - open-iscsi
+        - nfs-client
+        - chrony
+        - cryptsetup
+      Archlinux:
+        - curl
+        - tar
+        - iptables-nft
+        - open-iscsi
+        - nfs-utils
+        - chrony
+        - cryptsetup
+      Gentoo:
+        - net-misc/curl
+        - app-arch/tar
+        - net-firewall/iptables
+        - sys-block/open-iscsi
+        - net-fs/nfs-utils
+        - net-misc/chrony
+        - sys-fs/cryptsetup
+    rke2_iscsi_service_by_os_family:
+      RedHat: iscsid
+      Debian: iscsid
+      Suse: iscsid
+      Archlinux: iscsid
+      Gentoo: iscsid
+    rke2_time_service_by_os_family:
+      RedHat: chronyd
+      Debian: chrony
+      Suse: chronyd
+      Archlinux: chronyd
+      Gentoo: chronyd
   tasks:
+    - name: Show detected operating system
+      ansible.builtin.debug:
+        msg: "Preparing {{ ansible_distribution }} {{ ansible_distribution_version }} (family {{ ansible_os_family }}) for RKE2."
+
     - name: Ensure required packages are present
       ansible.builtin.package:
-        name:
-          - curl
-          - tar
-          - iptables
+        name: "{{ rke2_packages_by_os_family.get(ansible_os_family, ['curl', 'tar', 'iptables']) }}"
         state: present
 
-    - name: Enable required kernel modules placeholder
+    - name: Install nf_conntrack package on RHEL 10 compatible systems
+      ansible.builtin.package:
+        name: kernel-modules-extra
+        state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - ansible_distribution in ["RedHat", "Rocky", "AlmaLinux", "OracleLinux", "CentOS", "CentOS Stream"]
+        - ansible_distribution_major_version | int >= 10
+
+    - name: Load common Kubernetes kernel modules
+      ansible.builtin.command: "modprobe {{ item }}"
+      changed_when: false
+      failed_when: false
+      loop:
+        - br_netfilter
+        - overlay
+        - nf_conntrack
+        - iscsi_tcp
+
+    - name: Write Kubernetes sysctl baseline
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-rke2.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          net.ipv4.ip_forward=1
+          net.bridge.bridge-nf-call-iptables=1
+
+    - name: Apply sysctl baseline
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+      failed_when: false
+
+    - name: Enable iSCSI service when available
+      ansible.builtin.service:
+        name: "{{ rke2_iscsi_service_by_os_family.get(ansible_os_family, 'iscsid') }}"
+        enabled: true
+        state: started
+      failed_when: false
+
+    - name: Enable time synchronization service when available
+      ansible.builtin.service:
+        name: "{{ rke2_time_service_by_os_family.get(ansible_os_family, 'chronyd') }}"
+        enabled: true
+        state: started
+      failed_when: false
+
+    - name: Remind about distro support tier
       ansible.builtin.debug:
-        msg: "Customize kernel modules and sysctl settings for your OS baseline."
+        msg: "Verify this node OS against docs/NODE_OS_SUPPORT.md before production use."

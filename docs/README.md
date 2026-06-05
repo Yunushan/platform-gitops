@@ -9,6 +9,7 @@
 - [User Guide](USER_GUIDE.md)
 - [Backup and Restore](BACKUP_RESTORE.md)
 - [Platform Support](PLATFORM_SUPPORT.md)
+- [Node OS Support](NODE_OS_SUPPORT.md)
 - [Push Ready](PUSH_READY.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 - [Release Guide](RELEASE_GUIDE.md)

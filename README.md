@@ -142,12 +142,12 @@ docs/ARCHITECTURE.md
 | Area | Supported target |
 |---|---|
 | Admin workstation | Windows, Windows Server, macOS, Linux, BSD-family systems, Solaris-family systems |
-| Cluster nodes | Linux only for the RKE2 Kubernetes nodes |
+| Cluster nodes | Linux server distributions; see `docs/NODE_OS_SUPPORT.md` for tiers |
 | Shell tooling | Bash-compatible shell plus PowerShell helper scripts |
 | Git hosting compatibility | GitHub, GitLab, Gitea, Forgejo |
 | CI config compatibility | GitHub Actions, GitLab CI, Gitea/Forgejo Actions, Woodpecker CI |
 
-BSD and Solaris are supported as **operator/client workstations** for Git, SSH, editing, and documentation workflows. The Kubernetes server nodes should be Linux hosts.
+BSD and Solaris are supported as **operator/client workstations** for Git, SSH, editing, and documentation workflows. The Kubernetes server nodes should be Linux hosts. Premium node targets are SLES/SLE Micro, RHEL, Rocky Linux, Oracle Linux, and Ubuntu Server LTS; Debian, AlmaLinux, CentOS Stream, Fedora, Arch, Gentoo, Linux Mint, and legacy CentOS are documented with compatible or lab/workstation guidance.
 
 ## Repository layout
 

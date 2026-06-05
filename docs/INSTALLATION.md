@@ -3,10 +3,13 @@
 ## Prerequisites
 
 - Three Linux nodes for RKE2 server mode.
+- A node operating system from `docs/NODE_OS_SUPPORT.md`.
 - A virtual IP or DNS name for the Kubernetes API endpoint.
 - SSH access from an admin workstation.
 - Git, kubectl, Helm, and basic shell tools.
 - Off-cluster backup location.
+
+For the premium profile, prefer SLES, RHEL, Rocky Linux, Oracle Linux, or Ubuntu Server LTS. Debian, AlmaLinux, CentOS Stream, Fedora, Arch, Gentoo, and Linux Mint are documented as compatible or lab/workstation targets where upstream validation is limited.
 
 ## Step 1: Prepare local configuration
 
