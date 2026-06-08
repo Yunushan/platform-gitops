@@ -9,6 +9,14 @@ server:
     WOODPECKER_OPEN: "false"
     WOODPECKER_FORGEJO: "true"
     WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>
+  ingress:
+    enabled: true
+    className: traefik
+    hosts:
+      - host: woodpecker.<PLATFORM_DOMAIN>
+        paths:
+          - path: /
+            pathType: Prefix
 
 agent:
   enabled: true

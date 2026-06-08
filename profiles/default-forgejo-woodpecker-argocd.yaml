@@ -1,15 +1,26 @@
 profile: default-forgejo-woodpecker-argocd
-summary: Default zero-subscription modular CI/CD platform.
+summary: Default open-source HA platform recommendation for 3-node private deployments.
 components:
+  node_os: rocky-linux-10
   git_forge: forgejo
   ci: woodpecker
-  cd: argocd
+  cd: argocd-ha
   registry: harbor
   database: cloudnativepg
   storage: longhorn
-  ingress: ingress-nginx
+  cni: cilium
+  load_balancer: metallb
+  ingress: traefik
   api_vip_provider: kube-vip
+  tls: cert-manager
+  monitoring: prometheus-grafana
+  logging: loki
+  backups: velero
+  secrets: sops-age
+  policy: kyverno
+  supply_chain: cosign-renovate
 includes:
+  - gitops/clusters/rke2-main/apps/traefik
   - gitops/clusters/rke2-main/apps/forgejo
   - gitops/clusters/rke2-main/apps/woodpecker
   - gitops/clusters/rke2-main/apps/argocd-ha

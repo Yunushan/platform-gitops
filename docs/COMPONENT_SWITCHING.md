@@ -22,7 +22,7 @@ This uses:
 gitops/clusters/rke2-main/premium-3node
 ```
 
-The premium path switches ingress to Traefik and uses hardened values for Argo CD, Forgejo, Woodpecker, Harbor, Longhorn, CloudNativePG, monitoring, Loki, and Velero.
+The premium path uses the same Rocky Linux 10, RKE2, Cilium, Traefik, Forgejo, Woodpecker, and Argo CD HA recommendation, then adds hardened values for Harbor, Longhorn, CloudNativePG, monitoring, Loki, and Velero.
 
 ## Switch Forgejo to Gitea
 
@@ -74,12 +74,12 @@ Use profile:
 profiles/storage-rook-ceph.yaml
 ```
 
-## Switch ingress-nginx to Traefik
+## Switch Traefik to ingress-nginx
 
 Use profile:
 
 ```text
-profiles/ingress-traefik.yaml
+profiles/ingress-nginx.yaml
 ```
 
 ## Switch kube-vip to HAProxy/Keepalived

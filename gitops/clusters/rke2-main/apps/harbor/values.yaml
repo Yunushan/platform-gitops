@@ -3,7 +3,7 @@
 expose:
   type: ingress
   ingress:
-    className: ingress-nginx
+    className: traefik
     hosts:
       core: harbor.<PLATFORM_DOMAIN>
 

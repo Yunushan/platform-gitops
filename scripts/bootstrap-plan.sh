@@ -4,10 +4,10 @@ cat <<'EOF'
 Recommended bootstrap order
 
 1. Prepare 3 Linux nodes.
-2. Configure API VIP using kube-vip or HAProxy/Keepalived.
+2. Configure Rocky Linux 10 prerequisites and API VIP using kube-vip or HAProxy/Keepalived.
 3. Install RKE2 server on node-1.
 4. Join node-2 and node-3 as RKE2 servers.
-5. Install cert-manager, MetalLB, and ingress.
+5. Use Cilium CNI and install cert-manager, MetalLB, and Traefik ingress.
 6. Install Longhorn or Rook/Ceph.
 7. Install CloudNativePG.
 8. Install Argo CD HA.

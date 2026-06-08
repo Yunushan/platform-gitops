@@ -8,6 +8,7 @@ project:
 cluster:
   name: rke2-main
   mode: three-node-ha
+  node_os: rocky-linux-10
   api_vip: <VIP_ADDRESS>
   api_dns: <VIP_DNS_NAME>
   domain: <PLATFORM_DOMAIN>
@@ -26,21 +27,26 @@ nodes:
 
 components:
   kubernetes: rke2
+  cni: cilium
   git_forge: forgejo
   ci: woodpecker
-  cd: argocd
+  cd: argocd-ha
   registry: harbor
   database: cloudnativepg
   storage: longhorn
   storage_alternative: rook-ceph
   load_balancer: metallb
-  ingress: ingress-nginx
-  ingress_alternative: traefik
+  ingress: traefik
+  ingress_alternative: ingress-nginx
+  tls: cert-manager
   monitoring: prometheus-grafana
   logging: loki
   backups: velero
   api_vip_provider: kube-vip
   api_vip_alternative: haproxy-keepalived
+  policy: kyverno
+  image_scanning: trivy-via-harbor
+  supply_chain: cosign-renovate
 
 backup:
   off_cluster_target: <OFF_CLUSTER_BACKUP_TARGET>

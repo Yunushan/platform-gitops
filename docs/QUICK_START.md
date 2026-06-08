@@ -34,11 +34,11 @@ make bootstrap-plan
 
 ## 5. Deploy order
 
-1. Prepare Linux nodes.
+1. Prepare three Rocky Linux 10 nodes.
 2. Configure API VIP.
-3. Install RKE2 on three server nodes.
+3. Install RKE2 with Cilium on three server nodes.
 4. Install Argo CD HA bootstrap.
 5. Apply `gitops/bootstrap/root-app.yaml` with your private repository URL substituted at runtime.
-6. Let Argo CD deploy the platform components.
+6. Let Argo CD deploy Traefik and the platform components.
 7. Configure off-cluster backups.
 8. Run a restore drill.

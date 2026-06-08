@@ -4,7 +4,7 @@ server:
   replicas: 2
   ingress:
     enabled: true
-    ingressClassName: ingress-nginx
+    ingressClassName: traefik
     hosts:
       - argocd.<PLATFORM_DOMAIN>
 

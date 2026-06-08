@@ -8,7 +8,7 @@ image:
 
 ingress:
   enabled: true
-  className: ingress-nginx
+  className: traefik
   hosts:
     - host: forgejo.<PLATFORM_DOMAIN>
       paths:

@@ -14,7 +14,7 @@ Argo CD HA
 Harbor
 CloudNativePG PostgreSQL
 Longhorn or Rook/Ceph
-MetalLB + ingress-nginx or Traefik
+MetalLB + Traefik, ingress-nginx optional
 Prometheus + Grafana + Loki
 Velero + off-cluster backups
 Virtual IP / VIP

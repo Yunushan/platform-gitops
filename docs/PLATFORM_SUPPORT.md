@@ -17,10 +17,10 @@ RKE2 Kubernetes server nodes should be Linux hosts. See [Node OS Support](NODE_O
 
 Recommended premium node operating systems:
 
+- Rocky Linux 10
 - SUSE Linux Enterprise Server
 - SLE Micro
 - Red Hat Enterprise Linux
-- Rocky Linux
 - Oracle Linux
 - Ubuntu Server LTS
 

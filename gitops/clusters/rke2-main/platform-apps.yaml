@@ -45,17 +45,17 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: ingress-nginx
+  name: traefik
   namespace: argocd
 spec:
   project: platform
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
-    path: gitops/clusters/rke2-main/apps/ingress-nginx
+    path: gitops/clusters/rke2-main/apps/traefik
   destination:
     server: https://kubernetes.default.svc
-    namespace: ingress-nginx
+    namespace: traefik
   syncPolicy:
     automated:
       prune: false

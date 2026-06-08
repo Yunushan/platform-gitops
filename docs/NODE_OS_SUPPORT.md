@@ -17,7 +17,7 @@ This project supports a broad Linux estate, but node operating systems are tiere
 | SUSE Linux Enterprise Server | Enterprise validated | Best alignment with SUSE Rancher/RKE2. |
 | SLE Micro | Enterprise validated | Good immutable/appliance-style node OS. |
 | Red Hat Enterprise Linux | Enterprise validated | Best choice for Red Hat-standard companies. |
-| Rocky Linux | Enterprise validated when matching RHEL-tested releases | Best zero-subscription RHEL-style option. |
+| Rocky Linux 10 | Enterprise validated when matching RHEL 10-tested releases | Best zero-subscription RHEL-style option; install `kernel-modules-extra` for RKE2 prerequisites. |
 | Oracle Linux | Enterprise validated when using RHEL-compatible kernel behavior | Prefer RHCK-style compatibility for Kubernetes nodes. |
 | Ubuntu Server LTS | Enterprise validated | Best practical/common Linux choice. |
 | AlmaLinux | Compatible / best effort | RHEL-compatible, but verify against the current RKE2 support matrix before production. |
@@ -77,9 +77,9 @@ Every RKE2 server node should provide:
 
 For the premium 3-node profile, prefer one of:
 
-1. SUSE Linux Enterprise Server 15 SP7.
-2. RHEL 9 or the currently validated RHEL release.
-3. Rocky Linux 9 or the currently validated Rocky/RHEL-compatible release.
+1. Rocky Linux 10 or the currently validated Rocky/RHEL-compatible release.
+2. SUSE Linux Enterprise Server 15 SP7.
+3. RHEL 10 or the currently validated RHEL release.
 4. Ubuntu Server 24.04 LTS.
 
 Use the same distribution, major version, minor version, kernel track, and patch level across all three nodes.

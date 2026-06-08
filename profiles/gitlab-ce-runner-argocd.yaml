@@ -1,14 +1,17 @@
 profile: gitlab-ce-runner-argocd
 summary: Replace Forgejo/Woodpecker with GitLab CE and GitLab Runner, still using Argo CD for deployment.
 components:
+  node_os: rocky-linux-10
   git_forge: gitlab-ce
   ci: gitlab-runner
-  cd: argocd
+  cd: argocd-ha
   registry: gitlab-or-harbor
   database: cloudnativepg
   storage: longhorn
-  ingress: ingress-nginx
+  cni: cilium
+  ingress: traefik
 includes:
+  - gitops/clusters/rke2-main/apps/traefik
   - gitops/clusters/rke2-main/alternatives/gitlab-ce
   - gitops/clusters/rke2-main/alternatives/gitlab-runner
   - gitops/clusters/rke2-main/apps/argocd-ha

@@ -9,6 +9,7 @@ project:
 cluster:
   name: rke2-main
   mode: three-node-ha
+  node_os: rocky-linux-10
   api_vip: <VIP_ADDRESS>
   api_dns: <VIP_DNS_NAME>
   domain: <PLATFORM_DOMAIN>
@@ -30,6 +31,7 @@ nodes:
 
 components:
   kubernetes: rke2
+  cni: cilium
   git_forge: forgejo
   ci: woodpecker
   cd: argocd-ha
@@ -42,6 +44,9 @@ components:
   logging: loki
   backups: velero
   api_vip_provider: kube-vip
+  policy: kyverno
+  image_scanning: trivy-via-harbor
+  supply_chain: cosign-renovate
 
 storage:
   longhorn_data_path: /var/lib/longhorn

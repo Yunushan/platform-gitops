@@ -9,7 +9,7 @@
 - Git, kubectl, Helm, and basic shell tools.
 - Off-cluster backup location.
 
-For the premium profile, prefer SLES, RHEL, Rocky Linux, Oracle Linux, or Ubuntu Server LTS. Debian, AlmaLinux, CentOS Stream, Fedora, Arch, Gentoo, and Linux Mint are documented as compatible or lab/workstation targets where upstream validation is limited.
+The default recommendation is Rocky Linux 10 on all three nodes, with RKE2 using Cilium as the CNI. For the premium profile, Rocky Linux 10 remains the zero-subscription default; SLES, RHEL, Oracle Linux, and Ubuntu Server LTS are also suitable enterprise choices. Debian, AlmaLinux, CentOS Stream, Fedora, Arch, Gentoo, and Linux Mint are documented as compatible or lab/workstation targets where upstream validation is limited.
 
 ## Step 1: Prepare local configuration
 
@@ -50,6 +50,14 @@ sudo RKE2_TOKEN=<SAME_PRIVATE_TOKEN>   RKE2_API_ENDPOINT=<VIP_DNS_NAME>   script
 ```
 
 Never store the real token in git.
+
+The bootstrap scripts default to:
+
+```text
+RKE2_CNI=cilium
+```
+
+Override `RKE2_CNI` only if you intentionally choose another supported RKE2 CNI.
 
 ## Step 4: Bootstrap Argo CD
 

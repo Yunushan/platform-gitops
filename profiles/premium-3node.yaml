@@ -2,7 +2,9 @@ profile: premium-3node
 summary: Hardened 3-node profile for private production-like platform deployments.
 inherits: default-forgejo-woodpecker-argocd
 components:
+  node_os: rocky-linux-10
   kubernetes: rke2
+  cni: cilium
   api_vip_provider: kube-vip
   load_balancer: metallb
   ingress: traefik
@@ -16,6 +18,8 @@ components:
   logging: loki
   backups: velero-plus-cnpg-longhorn-harbor-forgejo
   secrets: sops-age-or-external-secrets
+  policy: kyverno
+  supply_chain: cosign-renovate
 remove:
   - gitops/clusters/rke2-main/apps/ingress-nginx
 includes:

@@ -8,7 +8,9 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 
 | Layer | Component |
 |---|---|
+| Node OS | Rocky Linux 10 |
 | Kubernetes | RKE2, 3 server nodes |
+| CNI | Cilium |
 | API VIP | kube-vip default, HAProxy/Keepalived alternative |
 | Git forge | Forgejo |
 | CI | Woodpecker CI |
@@ -17,10 +19,14 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 | Database | CloudNativePG PostgreSQL |
 | Storage | Longhorn default, Rook/Ceph alternative |
 | LoadBalancer services | MetalLB |
-| Ingress | ingress-nginx default, Traefik alternative |
+| Ingress | Traefik default, ingress-nginx alternative |
+| TLS | cert-manager |
 | Monitoring | Prometheus + Grafana |
 | Logs | Loki |
 | Backups | Velero plus database and off-cluster backups |
+| Secrets | SOPS + age default, External Secrets/OpenBao option |
+| Policy | Kyverno examples |
+| Supply chain | Cosign and Renovate helpers |
 
 ## Network model
 
@@ -28,7 +34,7 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 <PLATFORM_VIP_DNS>
   -> API VIP provider for Kubernetes API
   -> MetalLB service VIPs for ingress services
-  -> ingress-nginx or Traefik
+  -> Traefik
   -> platform services and application namespaces
 ```
 
@@ -36,7 +42,7 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 
 The premium profile is available at `profiles/premium-3node.yaml` and deploys from `gitops/clusters/rke2-main/premium-3node`.
 
-It keeps RKE2, kube-vip, MetalLB, Forgejo, Woodpecker, Argo CD HA, Harbor, CloudNativePG, Longhorn, Prometheus, Grafana, Loki, and Velero, but switches ingress to Traefik and adds hardened values for storage, backups, observability, and HA dependencies.
+It keeps the same recommended stack and adds hardened values for storage, backups, observability, and HA dependencies.
 
 ## Security model
 

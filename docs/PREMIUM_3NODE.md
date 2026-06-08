@@ -7,7 +7,9 @@ The premium profile keeps the compact 3-node RKE2 footprint, but uses stricter d
 | Area | Default profile | Premium profile |
 |---|---|---|
 | Bootstrap path | `gitops/clusters/rke2-main` | `gitops/clusters/rke2-main/premium-3node` |
-| Ingress | ingress-nginx | Traefik |
+| Node OS | Rocky Linux 10 | Rocky Linux 10 |
+| CNI | Cilium | Cilium |
+| Ingress | Traefik | Traefik with HA/resource values |
 | Storage | Minimal Longhorn values | Longhorn storage classes and backup target placeholders |
 | Registry | Basic Harbor values | Harbor HA values with external PostgreSQL, Redis, and object storage placeholders |
 | Database | CloudNativePG operator only | CloudNativePG operator plus a 3-instance cluster example with WAL archive |

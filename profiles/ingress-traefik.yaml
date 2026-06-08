@@ -1,5 +1,5 @@
 profile: ingress-traefik
-summary: Use Traefik instead of ingress-nginx.
+summary: Compatibility profile for older branches where ingress-nginx was the default. Traefik is now the default recommendation.
 components:
   ingress: traefik
 remove:

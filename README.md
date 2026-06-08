@@ -35,20 +35,25 @@
 A private-first platform workspace for building a **3-node RKE2 Kubernetes CI/CD and GitOps environment**. The default platform is:
 
 ```text
-RKE2 Kubernetes, 3 server nodes
+Rocky Linux 10, 3 server nodes
+RKE2 Kubernetes with Cilium CNI
 Forgejo
 Woodpecker CI
 Argo CD HA
 Harbor
 CloudNativePG PostgreSQL
 Longhorn storage, with Rook/Ceph as an alternative
-MetalLB + ingress-nginx, with Traefik as an alternative
+MetalLB + Traefik, with ingress-nginx as an alternative
 Prometheus + Grafana + Loki
 Velero + off-cluster backups
+cert-manager
+SOPS + age
+Kyverno policy examples
+Cosign + Renovate supply-chain helpers
 Virtual IP / VIP for highly available access
 ```
 
-The project is intentionally modular. You can switch from **Forgejo** to **Gitea** or **GitLab CE**, from **Longhorn** to **Rook/Ceph**, and from **ingress-nginx** to **Traefik** by changing profile files and GitOps paths rather than redesigning the repository.
+The project is intentionally modular. You can switch from **Forgejo** to **Gitea** or **GitLab CE**, from **Longhorn** to **Rook/Ceph**, and from **Traefik** to **ingress-nginx** by changing profile files and GitOps paths rather than redesigning the repository.
 
 For a hardened private deployment, use the **premium 3-node profile**:
 
@@ -94,7 +99,7 @@ make no-secrets
                                   |
                          MetalLB service VIPs
                                   |
-                    ingress-nginx or Traefik Ingress
+                         Traefik Ingress
                                   |
  ------------------------------------------------------------------
 |                  3-node RKE2 Kubernetes cluster                  |
@@ -147,7 +152,7 @@ docs/ARCHITECTURE.md
 | Git hosting compatibility | GitHub, GitLab, Gitea, Forgejo |
 | CI config compatibility | GitHub Actions, GitLab CI, Gitea/Forgejo Actions, Woodpecker CI |
 
-BSD and Solaris are supported as **operator/client workstations** for Git, SSH, editing, and documentation workflows. The Kubernetes server nodes should be Linux hosts. Premium node targets are SLES/SLE Micro, RHEL, Rocky Linux, Oracle Linux, and Ubuntu Server LTS; Debian, AlmaLinux, CentOS Stream, Fedora, Arch, Gentoo, Linux Mint, and legacy CentOS are documented with compatible or lab/workstation guidance.
+BSD and Solaris are supported as **operator/client workstations** for Git, SSH, editing, and documentation workflows. The Kubernetes server nodes should be Linux hosts. The default recommendation is Rocky Linux 10 on all three nodes. Other premium node targets are SLES/SLE Micro, RHEL, Oracle Linux, and Ubuntu Server LTS; Debian, AlmaLinux, CentOS Stream, Fedora, Arch, Gentoo, Linux Mint, and legacy CentOS are documented with compatible or lab/workstation guidance.
 
 ## Repository layout
 
@@ -177,7 +182,9 @@ BSD and Solaris are supported as **operator/client workstations** for Git, SSH, 
 
 | Layer | Default | Alternatives included |
 |---|---|---|
+| Node OS | Rocky Linux 10 | SLES, SLE Micro, RHEL, Oracle Linux, Ubuntu Server LTS |
 | Kubernetes | RKE2, 3 server nodes | Manual profile extension |
+| CNI | Cilium | Canal, Calico, Flannel where supported by RKE2 |
 | Git forge | Forgejo | Gitea, GitLab CE |
 | CI | Woodpecker CI | Gitea/Forgejo Actions, GitLab Runner profile |
 | CD / GitOps | Argo CD HA | Kept as required deployment engine |
@@ -185,11 +192,15 @@ BSD and Solaris are supported as **operator/client workstations** for Git, SSH, 
 | Database | CloudNativePG PostgreSQL | External PostgreSQL profile |
 | Storage | Longhorn | Rook/Ceph |
 | Load balancer | MetalLB | External load balancer profile |
-| Ingress | ingress-nginx | Traefik |
+| Ingress | Traefik | ingress-nginx |
+| TLS | cert-manager | External certificate workflow |
 | Monitoring | Prometheus + Grafana | Extendable |
 | Logs | Loki | Extendable |
 | Backups | Velero + DB backups + off-cluster target | External backup target profile |
 | API VIP | kube-vip | HAProxy + Keepalived |
+| Policy | Kyverno examples | Other admission controllers |
+| Secrets | SOPS + age | External Secrets, Sealed Secrets, Vault/OpenBao |
+| Supply chain | Cosign + Renovate helpers | Extendable |
 
 ## Recommended first repositories after deployment
 
