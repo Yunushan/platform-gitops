@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install rke2-status docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -13,6 +13,7 @@ help:
 	@echo "  rke2-preflight  Check Ansible SSH/sudo and write node /etc/hosts"
 	@echo "  rke2-prepare    Prepare Linux nodes through Ansible"
 	@echo "  rke2-install    Install RKE2 through Ansible"
+	@echo "  rke2-status     Show RKE2 install/service diagnostics"
 	@echo "  docs-list       List key docs"
 	@echo "  ci-list         List included CI definitions"
 
@@ -36,7 +37,10 @@ rke2-prepare: rke2-preflight
 	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/prepare-nodes.yml
 
 rke2-install:
-	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml
+
+rke2-status:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-status.yml
 
 docs-list:
 	@find docs -maxdepth 2 -type f | sort

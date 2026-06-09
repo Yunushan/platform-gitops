@@ -33,7 +33,19 @@ Use the Ansible install playbook instead of a long ad-hoc shell command:
 make rke2-install
 ```
 
-The playbook starts `rke2-server` without blocking Ansible output and prints recent journal logs if the first server does not become ready.
+The playbook runs the package installer asynchronously, polls progress, starts `rke2-server` without blocking Ansible output, verifies service readiness, and prints diagnostics if install or startup exceeds the timeout.
+
+Collect current process, service, journal, disk, and memory diagnostics:
+
+```bash
+make rke2-status
+```
+
+If the network or image pulls are slow, extend the timeouts:
+
+```bash
+RKE2_INSTALL_TIMEOUT=1800 RKE2_START_TIMEOUT=1200 make rke2-install
+```
 
 If logs show image pull failures such as `image ... not found`, pin a known-good RKE2 version:
 

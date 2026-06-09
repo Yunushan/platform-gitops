@@ -1,0 +1,55 @@
+---
+- name: Show RKE2 installation and service status
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_status_log_lines: 100
+  tasks:
+    - name: Show package manager and RKE2 related processes
+      ansible.builtin.shell: |
+        set -o pipefail
+        ps -eo pid,ppid,stat,etime,comm,args | egrep 'rke2|dnf|yum|rpm|curl|get.rke2|containerd|kubelet' | grep -v egrep || true
+      args:
+        executable: /bin/bash
+      register: rke2_status_processes
+      changed_when: false
+      failed_when: false
+
+    - name: Print package manager and RKE2 related processes
+      ansible.builtin.debug:
+        var: rke2_status_processes.stdout_lines
+
+    - name: Show rke2-server systemd status
+      ansible.builtin.command: systemctl status rke2-server --no-pager -l
+      register: rke2_status_systemd
+      changed_when: false
+      failed_when: false
+
+    - name: Print rke2-server systemd status
+      ansible.builtin.debug:
+        var: rke2_status_systemd.stdout_lines
+
+    - name: Show recent rke2-server journal logs
+      ansible.builtin.command: journalctl -u rke2-server -n {{ rke2_status_log_lines }} --no-pager
+      register: rke2_status_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Print recent rke2-server journal logs
+      ansible.builtin.debug:
+        var: rke2_status_journal.stdout_lines
+
+    - name: Show disk and memory status
+      ansible.builtin.shell: |
+        df -h / /var/lib/rancher 2>/dev/null || df -h /
+        free -h
+      args:
+        executable: /bin/bash
+      register: rke2_status_resources
+      changed_when: false
+      failed_when: false
+
+    - name: Print disk and memory status
+      ansible.builtin.debug:
+        var: rke2_status_resources.stdout_lines
