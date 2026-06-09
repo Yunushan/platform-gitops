@@ -82,6 +82,12 @@ Run verification independently when needed:
 make rke2-verify
 ```
 
+Collect focused diagnostics for a failed node:
+
+```bash
+make rke2-diagnose HOST=node-1
+```
+
 Limit diagnostics or connectivity checks to one node when one host is slow or unreachable:
 
 ```bash

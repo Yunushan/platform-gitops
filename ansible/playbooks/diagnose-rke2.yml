@@ -1,0 +1,147 @@
+---
+- name: Diagnose RKE2 node state
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  strategy: free
+  ignore_unreachable: true
+  vars:
+    rke2_diagnose_log_lines: 160
+  tasks:
+    - name: Show host identity
+      ansible.builtin.shell: |
+        echo "inventory_hostname={{ inventory_hostname }}"
+        echo "hostname=$(hostname)"
+        hostnamectl --static 2>/dev/null || true
+        ip -brief address || true
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_identity
+      changed_when: false
+      failed_when: false
+
+    - name: Print host identity
+      ansible.builtin.debug:
+        var: rke2_diagnose_identity.stdout_lines
+
+    - name: Show RKE2 config identity
+      ansible.builtin.shell: |
+        if [ -f /etc/rancher/rke2/config.yaml ]; then
+          grep -E '^(server:|node-name:|cni:|write-kubeconfig-mode:|etcd-expose-metrics:)' /etc/rancher/rke2/config.yaml || true
+        else
+          echo "/etc/rancher/rke2/config.yaml missing"
+        fi
+        test -s /var/lib/rancher/rke2/server/token && echo "server_token=present" || echo "server_token=missing"
+        test -s /etc/rancher/rke2/config.yaml && echo "config=present" || echo "config=missing"
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_config
+      changed_when: false
+      failed_when: false
+
+    - name: Print RKE2 config identity
+      ansible.builtin.debug:
+        var: rke2_diagnose_config.stdout_lines
+
+    - name: Show RKE2 service status
+      ansible.builtin.shell: |
+        echo "is-active=$(systemctl is-active rke2-server || true)"
+        echo "is-failed=$(systemctl is-failed rke2-server || true)"
+        systemctl status rke2-server --no-pager -l || true
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_service
+      changed_when: false
+      failed_when: false
+
+    - name: Print RKE2 service status
+      ansible.builtin.debug:
+        var: rke2_diagnose_service.stdout_lines
+
+    - name: Show recent RKE2 warnings and errors
+      ansible.builtin.shell: |
+        journalctl -u rke2-server -n {{ rke2_diagnose_log_lines }} --no-pager |
+          grep -E 'fatal|error|failed|token|certificate|x509|etcd|connection refused|no route|cacerts' || true
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_journal
+      changed_when: false
+      failed_when: false
+
+    - name: Print recent RKE2 warnings and errors
+      ansible.builtin.debug:
+        var: rke2_diagnose_journal.stdout_lines
+
+    - name: Show RKE2 listeners and processes
+      ansible.builtin.shell: |
+        echo "===== listeners ====="
+        ss -lntp | grep -E ':(2379|2380|6443|9345)[[:space:]]' || true
+        echo "===== processes ====="
+        ps -eo pid,ppid,stat,etime,comm,args | grep -E 'rke2|etcd|containerd|kubelet|install-rke2|dnf|yum|rpm' | grep -v grep || true
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_runtime
+      changed_when: false
+      failed_when: false
+
+    - name: Print RKE2 listeners and processes
+      ansible.builtin.debug:
+        var: rke2_diagnose_runtime.stdout_lines
+
+    - name: Show network and firewall state
+      ansible.builtin.shell: |
+        echo "===== firewalld ====="
+        if command -v firewall-cmd >/dev/null 2>&1; then
+          firewall-cmd --state || true
+          firewall-cmd --list-ports || true
+        else
+          echo "firewall-cmd missing"
+        fi
+        echo "===== routes ====="
+        ip route || true
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_network
+      changed_when: false
+      failed_when: false
+
+    - name: Print network and firewall state
+      ansible.builtin.debug:
+        var: rke2_diagnose_network.stdout_lines
+
+    - name: Show storage and memory state
+      ansible.builtin.shell: |
+        df -h / /var/lib/rancher 2>/dev/null || df -h /
+        du -sh /var/lib/rancher/rke2/server/db 2>/dev/null || true
+        free -h
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_resources
+      changed_when: false
+      failed_when: false
+
+    - name: Print storage and memory state
+      ansible.builtin.debug:
+        var: rke2_diagnose_resources.stdout_lines
+
+    - name: Show API and node state when kubeconfig exists
+      ansible.builtin.shell: |
+        if [ -f /etc/rancher/rke2/rke2.yaml ] && [ -x /var/lib/rancher/rke2/bin/kubectl ]; then
+          echo "===== readyz ====="
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get --raw=/readyz || true
+          echo "===== nodes ====="
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide || true
+          echo "===== kube-system pods ====="
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get pods -n kube-system -o wide || true
+        else
+          echo "kubeconfig_or_kubectl=missing"
+        fi
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_kubernetes
+      changed_when: false
+      failed_when: false
+
+    - name: Print API and node state
+      ansible.builtin.debug:
+        var: rke2_diagnose_kubernetes.stdout_lines

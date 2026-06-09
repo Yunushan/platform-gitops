@@ -77,6 +77,12 @@ Verify the cluster after recovery:
 make rke2-verify
 ```
 
+Collect focused diagnostics for a failed node:
+
+```bash
+make rke2-diagnose HOST=node-1
+```
+
 If the network or image pulls are slow, extend the timeouts:
 
 ```bash

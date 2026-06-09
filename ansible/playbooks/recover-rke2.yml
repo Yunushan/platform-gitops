@@ -31,6 +31,7 @@
     rke2_start_poll_interval_effective: "{{ rke2_start_poll_interval | default(rke2_start_poll_interval_from_env, true) | default(10, true) | int }}"
     rke2_api_ready_timeout_effective: "{{ rke2_api_ready_timeout | default(rke2_api_ready_timeout_from_env, true) | default(300, true) | int }}"
     rke2_node_ready_timeout_effective: "{{ rke2_node_ready_timeout | default(rke2_node_ready_timeout_from_env, true) | default(600, true) | int }}"
+    rke2_start_retries_effective: "{{ (((rke2_start_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     rke2_recovery_min_disk_mb: 10240
     rke2_recovery_min_memory_mb: 2048
     rke2_recovery_diagnostic_lines: 120
@@ -333,30 +334,33 @@
         - name: Poll first RKE2 server service
           ansible.builtin.shell: |
             set -o pipefail
-            deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
-            while [ "${SECONDS}" -lt "${deadline}" ]; do
-              state="$(systemctl is-active rke2-server || true)"
-              if [ "${state}" = "active" ]; then
-                echo "active"
-                exit 0
-              fi
+            state="$(systemctl is-active rke2-server || true)"
+            if [ "${state}" = "active" ]; then
+              echo "active"
+              exit 0
+            fi
 
-              if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
-                echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
-                cat /tmp/rke2-startup-fatal.log >&2
-                exit 42
-              fi
+            if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
+              echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
+              cat /tmp/rke2-startup-fatal.log >&2
+              exit 42
+            fi
 
-              echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
-              sleep {{ rke2_start_poll_interval_effective }}
-            done
-
-            echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
+            echo "rke2-server state is ${state}; retrying in {{ rke2_start_poll_interval_effective }}s"
             exit 1
           args:
             executable: /bin/bash
           register: rke2_first_server_active
+          retries: "{{ rke2_start_retries_effective }}"
+          delay: "{{ rke2_start_poll_interval_effective }}"
+          until: rke2_first_server_active.rc == 0 or rke2_first_server_active.rc == 42
           changed_when: false
+          failed_when: >-
+            rke2_first_server_active.rc == 42 or
+            (
+              rke2_first_server_active.rc != 0 and
+              (rke2_first_server_active.attempts | default(1) | int) >= (rke2_start_retries_effective | int)
+            )
       rescue:
         - name: Collect first-server recovery diagnostics
           ansible.builtin.shell: |
@@ -385,7 +389,7 @@
 
         - name: Stop after first-server recovery failure
           ansible.builtin.fail:
-            msg: "node-1 did not become active within {{ rke2_start_timeout_effective }} seconds. Review diagnostics above."
+            msg: "node-1 did not become active within {{ rke2_start_timeout_effective }} seconds. Review diagnostics above, or run: make rke2-diagnose HOST={{ rke2_first_server }}"
       when: inventory_hostname == rke2_first_server
 
     - name: Wait for first RKE2 kubeconfig
@@ -450,30 +454,33 @@
         - name: Poll every RKE2 server service
           ansible.builtin.shell: |
             set -o pipefail
-            deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
-            while [ "${SECONDS}" -lt "${deadline}" ]; do
-              state="$(systemctl is-active rke2-server || true)"
-              if [ "${state}" = "active" ]; then
-                echo "active"
-                exit 0
-              fi
+            state="$(systemctl is-active rke2-server || true)"
+            if [ "${state}" = "active" ]; then
+              echo "active"
+              exit 0
+            fi
 
-              if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
-                echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
-                cat /tmp/rke2-startup-fatal.log >&2
-                exit 42
-              fi
+            if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
+              echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
+              cat /tmp/rke2-startup-fatal.log >&2
+              exit 42
+            fi
 
-              echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
-              sleep {{ rke2_start_poll_interval_effective }}
-            done
-
-            echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
+            echo "rke2-server state is ${state}; retrying in {{ rke2_start_poll_interval_effective }}s"
             exit 1
           args:
             executable: /bin/bash
           register: rke2_service_active
+          retries: "{{ rke2_start_retries_effective }}"
+          delay: "{{ rke2_start_poll_interval_effective }}"
+          until: rke2_service_active.rc == 0 or rke2_service_active.rc == 42
           changed_when: false
+          failed_when: >-
+            rke2_service_active.rc == 42 or
+            (
+              rke2_service_active.rc != 0 and
+              (rke2_service_active.attempts | default(1) | int) >= (rke2_start_retries_effective | int)
+            )
       rescue:
         - name: Collect joining server recovery diagnostics
           ansible.builtin.shell: |
@@ -497,7 +504,7 @@
 
         - name: Stop after joining server recovery failure
           ansible.builtin.fail:
-            msg: "{{ inventory_hostname }} did not become active within {{ rke2_start_timeout_effective }} seconds. Review diagnostics above."
+            msg: "{{ inventory_hostname }} did not become active within {{ rke2_start_timeout_effective }} seconds. Review diagnostics above, or run: make rke2-diagnose HOST={{ inventory_hostname }}"
 
     - name: Wait for all RKE2 nodes to report Ready
       block:
