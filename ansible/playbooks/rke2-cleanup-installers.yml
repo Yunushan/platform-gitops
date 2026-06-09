@@ -1,0 +1,63 @@
+---
+- name: Cleanup stale RKE2 installer processes
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  strategy: free
+  ignore_unreachable: true
+  vars:
+    rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
+    rke2_cleanup_grace_seconds: 10
+  tasks:
+    - name: Show matching RKE2 installer processes before cleanup
+      ansible.builtin.shell: |
+        pgrep -af '{{ rke2_installer_process_pattern }}' || true
+      register: rke2_cleanup_before
+      changed_when: false
+      failed_when: false
+
+    - name: Print matching RKE2 installer processes before cleanup
+      ansible.builtin.debug:
+        var: rke2_cleanup_before.stdout_lines
+
+    - name: Terminate matching RKE2 installer processes
+      ansible.builtin.shell: |
+        set -eu
+        pids="$(pgrep -f '{{ rke2_installer_process_pattern }}' || true)"
+        if [ -n "${pids}" ]; then
+          kill -TERM ${pids} || true
+          sleep {{ rke2_cleanup_grace_seconds }}
+        fi
+        pids="$(pgrep -f '{{ rke2_installer_process_pattern }}' || true)"
+        if [ -n "${pids}" ]; then
+          kill -KILL ${pids} || true
+        fi
+      args:
+        executable: /bin/bash
+      register: rke2_cleanup_kill
+      changed_when: rke2_cleanup_before.stdout | length > 0
+
+    - name: Remove unfinished root async job markers
+      ansible.builtin.shell: |
+        if [ -d /root/.ansible_async ]; then
+          find /root/.ansible_async -type f -name 'j*' -exec grep -l '"finished": 0' {} \; | xargs -r rm -f
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Show matching RKE2 installer processes after cleanup
+      ansible.builtin.shell: |
+        pgrep -af '{{ rke2_installer_process_pattern }}' || true
+      register: rke2_cleanup_after
+      changed_when: false
+      failed_when: false
+
+    - name: Print matching RKE2 installer processes after cleanup
+      ansible.builtin.debug:
+        var: rke2_cleanup_after.stdout_lines
+
+    - name: Fail if matching RKE2 installer processes remain
+      ansible.builtin.fail:
+        msg: "Some RKE2 installer processes remain on {{ inventory_hostname }}. Check them manually before rerunning install."
+      when: rke2_cleanup_after.stdout | length > 0

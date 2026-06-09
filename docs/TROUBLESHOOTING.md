@@ -48,6 +48,12 @@ make rke2-ping HOST=node-1
 make rke2-status HOST=node-1
 ```
 
+If you interrupted `make rke2-install`, clean stale installer processes before rerunning it:
+
+```bash
+make rke2-cleanup-installers HOST=node-1
+```
+
 If the network or image pulls are slow, extend the timeouts:
 
 ```bash

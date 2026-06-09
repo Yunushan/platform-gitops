@@ -36,6 +36,7 @@
     rke2_install_poll_interval_effective: "{{ rke2_install_poll_interval | default(rke2_install_poll_interval_from_env, true) | default(15, true) | int }}"
     rke2_start_timeout_effective: "{{ rke2_start_timeout | default(rke2_start_timeout_from_env, true) | default(900, true) | int }}"
     rke2_start_poll_interval_effective: "{{ rke2_start_poll_interval | default(rke2_start_poll_interval_from_env, true) | default(10, true) | int }}"
+    rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
   pre_tasks:
     - name: Require an API endpoint or DNS name
       ansible.builtin.assert:
@@ -74,6 +75,25 @@
           Installing RKE2 {{ rke2_version_effective if (rke2_version_effective | length > 0) else ('from channel ' + rke2_channel_effective) }}
           with {{ rke2_cni_effective }} CNI. Package install timeout is {{ rke2_install_timeout_effective }}s and service start timeout is
           {{ rke2_start_timeout_effective }}s. Token is supplied privately or stored on the controller at {{ rke2_token_file }}.
+
+    - name: Detect existing RKE2 installer processes
+      ansible.builtin.shell: |
+        pgrep -af '{{ rke2_installer_process_pattern }}' || true
+      register: rke2_existing_installers
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when existing RKE2 installer processes are running
+      ansible.builtin.fail:
+        msg: |
+          Existing RKE2 installer or package-manager processes are already running on {{ inventory_hostname }}:
+          {{ rke2_existing_installers.stdout }}
+
+          This usually means an earlier Ansible run was interrupted. Run:
+          make rke2-cleanup-installers HOST={{ inventory_hostname }}
+
+          Then rerun make rke2-install.
+      when: rke2_existing_installers.stdout | length > 0
 
   tasks:
     - name: Create RKE2 config directory
