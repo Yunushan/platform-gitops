@@ -36,6 +36,12 @@ ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml
   -e rke2_version='v1.35.4+rke2r1'
 ```
 
+If the API VIP is not online yet, join node-2 and node-3 through node-1 while still keeping the API DNS/VIP in TLS SANs:
+
+```bash
+RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install
+```
+
 If no token is supplied in `inventory/hosts.local.ini` or the `RKE2_TOKEN` environment variable, the install playbook generates and reuses one at `~/.config/platform-gitops/rke2-token`.
 
 The install playbook runs the package installer asynchronously, polls it, and fails with diagnostics if it exceeds the timeout. Defaults are 1200 seconds for package install and 900 seconds for service startup. Override them only when your network or image pulls are slow:

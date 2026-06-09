@@ -18,8 +18,9 @@
     rke2_version_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERSION') }}"
     rke2_channel_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_CHANNEL') }}"
     rke2_token_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_TOKEN') }}"
+    rke2_join_endpoint_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_JOIN_ENDPOINT') }}"
     rke2_api_endpoint_effective: "{{ rke2_api_endpoint | default(rke2_api_dns | default(rke2_api_endpoint_from_env, true), true) }}"
-    rke2_join_endpoint_effective: "{{ rke2_join_endpoint | default(rke2_api_endpoint_effective, true) }}"
+    rke2_join_endpoint_effective: "{{ rke2_join_endpoint | default(rke2_join_endpoint_from_env, true) | default(rke2_api_endpoint_effective, true) }}"
     rke2_version_effective: "{{ rke2_version | default(rke2_version_from_env, true) }}"
     rke2_channel_effective: "{{ rke2_channel | default(rke2_channel_from_env, true) | default('stable', true) }}"
     rke2_cni_effective: "{{ rke2_cni | default('cilium', true) }}"
@@ -73,7 +74,7 @@
       ansible.builtin.debug:
         msg: >-
           Installing RKE2 {{ rke2_version_effective if (rke2_version_effective | length > 0) else ('from channel ' + rke2_channel_effective) }}
-          with {{ rke2_cni_effective }} CNI. Package install timeout is {{ rke2_install_timeout_effective }}s and service start timeout is
+          with {{ rke2_cni_effective }} CNI. Join endpoint is {{ rke2_join_endpoint_effective }}. Package install timeout is {{ rke2_install_timeout_effective }}s and service start timeout is
           {{ rke2_start_timeout_effective }}s. Token is supplied privately or stored on the controller at {{ rke2_token_file }}.
 
     - name: Detect existing RKE2 installer processes

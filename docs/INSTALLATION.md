@@ -117,6 +117,12 @@ Override `rke2_cni` only if you intentionally choose another supported RKE2 CNI.
 If the API VIP is not active yet, temporarily point joining servers at node-1 while keeping the API VIP in TLS SANs:
 
 ```bash
+RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install
+```
+
+or:
+
+```bash
 ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml \
   -e rke2_join_endpoint=<NODE_1_IP>
 ```
