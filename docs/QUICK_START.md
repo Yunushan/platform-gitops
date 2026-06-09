@@ -32,6 +32,19 @@ make no-secrets
 make bootstrap-plan
 ```
 
+Prepare and install RKE2 through Ansible:
+
+```bash
+make rke2-prepare
+make rke2-install
+```
+
+Optional exact RKE2 version pin:
+
+```bash
+RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
+```
+
 ## 5. Deploy order
 
 1. Prepare three Rocky Linux 10 nodes.

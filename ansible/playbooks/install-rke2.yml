@@ -1,8 +1,187 @@
 ---
-- name: Install RKE2 placeholder
+- name: Install RKE2 server cluster
   hosts: rke2_servers
   become: true
-  tasks:
-    - name: Show safe install command
+  gather_facts: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_api_endpoint_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_ENDPOINT') }}"
+    rke2_version_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERSION') }}"
+    rke2_channel_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_CHANNEL') }}"
+    rke2_token_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_TOKEN') }}"
+    rke2_api_endpoint_effective: "{{ rke2_api_endpoint | default(rke2_api_dns | default(rke2_api_endpoint_from_env, true), true) }}"
+    rke2_join_endpoint_effective: "{{ rke2_join_endpoint | default(rke2_api_endpoint_effective, true) }}"
+    rke2_version_effective: "{{ rke2_version | default(rke2_version_from_env, true) }}"
+    rke2_channel_effective: "{{ rke2_channel | default(rke2_channel_from_env, true) | default('stable', true) }}"
+    rke2_cni_effective: "{{ rke2_cni | default('cilium', true) }}"
+    rke2_token_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/platform-gitops/rke2-token"
+    rke2_disable_packaged_components:
+      - rke2-ingress-nginx
+      - rke2-traefik
+    rke2_install_url: https://get.rke2.io
+    rke2_start_timeout: 900
+  pre_tasks:
+    - name: Require an API endpoint or DNS name
+      ansible.builtin.assert:
+        that:
+          - rke2_api_endpoint_effective | length > 0
+          - not (rke2_api_endpoint_effective is match("^<.*>$"))
+        fail_msg: "Set rke2_api_dns in inventory/hosts.local.ini, pass -e rke2_api_endpoint=api.platform.local, or export RKE2_API_ENDPOINT."
+
+    - name: Ensure local token directory exists
+      ansible.builtin.file:
+        path: "{{ rke2_token_file | dirname }}"
+        state: directory
+        mode: "0700"
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Resolve RKE2 token candidate
+      ansible.builtin.set_fact:
+        rke2_token_candidate: "{{ rke2_token | default(rke2_token_from_env, true) }}"
+      no_log: true
+
+    - name: Generate or load local RKE2 token
+      ansible.builtin.set_fact:
+        rke2_generated_token: "{{ lookup('ansible.builtin.password', rke2_token_file + ' length=64 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Select RKE2 token
+      ansible.builtin.set_fact:
+        rke2_token_effective: "{{ (((rke2_token_candidate | default('', true)) | length == 0) or ((rke2_token_candidate | regex_search('^<.*>$')) is not none)) | ternary(rke2_generated_token, rke2_token_candidate) }}"
+      no_log: true
+
+    - name: Show selected RKE2 install source
       ansible.builtin.debug:
-        msg: "Use scripts/bootstrap/install-rke2-first-server.sh on node 1 and install-rke2-server.sh on nodes 2 and 3."
+        msg: >-
+          Installing RKE2 {{ rke2_version_effective if (rke2_version_effective | length > 0) else ('from channel ' + rke2_channel_effective) }}
+          with {{ rke2_cni_effective }} CNI. Token is supplied privately or stored on the controller at {{ rke2_token_file }}.
+
+  tasks:
+    - name: Create RKE2 config directory
+      ansible.builtin.file:
+        path: /etc/rancher/rke2
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write RKE2 server configuration
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/config.yaml
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          {% if inventory_hostname != rke2_first_server %}
+          server: https://{{ rke2_join_endpoint_effective }}:9345
+          {% endif %}
+          token: {{ rke2_token_effective }}
+          node-name: {{ inventory_hostname }}
+          cni: {{ rke2_cni_effective }}
+          tls-san:
+            - {{ rke2_api_endpoint_effective }}
+          {% if rke2_api_vip is defined and (rke2_api_vip | length > 0) and not (rke2_api_vip is match("^<.*>$")) %}
+            - {{ rke2_api_vip }}
+          {% endif %}
+          {% for san in rke2_extra_tls_sans | default([]) %}
+            - {{ san }}
+          {% endfor %}
+          write-kubeconfig-mode: "0640"
+          disable:
+          {% for component in rke2_disable_packaged_components %}
+            - {{ component }}
+          {% endfor %}
+          etcd-expose-metrics: true
+      no_log: true
+
+    - name: Download RKE2 installer
+      ansible.builtin.get_url:
+        url: "{{ rke2_install_url }}"
+        dest: /tmp/install-rke2.sh
+        owner: root
+        group: root
+        mode: "0755"
+        timeout: 60
+
+    - name: Build RKE2 installer environment
+      ansible.builtin.set_fact:
+        rke2_install_environment: "{{ {'INSTALL_RKE2_TYPE': 'server'} | combine(((rke2_version_effective | length) > 0) | ternary({'INSTALL_RKE2_VERSION': rke2_version_effective}, {'INSTALL_RKE2_CHANNEL': rke2_channel_effective})) }}"
+
+    - name: Install RKE2 server package
+      ansible.builtin.command: /tmp/install-rke2.sh
+      environment: "{{ rke2_install_environment }}"
+      register: rke2_install_result
+      changed_when: "'already installed' not in (rke2_install_result.stdout | lower)"
+
+    - name: Enable RKE2 server service
+      ansible.builtin.command: systemctl enable rke2-server
+      changed_when: false
+
+    - name: Start first RKE2 server without blocking Ansible output
+      ansible.builtin.command: systemctl --no-block restart rke2-server
+      changed_when: true
+      when: inventory_hostname == rke2_first_server
+
+    - name: Wait for first RKE2 kubeconfig
+      block:
+        - name: Wait for kubeconfig on first server
+          ansible.builtin.wait_for:
+            path: /etc/rancher/rke2/rke2.yaml
+            timeout: "{{ rke2_start_timeout }}"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for first server API to answer
+          ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get --raw=/readyz
+          register: rke2_readyz
+          retries: 60
+          delay: 10
+          until: rke2_readyz.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Show first server logs on startup failure
+          ansible.builtin.command: journalctl -u rke2-server -n 120 --no-pager
+          register: rke2_first_server_logs
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print first server logs
+          ansible.builtin.debug:
+            var: rke2_first_server_logs.stdout_lines
+          run_once: true
+
+        - name: Stop after first server startup failure
+          ansible.builtin.fail:
+            msg: "RKE2 first server did not become ready. Review the journal output above, then rerun this playbook."
+          run_once: true
+
+    - name: Start joining RKE2 servers without blocking Ansible output
+      ansible.builtin.command: systemctl --no-block restart rke2-server
+      changed_when: true
+      when: inventory_hostname != rke2_first_server
+
+    - name: Wait for RKE2 server service to become active
+      ansible.builtin.command: systemctl is-active rke2-server
+      register: rke2_service_active
+      retries: 60
+      delay: 10
+      until: rke2_service_active.stdout == "active"
+      changed_when: false
+
+    - name: Show cluster nodes
+      ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
+      register: rke2_nodes
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print cluster nodes
+      ansible.builtin.debug:
+        var: rke2_nodes.stdout_lines
+      run_once: true

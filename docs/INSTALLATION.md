@@ -37,27 +37,69 @@ scripts/vip/keepalived.conf.example
 
 ## Step 3: Install RKE2
 
-On the first server node:
+Recommended Ansible flow:
 
 ```bash
-sudo RKE2_TOKEN=<GENERATE_WITH_PASSWORD_MANAGER>   RKE2_API_ENDPOINT=<VIP_DNS_NAME>   scripts/bootstrap/install-rke2-first-server.sh
+make rke2-prepare
+make rke2-install
 ```
 
-On the second and third server nodes:
+The install playbook reads these from `inventory/hosts.local.ini`:
+
+```ini
+[rke2_servers:vars]
+rke2_api_vip=<VIP_ADDRESS>
+rke2_api_dns=<VIP_DNS_NAME>
+```
+
+If `rke2_token` is omitted or left as a placeholder, the playbook generates a private controller-side token at:
+
+```text
+~/.config/platform-gitops/rke2-token
+```
+
+To pin an exact RKE2 version, use either environment variable style:
 
 ```bash
-sudo RKE2_TOKEN=<SAME_PRIVATE_TOKEN>   RKE2_API_ENDPOINT=<VIP_DNS_NAME>   scripts/bootstrap/install-rke2-server.sh
+RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
+```
+
+or Ansible extra vars:
+
+```bash
+ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml \
+  -e rke2_version='v1.35.4+rke2r1'
+```
+
+If no version is pinned, the playbook uses the configured channel:
+
+```ini
+rke2_channel=stable
+```
+
+The playbook defaults to:
+
+```text
+rke2_cni=cilium
+```
+
+Override `rke2_cni` only if you intentionally choose another supported RKE2 CNI.
+
+If the API VIP is not active yet, temporarily point joining servers at node-1 while keeping the API VIP in TLS SANs:
+
+```bash
+ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml \
+  -e rke2_join_endpoint=<NODE_1_IP>
+```
+
+Manual scripts remain available for debugging:
+
+```bash
+sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> scripts/bootstrap/install-rke2-first-server.sh
+sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> scripts/bootstrap/install-rke2-server.sh
 ```
 
 Never store the real token in git.
-
-The bootstrap scripts default to:
-
-```text
-RKE2_CNI=cilium
-```
-
-Override `RKE2_CNI` only if you intentionally choose another supported RKE2 CNI.
 
 ## Step 4: Bootstrap Argo CD
 

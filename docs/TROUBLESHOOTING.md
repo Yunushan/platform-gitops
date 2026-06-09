@@ -8,6 +8,29 @@ Check that you replaced `<THIS_REPO_URL>` at bootstrap time and configured repos
 
 Check that the address pool was customized from placeholders to your private network range in ignored or encrypted configuration.
 
+## RKE2 install appears stuck
+
+Use the Ansible install playbook instead of a long ad-hoc shell command:
+
+```bash
+make rke2-install
+```
+
+The playbook starts `rke2-server` without blocking Ansible output and prints recent journal logs if the first server does not become ready.
+
+If logs show image pull failures such as `image ... not found`, pin a known-good RKE2 version:
+
+```bash
+RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
+```
+
+You can also use:
+
+```bash
+ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml \
+  -e rke2_version='v1.35.4+rke2r1'
+```
+
 ## CI cannot push images
 
 Check Harbor robot account permissions. Do not commit robot account credentials.
