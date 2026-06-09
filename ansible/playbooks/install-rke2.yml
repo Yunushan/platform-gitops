@@ -38,6 +38,7 @@
     rke2_start_timeout_effective: "{{ rke2_start_timeout | default(rke2_start_timeout_from_env, true) | default(900, true) | int }}"
     rke2_start_poll_interval_effective: "{{ rke2_start_poll_interval | default(rke2_start_poll_interval_from_env, true) | default(10, true) | int }}"
     rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
+    rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|no route to host|connection refused|x509:|certificate signed by unknown authority'
   pre_tasks:
     - name: Require an API endpoint or DNS name
       ansible.builtin.assert:
@@ -275,12 +276,32 @@
 
     - name: Wait for RKE2 server service to become active
       block:
-        - name: Poll RKE2 server service state
-          ansible.builtin.command: systemctl is-active rke2-server
+        - name: Wait for RKE2 server service state
+          ansible.builtin.shell: |
+            set -o pipefail
+            deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
+            while [ "${SECONDS}" -lt "${deadline}" ]; do
+              state="$(systemctl is-active rke2-server || true)"
+              if [ "${state}" = "active" ]; then
+                echo "active"
+                exit 0
+              fi
+
+              if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
+                echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
+                cat /tmp/rke2-startup-fatal.log >&2
+                exit 42
+              fi
+
+              echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
+              sleep {{ rke2_start_poll_interval_effective }}
+            done
+
+            echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
+            exit 1
+          args:
+            executable: /bin/bash
           register: rke2_service_active
-          retries: "{{ (((rke2_start_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
-          delay: "{{ rke2_start_poll_interval_effective }}"
-          until: rke2_service_active.stdout == "active"
           changed_when: false
       rescue:
         - name: Show RKE2 service status on startup failure
