@@ -1,0 +1,354 @@
+---
+- name: Prepare Ansible root temporary directory
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure root Ansible temporary directory exists
+      ansible.builtin.raw: install -d -m 0700 -o root -g root /root/.ansible/tmp
+      changed_when: false
+
+- name: Recover RKE2 server cluster without deleting cluster data
+  hosts: rke2_servers
+  become: true
+  gather_facts: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_first_server_ip: "{{ hostvars[rke2_first_server].ansible_host }}"
+    rke2_api_endpoint_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_ENDPOINT') }}"
+    rke2_join_endpoint_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_JOIN_ENDPOINT') }}"
+    rke2_token_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_TOKEN') }}"
+    rke2_api_endpoint_effective: "{{ rke2_api_endpoint | default(rke2_api_dns | default(rke2_api_endpoint_from_env, true), true) }}"
+    rke2_join_endpoint_effective: "{{ rke2_join_endpoint | default(rke2_join_endpoint_from_env, true) | default(rke2_first_server_ip, true) }}"
+    rke2_cni_effective: "{{ rke2_cni | default('cilium', true) }}"
+    rke2_token_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/platform-gitops/rke2-token"
+    rke2_start_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_START_TIMEOUT') }}"
+    rke2_start_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_START_POLL_INTERVAL') }}"
+    rke2_start_timeout_effective: "{{ rke2_start_timeout | default(rke2_start_timeout_from_env, true) | default(1200, true) | int }}"
+    rke2_start_poll_interval_effective: "{{ rke2_start_poll_interval | default(rke2_start_poll_interval_from_env, true) | default(10, true) | int }}"
+    rke2_disable_packaged_components:
+      - rke2-ingress-nginx
+      - rke2-traefik
+    rke2_firewalld_ports:
+      - 6443/tcp
+      - 9345/tcp
+      - 2379-2380/tcp
+      - 10250/tcp
+      - 4240/tcp
+      - 4244/tcp
+      - 8472/udp
+      - 30000-32767/tcp
+      - 30000-32767/udp
+    rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|no route to host|connection refused|x509:|certificate signed by unknown authority'
+    rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
+  handlers:
+    - name: Reload firewalld
+      ansible.builtin.command: firewall-cmd --reload
+      changed_when: true
+  pre_tasks:
+    - name: Require an API endpoint or DNS name
+      ansible.builtin.assert:
+        that:
+          - rke2_api_endpoint_effective | length > 0
+          - not (rke2_api_endpoint_effective is match("^<.*>$"))
+        fail_msg: "Set rke2_api_dns in inventory/hosts.local.ini, pass -e rke2_api_endpoint=api.platform.local, or export RKE2_API_ENDPOINT."
+
+    - name: Require ansible_host for first server
+      ansible.builtin.assert:
+        that:
+          - rke2_first_server_ip is defined
+          - rke2_first_server_ip | length > 0
+          - not (rke2_first_server_ip is match("^<.*>$"))
+        fail_msg: "The first host in [rke2_servers] must define ansible_host."
+      run_once: true
+
+    - name: Ensure local token directory exists
+      ansible.builtin.file:
+        path: "{{ rke2_token_file | dirname }}"
+        state: directory
+        mode: "0700"
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Resolve RKE2 token candidate
+      ansible.builtin.set_fact:
+        rke2_token_candidate: "{{ rke2_token | default(rke2_token_from_env, true) }}"
+      no_log: true
+
+    - name: Generate or load local RKE2 token
+      ansible.builtin.set_fact:
+        rke2_generated_token: "{{ lookup('ansible.builtin.password', rke2_token_file + ' length=64 chars=ascii_letters,digits') }}"
+      no_log: true
+
+    - name: Read existing first server RKE2 token when present
+      ansible.builtin.shell: |
+        if [ -s /var/lib/rancher/rke2/server/token ]; then
+          cat /var/lib/rancher/rke2/server/token
+        fi
+      args:
+        executable: /bin/bash
+      register: rke2_existing_first_server_token
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      no_log: true
+
+    - name: Select recovery RKE2 token
+      ansible.builtin.set_fact:
+        rke2_token_effective: >-
+          {{
+            ((rke2_existing_first_server_token.stdout | default('', true)) | length > 0)
+            | ternary(
+                rke2_existing_first_server_token.stdout,
+                ((((rke2_token_candidate | default('', true)) | length == 0) or ((rke2_token_candidate | regex_search('^<.*>$')) is not none)) | ternary(rke2_generated_token, rke2_token_candidate))
+              )
+          }}
+      no_log: true
+
+    - name: Persist selected RKE2 token on controller
+      ansible.builtin.copy:
+        dest: "{{ rke2_token_file }}"
+        content: "{{ rke2_token_effective }}\n"
+        mode: "0600"
+      become: false
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Show recovery choices
+      ansible.builtin.debug:
+        msg: >-
+          Recovering RKE2 with token source {{ 'existing first-server token' if ((rke2_existing_first_server_token.stdout | default('', true)) | length > 0) else 'controller token file or supplied private token' }},
+          join endpoint {{ rke2_join_endpoint_effective }}, and API endpoint {{ rke2_api_endpoint_effective }}.
+
+  tasks:
+    - name: Check firewalld state
+      ansible.builtin.command: firewall-cmd --state
+      register: rke2_firewalld_state
+      changed_when: false
+      failed_when: false
+
+    - name: Query required RKE2 firewalld ports
+      ansible.builtin.command: "firewall-cmd --permanent --query-port={{ item }}"
+      register: rke2_firewalld_port_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ rke2_firewalld_ports }}"
+      when: rke2_firewalld_state.rc == 0
+
+    - name: Open required RKE2 firewalld ports
+      ansible.builtin.command: "firewall-cmd --permanent --add-port={{ item.item }}"
+      changed_when: true
+      loop: "{{ rke2_firewalld_port_queries.results | default([]) }}"
+      when:
+        - rke2_firewalld_state.rc == 0
+        - item.rc != 0
+      notify: Reload firewalld
+
+    - name: Flush firewalld changes before network checks
+      ansible.builtin.meta: flush_handlers
+
+    - name: Require RKE2 binary to be installed before recovery
+      ansible.builtin.shell: |
+        command -v rke2
+      args:
+        executable: /bin/bash
+      register: rke2_recovery_binary
+      changed_when: false
+      failed_when: rke2_recovery_binary.rc != 0
+
+    - name: Stop RKE2 server before controlled recovery
+      ansible.builtin.systemd:
+        name: rke2-server
+        state: stopped
+      failed_when: false
+
+    - name: Stop lingering RKE2 processes
+      ansible.builtin.shell: |
+        /usr/local/bin/rke2-killall.sh || /usr/bin/rke2-killall.sh || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
+    - name: Stop stale installer processes
+      ansible.builtin.shell: |
+        pids="$(pgrep -f '{{ rke2_installer_process_pattern }}' || true)"
+        if [ -n "${pids}" ]; then
+          kill -TERM ${pids} || true
+          sleep 5
+        fi
+        pids="$(pgrep -f '{{ rke2_installer_process_pattern }}' || true)"
+        if [ -n "${pids}" ]; then
+          kill -KILL ${pids} || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
+    - name: Reset failed RKE2 service state
+      ansible.builtin.command: systemctl reset-failed rke2-server
+      changed_when: false
+      failed_when: false
+
+    - name: Ensure RKE2 config directory exists
+      ansible.builtin.file:
+        path: /etc/rancher/rke2
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write consistent RKE2 server configuration
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/config.yaml
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          {% if inventory_hostname != rke2_first_server %}
+          server: https://{{ rke2_join_endpoint_effective }}:9345
+          {% endif %}
+          token: {{ rke2_token_effective }}
+          node-name: {{ inventory_hostname }}
+          cni: {{ rke2_cni_effective }}
+          tls-san:
+            - {{ rke2_api_endpoint_effective }}
+          {% if rke2_api_vip is defined and (rke2_api_vip | length > 0) and not (rke2_api_vip is match("^<.*>$")) %}
+            - {{ rke2_api_vip }}
+          {% endif %}
+          {% for san in rke2_extra_tls_sans | default([]) %}
+            - {{ san }}
+          {% endfor %}
+          write-kubeconfig-mode: "0640"
+          disable:
+          {% for component in rke2_disable_packaged_components %}
+            - {{ component }}
+          {% endfor %}
+          etcd-expose-metrics: true
+      no_log: true
+
+    - name: Enable RKE2 server service
+      ansible.builtin.command: systemctl enable rke2-server
+      changed_when: false
+
+    - name: Start first RKE2 server
+      ansible.builtin.command: systemctl --no-block restart rke2-server
+      changed_when: true
+      when: inventory_hostname == rke2_first_server
+
+    - name: Wait for first RKE2 server to become active
+      ansible.builtin.shell: |
+        set -o pipefail
+        deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
+        while [ "${SECONDS}" -lt "${deadline}" ]; do
+          state="$(systemctl is-active rke2-server || true)"
+          if [ "${state}" = "active" ]; then
+            echo "active"
+            exit 0
+          fi
+
+          if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
+            echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
+            cat /tmp/rke2-startup-fatal.log >&2
+            exit 42
+          fi
+
+          echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
+          sleep {{ rke2_start_poll_interval_effective }}
+        done
+
+        echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
+        exit 1
+      args:
+        executable: /bin/bash
+      register: rke2_first_server_active
+      changed_when: false
+      when: inventory_hostname == rke2_first_server
+
+    - name: Wait for first RKE2 kubeconfig
+      ansible.builtin.wait_for:
+        path: /etc/rancher/rke2/rke2.yaml
+        timeout: "{{ rke2_start_timeout_effective }}"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for first RKE2 API readiness
+      ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get --raw=/readyz
+      register: rke2_first_readyz
+      retries: "{{ (((rke2_start_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+      delay: "{{ rke2_start_poll_interval_effective }}"
+      until: rke2_first_readyz.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Verify joining nodes can reach first server supervisor port
+      ansible.builtin.wait_for:
+        host: "{{ rke2_join_endpoint_effective }}"
+        port: 9345
+        timeout: 10
+      when: inventory_hostname != rke2_first_server
+
+    - name: Start joining RKE2 servers
+      ansible.builtin.command: systemctl --no-block restart rke2-server
+      changed_when: true
+      when: inventory_hostname != rke2_first_server
+
+    - name: Wait for every RKE2 server service to become active
+      ansible.builtin.shell: |
+        set -o pipefail
+        deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
+        while [ "${SECONDS}" -lt "${deadline}" ]; do
+          state="$(systemctl is-active rke2-server || true)"
+          if [ "${state}" = "active" ]; then
+            echo "active"
+            exit 0
+          fi
+
+          if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
+            echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
+            cat /tmp/rke2-startup-fatal.log >&2
+            exit 42
+          fi
+
+          echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
+          sleep {{ rke2_start_poll_interval_effective }}
+        done
+
+        echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
+        exit 1
+      args:
+        executable: /bin/bash
+      register: rke2_service_active
+      changed_when: false
+
+    - name: Wait for all RKE2 nodes to report Ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
+          awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
+      args:
+        executable: /bin/bash
+      register: rke2_all_nodes_ready
+      retries: "{{ (((rke2_start_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+      delay: "{{ rke2_start_poll_interval_effective }}"
+      until: rke2_all_nodes_ready.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Show recovered cluster nodes
+      ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
+      register: rke2_nodes
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print recovered cluster nodes
+      ansible.builtin.debug:
+        var: rke2_nodes.stdout_lines
+      run_once: true

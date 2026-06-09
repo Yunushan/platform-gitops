@@ -9,7 +9,6 @@ Use the easier RKE2 bootstrap flow:
 ```bash
 make rke2-preflight
 make rke2-prepare
-make rke2-network-check
 make rke2-install
 ```
 
@@ -17,7 +16,7 @@ make rke2-install
 
 The playbooks pre-create `/root/.ansible/tmp` with root-only permissions before normal module execution. This avoids Ansible's `remote_tmp ... did not exist` warning during privileged RKE2 tasks.
 
-`playbooks/prepare-nodes.yml` opens the required RKE2 ports in firewalld when firewalld is active. `make rke2-network-check` verifies that joining nodes can reach the first server on the RKE2 supervisor/API ports.
+`playbooks/prepare-nodes.yml` opens the required RKE2 ports in firewalld when firewalld is active. `make rke2-network-check` verifies that joining nodes can reach the first server on the RKE2 supervisor/API ports after the first server is listening.
 
 To also update the controller's `/etc/hosts`:
 
@@ -63,6 +62,12 @@ If an Ansible run was interrupted, stale `/tmp/install-rke2.sh` or package-manag
 
 ```bash
 make rke2-cleanup-installers HOST=node-1
+```
+
+For interrupted or partially bootstrapped clusters, use the safe automated recovery flow. It reuses the existing first-server token, opens firewalld ports, rewrites consistent configs, restarts node-1 first, verifies supervisor reachability, starts joining servers, and waits for all three nodes to become Ready:
+
+```bash
+make rke2-recover
 ```
 
 Limit diagnostics or connectivity checks to one node when one host is slow or unreachable:

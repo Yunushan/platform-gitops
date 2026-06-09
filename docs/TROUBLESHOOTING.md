@@ -61,6 +61,14 @@ make rke2-prepare
 make rke2-network-check
 ```
 
+For interrupted bootstrap, token mismatch, stale process, or node join recovery, use the automated safe recovery flow:
+
+```bash
+make rke2-recover
+```
+
+This does not delete `/var/lib/rancher/rke2` cluster data. It reuses the existing first-server token, repairs config, opens firewalld ports, restarts services in the correct order, and waits for all three nodes to report Ready.
+
 If the network or image pulls are slow, extend the timeouts:
 
 ```bash

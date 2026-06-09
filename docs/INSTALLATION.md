@@ -73,6 +73,12 @@ make rke2-prepare
 make rke2-install
 ```
 
+If bootstrap is interrupted or nodes fail to join after the first server starts, use the safe recovery flow:
+
+```bash
+make rke2-recover
+```
+
 The install playbook reads these from `inventory/hosts.local.ini`:
 
 ```ini

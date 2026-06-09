@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install rke2-recover rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -13,6 +13,7 @@ help:
 	@echo "  rke2-preflight  Check Ansible SSH/sudo and write node /etc/hosts"
 	@echo "  rke2-prepare    Prepare Linux nodes through Ansible"
 	@echo "  rke2-install    Install RKE2 through Ansible"
+	@echo "  rke2-recover    Safely recover interrupted RKE2 bootstrap without deleting cluster data"
 	@echo "  rke2-status     Show RKE2 install/service diagnostics"
 	@echo "  rke2-cleanup-installers  Stop stale installer jobs, optional HOST=node-1"
 	@echo "  rke2-network-check  Check node-to-node RKE2 API/supervisor reachability"
@@ -41,6 +42,9 @@ rke2-prepare: rke2-preflight
 
 rke2-install:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml
+
+rke2-recover: rke2-prepare
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/recover-rke2.yml
 
 rke2-status:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-status.yml $(if $(HOST),--limit $(HOST),)

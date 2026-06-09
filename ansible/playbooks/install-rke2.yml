@@ -269,6 +269,13 @@
             msg: "RKE2 first server did not become ready. Review the journal output above, then rerun this playbook."
           run_once: true
 
+    - name: Verify joining nodes can reach RKE2 supervisor endpoint
+      ansible.builtin.wait_for:
+        host: "{{ rke2_join_endpoint_effective }}"
+        port: 9345
+        timeout: 10
+      when: inventory_hostname != rke2_first_server
+
     - name: Start joining RKE2 servers without blocking Ansible output
       ansible.builtin.command: systemctl --no-block restart rke2-server
       changed_when: true
