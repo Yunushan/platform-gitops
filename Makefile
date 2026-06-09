@@ -43,7 +43,7 @@ rke2-preflight:
 rke2-prepare: rke2-preflight
 	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/prepare-nodes.yml
 
-rke2-install:
+rke2-install: rke2-prepare
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml
 
 rke2-recover: rke2-prepare

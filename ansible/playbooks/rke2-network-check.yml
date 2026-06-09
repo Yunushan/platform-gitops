@@ -20,7 +20,7 @@
 
     - name: Show first server local listening ports
       ansible.builtin.shell: |
-        ss -lntp | egrep ':(9345|6443)[[:space:]]' || true
+        ss -lntp | grep -E ':(9345|6443)[[:space:]]' || true
       args:
         executable: /bin/bash
       register: rke2_first_server_listeners

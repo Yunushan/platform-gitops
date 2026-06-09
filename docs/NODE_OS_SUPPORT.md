@@ -84,6 +84,8 @@ For the premium 3-node profile, prefer one of:
 
 Use the same distribution, major version, minor version, kernel track, and patch level across all three nodes.
 
+Run `make rke2-install` from the controller to apply the project preparation automatically before installation. The preparation disables swap, persists and loads required kernel modules, applies Kubernetes sysctls, opens RKE2 firewalld ports, and configures NetworkManager to ignore Kubernetes CNI interfaces.
+
 ## Validation sources
 
 - RKE2 requirements: https://docs.rke2.io/install/requirements

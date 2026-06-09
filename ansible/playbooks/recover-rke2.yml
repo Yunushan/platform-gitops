@@ -48,6 +48,10 @@
       - 8472/udp
       - 30000-32767/tcp
       - 30000-32767/udp
+    rke2_core_kernel_modules:
+      - br_netfilter
+      - overlay
+      - nf_conntrack
     rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|x509:|certificate signed by unknown authority'
     rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
     rke2_runtime_process_pattern: '([r]ke2 server|[c]ontainerd.*rancher/rke2|[c]ontainerd-shim.*rancher/rke2|[k]ubelet.*rancher/rke2)'
@@ -370,10 +374,39 @@
             systemctl status rke2-server --no-pager -l || true
             echo "===== recent journal ====="
             journalctl -u rke2-server -n {{ rke2_recovery_diagnostic_lines }} --no-pager || true
+            echo "===== likely bootstrap blockers ====="
+            journalctl -u rke2-server -n 240 --no-pager |
+              grep -E 'fatal|error|failed|etcd|pod sandbox|containerd|pause|image|x509|token|certificate|connection refused|no route|cacerts' || true
             echo "===== listeners ====="
-            ss -lntp | egrep ':(2379|2380|6443|9345)[[:space:]]' || true
+            ss -lntp | grep -E ':(2379|2380|6443|9345)[[:space:]]' || true
+            echo "===== prepared host checks ====="
+            for module in {{ rke2_core_kernel_modules | join(' ') }}; do
+              if lsmod | awk '{print $1}' | grep -Fx "${module}" >/dev/null; then
+                echo "module:${module}=loaded"
+              else
+                echo "module:${module}=missing"
+              fi
+            done
+            sysctl net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tables || true
+            echo "swap_entries=$(swapon --noheadings | wc -l)"
+            if [ -f /etc/redhat-release ]; then
+              cat /etc/redhat-release
+              rpm -q kernel-modules-extra || true
+            fi
+            echo "===== container runtime state ====="
+            if [ -x /var/lib/rancher/rke2/bin/crictl ]; then
+              export CONTAINER_RUNTIME_ENDPOINT=unix:///run/k3s/containerd/containerd.sock
+              /var/lib/rancher/rke2/bin/crictl info || true
+              /var/lib/rancher/rke2/bin/crictl pods -a || true
+              /var/lib/rancher/rke2/bin/crictl ps -a || true
+              /var/lib/rancher/rke2/bin/crictl images | head -120 || true
+            else
+              echo "crictl=missing"
+            fi
+            echo "===== containerd log tail ====="
+            tail -n 160 /var/lib/rancher/rke2/agent/containerd/containerd.log 2>/dev/null || true
             echo "===== rke2 processes ====="
-            ps -eo pid,ppid,stat,etime,comm,args | egrep 'rke2|etcd|containerd|kubelet' | grep -v egrep || true
+            ps -eo pid,ppid,stat,etime,comm,args | grep -E 'rke2|etcd|containerd|kubelet' | grep -v grep || true
             echo "===== resources ====="
             df -h / /var/lib/rancher 2>/dev/null || df -h /
             free -h
@@ -387,9 +420,25 @@
           ansible.builtin.debug:
             var: rke2_first_server_recovery_diagnostics.stdout_lines
 
+        - name: Detect repeated etcd sandbox recovery failure
+          ansible.builtin.set_fact:
+            rke2_first_server_etcd_sandbox_failure: >-
+              {{
+                (rke2_first_server_recovery_diagnostics.stdout | default('')) is search('Pod for etcd not synced|127[.]0[.]0[.]1:2379: connect: connection refused')
+              }}
+
         - name: Stop after first-server recovery failure
           ansible.builtin.fail:
-            msg: "node-1 did not become active within {{ rke2_start_timeout_effective }} seconds. Review diagnostics above, or run: make rke2-diagnose HOST={{ rke2_first_server }}"
+            msg: >-
+              {{ rke2_first_server }} did not become active within {{ rke2_start_timeout_effective }} seconds.
+              {% if rke2_first_server_etcd_sandbox_failure | default(false) %}
+              The logs show embedded etcd never created a healthy pod sandbox or listener on 127.0.0.1:2379.
+              Confirm `make rke2-prepare` completed successfully on Rocky Linux 10. If this cluster has no production data yet,
+              use `CONFIRM_RKE2_RESET=YES_I_UNDERSTAND RKE2_RESET_CONTROLLER_TOKEN=true make rke2-reset`, then rerun
+              `RKE2_JOIN_ENDPOINT={{ rke2_first_server_ip }} make rke2-install`.
+              {% else %}
+              Review diagnostics above, or run: make rke2-diagnose HOST={{ rke2_first_server }}
+              {% endif %}
       when: inventory_hostname == rke2_first_server
 
     - name: Wait for first RKE2 kubeconfig
@@ -418,7 +467,7 @@
             echo "===== apiserver logs ====="
             journalctl -u rke2-server -n {{ rke2_recovery_diagnostic_lines }} --no-pager || true
             echo "===== listeners ====="
-            ss -lntp | egrep ':(6443|9345|2379|2380)[[:space:]]' || true
+            ss -lntp | grep -E ':(6443|9345|2379|2380)[[:space:]]' || true
           args:
             executable: /bin/bash
           register: rke2_api_recovery_diagnostics

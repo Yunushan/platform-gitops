@@ -37,6 +37,10 @@
     rke2_install_poll_interval_effective: "{{ rke2_install_poll_interval | default(rke2_install_poll_interval_from_env, true) | default(15, true) | int }}"
     rke2_start_timeout_effective: "{{ rke2_start_timeout | default(rke2_start_timeout_from_env, true) | default(900, true) | int }}"
     rke2_start_poll_interval_effective: "{{ rke2_start_poll_interval | default(rke2_start_poll_interval_from_env, true) | default(10, true) | int }}"
+    rke2_core_kernel_modules:
+      - br_netfilter
+      - overlay
+      - nf_conntrack
     rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
     rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|x509:|certificate signed by unknown authority'
   pre_tasks:
@@ -46,6 +50,41 @@
           - rke2_api_endpoint_effective | length > 0
           - not (rke2_api_endpoint_effective is match("^<.*>$"))
         fail_msg: "Set rke2_api_dns in inventory/hosts.local.ini, pass -e rke2_api_endpoint=api.platform.local, or export RKE2_API_ENDPOINT."
+
+    - name: Verify host was prepared for RKE2
+      ansible.builtin.shell: |
+        set -eu
+        for module in {{ rke2_core_kernel_modules | join(' ') }}; do
+          modprobe "${module}"
+          lsmod | awk '{print $1}' | grep -Fx "${module}" >/dev/null
+        done
+        test -z "$(swapon --noheadings)"
+        test "$(sysctl -n net.ipv4.ip_forward)" = "1"
+        test "$(sysctl -n net.bridge.bridge-nf-call-iptables)" = "1"
+        test "$(sysctl -n net.bridge.bridge-nf-call-ip6tables)" = "1"
+        if [ -f /etc/redhat-release ] && grep -Eq 'release 10(\.| |$)' /etc/redhat-release; then
+          rpm -q kernel-modules-extra >/dev/null
+        fi
+      args:
+        executable: /bin/bash
+      register: rke2_prepare_gate
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when host preparation is incomplete
+      ansible.builtin.fail:
+        msg: |
+          {{ inventory_hostname }} is missing required RKE2 host preparation.
+
+          Run:
+          make rke2-prepare
+
+          Then rerun:
+          RKE2_JOIN_ENDPOINT={{ hostvars[rke2_first_server].ansible_host | default(rke2_join_endpoint_effective, true) }} make rke2-install
+
+          On Rocky/RHEL/Alma/Oracle Linux 10 this includes kernel-modules-extra for nf_conntrack.
+          Kubernetes swap is also disabled during preparation.
+      when: rke2_prepare_gate.rc != 0
 
     - name: Ensure local token directory exists
       ansible.builtin.file:
@@ -196,7 +235,7 @@
         - name: Show package install process state
           ansible.builtin.shell: |
             set -o pipefail
-            ps -eo pid,ppid,stat,etime,comm,args | egrep 'rke2|dnf|yum|rpm|curl|get.rke2' | grep -v egrep || true
+            ps -eo pid,ppid,stat,etime,comm,args | grep -E 'rke2|dnf|yum|rpm|curl|get.rke2' | grep -v grep || true
           args:
             executable: /bin/bash
           register: rke2_install_processes
@@ -251,22 +290,84 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
       rescue:
-        - name: Show first server logs on startup failure
-          ansible.builtin.command: journalctl -u rke2-server -n 120 --no-pager
-          register: rke2_first_server_logs
+        - name: Collect first server startup diagnostics
+          ansible.builtin.shell: |
+            echo "===== systemctl is-active ====="
+            systemctl is-active rke2-server || true
+            echo "===== systemctl status ====="
+            systemctl status rke2-server --no-pager -l || true
+            echo "===== recent journal ====="
+            journalctl -u rke2-server -n 180 --no-pager || true
+            echo "===== likely bootstrap blockers ====="
+            journalctl -u rke2-server -n 240 --no-pager |
+              grep -E 'fatal|error|failed|etcd|pod sandbox|containerd|pause|image|x509|token|certificate|connection refused|no route|cacerts' || true
+            echo "===== listeners ====="
+            ss -lntp | grep -E ':(2379|2380|6443|9345)[[:space:]]' || true
+            echo "===== prepared host checks ====="
+            for module in {{ rke2_core_kernel_modules | join(' ') }}; do
+              if lsmod | awk '{print $1}' | grep -Fx "${module}" >/dev/null; then
+                echo "module:${module}=loaded"
+              else
+                echo "module:${module}=missing"
+              fi
+            done
+            sysctl net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tables || true
+            echo "swap_entries=$(swapon --noheadings | wc -l)"
+            if [ -f /etc/redhat-release ]; then
+              cat /etc/redhat-release
+              rpm -q kernel-modules-extra || true
+            fi
+            echo "===== container runtime state ====="
+            if [ -x /var/lib/rancher/rke2/bin/crictl ]; then
+              export CONTAINER_RUNTIME_ENDPOINT=unix:///run/k3s/containerd/containerd.sock
+              /var/lib/rancher/rke2/bin/crictl info || true
+              /var/lib/rancher/rke2/bin/crictl pods -a || true
+              /var/lib/rancher/rke2/bin/crictl ps -a || true
+              /var/lib/rancher/rke2/bin/crictl images | head -120 || true
+            else
+              echo "crictl=missing"
+            fi
+            echo "===== containerd log tail ====="
+            tail -n 160 /var/lib/rancher/rke2/agent/containerd/containerd.log 2>/dev/null || true
+            echo "===== rke2 processes ====="
+            ps -eo pid,ppid,stat,etime,comm,args | grep -E 'rke2|etcd|containerd|kubelet|install-rke2|dnf|yum|rpm' | grep -v grep || true
+            echo "===== resources ====="
+            df -h / /var/lib/rancher 2>/dev/null || df -h /
+            free -h
+          args:
+            executable: /bin/bash
+          register: rke2_first_server_diagnostics
           changed_when: false
           failed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
-        - name: Print first server logs
+        - name: Print first server startup diagnostics
           ansible.builtin.debug:
-            var: rke2_first_server_logs.stdout_lines
+            var: rke2_first_server_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Detect repeated etcd sandbox bootstrap failure
+          ansible.builtin.set_fact:
+            rke2_first_server_etcd_sandbox_failure: >-
+              {{
+                (rke2_first_server_diagnostics.stdout | default('')) is search('Pod for etcd not synced|127[.]0[.]0[.]1:2379: connect: connection refused')
+              }}
           run_once: true
 
         - name: Stop after first server startup failure
           ansible.builtin.fail:
-            msg: "RKE2 first server did not become ready. Review the journal output above, then rerun this playbook."
+            msg: >-
+              RKE2 first server did not become ready within {{ rke2_start_timeout_effective }} seconds.
+              {% if rke2_first_server_etcd_sandbox_failure | default(false) %}
+              The logs show embedded etcd never created a healthy pod sandbox or listener on 127.0.0.1:2379.
+              On Rocky Linux 10, first confirm `make rke2-prepare` completed successfully so kernel-modules-extra/nf_conntrack,
+              sysctls, firewalld, and NetworkManager CNI settings are applied. If this was a failed partial bootstrap with no
+              production data yet, run `CONFIRM_RKE2_RESET=YES_I_UNDERSTAND RKE2_RESET_CONTROLLER_TOKEN=true make rke2-reset`,
+              then `RKE2_JOIN_ENDPOINT={{ hostvars[rke2_first_server].ansible_host | default(rke2_join_endpoint_effective, true) }} make rke2-install`.
+              {% else %}
+              Review the diagnostics above, then run `make rke2-diagnose HOST={{ rke2_first_server }}` if more detail is needed.
+              {% endif %}
           run_once: true
 
     - name: Verify joining nodes can reach RKE2 supervisor endpoint

@@ -34,6 +34,7 @@ make rke2-install
 ```
 
 The playbook runs the package installer asynchronously, polls progress, starts `rke2-server` without blocking Ansible output, verifies service readiness, and prints diagnostics if install or startup exceeds the timeout.
+The `rke2-install` target also runs preflight and node preparation first, including Rocky/RHEL 10 `kernel-modules-extra`, kernel modules, swap disablement, sysctls, firewalld ports, and NetworkManager CNI handling.
 
 Collect current process, service, journal, disk, and memory diagnostics:
 
@@ -59,6 +60,25 @@ If logs show `no route to host` for `:9345`, run node preparation again to open 
 ```bash
 make rke2-prepare
 make rke2-network-check
+```
+
+If node-1 repeatedly logs `Pod for etcd not synced (pod sandbox not found)` and `127.0.0.1:2379: connect: connection refused`, the first server did not get embedded etcd running. First rerun the prepared install path:
+
+```bash
+RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install
+```
+
+If this is still a failed partial bootstrap and there is no production cluster data yet, reset the failed bootstrap state and reinstall:
+
+```bash
+CONFIRM_RKE2_RESET=YES_I_UNDERSTAND RKE2_RESET_CONTROLLER_TOKEN=true make rke2-reset
+RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install
+```
+
+The install and recovery playbooks print kernel module, swap, sysctl, `kernel-modules-extra`, CRI, containerd, listener, process, disk, and memory diagnostics for this failure pattern. You can collect the same diagnostics directly:
+
+```bash
+make rke2-diagnose HOST=node-1
 ```
 
 For interrupted bootstrap, token mismatch, stale process, or node join recovery, use the automated safe recovery flow:

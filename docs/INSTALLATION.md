@@ -69,9 +69,10 @@ Use `--ask-become-pass` if your controller user needs a sudo password.
 Recommended Ansible flow:
 
 ```bash
-make rke2-prepare
 make rke2-install
 ```
+
+`make rke2-install` runs preflight and node preparation before installing RKE2. On Rocky Linux 10 and other RHEL 10-compatible nodes, preparation installs `kernel-modules-extra`, loads `nf_conntrack`, disables swap, applies Kubernetes sysctls, opens required firewalld ports, and configures NetworkManager to ignore CNI interfaces.
 
 If bootstrap is interrupted or nodes fail to join after the first server starts, use the safe recovery flow:
 
@@ -85,7 +86,6 @@ For a failed bootstrap that never reached a healthy cluster state, use the guard
 
 ```bash
 CONFIRM_RKE2_RESET=YES_I_UNDERSTAND make rke2-reset
-make rke2-prepare
 RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install
 ```
 

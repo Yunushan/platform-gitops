@@ -24,7 +24,7 @@
       ansible.builtin.shell: |
         set -o pipefail
         timeout {{ rke2_status_command_timeout }}s ps -eo pid,ppid,stat,etime,comm,args |
-          egrep 'rke2|dnf|yum|rpm|curl|get.rke2|containerd|kubelet' | grep -v egrep || true
+          grep -E 'rke2|dnf|yum|rpm|curl|get.rke2|containerd|kubelet' | grep -v grep || true
       args:
         executable: /bin/bash
       register: rke2_status_processes

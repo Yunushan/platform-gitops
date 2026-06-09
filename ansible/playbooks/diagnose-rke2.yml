@@ -7,6 +7,10 @@
   ignore_unreachable: true
   vars:
     rke2_diagnose_log_lines: 160
+    rke2_core_kernel_modules:
+      - br_netfilter
+      - overlay
+      - nf_conntrack
   tasks:
     - name: Show host identity
       ansible.builtin.shell: |
@@ -87,6 +91,66 @@
     - name: Print RKE2 listeners and processes
       ansible.builtin.debug:
         var: rke2_diagnose_runtime.stdout_lines
+
+    - name: Show RKE2 host prerequisite state
+      ansible.builtin.shell: |
+        echo "===== kernel modules ====="
+        for module in {{ rke2_core_kernel_modules | join(' ') }}; do
+          if lsmod | awk '{print $1}' | grep -Fx "${module}" >/dev/null; then
+            echo "module:${module}=loaded"
+          else
+            echo "module:${module}=missing"
+          fi
+        done
+        echo "===== sysctl ====="
+        sysctl net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tables || true
+        echo "===== swap ====="
+        swapon --show || true
+        echo "===== enterprise linux 10 package check ====="
+        if [ -f /etc/redhat-release ]; then
+          cat /etc/redhat-release
+          rpm -q kernel-modules-extra || true
+        else
+          echo "not-redhat-family"
+        fi
+        echo "===== networkmanager cni config ====="
+        test -f /etc/NetworkManager/conf.d/99-rke2-cni.conf && cat /etc/NetworkManager/conf.d/99-rke2-cni.conf || echo "networkmanager-cni-config=missing"
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_prereqs
+      changed_when: false
+      failed_when: false
+
+    - name: Print RKE2 host prerequisite state
+      ansible.builtin.debug:
+        var: rke2_diagnose_prereqs.stdout_lines
+
+    - name: Show RKE2 container runtime state
+      ansible.builtin.shell: |
+        if [ -x /var/lib/rancher/rke2/bin/crictl ]; then
+          export CONTAINER_RUNTIME_ENDPOINT=unix:///run/k3s/containerd/containerd.sock
+          echo "===== crictl info ====="
+          /var/lib/rancher/rke2/bin/crictl info || true
+          echo "===== crictl pods ====="
+          /var/lib/rancher/rke2/bin/crictl pods -a || true
+          echo "===== crictl containers ====="
+          /var/lib/rancher/rke2/bin/crictl ps -a || true
+          echo "===== crictl images ====="
+          /var/lib/rancher/rke2/bin/crictl images | head -120 || true
+        else
+          echo "crictl=missing"
+        fi
+        echo "===== containerd log tail ====="
+        tail -n 160 /var/lib/rancher/rke2/agent/containerd/containerd.log 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      register: rke2_diagnose_cri
+      changed_when: false
+      failed_when: false
+
+    - name: Print RKE2 container runtime state
+      ansible.builtin.debug:
+        var: rke2_diagnose_cri.stdout_lines
 
     - name: Show network and firewall state
       ansible.builtin.shell: |
