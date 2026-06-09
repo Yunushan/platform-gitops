@@ -12,6 +12,7 @@
   hosts: rke2_servers
   become: true
   gather_facts: true
+  any_errors_fatal: true
   vars:
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     rke2_first_server_ip: "{{ hostvars[rke2_first_server].ansible_host }}"
@@ -39,7 +40,7 @@
       - 8472/udp
       - 30000-32767/tcp
       - 30000-32767/udp
-    rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|no route to host|connection refused|x509:|certificate signed by unknown authority'
+    rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|x509:|certificate signed by unknown authority'
     rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
   handlers:
     - name: Reload firewalld
