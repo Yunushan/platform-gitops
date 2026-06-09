@@ -69,6 +69,14 @@ make rke2-recover
 
 This does not delete `/var/lib/rancher/rke2` cluster data. It reuses the existing first-server token, repairs config, opens firewalld ports, restarts services in the correct order, and waits for all three nodes to report Ready.
 
+Recovery defaults are intentionally short: 300 seconds for service/API stages and 600 seconds for node readiness. On failure, the playbook prints service status, RKE2 journals, listeners, process state, resources, nodes, pods, and events for the failed stage.
+
+Verify the cluster after recovery:
+
+```bash
+make rke2-verify
+```
+
 If the network or image pulls are slow, extend the timeouts:
 
 ```bash

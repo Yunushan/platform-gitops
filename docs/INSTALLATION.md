@@ -79,6 +79,8 @@ If bootstrap is interrupted or nodes fail to join after the first server starts,
 make rke2-recover
 ```
 
+The recovery flow uses 300-second service/API stage timeouts and a 600-second node readiness timeout by default. It prints stage diagnostics on failure and runs `make rke2-verify` after recovery.
+
 The install playbook reads these from `inventory/hosts.local.ini`:
 
 ```ini

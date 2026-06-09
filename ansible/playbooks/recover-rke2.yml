@@ -25,8 +25,15 @@
     rke2_token_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/platform-gitops/rke2-token"
     rke2_start_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_START_TIMEOUT') }}"
     rke2_start_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_START_POLL_INTERVAL') }}"
-    rke2_start_timeout_effective: "{{ rke2_start_timeout | default(rke2_start_timeout_from_env, true) | default(1200, true) | int }}"
+    rke2_api_ready_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_READY_TIMEOUT') }}"
+    rke2_node_ready_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_NODE_READY_TIMEOUT') }}"
+    rke2_start_timeout_effective: "{{ rke2_start_timeout | default(rke2_start_timeout_from_env, true) | default(300, true) | int }}"
     rke2_start_poll_interval_effective: "{{ rke2_start_poll_interval | default(rke2_start_poll_interval_from_env, true) | default(10, true) | int }}"
+    rke2_api_ready_timeout_effective: "{{ rke2_api_ready_timeout | default(rke2_api_ready_timeout_from_env, true) | default(300, true) | int }}"
+    rke2_node_ready_timeout_effective: "{{ rke2_node_ready_timeout | default(rke2_node_ready_timeout_from_env, true) | default(600, true) | int }}"
+    rke2_recovery_min_disk_mb: 10240
+    rke2_recovery_min_memory_mb: 2048
+    rke2_recovery_diagnostic_lines: 120
     rke2_disable_packaged_components:
       - rke2-ingress-nginx
       - rke2-traefik
@@ -42,6 +49,7 @@
       - 30000-32767/udp
     rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|x509:|certificate signed by unknown authority'
     rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
+    rke2_runtime_process_pattern: '([r]ke2 server|[c]ontainerd.*rancher/rke2|[c]ontainerd-shim.*rancher/rke2|[k]ubelet.*rancher/rke2)'
   handlers:
     - name: Reload firewalld
       ansible.builtin.command: firewall-cmd --reload
@@ -61,6 +69,20 @@
           - rke2_first_server_ip | length > 0
           - not (rke2_first_server_ip is match("^<.*>$"))
         fail_msg: "The first host in [rke2_servers] must define ansible_host."
+      run_once: true
+
+    - name: Require exactly three RKE2 server hosts
+      ansible.builtin.assert:
+        that:
+          - groups['rke2_servers'] | length == 3
+        fail_msg: "Recovery expects exactly three hosts in [rke2_servers]."
+      run_once: true
+
+    - name: Require unique node addresses
+      ansible.builtin.assert:
+        that:
+          - groups['rke2_servers'] | map('extract', hostvars, 'ansible_host') | list | unique | length == groups['rke2_servers'] | length
+        fail_msg: "Every RKE2 node must have a unique ansible_host address."
       run_once: true
 
     - name: Ensure local token directory exists
@@ -124,7 +146,35 @@
           Recovering RKE2 with token source {{ 'existing first-server token' if ((rke2_existing_first_server_token.stdout | default('', true)) | length > 0) else 'controller token file or supplied private token' }},
           join endpoint {{ rke2_join_endpoint_effective }}, and API endpoint {{ rke2_api_endpoint_effective }}.
 
+    - name: Show recovery timeout policy
+      ansible.builtin.debug:
+        msg: >-
+          Recovery timeout policy: service={{ rke2_start_timeout_effective }}s,
+          api={{ rke2_api_ready_timeout_effective }}s,
+          nodes-ready={{ rke2_node_ready_timeout_effective }}s,
+          poll={{ rke2_start_poll_interval_effective }}s.
+
   tasks:
+    - name: Check recovery resource baseline
+      ansible.builtin.shell: |
+        set -eu
+        disk_mb="$(df -Pm /var/lib/rancher 2>/dev/null | awk 'NR==2 {print $4}' || true)"
+        if [ -z "${disk_mb}" ]; then
+          disk_mb="$(df -Pm / | awk 'NR==2 {print $4}')"
+        fi
+        memory_mb="$(free -m | awk '/Mem:/ {print $7}')"
+        echo "available_disk_mb=${disk_mb} available_memory_mb=${memory_mb}"
+        test "${disk_mb}" -ge "{{ rke2_recovery_min_disk_mb }}"
+        test "${memory_mb}" -ge "{{ rke2_recovery_min_memory_mb }}"
+      args:
+        executable: /bin/bash
+      register: rke2_recovery_resources
+      changed_when: false
+
+    - name: Show recovery resource baseline
+      ansible.builtin.debug:
+        var: rke2_recovery_resources.stdout_lines
+
     - name: Check firewalld state
       ansible.builtin.command: firewall-cmd --state
       register: rke2_firewalld_state
@@ -190,6 +240,30 @@
       changed_when: false
       failed_when: false
 
+    - name: Verify no stale installer processes remain
+      ansible.builtin.shell: |
+        pgrep -af '{{ rke2_installer_process_pattern }}' || true
+      args:
+        executable: /bin/bash
+      register: rke2_stale_installers_after_cleanup
+      retries: 6
+      delay: 5
+      until: rke2_stale_installers_after_cleanup.stdout | length == 0
+      changed_when: false
+      failed_when: rke2_stale_installers_after_cleanup.stdout | length > 0
+
+    - name: Verify no stale RKE2 runtime processes remain
+      ansible.builtin.shell: |
+        pgrep -af '{{ rke2_runtime_process_pattern }}' || true
+      args:
+        executable: /bin/bash
+      register: rke2_stale_runtime_after_cleanup
+      retries: 6
+      delay: 5
+      until: rke2_stale_runtime_after_cleanup.stdout | length == 0
+      changed_when: false
+      failed_when: rke2_stale_runtime_after_cleanup.stdout | length > 0
+
     - name: Reset failed RKE2 service state
       ansible.builtin.command: systemctl reset-failed rke2-server
       changed_when: false
@@ -232,6 +306,19 @@
           etcd-expose-metrics: true
       no_log: true
 
+    - name: Verify rendered RKE2 configuration identity
+      ansible.builtin.shell: |
+        set -o pipefail
+        grep -E '^(server:|node-name:|cni:|write-kubeconfig-mode:|etcd-expose-metrics:)' /etc/rancher/rke2/config.yaml || true
+      args:
+        executable: /bin/bash
+      register: rke2_recovery_config_summary
+      changed_when: false
+
+    - name: Print RKE2 configuration identity
+      ansible.builtin.debug:
+        var: rke2_recovery_config_summary.stdout_lines
+
     - name: Enable RKE2 server service
       ansible.builtin.command: systemctl enable rke2-server
       changed_when: false
@@ -242,50 +329,109 @@
       when: inventory_hostname == rke2_first_server
 
     - name: Wait for first RKE2 server to become active
-      ansible.builtin.shell: |
-        set -o pipefail
-        deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
-        while [ "${SECONDS}" -lt "${deadline}" ]; do
-          state="$(systemctl is-active rke2-server || true)"
-          if [ "${state}" = "active" ]; then
-            echo "active"
-            exit 0
-          fi
+      block:
+        - name: Poll first RKE2 server service
+          ansible.builtin.shell: |
+            set -o pipefail
+            deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
+            while [ "${SECONDS}" -lt "${deadline}" ]; do
+              state="$(systemctl is-active rke2-server || true)"
+              if [ "${state}" = "active" ]; then
+                echo "active"
+                exit 0
+              fi
 
-          if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
-            echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
-            cat /tmp/rke2-startup-fatal.log >&2
-            exit 42
-          fi
+              if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
+                echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
+                cat /tmp/rke2-startup-fatal.log >&2
+                exit 42
+              fi
 
-          echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
-          sleep {{ rke2_start_poll_interval_effective }}
-        done
+              echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
+              sleep {{ rke2_start_poll_interval_effective }}
+            done
 
-        echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
-        exit 1
-      args:
-        executable: /bin/bash
-      register: rke2_first_server_active
-      changed_when: false
+            echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
+            exit 1
+          args:
+            executable: /bin/bash
+          register: rke2_first_server_active
+          changed_when: false
+      rescue:
+        - name: Collect first-server recovery diagnostics
+          ansible.builtin.shell: |
+            echo "===== systemctl is-active ====="
+            systemctl is-active rke2-server || true
+            echo "===== systemctl status ====="
+            systemctl status rke2-server --no-pager -l || true
+            echo "===== recent journal ====="
+            journalctl -u rke2-server -n {{ rke2_recovery_diagnostic_lines }} --no-pager || true
+            echo "===== listeners ====="
+            ss -lntp | egrep ':(2379|2380|6443|9345)[[:space:]]' || true
+            echo "===== rke2 processes ====="
+            ps -eo pid,ppid,stat,etime,comm,args | egrep 'rke2|etcd|containerd|kubelet' | grep -v egrep || true
+            echo "===== resources ====="
+            df -h / /var/lib/rancher 2>/dev/null || df -h /
+            free -h
+          args:
+            executable: /bin/bash
+          register: rke2_first_server_recovery_diagnostics
+          changed_when: false
+          failed_when: false
+
+        - name: Print first-server recovery diagnostics
+          ansible.builtin.debug:
+            var: rke2_first_server_recovery_diagnostics.stdout_lines
+
+        - name: Stop after first-server recovery failure
+          ansible.builtin.fail:
+            msg: "node-1 did not become active within {{ rke2_start_timeout_effective }} seconds. Review diagnostics above."
       when: inventory_hostname == rke2_first_server
 
     - name: Wait for first RKE2 kubeconfig
       ansible.builtin.wait_for:
         path: /etc/rancher/rke2/rke2.yaml
-        timeout: "{{ rke2_start_timeout_effective }}"
+        timeout: "{{ rke2_api_ready_timeout_effective }}"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
     - name: Wait for first RKE2 API readiness
-      ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get --raw=/readyz
-      register: rke2_first_readyz
-      retries: "{{ (((rke2_start_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
-      delay: "{{ rke2_start_poll_interval_effective }}"
-      until: rke2_first_readyz.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll first RKE2 API readiness
+          ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get --raw=/readyz
+          register: rke2_first_readyz
+          retries: "{{ (((rke2_api_ready_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ rke2_start_poll_interval_effective }}"
+          until: rke2_first_readyz.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect first API readiness diagnostics
+          ansible.builtin.shell: |
+            echo "===== readyz ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get --raw=/readyz || true
+            echo "===== apiserver logs ====="
+            journalctl -u rke2-server -n {{ rke2_recovery_diagnostic_lines }} --no-pager || true
+            echo "===== listeners ====="
+            ss -lntp | egrep ':(6443|9345|2379|2380)[[:space:]]' || true
+          args:
+            executable: /bin/bash
+          register: rke2_api_recovery_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print first API readiness diagnostics
+          ansible.builtin.debug:
+            var: rke2_api_recovery_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after first API readiness failure
+          ansible.builtin.fail:
+            msg: "First RKE2 API did not become ready within {{ rke2_api_ready_timeout_effective }} seconds."
+          run_once: true
 
     - name: Verify joining nodes can reach first server supervisor port
       ansible.builtin.wait_for:
@@ -300,47 +446,101 @@
       when: inventory_hostname != rke2_first_server
 
     - name: Wait for every RKE2 server service to become active
-      ansible.builtin.shell: |
-        set -o pipefail
-        deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
-        while [ "${SECONDS}" -lt "${deadline}" ]; do
-          state="$(systemctl is-active rke2-server || true)"
-          if [ "${state}" = "active" ]; then
-            echo "active"
-            exit 0
-          fi
+      block:
+        - name: Poll every RKE2 server service
+          ansible.builtin.shell: |
+            set -o pipefail
+            deadline=$((SECONDS + {{ rke2_start_timeout_effective }}))
+            while [ "${SECONDS}" -lt "${deadline}" ]; do
+              state="$(systemctl is-active rke2-server || true)"
+              if [ "${state}" = "active" ]; then
+                echo "active"
+                exit 0
+              fi
 
-          if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
-            echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
-            cat /tmp/rke2-startup-fatal.log >&2
-            exit 42
-          fi
+              if journalctl -u rke2-server -n 80 --no-pager | grep -E '{{ rke2_fatal_startup_pattern }}' >/tmp/rke2-startup-fatal.log; then
+                echo "rke2-server fatal startup error detected on {{ inventory_hostname }}:" >&2
+                cat /tmp/rke2-startup-fatal.log >&2
+                exit 42
+              fi
 
-          echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
-          sleep {{ rke2_start_poll_interval_effective }}
-        done
+              echo "rke2-server state is ${state}; waiting {{ rke2_start_poll_interval_effective }}s"
+              sleep {{ rke2_start_poll_interval_effective }}
+            done
 
-        echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
-        exit 1
-      args:
-        executable: /bin/bash
-      register: rke2_service_active
-      changed_when: false
+            echo "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds" >&2
+            exit 1
+          args:
+            executable: /bin/bash
+          register: rke2_service_active
+          changed_when: false
+      rescue:
+        - name: Collect joining server recovery diagnostics
+          ansible.builtin.shell: |
+            echo "===== systemctl is-active ====="
+            systemctl is-active rke2-server || true
+            echo "===== systemctl status ====="
+            systemctl status rke2-server --no-pager -l || true
+            echo "===== recent journal ====="
+            journalctl -u rke2-server -n {{ rke2_recovery_diagnostic_lines }} --no-pager || true
+            echo "===== supervisor endpoint test ====="
+            curl -sk --connect-timeout 5 https://{{ rke2_join_endpoint_effective }}:9345/cacerts >/dev/null && echo "supervisor=OK" || echo "supervisor=FAIL"
+          args:
+            executable: /bin/bash
+          register: rke2_joiner_recovery_diagnostics
+          changed_when: false
+          failed_when: false
+
+        - name: Print joining server recovery diagnostics
+          ansible.builtin.debug:
+            var: rke2_joiner_recovery_diagnostics.stdout_lines
+
+        - name: Stop after joining server recovery failure
+          ansible.builtin.fail:
+            msg: "{{ inventory_hostname }} did not become active within {{ rke2_start_timeout_effective }} seconds. Review diagnostics above."
 
     - name: Wait for all RKE2 nodes to report Ready
-      ansible.builtin.shell: |
-        set -o pipefail
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
-          awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
-      args:
-        executable: /bin/bash
-      register: rke2_all_nodes_ready
-      retries: "{{ (((rke2_start_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
-      delay: "{{ rke2_start_poll_interval_effective }}"
-      until: rke2_all_nodes_ready.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll all RKE2 nodes Ready
+          ansible.builtin.shell: |
+            set -o pipefail
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
+              awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
+          args:
+            executable: /bin/bash
+          register: rke2_all_nodes_ready
+          retries: "{{ (((rke2_node_ready_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ rke2_start_poll_interval_effective }}"
+          until: rke2_all_nodes_ready.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect node readiness diagnostics
+          ansible.builtin.shell: |
+            echo "===== nodes ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide || true
+            echo "===== kube-system pods ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get pods -n kube-system -o wide || true
+            echo "===== recent events ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get events -A --sort-by=.lastTimestamp | tail -80 || true
+          args:
+            executable: /bin/bash
+          register: rke2_node_recovery_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print node readiness diagnostics
+          ansible.builtin.debug:
+            var: rke2_node_recovery_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after node readiness failure
+          ansible.builtin.fail:
+            msg: "Not all RKE2 nodes became Ready within {{ rke2_node_ready_timeout_effective }} seconds."
+          run_once: true
 
     - name: Show recovered cluster nodes
       ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide

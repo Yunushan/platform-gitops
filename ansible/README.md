@@ -70,6 +70,18 @@ For interrupted or partially bootstrapped clusters, use the safe automated recov
 make rke2-recover
 ```
 
+Recovery uses shorter operator-grade defaults: 300 seconds for service/API stages and 600 seconds for node readiness. It prints diagnostics on failure instead of waiting silently. Override only for slow lab hardware:
+
+```bash
+RKE2_START_TIMEOUT=900 RKE2_NODE_READY_TIMEOUT=1200 make rke2-recover
+```
+
+Run verification independently when needed:
+
+```bash
+make rke2-verify
+```
+
 Limit diagnostics or connectivity checks to one node when one host is slow or unreachable:
 
 ```bash

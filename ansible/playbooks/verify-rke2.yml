@@ -1,0 +1,64 @@
+---
+- name: Verify recovered RKE2 cluster
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_first_server_ip: "{{ hostvars[rke2_first_server].ansible_host }}"
+    rke2_verify_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERIFY_TIMEOUT') }}"
+    rke2_verify_timeout_effective: "{{ rke2_verify_timeout | default(rke2_verify_timeout_from_env, true) | default(120, true) | int }}"
+    rke2_verify_poll_interval: 10
+  tasks:
+    - name: Require rke2-server service active on every node
+      ansible.builtin.command: systemctl is-active rke2-server
+      register: rke2_verify_service
+      changed_when: false
+      failed_when: rke2_verify_service.stdout != "active"
+
+    - name: Verify joining nodes can reach first server supervisor and API ports
+      ansible.builtin.wait_for:
+        host: "{{ rke2_first_server_ip }}"
+        port: "{{ item }}"
+        timeout: 5
+      loop:
+        - 9345
+        - 6443
+      when: inventory_hostname != rke2_first_server
+
+    - name: Verify API readyz
+      ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get --raw=/readyz
+      register: rke2_verify_readyz
+      retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
+      delay: "{{ rke2_verify_poll_interval }}"
+      until: rke2_verify_readyz.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Verify all expected nodes are Ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
+          awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
+      args:
+        executable: /bin/bash
+      register: rke2_verify_nodes_ready
+      retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
+      delay: "{{ rke2_verify_poll_interval }}"
+      until: rke2_verify_nodes_ready.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Show verified nodes
+      ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
+      register: rke2_verify_nodes
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print verified nodes
+      ansible.builtin.debug:
+        var: rke2_verify_nodes.stdout_lines
+      run_once: true
