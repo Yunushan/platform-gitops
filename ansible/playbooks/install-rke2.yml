@@ -65,10 +65,36 @@
         rke2_generated_token: "{{ lookup('ansible.builtin.password', rke2_token_file + ' length=64 chars=ascii_letters,digits') }}"
       no_log: true
 
+    - name: Read existing first server RKE2 token when present
+      ansible.builtin.shell: |
+        if [ -s /var/lib/rancher/rke2/server/token ]; then
+          cat /var/lib/rancher/rke2/server/token
+        fi
+      args:
+        executable: /bin/bash
+      register: rke2_existing_first_server_token
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      no_log: true
+
     - name: Select RKE2 token
       ansible.builtin.set_fact:
-        rke2_token_effective: "{{ (((rke2_token_candidate | default('', true)) | length == 0) or ((rke2_token_candidate | regex_search('^<.*>$')) is not none)) | ternary(rke2_generated_token, rke2_token_candidate) }}"
+        rke2_token_effective: >-
+          {{
+            ((rke2_existing_first_server_token.stdout | default('', true)) | length > 0)
+            | ternary(
+                rke2_existing_first_server_token.stdout,
+                ((((rke2_token_candidate | default('', true)) | length == 0) or ((rke2_token_candidate | regex_search('^<.*>$')) is not none)) | ternary(rke2_generated_token, rke2_token_candidate))
+              )
+          }}
       no_log: true
+
+    - name: Show token source
+      ansible.builtin.debug:
+        msg: >-
+          RKE2 token source is {{ 'existing first-server token' if ((rke2_existing_first_server_token.stdout | default('', true)) | length > 0) else 'controller token file or supplied private token' }}.
 
     - name: Show selected RKE2 install source
       ansible.builtin.debug:
