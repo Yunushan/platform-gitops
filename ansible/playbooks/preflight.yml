@@ -10,6 +10,15 @@
           - groups['rke2_servers'] | length == 3
         fail_msg: "inventory/hosts.local.ini must define exactly three hosts in [rke2_servers]."
 
+- name: Prepare Ansible root temporary directory
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure root Ansible temporary directory exists
+      ansible.builtin.raw: install -d -m 0700 -o root -g root /root/.ansible/tmp
+      changed_when: false
+
 - name: Check node access and write platform host resolution
   hosts: rke2_servers
   become: true

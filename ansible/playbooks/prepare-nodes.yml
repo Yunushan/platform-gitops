@@ -1,4 +1,13 @@
 ---
+- name: Prepare Ansible root temporary directory
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Ensure root Ansible temporary directory exists
+      ansible.builtin.raw: install -d -m 0700 -o root -g root /root/.ansible/tmp
+      changed_when: false
+
 - name: Prepare Linux nodes for RKE2
   hosts: rke2_servers
   become: true

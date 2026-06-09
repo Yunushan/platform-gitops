@@ -1,4 +1,15 @@
 ---
+- name: Prepare Ansible root temporary directory
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  strategy: free
+  ignore_unreachable: true
+  tasks:
+    - name: Ensure root Ansible temporary directory exists
+      ansible.builtin.raw: install -d -m 0700 -o root -g root /root/.ansible/tmp
+      changed_when: false
+
 - name: Show RKE2 installation and service status
   hosts: rke2_servers
   become: true
