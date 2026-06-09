@@ -47,3 +47,10 @@ If an installation appears stuck, collect process, service, journal, disk, and m
 ```bash
 make rke2-status
 ```
+
+Limit diagnostics or connectivity checks to one node when one host is slow or unreachable:
+
+```bash
+make rke2-status HOST=node-1
+make rke2-ping HOST=node-1
+```

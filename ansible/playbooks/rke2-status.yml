@@ -3,13 +3,17 @@
   hosts: rke2_servers
   become: true
   gather_facts: false
+  strategy: free
+  ignore_unreachable: true
   vars:
     rke2_status_log_lines: 100
+    rke2_status_command_timeout: 20
   tasks:
     - name: Show package manager and RKE2 related processes
       ansible.builtin.shell: |
         set -o pipefail
-        ps -eo pid,ppid,stat,etime,comm,args | egrep 'rke2|dnf|yum|rpm|curl|get.rke2|containerd|kubelet' | grep -v egrep || true
+        timeout {{ rke2_status_command_timeout }}s ps -eo pid,ppid,stat,etime,comm,args |
+          egrep 'rke2|dnf|yum|rpm|curl|get.rke2|containerd|kubelet' | grep -v egrep || true
       args:
         executable: /bin/bash
       register: rke2_status_processes
@@ -21,7 +25,7 @@
         var: rke2_status_processes.stdout_lines
 
     - name: Show rke2-server systemd status
-      ansible.builtin.command: systemctl status rke2-server --no-pager -l
+      ansible.builtin.command: timeout {{ rke2_status_command_timeout }}s systemctl status rke2-server --no-pager -l
       register: rke2_status_systemd
       changed_when: false
       failed_when: false
@@ -31,7 +35,7 @@
         var: rke2_status_systemd.stdout_lines
 
     - name: Show recent rke2-server journal logs
-      ansible.builtin.command: journalctl -u rke2-server -n {{ rke2_status_log_lines }} --no-pager
+      ansible.builtin.command: timeout {{ rke2_status_command_timeout }}s journalctl -u rke2-server -n {{ rke2_status_log_lines }} --no-pager
       register: rke2_status_journal
       changed_when: false
       failed_when: false
@@ -42,8 +46,8 @@
 
     - name: Show disk and memory status
       ansible.builtin.shell: |
-        df -h / /var/lib/rancher 2>/dev/null || df -h /
-        free -h
+        timeout {{ rke2_status_command_timeout }}s df -h / /var/lib/rancher 2>/dev/null || df -h /
+        timeout {{ rke2_status_command_timeout }}s free -h
       args:
         executable: /bin/bash
       register: rke2_status_resources

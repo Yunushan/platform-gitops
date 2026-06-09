@@ -41,6 +41,13 @@ Collect current process, service, journal, disk, and memory diagnostics:
 make rke2-status
 ```
 
+If only one host appears stuck, limit the check to that node:
+
+```bash
+make rke2-ping HOST=node-1
+make rke2-status HOST=node-1
+```
+
 If the network or image pulls are slow, extend the timeouts:
 
 ```bash
