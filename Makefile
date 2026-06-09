@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan rke2-prepare rke2-install docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -10,6 +10,7 @@ help:
 	@echo "  validate        Run repository validation"
 	@echo "  no-secrets      Scan repository for obvious secrets/private data"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
+	@echo "  rke2-preflight  Check Ansible SSH/sudo and write node /etc/hosts"
 	@echo "  rke2-prepare    Prepare Linux nodes through Ansible"
 	@echo "  rke2-install    Install RKE2 through Ansible"
 	@echo "  docs-list       List key docs"
@@ -28,7 +29,10 @@ no-secrets:
 bootstrap-plan:
 	@bash scripts/bootstrap-plan.sh
 
-rke2-prepare:
+rke2-preflight:
+	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/preflight.yml
+
+rke2-prepare: rke2-preflight
 	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/prepare-nodes.yml
 
 rke2-install:

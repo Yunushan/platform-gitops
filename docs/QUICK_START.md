@@ -35,6 +35,7 @@ make bootstrap-plan
 Prepare and install RKE2 through Ansible:
 
 ```bash
+make rke2-preflight
 make rke2-prepare
 make rke2-install
 ```
@@ -48,10 +49,11 @@ RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
 ## 5. Deploy order
 
 1. Prepare three Rocky Linux 10 nodes.
-2. Configure API VIP.
-3. Install RKE2 with Cilium on three server nodes.
-4. Install Argo CD HA bootstrap.
-5. Apply `gitops/bootstrap/root-app.yaml` with your private repository URL substituted at runtime.
-6. Let Argo CD deploy Traefik and the platform components.
-7. Configure off-cluster backups.
-8. Run a restore drill.
+2. Configure API VIP and ingress VIP.
+3. Run `make rke2-preflight`.
+4. Install RKE2 with Cilium on three server nodes.
+5. Install Argo CD HA bootstrap.
+6. Apply `gitops/bootstrap/root-app.yaml` with your private repository URL substituted at runtime.
+7. Let Argo CD deploy Traefik and the platform components.
+8. Configure off-cluster backups.
+9. Run a restore drill.

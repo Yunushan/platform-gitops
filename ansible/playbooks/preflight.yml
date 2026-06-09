@@ -1,0 +1,118 @@
+---
+- name: Validate local inventory before cluster bootstrap
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Require exactly three RKE2 server hosts
+      ansible.builtin.assert:
+        that:
+          - groups['rke2_servers'] is defined
+          - groups['rke2_servers'] | length == 3
+        fail_msg: "inventory/hosts.local.ini must define exactly three hosts in [rke2_servers]."
+
+- name: Check node access and write platform host resolution
+  hosts: rke2_servers
+  become: true
+  gather_facts: true
+  vars:
+    platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
+    rke2_api_vip_effective: "{{ rke2_api_vip | default('', true) }}"
+    rke2_api_dns_effective: "{{ rke2_api_dns | default('', true) }}"
+    platform_ingress_hosts:
+      - forgejo
+      - harbor
+      - argocd
+      - woodpecker
+      - grafana
+      - prometheus
+    platform_hosts_block: |
+      {% for node in groups['rke2_servers'] %}
+      {{ hostvars[node].ansible_host }} {{ node }} {{ node }}.{{ platform_domain_effective }}
+      {% endfor %}
+      {{ rke2_api_vip_effective }} {{ rke2_api_dns_effective }} rke2-api
+      {{ rke2_ingress_vip_effective }} {% for name in platform_ingress_hosts %}{{ name }}.{{ platform_domain_effective }}{% if not loop.last %} {% endif %}{% endfor %}
+  tasks:
+    - name: Confirm SSH connection works
+      ansible.builtin.ping:
+
+    - name: Confirm passwordless sudo works
+      ansible.builtin.command: id -u
+      register: preflight_uid
+      changed_when: false
+      failed_when: preflight_uid.stdout != "0"
+
+    - name: Require platform VIP and DNS variables
+      ansible.builtin.assert:
+        that:
+          - rke2_api_vip is defined
+          - rke2_api_vip_effective | length > 0
+          - not (rke2_api_vip_effective is match("^<.*>$"))
+          - rke2_api_dns is defined
+          - rke2_api_dns_effective | length > 0
+          - not (rke2_api_dns_effective is match("^<.*>$"))
+          - rke2_ingress_vip_effective | length > 0
+          - not (rke2_ingress_vip_effective is match("^<.*>$"))
+          - platform_domain_effective | length > 0
+          - not (platform_domain_effective is match("^<.*>$"))
+        fail_msg: "Set rke2_api_vip, rke2_api_dns, rke2_ingress_vip, and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
+
+    - name: Require ansible_host for every RKE2 server
+      ansible.builtin.assert:
+        that:
+          - hostvars[item].ansible_host is defined
+          - hostvars[item].ansible_host | length > 0
+          - not (hostvars[item].ansible_host is match("^<.*>$"))
+        fail_msg: "Every host in [rke2_servers] must define ansible_host."
+      loop: "{{ groups['rke2_servers'] }}"
+      run_once: true
+
+    - name: Add platform hosts block to each node
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} platform-gitops"
+        block: "{{ platform_hosts_block }}"
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Show managed host entries
+      ansible.builtin.debug:
+        msg: "{{ platform_hosts_block.splitlines() }}"
+      run_once: true
+
+- name: Optionally write platform host resolution on the Ansible controller
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars:
+    rke2_reference_host: "{{ groups['rke2_servers'][0] }}"
+    rke2_api_vip_effective: "{{ hostvars[rke2_reference_host].rke2_api_vip | default('', true) }}"
+    rke2_api_dns_effective: "{{ hostvars[rke2_reference_host].rke2_api_dns | default('', true) }}"
+    platform_domain_effective: "{{ hostvars[rke2_reference_host].platform_domain | default(hostvars[rke2_reference_host].rke2_platform_domain | default((rke2_api_dns_effective | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    rke2_ingress_vip_effective: "{{ hostvars[rke2_reference_host].rke2_ingress_vip | default(hostvars[rke2_reference_host].ingress_vip | default('', true), true) }}"
+    platform_ingress_hosts:
+      - forgejo
+      - harbor
+      - argocd
+      - woodpecker
+      - grafana
+      - prometheus
+    platform_hosts_block: |
+      {% for node in groups['rke2_servers'] %}
+      {{ hostvars[node].ansible_host }} {{ node }} {{ node }}.{{ platform_domain_effective }}
+      {% endfor %}
+      {{ rke2_api_vip_effective }} {{ rke2_api_dns_effective }} rke2-api
+      {{ rke2_ingress_vip_effective }} {% for name in platform_ingress_hosts %}{{ name }}.{{ platform_domain_effective }}{% if not loop.last %} {% endif %}{% endfor %}
+  tasks:
+    - name: Add platform hosts block to controller
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} platform-gitops"
+        block: "{{ platform_hosts_block }}"
+        create: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: manage_controller_hosts | default(false) | bool

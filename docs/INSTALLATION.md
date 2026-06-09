@@ -35,7 +35,36 @@ scripts/vip/haproxy.cfg.example
 scripts/vip/keepalived.conf.example
 ```
 
-## Step 3: Install RKE2
+## Step 3: Run preflight checks
+
+The preflight playbook checks Ansible connectivity, confirms passwordless sudo, validates required VIP/domain variables, and writes the platform `/etc/hosts` block on all three nodes.
+
+Set these in `inventory/hosts.local.ini`:
+
+```ini
+[rke2_servers:vars]
+rke2_api_vip=<VIP_ADDRESS>
+rke2_api_dns=<VIP_DNS_NAME>
+rke2_ingress_vip=<INGRESS_VIP_ADDRESS>
+rke2_platform_domain=<PLATFORM_DOMAIN>
+```
+
+Run:
+
+```bash
+make rke2-preflight
+```
+
+To also write the same block into the Ansible controller's `/etc/hosts`, run:
+
+```bash
+ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/preflight.yml \
+  -e manage_controller_hosts=true
+```
+
+Use `--ask-become-pass` if your controller user needs a sudo password.
+
+## Step 4: Install RKE2
 
 Recommended Ansible flow:
 
@@ -101,7 +130,7 @@ sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERS
 
 Never store the real token in git.
 
-## Step 4: Bootstrap Argo CD
+## Step 5: Bootstrap Argo CD
 
 ```bash
 export PLATFORM_REPO_URL=<THIS_REPO_URL>
@@ -109,7 +138,7 @@ export KUBECONFIG=<PATH_TO_PRIVATE_KUBECONFIG>
 scripts/bootstrap/bootstrap-argocd.sh
 ```
 
-## Step 5: Let GitOps take over
+## Step 6: Let GitOps take over
 
 Argo CD reads:
 

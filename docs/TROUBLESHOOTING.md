@@ -8,6 +8,23 @@ Check that you replaced `<THIS_REPO_URL>` at bootstrap time and configured repos
 
 Check that the address pool was customized from placeholders to your private network range in ignored or encrypted configuration.
 
+## Ansible or host resolution fails
+
+Run:
+
+```bash
+make rke2-preflight
+```
+
+This checks SSH, passwordless sudo, required VIP/domain variables, and node `/etc/hosts` entries.
+
+If the WSL/controller machine cannot resolve `api.platform.local` or platform app names, also update the controller:
+
+```bash
+ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/preflight.yml \
+  -e manage_controller_hosts=true
+```
+
 ## RKE2 install appears stuck
 
 Use the Ansible install playbook instead of a long ad-hoc shell command:
