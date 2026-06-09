@@ -9,12 +9,15 @@ Use the easier RKE2 bootstrap flow:
 ```bash
 make rke2-preflight
 make rke2-prepare
+make rke2-network-check
 make rke2-install
 ```
 
 `playbooks/preflight.yml` checks SSH, passwordless sudo, required VIP/domain inventory variables, and writes the managed `platform-gitops` block into `/etc/hosts` on each cluster node.
 
 The playbooks pre-create `/root/.ansible/tmp` with root-only permissions before normal module execution. This avoids Ansible's `remote_tmp ... did not exist` warning during privileged RKE2 tasks.
+
+`playbooks/prepare-nodes.yml` opens the required RKE2 ports in firewalld when firewalld is active. `make rke2-network-check` verifies that joining nodes can reach the first server on the RKE2 supervisor/API ports.
 
 To also update the controller's `/etc/hosts`:
 

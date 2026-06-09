@@ -65,6 +65,20 @@
       Suse: chronyd
       Archlinux: chronyd
       Gentoo: chronyd
+    rke2_firewalld_ports:
+      - 6443/tcp
+      - 9345/tcp
+      - 2379-2380/tcp
+      - 10250/tcp
+      - 4240/tcp
+      - 4244/tcp
+      - 8472/udp
+      - 30000-32767/tcp
+      - 30000-32767/udp
+  handlers:
+    - name: Reload firewalld
+      ansible.builtin.command: firewall-cmd --reload
+      changed_when: true
   tasks:
     - name: Show detected operating system
       ansible.builtin.debug:
@@ -122,6 +136,34 @@
         enabled: true
         state: started
       failed_when: false
+
+    - name: Check firewalld state
+      ansible.builtin.command: firewall-cmd --state
+      register: rke2_firewalld_state
+      changed_when: false
+      failed_when: false
+
+    - name: Query required RKE2 firewalld ports
+      ansible.builtin.command: "firewall-cmd --permanent --query-port={{ item }}"
+      register: rke2_firewalld_port_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ rke2_firewalld_ports }}"
+      when: rke2_firewalld_state.rc == 0
+
+    - name: Open required RKE2 firewalld ports
+      ansible.builtin.command: "firewall-cmd --permanent --add-port={{ item.item }}"
+      changed_when: true
+      loop: "{{ rke2_firewalld_port_queries.results | default([]) }}"
+      when:
+        - rke2_firewalld_state.rc == 0
+        - item.rc != 0
+      notify: Reload firewalld
+
+    - name: Show skipped firewalld configuration
+      ansible.builtin.debug:
+        msg: "firewalld is not active on this node; skipping firewalld port configuration."
+      when: rke2_firewalld_state.rc != 0
 
     - name: Remind about distro support tier
       ansible.builtin.debug:

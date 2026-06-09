@@ -54,6 +54,13 @@ If you interrupted `make rke2-install`, clean stale installer processes before r
 make rke2-cleanup-installers HOST=node-1
 ```
 
+If logs show `no route to host` for `:9345`, run node preparation again to open firewalld ports, then test node-to-node reachability:
+
+```bash
+make rke2-prepare
+make rke2-network-check
+```
+
 If the network or image pulls are slow, extend the timeouts:
 
 ```bash

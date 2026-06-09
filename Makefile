@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install rke2-status rke2-cleanup-installers rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -15,6 +15,7 @@ help:
 	@echo "  rke2-install    Install RKE2 through Ansible"
 	@echo "  rke2-status     Show RKE2 install/service diagnostics"
 	@echo "  rke2-cleanup-installers  Stop stale installer jobs, optional HOST=node-1"
+	@echo "  rke2-network-check  Check node-to-node RKE2 API/supervisor reachability"
 	@echo "  rke2-ping       Check Ansible connectivity, optional HOST=node-1"
 	@echo "  docs-list       List key docs"
 	@echo "  ci-list         List included CI definitions"
@@ -46,6 +47,9 @@ rke2-status:
 
 rke2-cleanup-installers:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-cleanup-installers.yml $(if $(HOST),--limit $(HOST),)
+
+rke2-network-check:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-network-check.yml
 
 rke2-ping:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-10} ansible -i inventory/hosts.local.ini $(if $(HOST),$(HOST),all) -m ping -T $${ANSIBLE_TIMEOUT:-10}

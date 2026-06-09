@@ -1,0 +1,34 @@
+---
+- name: Check RKE2 node-to-node network reachability
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_first_server_ip: "{{ hostvars[rke2_first_server].ansible_host }}"
+    rke2_network_check_ports:
+      - 9345
+      - 6443
+  tasks:
+    - name: Check RKE2 ports on the first server from every node
+      ansible.builtin.wait_for:
+        host: "{{ rke2_first_server_ip }}"
+        port: "{{ item }}"
+        timeout: 5
+      loop: "{{ rke2_network_check_ports }}"
+      when: inventory_hostname != rke2_first_server
+
+    - name: Show first server local listening ports
+      ansible.builtin.shell: |
+        ss -lntp | egrep ':(9345|6443)[[:space:]]' || true
+      args:
+        executable: /bin/bash
+      register: rke2_first_server_listeners
+      changed_when: false
+      failed_when: false
+      when: inventory_hostname == rke2_first_server
+
+    - name: Print first server local listening ports
+      ansible.builtin.debug:
+        var: rke2_first_server_listeners.stdout_lines
+      when: inventory_hostname == rke2_first_server
