@@ -83,6 +83,16 @@ Collect focused diagnostics for a failed node:
 make rke2-diagnose HOST=node-1
 ```
 
+If the first server never became healthy and diagnostics show embedded etcd stuck in authentication handshake failures, use the guarded destructive reset for a failed bootstrap:
+
+```bash
+CONFIRM_RKE2_RESET=YES_I_UNDERSTAND make rke2-reset
+make rke2-prepare
+RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install
+```
+
+This deletes RKE2 cluster state on the selected nodes. Use it only before production data exists or after restoring from backup.
+
 If the network or image pulls are slow, extend the timeouts:
 
 ```bash

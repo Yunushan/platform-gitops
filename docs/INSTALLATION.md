@@ -81,6 +81,14 @@ make rke2-recover
 
 The recovery flow uses 300-second service/API stage timeouts and a 600-second node readiness timeout by default. It prints stage diagnostics on failure and runs `make rke2-verify` after recovery.
 
+For a failed bootstrap that never reached a healthy cluster state, use the guarded destructive reset:
+
+```bash
+CONFIRM_RKE2_RESET=YES_I_UNDERSTAND make rke2-reset
+make rke2-prepare
+RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install
+```
+
 The install playbook reads these from `inventory/hosts.local.ini`:
 
 ```ini

@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install rke2-recover rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -14,6 +14,7 @@ help:
 	@echo "  rke2-prepare    Prepare Linux nodes through Ansible"
 	@echo "  rke2-install    Install RKE2 through Ansible"
 	@echo "  rke2-recover    Safely recover interrupted RKE2 bootstrap without deleting cluster data"
+	@echo "  rke2-reset      Destructively reset failed RKE2 bootstrap state with confirmation"
 	@echo "  rke2-verify     Verify RKE2 service, API, network, and Ready nodes"
 	@echo "  rke2-diagnose   Collect RKE2 diagnostics, optional HOST=node-1"
 	@echo "  rke2-status     Show RKE2 install/service diagnostics"
@@ -48,6 +49,9 @@ rke2-install:
 rke2-recover: rke2-prepare
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/recover-rke2.yml
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-rke2.yml
+
+rke2-reset:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/reset-rke2.yml
 
 rke2-verify:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-rke2.yml

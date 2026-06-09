@@ -88,6 +88,20 @@ Collect focused diagnostics for a failed node:
 make rke2-diagnose HOST=node-1
 ```
 
+If the cluster never reached a healthy state and embedded etcd is stuck, use the guarded destructive reset. This removes failed RKE2 cluster state from all selected nodes but leaves packages installed:
+
+```bash
+CONFIRM_RKE2_RESET=YES_I_UNDERSTAND make rke2-reset
+make rke2-prepare
+RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install
+```
+
+To also force a fresh controller-side token:
+
+```bash
+CONFIRM_RKE2_RESET=YES_I_UNDERSTAND RKE2_RESET_CONTROLLER_TOKEN=true make rke2-reset
+```
+
 Limit diagnostics or connectivity checks to one node when one host is slow or unreachable:
 
 ```bash

@@ -1,0 +1,110 @@
+---
+- name: Reset failed RKE2 bootstrap state
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_reset_confirm_from_env: "{{ lookup('ansible.builtin.env', 'CONFIRM_RKE2_RESET') }}"
+    rke2_reset_confirm_effective: "{{ rke2_reset_confirm | default(rke2_reset_confirm_from_env, true) }}"
+    rke2_reset_token_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/platform-gitops/rke2-token"
+    rke2_reset_controller_token_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_RESET_CONTROLLER_TOKEN') }}"
+    rke2_reset_controller_token_effective: "{{ rke2_reset_controller_token | default(rke2_reset_controller_token_from_env, true) | default(false, true) | bool }}"
+    rke2_reset_paths:
+      - /etc/rancher/rke2
+      - /var/lib/rancher/rke2
+      - /var/lib/kubelet
+      - /var/lib/cni
+      - /etc/cni/net.d
+      - /run/k3s
+      - /run/flannel
+  pre_tasks:
+    - name: Require explicit reset confirmation
+      ansible.builtin.assert:
+        that:
+          - rke2_reset_confirm_effective == "YES_I_UNDERSTAND"
+        fail_msg: >-
+          This deletes RKE2 cluster state on all selected nodes. Run only for a failed bootstrap or lab reset:
+          CONFIRM_RKE2_RESET=YES_I_UNDERSTAND make rke2-reset
+      run_once: true
+
+    - name: Show reset scope
+      ansible.builtin.debug:
+        msg: "Resetting RKE2 state on {{ groups['rke2_servers'] | join(', ') }}. Package binaries remain installed."
+      run_once: true
+
+  tasks:
+    - name: Stop RKE2 services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+      loop:
+        - rke2-server
+        - rke2-agent
+      failed_when: false
+
+    - name: Run RKE2 killall helper when available
+      ansible.builtin.shell: |
+        /usr/local/bin/rke2-killall.sh || /usr/bin/rke2-killall.sh || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
+    - name: Terminate remaining RKE2 related processes
+      ansible.builtin.shell: |
+        pids="$(pgrep -f '([r]ke2 server|[r]ke2 agent|[e]tcd --config-file=.*/rke2|[c]ontainerd.*rancher/rke2|[c]ontainerd-shim.*rancher/rke2|[k]ubelet.*rancher/rke2)' || true)"
+        if [ -n "${pids}" ]; then
+          kill -TERM ${pids} || true
+          sleep 10
+        fi
+        pids="$(pgrep -f '([r]ke2 server|[r]ke2 agent|[e]tcd --config-file=.*/rke2|[c]ontainerd.*rancher/rke2|[c]ontainerd-shim.*rancher/rke2|[k]ubelet.*rancher/rke2)' || true)"
+        if [ -n "${pids}" ]; then
+          kill -KILL ${pids} || true
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
+    - name: Reset failed systemd state
+      ansible.builtin.command: systemctl reset-failed rke2-server rke2-agent
+      changed_when: false
+      failed_when: false
+
+    - name: Remove failed bootstrap state directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ rke2_reset_paths }}"
+
+    - name: Remove stale async job markers
+      ansible.builtin.file:
+        path: /root/.ansible_async
+        state: absent
+
+    - name: Verify no RKE2 runtime processes remain
+      ansible.builtin.shell: |
+        pgrep -af '([r]ke2 server|[r]ke2 agent|[e]tcd --config-file=.*/rke2|[c]ontainerd.*rancher/rke2|[c]ontainerd-shim.*rancher/rke2|[k]ubelet.*rancher/rke2)' || true
+      args:
+        executable: /bin/bash
+      register: rke2_reset_processes
+      retries: 6
+      delay: 5
+      until: rke2_reset_processes.stdout | length == 0
+      changed_when: false
+      failed_when: rke2_reset_processes.stdout | length > 0
+
+    - name: Optionally remove controller token for a fully fresh token
+      ansible.builtin.file:
+        path: "{{ rke2_reset_token_file }}"
+        state: absent
+      become: false
+      delegate_to: localhost
+      run_once: true
+      when: rke2_reset_controller_token_effective
+
+    - name: Print reset completion
+      ansible.builtin.debug:
+        msg: "RKE2 state reset completed. Run make rke2-prepare, then RKE2_JOIN_ENDPOINT=<NODE_1_IP> make rke2-install."
+      run_once: true
