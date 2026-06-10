@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-prepare rke2-registry-check rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -11,8 +11,10 @@ help:
 	@echo "  no-secrets      Scan repository for obvious secrets/private data"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  rke2-preflight  Check Ansible SSH/sudo and write node /etc/hosts"
+	@echo "  rke2-controller-hosts  Write platform /etc/hosts on the Ansible controller"
 	@echo "  rke2-prepare    Prepare Linux nodes through Ansible"
 	@echo "  rke2-registry-check  Check Docker Hub/RKE2 image pull egress, optional HOST=node-1"
+	@echo "  rke2-api-vip    Deploy kube-vip for the Kubernetes API VIP"
 	@echo "  rke2-install    Install RKE2 through Ansible"
 	@echo "  rke2-recover    Safely recover interrupted RKE2 bootstrap without deleting cluster data"
 	@echo "  rke2-reset      Destructively reset failed RKE2 bootstrap state with confirmation"
@@ -41,11 +43,17 @@ bootstrap-plan:
 rke2-preflight:
 	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/preflight.yml
 
+rke2-controller-hosts:
+	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/preflight.yml -e manage_controller_hosts=true
+
 rke2-prepare: rke2-preflight
 	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/prepare-nodes.yml
 
 rke2-registry-check:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-registry-check.yml $(if $(HOST),--limit $(HOST),)
+
+rke2-api-vip:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/deploy-kube-vip.yml
 
 rke2-install: rke2-prepare
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml

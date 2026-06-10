@@ -8,6 +8,24 @@ Check that you replaced `<THIS_REPO_URL>` at bootstrap time and configured repos
 
 Check that the address pool was customized from placeholders to your private network range in ignored or encrypted configuration.
 
+## API VIP or API DNS does not answer
+
+If all RKE2 nodes are `Ready` but the VIP or API DNS fails:
+
+```bash
+curl -k https://<VIP_ADDRESS>:6443/readyz
+curl -k https://<VIP_DNS_NAME>:6443/readyz
+```
+
+deploy kube-vip and write controller host resolution:
+
+```bash
+make rke2-api-vip
+make rke2-controller-hosts
+```
+
+Then retest the same `curl` commands. `make rke2-api-vip` deploys kube-vip as a control-plane DaemonSet in ARP mode. The default image is pulled from `ghcr.io`, so include that endpoint in registry/proxy/mirror rules.
+
 ## Ansible or host resolution fails
 
 Run:

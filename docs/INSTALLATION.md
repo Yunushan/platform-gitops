@@ -168,6 +168,17 @@ Never store the real token in git.
 
 ## Step 5: Bootstrap Argo CD
 
+Before bootstrapping GitOps, deploy and verify the Kubernetes API VIP:
+
+```bash
+make rke2-api-vip
+make rke2-controller-hosts
+curl -k https://<VIP_ADDRESS>:6443/readyz
+curl -k https://<VIP_DNS_NAME>:6443/readyz
+```
+
+`make rke2-api-vip` deploys kube-vip as a control-plane DaemonSet in ARP mode. It uses `rke2_api_vip`, `rke2_api_dns`, and the node default interface unless `kube_vip_interface` is set. Pin kube-vip with `kube_vip_version`, `kube_vip_image`, or the matching `KUBE_VIP_*` environment variables.
+
 ```bash
 export PLATFORM_REPO_URL=<THIS_REPO_URL>
 export KUBECONFIG=<PATH_TO_PRIVATE_KUBECONFIG>

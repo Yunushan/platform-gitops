@@ -14,7 +14,7 @@
     rke2_registry_check_enabled_effective: "{{ rke2_registry_check_enabled | default(rke2_registry_check_enabled_from_env, true) | default(true, true) | bool }}"
     rke2_registry_check_timeout_effective: "{{ rke2_registry_check_timeout | default(rke2_registry_check_timeout_from_env, true) | default(45, true) | int }}"
     rke2_registry_connect_timeout_effective: "{{ rke2_registry_connect_timeout | default(rke2_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
-    rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/', 'https://quay.io/v2/'], true) }}"
+    rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/', 'https://quay.io/v2/', 'https://ghcr.io/v2/'], true) }}"
     rke2_http_proxy_effective: "{{ rke2_http_proxy | default(rke2_http_proxy_from_env, true) }}"
     rke2_https_proxy_effective: "{{ rke2_https_proxy | default(rke2_https_proxy_from_env, true) }}"
     rke2_no_proxy_effective: "{{ rke2_no_proxy | default(rke2_no_proxy_from_env, true) }}"

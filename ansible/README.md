@@ -8,6 +8,9 @@ Use the easier RKE2 bootstrap flow:
 
 ```bash
 make rke2-install
+make rke2-api-vip
+make rke2-controller-hosts
+make rke2-verify
 ```
 
 `playbooks/preflight.yml` checks SSH, passwordless sudo, required VIP/domain inventory variables, and writes the managed `platform-gitops` block into `/etc/hosts` on each cluster node.
@@ -35,6 +38,24 @@ RKE2_REGISTRY_CHECK_ENABLED=false make rke2-install
 ```
 
 If nodes require a proxy for internet access, set `rke2_http_proxy`, `rke2_https_proxy`, and `rke2_no_proxy` in ignored local inventory, or export `RKE2_HTTP_PROXY`, `RKE2_HTTPS_PROXY`, and `RKE2_NO_PROXY`. The install playbook uses these values for installer downloads, registry checks, package installation, and `/etc/default/rke2-server`.
+
+Deploy the Kubernetes API VIP after the RKE2 API is healthy:
+
+```bash
+make rke2-api-vip
+```
+
+This deploys kube-vip as a control-plane DaemonSet in ARP mode using `rke2_api_vip`, `rke2_api_dns`, and the detected default node interface. Override the interface or image when needed:
+
+```bash
+KUBE_VIP_INTERFACE=<NODE_INTERFACE> KUBE_VIP_VERSION=v0.8.9 make rke2-api-vip
+```
+
+If the controller cannot resolve the API DNS name, write the managed platform host entries locally:
+
+```bash
+make rke2-controller-hosts
+```
 
 To also update the controller's `/etc/hosts`:
 
