@@ -12,7 +12,7 @@ help:
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  rke2-preflight  Check Ansible SSH/sudo and write node /etc/hosts"
 	@echo "  rke2-prepare    Prepare Linux nodes through Ansible"
-	@echo "  rke2-registry-check  Check Docker Hub/RKE2 image pull egress from nodes"
+	@echo "  rke2-registry-check  Check Docker Hub/RKE2 image pull egress, optional HOST=node-1"
 	@echo "  rke2-install    Install RKE2 through Ansible"
 	@echo "  rke2-recover    Safely recover interrupted RKE2 bootstrap without deleting cluster data"
 	@echo "  rke2-reset      Destructively reset failed RKE2 bootstrap state with confirmation"
@@ -45,7 +45,7 @@ rke2-prepare: rke2-preflight
 	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/prepare-nodes.yml
 
 rke2-registry-check:
-	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-registry-check.yml
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-registry-check.yml $(if $(HOST),--limit $(HOST),)
 
 rke2-install: rke2-prepare
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml

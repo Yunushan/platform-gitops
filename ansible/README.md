@@ -22,6 +22,12 @@ The playbooks pre-create `/root/.ansible/tmp` with root-only permissions before 
 make rke2-registry-check
 ```
 
+To retest one node after a firewall, proxy, DNS, or NAT change:
+
+```bash
+make rke2-registry-check HOST=node-2
+```
+
 If you use a private registry mirror or airgap image flow, set `rke2_registry_check_urls` to your mirror endpoints, or disable the check only after the mirror is configured:
 
 ```bash

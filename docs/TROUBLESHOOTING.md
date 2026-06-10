@@ -87,6 +87,13 @@ If diagnostics show `net/http: TLS handshake timeout` while pulling images such 
 make rke2-registry-check
 ```
 
+When only one node fails after a network change, retest that node directly:
+
+```bash
+make rke2-registry-check HOST=node-2
+make rke2-registry-check HOST=node-3
+```
+
 Fix firewall, proxy, DNS, MTU, TLS inspection, or internet egress from all three nodes to Docker Hub. For enterprise environments, prefer an internal registry mirror or airgap image flow, then set `rke2_registry_check_urls` to the mirror endpoints. Disable the check only after the mirror is configured:
 
 ```bash
