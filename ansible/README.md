@@ -28,6 +28,8 @@ If you use a private registry mirror or airgap image flow, set `rke2_registry_ch
 RKE2_REGISTRY_CHECK_ENABLED=false make rke2-install
 ```
 
+If nodes require a proxy for internet access, set `rke2_http_proxy`, `rke2_https_proxy`, and `rke2_no_proxy` in ignored local inventory, or export `RKE2_HTTP_PROXY`, `RKE2_HTTPS_PROXY`, and `RKE2_NO_PROXY`. The install playbook uses these values for installer downloads, registry checks, package installation, and `/etc/default/rke2-server`.
+
 To also update the controller's `/etc/hosts`:
 
 ```bash

@@ -36,6 +36,9 @@
     rke2_registry_check_enabled_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_ENABLED') }}"
     rke2_registry_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_TIMEOUT') }}"
     rke2_registry_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CONNECT_TIMEOUT') }}"
+    rke2_http_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_HTTP_PROXY') | default(lookup('ansible.builtin.env', 'HTTP_PROXY'), true) }}"
+    rke2_https_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_HTTPS_PROXY') | default(lookup('ansible.builtin.env', 'HTTPS_PROXY'), true) }}"
+    rke2_no_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_NO_PROXY') | default(lookup('ansible.builtin.env', 'NO_PROXY'), true) }}"
     rke2_install_timeout_effective: "{{ rke2_install_timeout | default(rke2_install_timeout_from_env, true) | default(1200, true) | int }}"
     rke2_install_poll_interval_effective: "{{ rke2_install_poll_interval | default(rke2_install_poll_interval_from_env, true) | default(15, true) | int }}"
     rke2_start_timeout_effective: "{{ rke2_start_timeout | default(rke2_start_timeout_from_env, true) | default(900, true) | int }}"
@@ -44,6 +47,32 @@
     rke2_registry_check_timeout_effective: "{{ rke2_registry_check_timeout | default(rke2_registry_check_timeout_from_env, true) | default(45, true) | int }}"
     rke2_registry_connect_timeout_effective: "{{ rke2_registry_connect_timeout | default(rke2_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
     rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/'], true) }}"
+    rke2_http_proxy_effective: "{{ rke2_http_proxy | default(rke2_http_proxy_from_env, true) }}"
+    rke2_https_proxy_effective: "{{ rke2_https_proxy | default(rke2_https_proxy_from_env, true) }}"
+    rke2_no_proxy_base: >-
+      {{
+        [
+          '127' ~ '.0.0.1',
+          'localhost',
+          '127' ~ '.0.0.0/8',
+          '10' ~ '.0.0.0/8',
+          '172' ~ '.16.0.0/12',
+          '192' ~ '.168.0.0/16',
+          rke2_api_vip | default(''),
+          rke2_api_dns | default(''),
+          rke2_platform_domain | default(''),
+          ((rke2_platform_domain is defined and (rke2_platform_domain | length > 0)) | ternary('.' + rke2_platform_domain, ''))
+        ]
+        + (groups['rke2_servers'] | map('extract', hostvars, 'ansible_host') | list)
+      }}
+    rke2_no_proxy_effective: "{{ rke2_no_proxy | default(rke2_no_proxy_from_env, true) | default((rke2_no_proxy_base | reject('equalto', '') | unique | join(',')), true) }}"
+    rke2_proxy_environment_effective: >-
+      {{
+        {}
+        | combine(((rke2_http_proxy_effective | length) > 0) | ternary({'HTTP_PROXY': rke2_http_proxy_effective, 'http_proxy': rke2_http_proxy_effective}, {}))
+        | combine(((rke2_https_proxy_effective | length) > 0) | ternary({'HTTPS_PROXY': rke2_https_proxy_effective, 'https_proxy': rke2_https_proxy_effective}, {}))
+        | combine(((rke2_no_proxy_effective | length) > 0) | ternary({'NO_PROXY': rke2_no_proxy_effective, 'no_proxy': rke2_no_proxy_effective}, {}))
+      }}
     rke2_core_kernel_modules:
       - br_netfilter
       - overlay
@@ -159,6 +188,12 @@
           with {{ rke2_cni_effective }} CNI. Join endpoint is {{ rke2_join_endpoint_effective }}. Package install timeout is {{ rke2_install_timeout_effective }}s and service start timeout is
           {{ rke2_start_timeout_effective }}s. Token is supplied privately or stored on the controller at {{ rke2_token_file }}.
 
+    - name: Show RKE2 proxy configuration state
+      ansible.builtin.debug:
+        msg: >-
+          RKE2 proxy configuration is {{ 'enabled' if ((rke2_http_proxy_effective | length > 0) or (rke2_https_proxy_effective | length > 0)) else 'disabled' }}.
+          Proxy values are intentionally not printed.
+
     - name: Detect existing RKE2 installer processes
       ansible.builtin.shell: |
         pgrep -af '{{ rke2_installer_process_pattern }}' || true
@@ -224,10 +259,11 @@
         group: root
         mode: "0755"
         timeout: 60
+      environment: "{{ rke2_proxy_environment_effective }}"
 
     - name: Build RKE2 installer environment
       ansible.builtin.set_fact:
-        rke2_install_environment: "{{ {'INSTALL_RKE2_TYPE': 'server'} | combine(((rke2_version_effective | length) > 0) | ternary({'INSTALL_RKE2_VERSION': rke2_version_effective}, {'INSTALL_RKE2_CHANNEL': rke2_channel_effective})) }}"
+        rke2_install_environment: "{{ {'INSTALL_RKE2_TYPE': 'server'} | combine(rke2_proxy_environment_effective) | combine(((rke2_version_effective | length) > 0) | ternary({'INSTALL_RKE2_VERSION': rke2_version_effective}, {'INSTALL_RKE2_CHANNEL': rke2_channel_effective})) }}"
 
     - name: Install RKE2 server package with timeout control
       block:
@@ -281,6 +317,35 @@
     - name: Enable RKE2 server service
       ansible.builtin.command: systemctl enable rke2-server
       changed_when: false
+
+    - name: Ensure RKE2 systemd environment directory exists
+      ansible.builtin.file:
+        path: /etc/default
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: (rke2_http_proxy_effective | length > 0) or (rke2_https_proxy_effective | length > 0)
+
+    - name: Configure RKE2 server proxy environment
+      ansible.builtin.copy:
+        dest: /etc/default/rke2-server
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          {% if rke2_http_proxy_effective | length > 0 %}
+          HTTP_PROXY={{ rke2_http_proxy_effective }}
+          http_proxy={{ rke2_http_proxy_effective }}
+          {% endif %}
+          {% if rke2_https_proxy_effective | length > 0 %}
+          HTTPS_PROXY={{ rke2_https_proxy_effective }}
+          https_proxy={{ rke2_https_proxy_effective }}
+          {% endif %}
+          NO_PROXY={{ rke2_no_proxy_effective }}
+          no_proxy={{ rke2_no_proxy_effective }}
+      no_log: true
+      when: (rke2_http_proxy_effective | length > 0) or (rke2_https_proxy_effective | length > 0)
 
     - name: Start first RKE2 server without blocking Ansible output
       ansible.builtin.command: systemctl --no-block restart rke2-server

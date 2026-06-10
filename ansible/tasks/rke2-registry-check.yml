@@ -15,6 +15,7 @@
     executable: /bin/bash
   register: rke2_registry_checks
   loop: "{{ rke2_registry_check_urls_effective }}"
+  environment: "{{ rke2_proxy_environment_effective | default({}) }}"
   changed_when: false
   failed_when: false
 
@@ -56,6 +57,7 @@
   args:
     executable: /bin/bash
   register: rke2_registry_failure_diagnostics
+  environment: "{{ rke2_proxy_environment_effective | default({}) }}"
   changed_when: false
   failed_when: false
   when: (rke2_registry_checks.results | selectattr('rc', 'ne', 0) | list | length) > 0

@@ -93,6 +93,17 @@ Fix firewall, proxy, DNS, MTU, TLS inspection, or internet egress from all three
 RKE2_REGISTRY_CHECK_ENABLED=false make rke2-install
 ```
 
+If the nodes must use an HTTP proxy for internet access, provide proxy settings through ignored local inventory or private environment variables:
+
+```bash
+RKE2_HTTP_PROXY=http://proxy.example.com:8080 \
+RKE2_HTTPS_PROXY=http://proxy.example.com:8080 \
+RKE2_NO_PROXY=<LOOPBACK>,localhost,<RFC1918_CIDRS>,<NODE_1_IP>,<NODE_2_IP>,<NODE_3_IP>,<API_VIP>,api.platform.local \
+make rke2-registry-check
+```
+
+When install runs with these variables, the playbook writes `/etc/default/rke2-server` so RKE2, embedded containerd, kubelet, control-plane pods, etcd, and kube-proxy receive the proxy configuration.
+
 For interrupted bootstrap, token mismatch, stale process, or node join recovery, use the automated safe recovery flow:
 
 ```bash

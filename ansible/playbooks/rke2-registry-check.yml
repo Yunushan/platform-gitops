@@ -7,10 +7,23 @@
     rke2_registry_check_enabled_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_ENABLED') }}"
     rke2_registry_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_TIMEOUT') }}"
     rke2_registry_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CONNECT_TIMEOUT') }}"
+    rke2_http_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_HTTP_PROXY') | default(lookup('ansible.builtin.env', 'HTTP_PROXY'), true) }}"
+    rke2_https_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_HTTPS_PROXY') | default(lookup('ansible.builtin.env', 'HTTPS_PROXY'), true) }}"
+    rke2_no_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_NO_PROXY') | default(lookup('ansible.builtin.env', 'NO_PROXY'), true) }}"
     rke2_registry_check_enabled_effective: "{{ rke2_registry_check_enabled | default(rke2_registry_check_enabled_from_env, true) | default(true, true) | bool }}"
     rke2_registry_check_timeout_effective: "{{ rke2_registry_check_timeout | default(rke2_registry_check_timeout_from_env, true) | default(45, true) | int }}"
     rke2_registry_connect_timeout_effective: "{{ rke2_registry_connect_timeout | default(rke2_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
     rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/'], true) }}"
+    rke2_http_proxy_effective: "{{ rke2_http_proxy | default(rke2_http_proxy_from_env, true) }}"
+    rke2_https_proxy_effective: "{{ rke2_https_proxy | default(rke2_https_proxy_from_env, true) }}"
+    rke2_no_proxy_effective: "{{ rke2_no_proxy | default(rke2_no_proxy_from_env, true) }}"
+    rke2_proxy_environment_effective: >-
+      {{
+        {}
+        | combine(((rke2_http_proxy_effective | length) > 0) | ternary({'HTTP_PROXY': rke2_http_proxy_effective, 'http_proxy': rke2_http_proxy_effective}, {}))
+        | combine(((rke2_https_proxy_effective | length) > 0) | ternary({'HTTPS_PROXY': rke2_https_proxy_effective, 'https_proxy': rke2_https_proxy_effective}, {}))
+        | combine(((rke2_no_proxy_effective | length) > 0) | ternary({'NO_PROXY': rke2_no_proxy_effective, 'no_proxy': rke2_no_proxy_effective}, {}))
+      }}
   tasks:
     - name: Run RKE2 registry connectivity checks
       ansible.builtin.include_tasks: ../tasks/rke2-registry-check.yml

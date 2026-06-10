@@ -86,6 +86,8 @@ If your enterprise network uses a private registry mirror or airgap image flow, 
 RKE2_REGISTRY_CHECK_ENABLED=false make rke2-install
 ```
 
+If internet access requires an HTTP proxy, set `rke2_http_proxy`, `rke2_https_proxy`, and `rke2_no_proxy` in ignored local inventory, or export `RKE2_HTTP_PROXY`, `RKE2_HTTPS_PROXY`, and `RKE2_NO_PROXY` before running `make rke2-install`. The install playbook writes `/etc/default/rke2-server` for the RKE2 systemd service.
+
 If bootstrap is interrupted or nodes fail to join after the first server starts, use the safe recovery flow:
 
 ```bash
