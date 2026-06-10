@@ -81,6 +81,18 @@ The install and recovery playbooks print kernel module, swap, sysctl, `kernel-mo
 make rke2-diagnose HOST=node-1
 ```
 
+If diagnostics show `net/http: TLS handshake timeout` while pulling images such as `rancher/hardened-etcd`, `rancher/hardened-kubernetes`, or `rancher/rke2-cloud-provider`, the first server is blocked by registry egress, not local etcd configuration. Check the node-to-registry path:
+
+```bash
+make rke2-registry-check
+```
+
+Fix firewall, proxy, DNS, MTU, TLS inspection, or internet egress from all three nodes to Docker Hub. For enterprise environments, prefer an internal registry mirror or airgap image flow, then set `rke2_registry_check_urls` to the mirror endpoints. Disable the check only after the mirror is configured:
+
+```bash
+RKE2_REGISTRY_CHECK_ENABLED=false make rke2-install
+```
+
 For interrupted bootstrap, token mismatch, stale process, or node join recovery, use the automated safe recovery flow:
 
 ```bash

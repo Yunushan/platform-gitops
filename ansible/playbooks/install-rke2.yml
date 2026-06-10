@@ -33,10 +33,17 @@
     rke2_install_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_INSTALL_POLL_INTERVAL') }}"
     rke2_start_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_START_TIMEOUT') }}"
     rke2_start_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_START_POLL_INTERVAL') }}"
+    rke2_registry_check_enabled_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_ENABLED') }}"
+    rke2_registry_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_TIMEOUT') }}"
+    rke2_registry_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CONNECT_TIMEOUT') }}"
     rke2_install_timeout_effective: "{{ rke2_install_timeout | default(rke2_install_timeout_from_env, true) | default(1200, true) | int }}"
     rke2_install_poll_interval_effective: "{{ rke2_install_poll_interval | default(rke2_install_poll_interval_from_env, true) | default(15, true) | int }}"
     rke2_start_timeout_effective: "{{ rke2_start_timeout | default(rke2_start_timeout_from_env, true) | default(900, true) | int }}"
     rke2_start_poll_interval_effective: "{{ rke2_start_poll_interval | default(rke2_start_poll_interval_from_env, true) | default(10, true) | int }}"
+    rke2_registry_check_enabled_effective: "{{ rke2_registry_check_enabled | default(rke2_registry_check_enabled_from_env, true) | default(true, true) | bool }}"
+    rke2_registry_check_timeout_effective: "{{ rke2_registry_check_timeout | default(rke2_registry_check_timeout_from_env, true) | default(45, true) | int }}"
+    rke2_registry_connect_timeout_effective: "{{ rke2_registry_connect_timeout | default(rke2_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
+    rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/'], true) }}"
     rke2_core_kernel_modules:
       - br_netfilter
       - overlay
@@ -85,6 +92,15 @@
           On Rocky/RHEL/Alma/Oracle Linux 10 this includes kernel-modules-extra for nf_conntrack.
           Kubernetes swap is also disabled during preparation.
       when: rke2_prepare_gate.rc != 0
+
+    - name: Run RKE2 registry connectivity checks
+      ansible.builtin.include_tasks: ../tasks/rke2-registry-check.yml
+      when: rke2_registry_check_enabled_effective | bool
+
+    - name: Show skipped RKE2 registry connectivity checks
+      ansible.builtin.debug:
+        msg: "RKE2 registry connectivity checks are disabled. Ensure a private registry mirror or airgap image flow is configured before bootstrap."
+      when: not (rke2_registry_check_enabled_effective | bool)
 
     - name: Ensure local token directory exists
       ansible.builtin.file:
@@ -349,6 +365,10 @@
 
         - name: Detect repeated etcd sandbox bootstrap failure
           ansible.builtin.set_fact:
+            rke2_first_server_image_pull_failure: >-
+              {{
+                (rke2_first_server_diagnostics.stdout | default('')) is search('TLS handshake timeout|failed to pull and unpack image|PullImage .* failed|failed to process image event')
+              }}
             rke2_first_server_etcd_sandbox_failure: >-
               {{
                 (rke2_first_server_diagnostics.stdout | default('')) is search('Pod for etcd not synced|127[.]0[.]0[.]1:2379: connect: connection refused')
@@ -359,7 +379,11 @@
           ansible.builtin.fail:
             msg: >-
               RKE2 first server did not become ready within {{ rke2_start_timeout_effective }} seconds.
-              {% if rke2_first_server_etcd_sandbox_failure | default(false) %}
+              {% if rke2_first_server_image_pull_failure | default(false) %}
+              The logs show RKE2 control-plane image pull failures, including Docker Hub TLS handshake timeouts.
+              Fix node egress/proxy/DNS/MTU/packet inspection to Docker Hub, or configure an internal registry mirror/airgap image flow.
+              Run `make rke2-registry-check` to verify the registry path before retrying install.
+              {% elif rke2_first_server_etcd_sandbox_failure | default(false) %}
               The logs show embedded etcd never created a healthy pod sandbox or listener on 127.0.0.1:2379.
               On Rocky Linux 10, first confirm `make rke2-prepare` completed successfully so kernel-modules-extra/nf_conntrack,
               sysctls, firewalld, and NetworkManager CNI settings are applied. If this was a failed partial bootstrap with no

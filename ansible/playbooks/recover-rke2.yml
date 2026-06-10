@@ -422,6 +422,10 @@
 
         - name: Detect repeated etcd sandbox recovery failure
           ansible.builtin.set_fact:
+            rke2_first_server_image_pull_failure: >-
+              {{
+                (rke2_first_server_recovery_diagnostics.stdout | default('')) is search('TLS handshake timeout|failed to pull and unpack image|PullImage .* failed|failed to process image event')
+              }}
             rke2_first_server_etcd_sandbox_failure: >-
               {{
                 (rke2_first_server_recovery_diagnostics.stdout | default('')) is search('Pod for etcd not synced|127[.]0[.]0[.]1:2379: connect: connection refused')
@@ -431,7 +435,11 @@
           ansible.builtin.fail:
             msg: >-
               {{ rke2_first_server }} did not become active within {{ rke2_start_timeout_effective }} seconds.
-              {% if rke2_first_server_etcd_sandbox_failure | default(false) %}
+              {% if rke2_first_server_image_pull_failure | default(false) %}
+              The logs show RKE2 control-plane image pull failures, including Docker Hub TLS handshake timeouts.
+              Fix node egress/proxy/DNS/MTU/packet inspection to Docker Hub, or configure an internal registry mirror/airgap image flow.
+              Run `make rke2-registry-check` to verify the registry path before retrying recovery.
+              {% elif rke2_first_server_etcd_sandbox_failure | default(false) %}
               The logs show embedded etcd never created a healthy pod sandbox or listener on 127.0.0.1:2379.
               Confirm `make rke2-prepare` completed successfully on Rocky Linux 10. If this cluster has no production data yet,
               use `CONFIRM_RKE2_RESET=YES_I_UNDERSTAND RKE2_RESET_CONTROLLER_TOKEN=true make rke2-reset`, then rerun

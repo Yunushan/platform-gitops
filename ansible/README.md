@@ -7,8 +7,6 @@ Optional playbooks for node preparation and RKE2 bootstrap. Use `inventory/hosts
 Use the easier RKE2 bootstrap flow:
 
 ```bash
-make rke2-preflight
-make rke2-prepare
 make rke2-install
 ```
 
@@ -17,6 +15,18 @@ make rke2-install
 The playbooks pre-create `/root/.ansible/tmp` with root-only permissions before normal module execution. This avoids Ansible's `remote_tmp ... did not exist` warning during privileged RKE2 tasks.
 
 `playbooks/prepare-nodes.yml` opens the required RKE2 ports in firewalld when firewalld is active. `make rke2-network-check` verifies that joining nodes can reach the first server on the RKE2 supervisor/API ports after the first server is listening.
+
+`playbooks/rke2-registry-check.yml` verifies node egress to the default RKE2 online image pull path before bootstrap. Run it directly when logs show Docker Hub or TLS handshake timeouts:
+
+```bash
+make rke2-registry-check
+```
+
+If you use a private registry mirror or airgap image flow, set `rke2_registry_check_urls` to your mirror endpoints, or disable the check only after the mirror is configured:
+
+```bash
+RKE2_REGISTRY_CHECK_ENABLED=false make rke2-install
+```
 
 To also update the controller's `/etc/hosts`:
 

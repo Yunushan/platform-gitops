@@ -1,0 +1,22 @@
+---
+- name: Check RKE2 image registry connectivity
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_registry_check_enabled_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_ENABLED') }}"
+    rke2_registry_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_TIMEOUT') }}"
+    rke2_registry_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CONNECT_TIMEOUT') }}"
+    rke2_registry_check_enabled_effective: "{{ rke2_registry_check_enabled | default(rke2_registry_check_enabled_from_env, true) | default(true, true) | bool }}"
+    rke2_registry_check_timeout_effective: "{{ rke2_registry_check_timeout | default(rke2_registry_check_timeout_from_env, true) | default(45, true) | int }}"
+    rke2_registry_connect_timeout_effective: "{{ rke2_registry_connect_timeout | default(rke2_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
+    rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/'], true) }}"
+  tasks:
+    - name: Run RKE2 registry connectivity checks
+      ansible.builtin.include_tasks: ../tasks/rke2-registry-check.yml
+      when: rke2_registry_check_enabled_effective | bool
+
+    - name: Show skipped RKE2 registry connectivity checks
+      ansible.builtin.debug:
+        msg: "RKE2 registry connectivity checks are disabled. Ensure a private registry mirror or airgap image flow is configured before bootstrap."
+      when: not (rke2_registry_check_enabled_effective | bool)

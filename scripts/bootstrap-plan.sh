@@ -5,9 +5,10 @@ Recommended bootstrap order
 
 1. Prepare 3 Linux nodes.
 2. Configure Rocky Linux 10 prerequisites and API VIP using kube-vip or HAProxy/Keepalived.
-3. Run make rke2-preflight to verify SSH, sudo, inventory, and node host resolution.
-4. Run make rke2-prepare.
-5. Run make rke2-install, optionally with RKE2_VERSION=vX.Y.Z+rke2rN.
+3. Run make rke2-registry-check to verify node egress to the RKE2 image registry path.
+4. Run make rke2-install, optionally with RKE2_VERSION=vX.Y.Z+rke2rN.
+   This runs preflight, node preparation, registry checks, and RKE2 install.
+5. Verify all three nodes are Ready with make rke2-verify.
 6. Use Cilium CNI and install cert-manager, MetalLB, and Traefik ingress.
 7. Install Longhorn or Rook/Ceph.
 8. Install CloudNativePG.
