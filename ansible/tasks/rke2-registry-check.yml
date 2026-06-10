@@ -1,4 +1,18 @@
 ---
+- name: Stop when placeholder proxy settings are still configured
+  ansible.builtin.fail:
+    msg: |
+      Placeholder proxy settings are configured for {{ inventory_hostname }}.
+
+      Replace proxy.example.com or <PLACEHOLDER> values with your real enterprise proxy, or unset proxy variables before running the registry check:
+
+      unset RKE2_HTTP_PROXY RKE2_HTTPS_PROXY RKE2_NO_PROXY HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
+      make rke2-registry-check
+  when: >-
+    ((rke2_http_proxy_effective | default('')) is search('proxy[.]example[.]com|<.*>')) or
+    ((rke2_https_proxy_effective | default('')) is search('proxy[.]example[.]com|<.*>')) or
+    ((rke2_no_proxy_effective | default('')) is search('<.*>'))
+
 - name: Check RKE2 registry TLS reachability
   ansible.builtin.shell: |
     set -o pipefail
