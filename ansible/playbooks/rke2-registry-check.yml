@@ -3,6 +3,7 @@
   hosts: rke2_servers
   become: true
   gather_facts: false
+  any_errors_fatal: true
   vars:
     rke2_registry_check_enabled_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_ENABLED') }}"
     rke2_registry_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_TIMEOUT') }}"
