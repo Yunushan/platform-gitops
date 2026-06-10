@@ -93,6 +93,17 @@ Fix firewall, proxy, DNS, MTU, TLS inspection, or internet egress from all three
 RKE2_REGISTRY_CHECK_ENABLED=false make rke2-install
 ```
 
+If nodes are registered but remain `NotReady` and Cilium pods show `Init:ImagePullBackOff`, check the Cilium pod events and image names. Depending on the chart image settings, the required registry may include `quay.io` as well as Docker Hub:
+
+```bash
+ansible -i inventory/hosts.local.ini node-1 -b -m shell -a '
+K=/var/lib/rancher/rke2/bin/kubectl
+C=/etc/rancher/rke2/rke2.yaml
+$K --kubeconfig "$C" -n kube-system get ds cilium -o jsonpath="{range .spec.template.spec.initContainers[*]}init:{.name}={.image}{\"\\n\"}{end}{range .spec.template.spec.containers[*]}container:{.name}={.image}{\"\\n\"}{end}"
+$K --kubeconfig "$C" -n kube-system describe pod -l k8s-app=cilium | sed -n "/Events:/,\$p"
+'
+```
+
 If the nodes must use an HTTP proxy for internet access, provide proxy settings through ignored local inventory or private environment variables:
 
 ```bash

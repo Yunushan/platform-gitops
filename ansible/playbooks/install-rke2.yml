@@ -46,7 +46,7 @@
     rke2_registry_check_enabled_effective: "{{ rke2_registry_check_enabled | default(rke2_registry_check_enabled_from_env, true) | default(true, true) | bool }}"
     rke2_registry_check_timeout_effective: "{{ rke2_registry_check_timeout | default(rke2_registry_check_timeout_from_env, true) | default(45, true) | int }}"
     rke2_registry_connect_timeout_effective: "{{ rke2_registry_connect_timeout | default(rke2_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
-    rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/'], true) }}"
+    rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/', 'https://quay.io/v2/'], true) }}"
     rke2_http_proxy_effective: "{{ rke2_http_proxy | default(rke2_http_proxy_from_env, true) }}"
     rke2_https_proxy_effective: "{{ rke2_https_proxy | default(rke2_https_proxy_from_env, true) }}"
     rke2_no_proxy_base: >-
@@ -526,19 +526,55 @@
             msg: "rke2-server did not become active within {{ rke2_start_timeout_effective }} seconds on {{ inventory_hostname }}."
 
     - name: Wait for all RKE2 nodes to report Ready
-      ansible.builtin.shell: |
-        set -o pipefail
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
-          awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
-      args:
-        executable: /bin/bash
-      register: rke2_all_nodes_ready
-      retries: "{{ (((rke2_start_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
-      delay: "{{ rke2_start_poll_interval_effective }}"
-      until: rke2_all_nodes_ready.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll all RKE2 nodes Ready
+          ansible.builtin.shell: |
+            set -o pipefail
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
+              awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
+          args:
+            executable: /bin/bash
+          register: rke2_all_nodes_ready
+          retries: "{{ (((rke2_start_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ rke2_start_poll_interval_effective }}"
+          until: rke2_all_nodes_ready.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect node readiness diagnostics
+          ansible.builtin.shell: |
+            echo "===== nodes ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide || true
+            echo "===== kube-system pods ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get pods -n kube-system -o wide || true
+            echo "===== cilium images ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system get ds cilium -o jsonpath='{range .spec.template.spec.initContainers[*]}init:{.name}={.image}{"\n"}{end}{range .spec.template.spec.containers[*]}container:{.name}={.image}{"\n"}{end}' || true
+            echo
+            echo "===== cilium pod descriptions ====="
+            for pod in $(/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system get pods -l k8s-app=cilium -o name 2>/dev/null); do
+              echo "--- ${pod} ---"
+              /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system describe "${pod}" | sed -n '/Init Containers:/,/Conditions:/p;/Events:/,$p' || true
+            done
+            echo "===== recent events ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get events -A --sort-by=.lastTimestamp | tail -120 || true
+          args:
+            executable: /bin/bash
+          register: rke2_node_readiness_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print node readiness diagnostics
+          ansible.builtin.debug:
+            var: rke2_node_readiness_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after node readiness failure
+          ansible.builtin.fail:
+            msg: "Not all RKE2 nodes became Ready within {{ rke2_start_timeout_effective }} seconds. Review Cilium/image-pull diagnostics above."
+          run_once: true
 
     - name: Show cluster nodes
       ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
