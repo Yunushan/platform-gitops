@@ -25,10 +25,57 @@
   loop_control:
     label: "{{ item.item }}"
 
+- name: Collect RKE2 registry failure diagnostics
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "===== proxy environment ====="
+    env | grep -Ei '^(http|https|no)_proxy=' || echo "proxy_env=not-set"
+    echo "===== time ====="
+    date -u
+    timedatectl status 2>/dev/null || true
+    echo "===== ca-certificates ====="
+    rpm -q ca-certificates 2>/dev/null || dpkg -l ca-certificates 2>/dev/null || true
+    echo "===== route ====="
+    ip route || true
+    ip route get 1.1.1.1 || true
+    echo "===== dns ====="
+    for url in {{ rke2_registry_check_urls_effective | join(' ') }}; do
+      host="$(printf '%s\n' "${url}" | sed -E 's#^[a-zA-Z]+://([^/:]+).*#\1#')"
+      echo "--- ${host} ---"
+      getent ahostsv4 "${host}" || true
+    done
+    echo "===== curl detail ====="
+    for url in {{ rke2_registry_check_urls_effective | join(' ') }}; do
+      echo "--- ${url} ---"
+      curl --ipv4 --silent --show-error --location --output /dev/null \
+        --write-out 'http_code=%{http_code} remote_ip=%{remote_ip} time_namelookup=%{time_namelookup} time_connect=%{time_connect} time_appconnect=%{time_appconnect} time_total=%{time_total}\n' \
+        --connect-timeout {{ rke2_registry_connect_timeout_effective }} \
+        --max-time {{ rke2_registry_check_timeout_effective }} \
+        "${url}" || true
+    done
+  args:
+    executable: /bin/bash
+  register: rke2_registry_failure_diagnostics
+  changed_when: false
+  failed_when: false
+  when: (rke2_registry_checks.results | selectattr('rc', 'ne', 0) | list | length) > 0
+
+- name: Print RKE2 registry failure diagnostics
+  ansible.builtin.debug:
+    var: rke2_registry_failure_diagnostics.stdout_lines
+  when: (rke2_registry_checks.results | selectattr('rc', 'ne', 0) | list | length) > 0
+
 - name: Stop when RKE2 registry connectivity is unhealthy
   ansible.builtin.fail:
     msg: |
       {{ inventory_hostname }} cannot reliably reach one or more RKE2 image registry endpoints.
+
+      Failed checks:
+      {% for result in rke2_registry_checks.results %}
+      {% if result.rc != 0 %}
+      - {{ result.item }}: {{ result.stdout | default(result.stderr | default('no output'), true) }}
+      {% endif %}
+      {% endfor %}
 
       RKE2 online bootstrap must pull Rancher control-plane images such as hardened-etcd and hardened-kubernetes.
       TLS handshake timeouts against Docker Hub usually mean firewall, proxy, DNS, MTU, packet inspection, or internet egress issues.
