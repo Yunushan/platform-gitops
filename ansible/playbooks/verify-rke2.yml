@@ -37,19 +37,54 @@
       run_once: true
 
     - name: Verify all expected nodes are Ready
-      ansible.builtin.shell: |
-        set -o pipefail
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
-          awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
-      args:
-        executable: /bin/bash
-      register: rke2_verify_nodes_ready
-      retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
-      delay: "{{ rke2_verify_poll_interval }}"
-      until: rke2_verify_nodes_ready.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll all expected nodes Ready
+          ansible.builtin.shell: |
+            set -o pipefail
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
+              awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
+          args:
+            executable: /bin/bash
+          register: rke2_verify_nodes_ready
+          retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ rke2_verify_poll_interval }}"
+          until: rke2_verify_nodes_ready.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect node readiness diagnostics
+          ansible.builtin.shell: |
+            echo "===== nodes ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide || true
+            echo "===== kube-system pods ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get pods -n kube-system -o wide || true
+            echo "===== cilium images ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system get ds cilium -o jsonpath='{range .spec.template.spec.initContainers[*]}init:{.name}={.image}{"\n"}{end}{range .spec.template.spec.containers[*]}container:{.name}={.image}{"\n"}{end}' || true
+            echo
+            echo "===== cilium pod events ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system describe pod -l k8s-app=cilium | sed -n '/Events:/,$p' || true
+            echo "===== coredns pod events ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system describe pod -l k8s-app=kube-dns | sed -n '/Events:/,$p' || true
+            echo "===== recent events ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get events -A --sort-by=.lastTimestamp | tail -120 || true
+          args:
+            executable: /bin/bash
+          register: rke2_verify_readiness_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print node readiness diagnostics
+          ansible.builtin.debug:
+            var: rke2_verify_readiness_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after node readiness verification failure
+          ansible.builtin.fail:
+            msg: "Not all RKE2 nodes became Ready within {{ rke2_verify_timeout_effective }} seconds. Review node, Cilium, CoreDNS, and event diagnostics above."
+          run_once: true
 
     - name: Show verified nodes
       ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide
