@@ -9,6 +9,7 @@
     rke2_api_dns_effective: "{{ rke2_api_dns | default('', true) }}"
     rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
     platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
     platform_ingress_hosts:
       - argocd
       - forgejo
@@ -87,6 +88,15 @@
           if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
             "$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o wide || true
           fi
+          nodeport="$("$K" --kubeconfig "$C" -n argocd get service {{ platform_argocd_bootstrap_service_name }} -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null || true)"
+          if [ -n "${nodeport}" ]; then
+            echo "Argo CD bootstrap NodePort URLs:"
+          {% for node in groups['rke2_servers'] %}
+            echo "  https://{{ hostvars[node].ansible_host }}:${nodeport}"
+          {% endfor %}
+          else
+            echo "Argo CD bootstrap NodePort is not exposed. Run: make platform-argocd-expose"
+          fi
           echo "Argo CD port-forward URL: https://127.0.0.1:8080"
           echo "Argo CD port-forward command: kubectl -n argocd port-forward svc/argocd-server 8080:443 --address 0.0.0.0"
           echo "Argo CD initial password command: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"
@@ -112,7 +122,12 @@
         ingress_count="$("$K" --kubeconfig "$C" get ingress -A --no-headers 2>/dev/null | wc -l | tr -d ' ')"
         traefik_ip="$("$K" --kubeconfig "$C" -n traefik get svc traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}' 2>/dev/null || true)"
         if [ "${ingress_count}" = "0" ]; then
-          echo "No GUI ingresses are deployed yet. API VIP is ready, but app pages are not published."
+          nodeport="$("$K" --kubeconfig "$C" -n argocd get service {{ platform_argocd_bootstrap_service_name }} -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null || true)"
+          if [ -n "${nodeport}" ]; then
+            echo "No platform ingress is deployed yet, but Argo CD is published through the bootstrap NodePort."
+          else
+            echo "No GUI ingresses are deployed yet. API VIP is ready, but app pages are not published."
+          fi
           echo "Next automation path:"
           echo "  make platform-argocd"
           echo "  PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd"

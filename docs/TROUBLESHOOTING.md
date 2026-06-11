@@ -18,6 +18,24 @@ To bootstrap Argo CD without manually copying commands:
 make platform-argocd
 ```
 
+`make platform-argocd` also exposes Argo CD through a temporary bootstrap NodePort. The default browser URL is `https://<NODE_1_IP>:30443`, and the same port works on every RKE2 node IP. To expose an already-installed Argo CD instance again:
+
+```bash
+make platform-argocd-expose
+```
+
+To use a different bootstrap port:
+
+```bash
+PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_HTTPS=31443 make platform-argocd-expose
+```
+
+After Traefik and MetalLB provide the real ingress URL, remove the temporary NodePort exposure:
+
+```bash
+make platform-argocd-unexpose
+```
+
 If Argo CD bootstrap fails with `metadata.annotations: Too long` for `applicationsets.argoproj.io`, rerun `make platform-argocd` after updating to this version of the playbook. The bootstrap uses server-side apply so large Argo CD CRDs are not stored in the client-side `last-applied` annotation.
 
 If the playbook is waiting at Argo CD rollout, it polls for up to 600 seconds by default and prints pod/event diagnostics plus a likely-cause summary on failure. To extend the wait for slow image pulls:

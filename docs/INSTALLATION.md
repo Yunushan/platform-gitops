@@ -200,10 +200,28 @@ To show the same report later without changing the cluster:
 make platform-status
 ```
 
-To install only Argo CD:
+To install only Argo CD and expose it through a temporary bootstrap NodePort:
 
 ```bash
 make platform-argocd
+```
+
+The default bootstrap Argo CD URL is:
+
+```text
+https://<NODE_1_IP>:30443
+```
+
+The same NodePort works through all three node IPs. To change the bootstrap HTTPS port:
+
+```bash
+PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_HTTPS=31443 make platform-argocd-expose
+```
+
+After Traefik and MetalLB are ready, prefer the platform ingress URL and remove the temporary bootstrap NodePort:
+
+```bash
+make platform-argocd-unexpose
 ```
 
 To register platform applications in Argo CD, first replace or privately render all placeholders in the selected GitOps profile. Then run:
