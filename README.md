@@ -38,7 +38,7 @@ A private-first platform workspace for building a **3-node RKE2 Kubernetes CI/CD
 Rocky Linux 10, 3 server nodes
 RKE2 Kubernetes with Cilium CNI
 Forgejo
-Woodpecker CI
+Woodpecker CI with HA server replicas and 3 Kubernetes agents
 Argo CD HA
 Harbor
 CloudNativePG PostgreSQL
@@ -108,7 +108,7 @@ make no-secrets
 |  server + etcd          server + etcd          server + etcd      |
 |  worker schedulable     worker schedulable     worker schedulable |
 |                                                                  |
-|  Forgejo/Gitea/GitLab   Woodpecker CI          Argo CD HA         |
+|  Forgejo/Gitea/GitLab   Woodpecker CI HA       Argo CD HA         |
 |  Harbor registry        CloudNativePG          Longhorn/Rook      |
 |  Prometheus/Grafana     Loki                   Velero             |
  ------------------------------------------------------------------
@@ -186,7 +186,7 @@ BSD and Solaris are supported as **operator/client workstations** for Git, SSH, 
 | Kubernetes | RKE2, 3 server nodes | Manual profile extension |
 | CNI | Cilium | Canal, Calico, Flannel where supported by RKE2 |
 | Git forge | Forgejo | Gitea, GitLab CE |
-| CI | Woodpecker CI | Gitea/Forgejo Actions, GitLab Runner profile |
+| CI | Woodpecker CI with HA server replicas and 3 Kubernetes agents | Gitea/Forgejo Actions, GitLab Runner profile |
 | CD / GitOps | Argo CD HA | Kept as required deployment engine |
 | Registry | Harbor | Forgejo/Gitea packages or GitLab registry profile |
 | Database | CloudNativePG PostgreSQL | External PostgreSQL profile |

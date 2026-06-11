@@ -13,7 +13,7 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 | CNI | Cilium |
 | API VIP | kube-vip default, HAProxy/Keepalived alternative |
 | Git forge | Forgejo |
-| CI | Woodpecker CI |
+| CI | Woodpecker CI with HA server replicas and distributed Kubernetes agents |
 | CD | Argo CD HA |
 | Registry | Harbor |
 | Database | CloudNativePG PostgreSQL |
@@ -43,6 +43,18 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 The premium profile is available at `profiles/premium-3node.yaml` and deploys from `gitops/clusters/rke2-main/premium-3node`.
 
 It keeps the same recommended stack and adds hardened values for storage, backups, observability, and HA dependencies.
+
+## CI/CD HA model
+
+The recommended platform keeps CI and CD separate:
+
+- Forgejo stores Git repositories and pull requests.
+- Woodpecker CI runs build, test, scan, sign, and image-publish workflows.
+- Argo CD deploys the desired Kubernetes state from GitOps repositories.
+
+In the 3-node profiles, Woodpecker is not intended to run as a single-node-only CI service. The chart values run multiple Woodpecker server replicas behind Kubernetes Service/Ingress and three Kubernetes agents so jobs can continue when one worker node is unavailable. Woodpecker HA requires shared PostgreSQL state and identical server secrets across replicas.
+
+Argo CD uses the HA profile. The premium profile runs multiple `argocd-server`, `argocd-repo-server`, and `argocd-applicationset-controller` replicas, with Redis HA enabled. Argo CD stores desired state in Kubernetes objects backed by RKE2 etcd, so the cluster's 3 server nodes provide the control-plane quorum.
 
 ## Security model
 

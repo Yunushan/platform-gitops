@@ -13,6 +13,8 @@ The premium profile keeps the compact 3-node RKE2 footprint, but uses stricter d
 | Storage | Minimal Longhorn values | Longhorn storage classes and backup target placeholders |
 | Registry | Basic Harbor values | Harbor HA values with external PostgreSQL, Redis, and object storage placeholders |
 | Database | CloudNativePG operator only | CloudNativePG operator plus a 3-instance cluster example with WAL archive |
+| CI | Woodpecker CI | Woodpecker server replicas plus 3 Kubernetes agents |
+| CD / GitOps | Argo CD HA | Argo CD HA with multi-replica server, repo server, ApplicationSet, and Redis HA |
 | Backups | Velero placeholders | Velero schedule, CSI snapshot, and off-cluster object storage placeholders |
 | Observability | Minimal values | HA Prometheus, Alertmanager, Grafana, Loki, and service monitors |
 | Security | Optional policy examples | Additional NetworkPolicy and Kyverno examples |
@@ -53,6 +55,26 @@ Required private inputs include:
 - Forgejo database, Redis, and repository backup settings.
 - Woodpecker OAuth and agent settings.
 - Grafana, Prometheus, and Loki storage sizes.
+
+## CI/CD high availability
+
+The premium profile keeps Forgejo as the Git forge and uses Woodpecker plus Argo CD for CI/CD. Forgejo may remain single-replica until repository storage, SSH access, and restore procedures are proven, but that does not mean CI/CD is single-node.
+
+Woodpecker is configured for the 3-node cluster with:
+
+- `server.replicas: 2` for the Woodpecker web/API service.
+- `agent.replicas: 3` for Kubernetes-backed build agents.
+- PostgreSQL-backed state through `WOODPECKER_DATABASE_DRIVER=postgres`.
+- Traefik ingress at `woodpecker.<PLATFORM_DOMAIN>`.
+
+Argo CD HA is configured with:
+
+- `server.replicas: 3` in the premium values.
+- `repoServer.replicas: 3` in the premium values.
+- `applicationSet.replicas: 2`.
+- `redis-ha.enabled: true`.
+
+With the 3 RKE2 server nodes healthy, these services are scheduled across the cluster and continue operating through a single-node failure, assuming storage, database, DNS, ingress VIP, and off-cluster backups are correctly configured.
 
 ## Storage stance
 
