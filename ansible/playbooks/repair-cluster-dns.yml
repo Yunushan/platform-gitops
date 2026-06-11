@@ -188,6 +188,7 @@
                         REPO_INDEX="${REPO_URL%/}/index.yaml"
                         REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
                         PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                        DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
                         run_bounded() {
                           seconds="$1"
                           shift
@@ -201,10 +202,17 @@
                         cat /etc/resolv.conf
                         echo "===== repository host ====="
                         printf '%s\n' "${REPO_HOST}"
+                        echo "===== configured CoreDNS upstreams ====="
+                        printf '%s\n' "${DNS_UPSTREAMS}"
                         echo "===== IPv4 resolution ====="
                         (getent ahostsv4 "${REPO_HOST}" || nslookup "${REPO_HOST}" || true)
                         echo "===== IPv6 resolution ====="
                         (getent ahostsv6 "${REPO_HOST}" || true)
+                        echo "===== direct upstream DNS checks ====="
+                        for dns in ${DNS_UPSTREAMS}; do
+                          echo "--- ${dns} ---"
+                          run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}" || true
+                        done
                         echo "===== repository HTTPS index probe ====="
                         if command -v curl >/dev/null 2>&1; then
                           run_bounded "${PROBE_TIMEOUT}" curl --fail --silent --show-error --location \
@@ -442,6 +450,7 @@
                             REPO_INDEX="${REPO_URL%/}/index.yaml"
                             REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
                             PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                            DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
                             run_bounded() {
                               seconds="$1"
                               shift
@@ -455,10 +464,17 @@
                             cat /etc/resolv.conf
                             echo "===== repository host ====="
                             printf '%s\n' "${REPO_HOST}"
+                            echo "===== configured CoreDNS upstreams ====="
+                            printf '%s\n' "${DNS_UPSTREAMS}"
                             echo "===== IPv4 resolution ====="
                             (getent ahostsv4 "${REPO_HOST}" || nslookup "${REPO_HOST}" || true)
                             echo "===== IPv6 resolution ====="
                             (getent ahostsv6 "${REPO_HOST}" || true)
+                            echo "===== direct upstream DNS checks ====="
+                            for dns in ${DNS_UPSTREAMS}; do
+                              echo "--- ${dns} ---"
+                              run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}" || true
+                            done
                             echo "===== repository HTTPS index probe ====="
                             if command -v curl >/dev/null 2>&1; then
                               run_bounded "${PROBE_TIMEOUT}" curl --fail --silent --show-error --location \
@@ -495,6 +511,35 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Collect cluster DNS diagnostics after failed repair
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== selected CoreDNS upstreams ====="
+            printf '%s\n' "{{ platform_dns_upstreams_effective }}"
+            echo "===== ignored Kubernetes DNS service IPs ====="
+            printf '%s\n' "{{ platform_cluster_dns_service_ips_list | join(' ') }}"
+            echo "===== CoreDNS service/endpoints ====="
+            "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice -l k8s-app=kube-dns -o wide || true
+            "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice | grep -E 'coredns|kube-dns|NAME' || true
+            echo "===== CoreDNS pods ====="
+            "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns -o wide || true
+            echo "===== CoreDNS logs ====="
+            "$K" --kubeconfig "$C" -n kube-system logs -l k8s-app=kube-dns --tail=220 || true
+            echo "===== CoreDNS Corefile ====="
+            "$K" --kubeconfig "$C" -n kube-system get configmap {{ platform_coredns_configmap }} -o jsonpath='{.data.Corefile}' || true
+            echo
+            echo "===== DNS check job events ====="
+            "$K" --kubeconfig "$C" -n kube-system describe job {{ platform_dns_check_job_name }} || true
+          args:
+            executable: /bin/bash
+          register: platform_dns_diagnostics_after_failed_repair
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_dns_check_after.rc != 0
+
         - name: Stop when cluster DNS still fails after repair
           ansible.builtin.fail:
             msg: |
@@ -507,6 +552,9 @@
               The post-repair failure was:
               {{ platform_dns_check_after.stdout }}
               {{ platform_dns_check_after.stderr }}
+
+              Post-repair CoreDNS diagnostics were:
+              {{ platform_dns_diagnostics_after_failed_repair.stdout | default('not collected') }}
 
               Set explicit DNS servers and retry:
               PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
