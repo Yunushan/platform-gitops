@@ -112,6 +112,8 @@ If Helm logs show `lookup ... on ...:53: i/o timeout`, pod DNS cannot resolve ex
 make platform-dns-repair
 ```
 
+The repair excludes Kubernetes DNS service IPs from CoreDNS upstream candidates. If a node resolver points back to the cluster DNS service, forwarding CoreDNS to that address creates a DNS loop and pod lookups will time out.
+
 To force explicit CoreDNS upstreams:
 
 ```bash
