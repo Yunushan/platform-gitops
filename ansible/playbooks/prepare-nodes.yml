@@ -73,6 +73,7 @@
       - 4240/tcp
       - 4244/tcp
       - 8472/udp
+      - 6081/udp
       - 30000-32767/tcp
       - 30000-32767/udp
     rke2_core_kernel_modules:
@@ -174,6 +175,8 @@
         mode: "0644"
         content: |
           net.ipv4.ip_forward=1
+          net.ipv4.conf.all.rp_filter=0
+          net.ipv4.conf.default.rp_filter=0
           net.bridge.bridge-nf-call-iptables=1
           net.bridge.bridge-nf-call-ip6tables=1
           fs.inotify.max_user_instances=8192

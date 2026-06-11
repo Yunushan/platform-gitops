@@ -72,7 +72,7 @@ Recommended Ansible flow:
 make rke2-install
 ```
 
-`make rke2-install` runs preflight, node preparation, and registry egress checks before installing RKE2. On Rocky Linux 10 and other RHEL 10-compatible nodes, preparation installs `kernel-modules-extra`, loads `nf_conntrack`, disables swap, applies Kubernetes sysctls, opens required firewalld ports, and configures NetworkManager to ignore CNI interfaces.
+`make rke2-install` runs preflight, node preparation, and registry egress checks before installing RKE2. On Rocky Linux 10 and other RHEL 10-compatible nodes, preparation installs `kernel-modules-extra`, loads `nf_conntrack`, disables swap, applies Kubernetes sysctls, disables reverse-path filtering for CNI traffic, opens required firewalld ports including Cilium VXLAN/Geneve overlay ports, and configures NetworkManager to ignore CNI interfaces.
 
 To check image registry egress without reinstalling:
 

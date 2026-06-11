@@ -22,6 +22,13 @@
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
+    platform_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-cni-dns-service-path.conf
+    platform_dns_service_path_firewalld_ports:
+      - 4240/tcp
+      - 4244/tcp
+      - 8472/udp
+      - 6081/udp
+      - 10250/tcp
     platform_coredns_configmap: rke2-coredns-rke2-coredns
     platform_coredns_deployment: rke2-coredns-rke2-coredns
   tasks:
@@ -576,6 +583,7 @@
                             REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
                             PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
                             DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
+                            KUBE_DNS_SERVICE_IPS='{{ platform_cluster_dns_service_ips_list | join(' ') }}'
                             run_bounded() {
                               seconds="$1"
                               shift
@@ -593,6 +601,14 @@
                             else
                               default_ok=false
                             fi
+                            echo "===== explicit Kubernetes DNS service IP checks ====="
+                            service_ip_ok=false
+                            for dns in ${KUBE_DNS_SERVICE_IPS}; do
+                              echo "--- ${dns} ---"
+                              if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                                service_ip_ok=true
+                              fi
+                            done
                             echo "===== direct upstream DNS checks ====="
                             direct_ok=false
                             for dns in ${DNS_UPSTREAMS}; do
@@ -602,6 +618,7 @@
                               fi
                             done
                             echo "PLATFORM_DNS_DEFAULT_RESOLUTION=${default_ok}"
+                            echo "PLATFORM_DNS_SERVICE_IP_RESOLUTION=${service_ip_ok}"
                             echo "PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=${direct_ok}"
           register: platform_dns_service_path_check
           changed_when: false
@@ -612,13 +629,81 @@
         - name: Detect Kubernetes DNS service path state
           ansible.builtin.set_fact:
             platform_dns_default_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DEFAULT_RESOLUTION=true') }}"
+            platform_dns_service_ip_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_SERVICE_IP_RESOLUTION=true') }}"
             platform_dns_direct_upstream_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=true') }}"
           run_once: true
 
-        - name: Repair Kubernetes DNS service path when upstreams work directly
+        - name: Write CNI DNS service path sysctl repair on all nodes
+          ansible.builtin.copy:
+            dest: "{{ platform_dns_service_path_sysctl_file }}"
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              net.ipv4.ip_forward=1
+              net.ipv4.conf.all.rp_filter=0
+              net.ipv4.conf.default.rp_filter=0
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+
+        - name: Apply CNI DNS service path sysctl repair on all nodes
+          ansible.builtin.command: sysctl --system
+          changed_when: false
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+
+        - name: Check firewalld state for DNS service path repair
+          ansible.builtin.command: firewall-cmd --state
+          register: platform_dns_service_path_firewalld_state
+          changed_when: false
+          failed_when: false
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+
+        - name: Query CNI DNS service path firewalld ports
+          ansible.builtin.command: "firewall-cmd --permanent --query-port={{ item }}"
+          register: platform_dns_service_path_firewalld_port_queries
+          changed_when: false
+          failed_when: false
+          loop: "{{ platform_dns_service_path_firewalld_ports }}"
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+
+        - name: Open CNI DNS service path firewalld ports
+          ansible.builtin.command: "firewall-cmd --permanent --add-port={{ item.item }}"
+          register: platform_dns_service_path_firewalld_open
+          changed_when: true
+          loop: "{{ platform_dns_service_path_firewalld_port_queries.results | default([]) }}"
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+            - item.rc != 0
+
+        - name: Reload firewalld after CNI DNS service path repair
+          ansible.builtin.command: firewall-cmd --reload
+          changed_when: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - platform_dns_service_path_firewalld_open is defined
+            - (platform_dns_service_path_firewalld_open.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
+
+        - name: Repair Kubernetes DNS service path components
           ansible.builtin.shell: |
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
+            echo "===== DNS service path before repair ====="
+            "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice -l k8s-app=kube-dns -o wide || true
+            "$K" --kubeconfig "$C" -n kube-system get ds,pods -o wide |
+              grep -E 'NAME|coredns|kube-proxy|cilium' || true
+            echo "===== Cilium config ====="
+            "$K" --kubeconfig "$C" -n kube-system get configmap cilium-config -o yaml 2>/dev/null || true
             echo "===== DNS service path repair: kube-proxy ====="
             if "$K" --kubeconfig "$C" -n kube-system get daemonset kube-proxy >/dev/null 2>&1; then
               "$K" --kubeconfig "$C" -n kube-system rollout restart daemonset/kube-proxy || true
@@ -653,7 +738,6 @@
           when:
             - platform_dns_service_path_repair_effective | bool
             - not (platform_dns_default_resolution_ok | bool)
-            - platform_dns_direct_upstream_resolution_ok | bool
 
         - name: Print Kubernetes DNS service path repair output
           ansible.builtin.debug:
@@ -789,6 +873,16 @@
             echo "===== CoreDNS service/endpoints ====="
             "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice -l k8s-app=kube-dns -o wide || true
             "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice | grep -E 'coredns|kube-dns|NAME' || true
+            echo "===== DNS service path check job logs ====="
+            "$K" --kubeconfig "$C" -n kube-system logs -l job-name={{ platform_dns_service_path_job_name }} --tail=240 || true
+            echo "===== DNS service path repair output ====="
+            cat <<'PLATFORM_DNS_SERVICE_PATH_REPAIR_OUTPUT'
+            {{ platform_dns_service_path_repair.stdout | default('repair task did not run') }}
+            PLATFORM_DNS_SERVICE_PATH_REPAIR_OUTPUT
+            echo "===== kube-proxy and Cilium workloads ====="
+            "$K" --kubeconfig "$C" -n kube-system get ds,pods -o wide | grep -E 'NAME|kube-proxy|cilium|coredns' || true
+            echo "===== Cilium config ====="
+            "$K" --kubeconfig "$C" -n kube-system get configmap cilium-config -o yaml 2>/dev/null || true
             echo "===== CoreDNS pods ====="
             "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns -o wide || true
             echo "===== CoreDNS logs ====="
@@ -823,7 +917,17 @@
               Post-repair CoreDNS diagnostics were:
               {{ platform_dns_diagnostics_after_failed_repair.stdout | default('not collected') }}
 
-              Set explicit DNS servers and retry:
+              If direct upstream DNS checks succeed but Kubernetes DNS service IP
+              checks fail, the remaining problem is cluster service or pod-to-pod
+              networking, not upstream DNS. This playbook already attempted the
+              automatic service-path repair: CNI sysctls, firewalld overlay ports,
+              kube-proxy, Cilium, and CoreDNS restart.
+
+              To re-run the full host preparation and retry:
+              make rke2-prepare
+              make platform-ingress
+
+              If no upstream DNS checks succeed, set explicit DNS servers and retry:
               PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
 
               If the output shows successful resolution but the HTTPS index probe

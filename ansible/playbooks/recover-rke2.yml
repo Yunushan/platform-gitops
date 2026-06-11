@@ -46,6 +46,7 @@
       - 4240/tcp
       - 4244/tcp
       - 8472/udp
+      - 6081/udp
       - 30000-32767/tcp
       - 30000-32767/udp
     rke2_core_kernel_modules:

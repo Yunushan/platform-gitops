@@ -114,7 +114,7 @@ make platform-dns-repair
 
 The repair excludes Kubernetes DNS service IPs from CoreDNS upstream candidates. If a node resolver points back to the cluster DNS service, forwarding CoreDNS to that address creates a DNS loop and pod lookups will time out. The playbook also tests discovered upstream candidates from inside a pod and configures CoreDNS only with candidates that resolve the chart repository from the cluster network.
 
-If direct upstream DNS works from pods but Kubernetes DNS service lookups still time out, the repair restarts the DNS service path components by default: kube-proxy when present, Cilium, and CoreDNS. To disable that bootstrap repair step:
+If direct upstream DNS works from pods but Kubernetes DNS service lookups still time out, the problem is the Kubernetes DNS service path rather than the upstream resolver. The repair now applies the CNI service-path host prerequisites on all nodes, including reverse-path-filter sysctls and Cilium VXLAN/Geneve firewalld ports, then restarts kube-proxy when present, Cilium, and CoreDNS. To disable that bootstrap repair step:
 
 ```bash
 PLATFORM_DNS_SERVICE_PATH_REPAIR=false make platform-ingress
@@ -208,7 +208,7 @@ make rke2-install
 ```
 
 The playbook runs the package installer asynchronously, polls progress, starts `rke2-server` without blocking Ansible output, verifies service readiness, and prints diagnostics if install or startup exceeds the timeout.
-The `rke2-install` target also runs preflight and node preparation first, including Rocky/RHEL 10 `kernel-modules-extra`, kernel modules, swap disablement, sysctls, firewalld ports, and NetworkManager CNI handling.
+The `rke2-install` target also runs preflight and node preparation first, including Rocky/RHEL 10 `kernel-modules-extra`, kernel modules, swap disablement, CNI sysctls, Cilium overlay firewalld ports, and NetworkManager CNI handling.
 
 Collect current process, service, journal, disk, and memory diagnostics:
 
