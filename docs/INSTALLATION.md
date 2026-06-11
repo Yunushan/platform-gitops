@@ -248,6 +248,12 @@ make platform-ingress
 make platform-status
 ```
 
+To limit ingress rollout waiting, set the timeout in seconds:
+
+```bash
+PLATFORM_INGRESS_ROLLOUT_TIMEOUT=180 make platform-ingress
+```
+
 `make platform-ingress` installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies the route, and removes the temporary Argo CD NodePort exposure.
 
 `make platform-status` prints the expected GUI URLs, including `argocd`, `forgejo`, `harbor`, `woodpecker`, `grafana`, and `prometheus` under your configured platform domain. For browser access from Windows, create equivalent Windows hosts-file or internal DNS records pointing those names at `rke2_ingress_vip`.

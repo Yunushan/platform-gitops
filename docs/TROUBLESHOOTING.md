@@ -82,6 +82,18 @@ make platform-status
 
 This installs MetalLB and Traefik through the RKE2 Helm controller, applies the configured app VIP, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies it on 443, and removes the temporary Argo CD NodePort exposure.
 
+To shorten a MetalLB or Traefik wait while testing:
+
+```bash
+PLATFORM_INGRESS_ROLLOUT_TIMEOUT=180 make platform-ingress
+```
+
+To wait longer on slow chart/image pulls:
+
+```bash
+PLATFORM_INGRESS_ROLLOUT_TIMEOUT=1200 make platform-ingress
+```
+
 ## API VIP or API DNS does not answer
 
 If all RKE2 nodes are `Ready` but the VIP or API DNS fails:

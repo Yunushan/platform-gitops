@@ -10,8 +10,13 @@
     platform_argocd_host: "argocd.{{ platform_domain_effective }}"
     platform_metallb_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_CHART_VERSION') }}"
     platform_traefik_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_VERSION') }}"
+    platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
+    platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_metallb_chart_version_effective: "{{ platform_metallb_chart_version | default(platform_metallb_chart_version_from_env, true) }}"
     platform_traefik_chart_version_effective: "{{ platform_traefik_chart_version | default(platform_traefik_chart_version_from_env, true) }}"
+    platform_ingress_rollout_timeout_effective: "{{ platform_ingress_rollout_timeout | default(platform_ingress_rollout_timeout_from_env, true) | default('600', true) | string | regex_replace('s$', '') | int }}"
+    platform_ingress_poll_interval_effective: "{{ platform_ingress_poll_interval | default(platform_ingress_poll_interval_from_env, true) | default(10, true) | int }}"
+    platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
     platform_ingress_firewalld_ports:
       - 80/tcp
@@ -24,7 +29,16 @@
           - not (rke2_ingress_vip_effective is match("^<.*>$"))
           - platform_domain_effective | length > 0
           - not (platform_domain_effective is match("^<.*>$"))
+          - platform_ingress_rollout_timeout_effective > 0
+          - platform_ingress_poll_interval_effective > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
+      run_once: true
+
+    - name: Show platform ingress wait settings
+      ansible.builtin.debug:
+        msg: >-
+          Platform ingress rollout timeout is {{ platform_ingress_rollout_timeout_effective }}s
+          with {{ platform_ingress_poll_interval_effective }}s polling.
       run_once: true
 
     - name: Check firewalld state
@@ -99,16 +113,59 @@
       run_once: true
 
     - name: Wait for MetalLB CRDs
-      ansible.builtin.command: >-
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-        get crd ipaddresspools.metallb.io l2advertisements.metallb.io
-      register: platform_metallb_crds
-      retries: 60
-      delay: 10
-      until: platform_metallb_crds.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll MetalLB CRDs
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            get crd ipaddresspools.metallb.io l2advertisements.metallb.io
+          register: platform_metallb_crds
+          retries: "{{ platform_ingress_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_metallb_crds.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect MetalLB install diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== HelmChart resources ====="
+            "$K" --kubeconfig "$C" -n kube-system get helmchart,helmchartconfig 2>/dev/null | grep -E 'platform-metallb|NAME' || true
+            echo "===== kube-system Helm jobs/pods ====="
+            "$K" --kubeconfig "$C" -n kube-system get jobs,pods -o wide | grep -E 'helm-install|platform-metallb|metallb|NAME' || true
+            echo "===== MetalLB namespace ====="
+            "$K" --kubeconfig "$C" get ns metallb-system -o wide || true
+            echo "===== MetalLB pods ====="
+            "$K" --kubeconfig "$C" -n metallb-system get pods -o wide || true
+            echo "===== Recent events ====="
+            "$K" --kubeconfig "$C" get events -A --sort-by=.lastTimestamp |
+              grep -E 'platform-metallb|metallb|helm|Failed|BackOff|ErrImagePull|ImagePullBackOff' | tail -120 || true
+          args:
+            executable: /bin/bash
+          register: platform_metallb_crd_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print MetalLB install diagnostics
+          ansible.builtin.debug:
+            var: platform_metallb_crd_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after MetalLB CRD timeout
+          ansible.builtin.fail:
+            msg: |
+              MetalLB CRDs did not appear within {{ platform_ingress_rollout_timeout_effective }}s.
+
+              To shorten or extend this wait:
+              PLATFORM_INGRESS_ROLLOUT_TIMEOUT=180 make platform-ingress
+              PLATFORM_INGRESS_ROLLOUT_TIMEOUT=1200 make platform-ingress
+
+              Review the diagnostics above. Common causes are Helm chart download failure,
+              registry/network/proxy issues, or an RKE2 Helm controller failure.
+          run_once: true
 
     - name: Wait for MetalLB controller
       ansible.builtin.shell: |
@@ -117,7 +174,7 @@
         C=/etc/rancher/rke2/rke2.yaml
         for deployment in platform-metallb-controller metallb-controller; do
           if "$K" --kubeconfig "$C" -n metallb-system get "deployment/${deployment}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n metallb-system rollout status "deployment/${deployment}" --timeout=10s
+            "$K" --kubeconfig "$C" -n metallb-system rollout status "deployment/${deployment}" --timeout={{ platform_ingress_poll_interval_effective }}s
             exit 0
           fi
         done
@@ -126,8 +183,8 @@
       args:
         executable: /bin/bash
       register: platform_metallb_controller_rollout
-      retries: 60
-      delay: 10
+      retries: "{{ platform_ingress_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
       until: platform_metallb_controller_rollout.rc == 0
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
@@ -140,7 +197,7 @@
         C=/etc/rancher/rke2/rke2.yaml
         for daemonset in platform-metallb-speaker metallb-speaker; do
           if "$K" --kubeconfig "$C" -n metallb-system get "daemonset/${daemonset}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n metallb-system rollout status "daemonset/${daemonset}" --timeout=10s
+            "$K" --kubeconfig "$C" -n metallb-system rollout status "daemonset/${daemonset}" --timeout={{ platform_ingress_poll_interval_effective }}s
             exit 0
           fi
         done
@@ -149,8 +206,8 @@
       args:
         executable: /bin/bash
       register: platform_metallb_speaker_rollout
-      retries: 60
-      delay: 10
+      retries: "{{ platform_ingress_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
       until: platform_metallb_speaker_rollout.rc == 0
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
@@ -264,7 +321,7 @@
         C=/etc/rancher/rke2/rke2.yaml
         for deployment in platform-traefik traefik; do
           if "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n traefik rollout status "deployment/${deployment}" --timeout=10s
+            "$K" --kubeconfig "$C" -n traefik rollout status "deployment/${deployment}" --timeout={{ platform_ingress_poll_interval_effective }}s
             exit 0
           fi
         done
@@ -273,8 +330,8 @@
       args:
         executable: /bin/bash
       register: platform_traefik_rollout
-      retries: 60
-      delay: 10
+      retries: "{{ platform_ingress_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
       until: platform_traefik_rollout.rc == 0
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
@@ -298,8 +355,8 @@
       args:
         executable: /bin/bash
       register: platform_traefik_vip
-      retries: 60
-      delay: 10
+      retries: "{{ platform_ingress_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
       until: platform_traefik_vip.rc == 0
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
@@ -337,10 +394,10 @@
     - name: Wait for Argo CD server after restart
       ansible.builtin.command: >-
         /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-        -n argocd rollout status deployment/argocd-server --timeout=10s
+        -n argocd rollout status deployment/argocd-server --timeout={{ platform_ingress_poll_interval_effective }}s
       register: platform_argocd_server_rollout
-      retries: 60
-      delay: 10
+      retries: "{{ platform_ingress_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
       until: platform_argocd_server_rollout.rc == 0
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
@@ -400,8 +457,8 @@
       args:
         executable: /bin/bash
       register: platform_argocd_ingress_check
-      retries: 30
-      delay: 10
+      retries: "{{ platform_ingress_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
       until: platform_argocd_ingress_check.rc == 0
       changed_when: false
 
