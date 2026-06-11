@@ -184,7 +184,13 @@
 
         - name: Stop after Argo CD bootstrap failure
           ansible.builtin.fail:
-            msg: "Argo CD did not become available within {{ platform_argocd_rollout_timeout_effective }}s. Review diagnostics above."
+            msg: |
+              Argo CD did not become available within {{ platform_argocd_rollout_timeout_effective }}s.
+
+              Review the diagnostics above. To collect the live state again without changing the cluster, run:
+              make platform-argocd-diagnose
+
+              Common causes are slow/blocked image pulls, registry egress/proxy issues, insufficient node resources, or pods waiting on scheduling.
           run_once: true
 
     - name: Show skipped GitOps application registration

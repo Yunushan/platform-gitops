@@ -1,0 +1,127 @@
+---
+- name: Diagnose Argo CD bootstrap and rollout state
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_argocd_registry_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_REGISTRY_CONNECT_TIMEOUT') }}"
+    platform_argocd_registry_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_REGISTRY_TIMEOUT') }}"
+    platform_argocd_registry_connect_timeout_effective: "{{ platform_argocd_registry_connect_timeout | default(platform_argocd_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
+    platform_argocd_registry_timeout_effective: "{{ platform_argocd_registry_timeout | default(platform_argocd_registry_timeout_from_env, true) | default(25, true) | int }}"
+  tasks:
+    - name: Collect Argo CD diagnostics
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        CONNECT_TIMEOUT={{ platform_argocd_registry_connect_timeout_effective }}
+        MAX_TIMEOUT={{ platform_argocd_registry_timeout_effective }}
+
+        echo "===== argocd namespace ====="
+        "$K" --kubeconfig "$C" get namespace argocd -o wide || true
+        echo
+
+        echo "===== argocd workloads ====="
+        "$K" --kubeconfig "$C" -n argocd get deployment,statefulset,replicaset,pods -o wide || true
+        echo
+
+        echo "===== argocd services ====="
+        "$K" --kubeconfig "$C" -n argocd get svc -o wide || true
+        echo
+
+        echo "===== argocd applications/crds ====="
+        "$K" --kubeconfig "$C" get crd | grep -E 'argoproj|NAME' || true
+        "$K" --kubeconfig "$C" -n argocd get applications.argoproj.io,appprojects.argoproj.io -o wide 2>/dev/null || true
+        echo
+
+        echo "===== argocd pod images ====="
+        "$K" --kubeconfig "$C" -n argocd get pods -o jsonpath='{range .items[*]}pod:{.metadata.name}{"\n"}{range .spec.initContainers[*]}  init:{.name}={.image}{"\n"}{end}{range .spec.containers[*]}  container:{.name}={.image}{"\n"}{end}{end}' || true
+        echo
+
+        echo "===== argocd pod status and events ====="
+        for pod in $("$K" --kubeconfig "$C" -n argocd get pods -o name 2>/dev/null); do
+          echo "--- ${pod} ---"
+          "$K" --kubeconfig "$C" -n argocd describe "${pod}" | sed -n '/Init Containers:/,/Conditions:/p;/Containers:/,/Conditions:/p;/Events:/,$p' || true
+        done
+        echo
+
+        echo "===== recent argocd logs ====="
+        for pod in $("$K" --kubeconfig "$C" -n argocd get pods -o name 2>/dev/null); do
+          echo "--- ${pod} current logs ---"
+          "$K" --kubeconfig "$C" -n argocd logs "${pod}" --all-containers --tail=80 || true
+          echo "--- ${pod} previous logs ---"
+          "$K" --kubeconfig "$C" -n argocd logs "${pod}" --all-containers --previous --tail=80 || true
+        done
+        echo
+
+        echo "===== recent argocd events ====="
+        "$K" --kubeconfig "$C" -n argocd get events --sort-by=.lastTimestamp | tail -160 || true
+        echo
+
+        echo "===== likely image registry endpoints ====="
+        images="$("$K" --kubeconfig "$C" -n argocd get pods -o jsonpath='{range .items[*]}{range .spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null | sort -u || true)"
+        printf '%s\n' "${images}" | sed '/^$/d' || true
+        echo
+
+        registries="$(
+          printf '%s\n' "${images}" |
+            awk -F/ '
+              NF == 1 { print "registry-1.docker.io"; print "auth.docker.io"; print "production.cloudflare.docker.com"; next }
+              $1 !~ /[.:]/ { print "registry-1.docker.io"; print "auth.docker.io"; print "production.cloudflare.docker.com"; next }
+              { print $1 }
+            ' |
+            sort -u
+        )"
+
+        echo "===== registry reachability from first server ====="
+        if [ -z "${registries}" ]; then
+          echo "No pod images found yet."
+        fi
+        for registry in ${registries}; do
+          case "${registry}" in
+            registry-1.docker.io|docker.io|index.docker.io)
+              urls="https://registry-1.docker.io/v2/ https://auth.docker.io/token https://production.cloudflare.docker.com/"
+              ;;
+            auth.docker.io)
+              urls="https://auth.docker.io/token"
+              ;;
+            production.cloudflare.docker.com)
+              urls="https://production.cloudflare.docker.com/"
+              ;;
+            quay.io)
+              urls="https://quay.io/v2/"
+              ;;
+            ghcr.io)
+              urls="https://ghcr.io/v2/"
+              ;;
+            public.ecr.aws)
+              urls="https://public.ecr.aws/v2/"
+              ;;
+            registry.k8s.io)
+              urls="https://registry.k8s.io/v2/"
+              ;;
+            *)
+              urls="https://${registry}/v2/"
+              ;;
+          esac
+          for url in ${urls}; do
+            echo "--- ${url} ---"
+            curl --silent --show-error --location --output /dev/null \
+              --write-out 'http_code=%{http_code} remote_ip=%{remote_ip} time_connect=%{time_connect} time_appconnect=%{time_appconnect} time_total=%{time_total}\n' \
+              --connect-timeout "${CONNECT_TIMEOUT}" \
+              --max-time "${MAX_TIMEOUT}" \
+              "${url}" || true
+          done
+        done
+      args:
+        executable: /bin/bash
+      register: platform_argocd_diagnose
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Argo CD diagnostics
+      ansible.builtin.debug:
+        var: platform_argocd_diagnose.stdout_lines
+      run_once: true

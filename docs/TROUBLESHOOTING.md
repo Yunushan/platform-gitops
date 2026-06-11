@@ -26,6 +26,14 @@ If the playbook is waiting at Argo CD rollout, it polls for up to 600 seconds by
 PLATFORM_ARGOCD_ROLLOUT_TIMEOUT=1200 make platform-argocd
 ```
 
+After an Argo CD timeout, collect the live state again without changing the cluster:
+
+```bash
+make platform-argocd-diagnose
+```
+
+The diagnostic target prints pods, workloads, services, CRDs, images, pod events/details, recent logs, recent events, and registry reachability checks for the image registries detected in Argo CD pods.
+
 To register platform applications, provide the repository URL and explicitly allow GitOps app registration:
 
 ```bash
