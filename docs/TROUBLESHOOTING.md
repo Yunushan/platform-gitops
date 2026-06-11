@@ -18,6 +18,8 @@ To bootstrap Argo CD without manually copying commands:
 make platform-argocd
 ```
 
+If Argo CD bootstrap fails with `metadata.annotations: Too long` for `applicationsets.argoproj.io`, rerun `make platform-argocd` after updating to this version of the playbook. The bootstrap uses server-side apply so large Argo CD CRDs are not stored in the client-side `last-applied` annotation.
+
 To register platform applications, provide the repository URL and explicitly allow GitOps app registration:
 
 ```bash

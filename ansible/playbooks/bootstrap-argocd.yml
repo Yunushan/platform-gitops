@@ -47,13 +47,52 @@
       run_once: true
 
     - name: Apply Argo CD HA bootstrap manifest
-      ansible.builtin.command: >-
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-        apply -n argocd -f {{ platform_argocd_manifest_url_effective }}
-      register: platform_argocd_apply
-      changed_when: "'created' in platform_argocd_apply.stdout or 'configured' in platform_argocd_apply.stdout"
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Apply Argo CD HA bootstrap manifest with server-side apply
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            apply --server-side --force-conflicts --field-manager=platform-gitops-bootstrap
+            -n argocd -f {{ platform_argocd_manifest_url_effective }}
+          register: platform_argocd_apply
+          changed_when: >-
+            'created' in platform_argocd_apply.stdout or
+            'configured' in platform_argocd_apply.stdout or
+            'serverside-applied' in platform_argocd_apply.stdout
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect Argo CD manifest apply diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== argocd namespace resources ====="
+            "$K" --kubeconfig "$C" -n argocd get all || true
+            echo "===== argocd CRDs ====="
+            "$K" --kubeconfig "$C" get crd | grep -E 'argoproj|NAME' || true
+          args:
+            executable: /bin/bash
+          register: platform_argocd_apply_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print Argo CD manifest apply diagnostics
+          ansible.builtin.debug:
+            var: platform_argocd_apply_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after Argo CD manifest apply failure
+          ansible.builtin.fail:
+            msg: |
+              Argo CD bootstrap manifest apply failed.
+
+              If the failure mentions "metadata.annotations: Too long", it means the manifest was applied with client-side apply before this fix.
+              This playbook now uses server-side apply to avoid the oversized last-applied annotation on Argo CD CRDs.
+
+              Rerun:
+              make platform-argocd
+          run_once: true
 
     - name: Wait for Argo CD workloads to become available
       block:
