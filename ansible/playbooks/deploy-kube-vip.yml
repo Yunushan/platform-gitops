@@ -128,6 +128,8 @@
                         value: "true"
                       - name: cp_namespace
                         value: kube-system
+                      - name: vip_ddns
+                        value: "false"
                       - name: svc_enable
                         value: "false"
                       - name: vip_leaderelection
@@ -145,19 +147,62 @@
                         add:
                           - NET_ADMIN
                           - NET_RAW
+                          - SYS_TIME
       register: kube_vip_apply
       changed_when: "'configured' in kube_vip_apply.stdout or 'created' in kube_vip_apply.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
     - name: Wait for kube-vip DaemonSet rollout
-      ansible.builtin.command: >-
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-        -n kube-system rollout status daemonset/kube-vip-ds --timeout={{ kube_vip_rollout_timeout_effective }}
-      register: kube_vip_rollout
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll kube-vip DaemonSet rollout
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout status daemonset/kube-vip-ds --timeout={{ kube_vip_rollout_timeout_effective }}
+          register: kube_vip_rollout
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect kube-vip rollout diagnostics
+          ansible.builtin.shell: |
+            echo "===== kube-vip daemonset ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system get daemonset kube-vip-ds -o wide || true
+            echo "===== kube-vip pods ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system get pods -l app.kubernetes.io/name=kube-vip -o wide || true
+            echo "===== kube-vip images ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system get daemonset kube-vip-ds -o jsonpath='{range .spec.template.spec.containers[*]}container:{.name}={.image}{"\n"}{end}' || true
+            echo
+            echo "===== kube-vip pod descriptions ====="
+            for pod in $(/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system get pods -l app.kubernetes.io/name=kube-vip -o name 2>/dev/null); do
+              echo "--- ${pod} ---"
+              /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system describe "${pod}" || true
+            done
+            echo "===== kube-vip logs ====="
+            for pod in $(/var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system get pods -l app.kubernetes.io/name=kube-vip -o name 2>/dev/null); do
+              echo "--- ${pod} ---"
+              /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n kube-system logs "${pod}" --all-containers --tail=120 || true
+            done
+            echo "===== recent kube-vip events ====="
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get events -A --sort-by=.lastTimestamp |
+              grep -E 'kube-vip|Failed|BackOff|ErrImagePull|ImagePullBackOff|FailedScheduling' | tail -120 || true
+          args:
+            executable: /bin/bash
+          register: kube_vip_rollout_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print kube-vip rollout diagnostics
+          ansible.builtin.debug:
+            var: kube_vip_rollout_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after kube-vip rollout failure
+          ansible.builtin.fail:
+            msg: "kube-vip DaemonSet did not become available within {{ kube_vip_rollout_timeout_effective }}. Review diagnostics above."
+          run_once: true
 
     - name: Verify API VIP answers from every node
       ansible.builtin.command: "curl -sk --connect-timeout 5 --max-time 15 https://{{ rke2_api_vip_effective }}:6443/readyz"
