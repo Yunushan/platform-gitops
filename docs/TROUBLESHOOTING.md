@@ -26,6 +26,8 @@ make rke2-controller-hosts
 
 Then retest the same `curl` commands. `make rke2-api-vip` deploys kube-vip as a control-plane DaemonSet in ARP mode. The default image is pulled from `ghcr.io`, so include that endpoint in registry/proxy/mirror rules.
 
+If kube-vip pods enter `CrashLoopBackOff` while the image is already present, check the pod logs. On SELinux-enforcing enterprise Linux nodes, kube-vip may need IPVS modules loaded on the host before the container starts. `make rke2-api-vip` loads and persists `ip_vs` and `ip_vs_rr` for this reason.
+
 ## Ansible or host resolution fails
 
 Run:
