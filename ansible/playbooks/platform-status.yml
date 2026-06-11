@@ -113,6 +113,8 @@
         fi
         if "$K" --kubeconfig "$C" -n traefik get svc traefik >/dev/null 2>&1; then
           "$K" --kubeconfig "$C" -n traefik get svc,pods -o wide || true
+        elif "$K" --kubeconfig "$C" -n traefik get svc platform-traefik >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n traefik get svc,pods -o wide || true
         else
           echo "Traefik is not installed yet."
         fi
@@ -120,7 +122,10 @@
 
         echo "===== GUI exposure verdict ====="
         ingress_count="$("$K" --kubeconfig "$C" get ingress -A --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-        traefik_ip="$("$K" --kubeconfig "$C" -n traefik get svc traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}' 2>/dev/null || true)"
+        traefik_ip="$("$K" --kubeconfig "$C" -n traefik get svc platform-traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}' 2>/dev/null || true)"
+        if [ -z "${traefik_ip}" ]; then
+          traefik_ip="$("$K" --kubeconfig "$C" -n traefik get svc traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}' 2>/dev/null || true)"
+        fi
         if [ "${ingress_count}" = "0" ]; then
           nodeport="$("$K" --kubeconfig "$C" -n argocd get service {{ platform_argocd_bootstrap_service_name }} -o jsonpath='{.spec.ports[?(@.name=="https")].nodePort}' 2>/dev/null || true)"
           if [ -n "${nodeport}" ]; then
@@ -129,14 +134,14 @@
             echo "No GUI ingresses are deployed yet. API VIP is ready, but app pages are not published."
           fi
           echo "Next automation path:"
-          echo "  make platform-argocd"
+          echo "  make platform-ingress"
           echo "  PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd"
-          echo "  make platform-ingress-vip"
         elif ! printf '%s\n' "${traefik_ip}" | grep -Fw "${INGRESS_VIP}" >/dev/null; then
           echo "GUI ingresses exist, but Traefik does not yet show the expected ingress VIP."
-          echo "Run: make platform-ingress-vip"
+          echo "Run: make platform-ingress"
         else
           echo "GUI ingress path appears ready on ${INGRESS_VIP}."
+          echo "Argo CD URL: https://argocd.${DOMAIN}"
         fi
       args:
         executable: /bin/bash

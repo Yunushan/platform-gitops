@@ -192,7 +192,7 @@ For the normal post-RKE2 flow, use the higher-level automation:
 make platform-bootstrap
 ```
 
-This verifies RKE2, deploys/verifies the API VIP, writes controller host entries, bootstraps Argo CD, applies the MetalLB ingress VIP pool when MetalLB is already installed, and prints an access report with API endpoints, GUI URLs, service state, ingress state, and the next command when something is not deployed yet.
+This verifies RKE2, deploys/verifies the API VIP, writes controller host entries, bootstraps Argo CD, installs MetalLB and Traefik, binds the app VIP, publishes Argo CD on HTTPS 443, and prints an access report with API endpoints, GUI URLs, service state, and ingress state.
 
 To show the same report later without changing the cluster:
 
@@ -241,12 +241,14 @@ export PLATFORM_PROFILE=premium-3node
 
 If unresolved placeholders remain, the playbook stops before registering applications so Argo CD does not sync incomplete production configuration.
 
-After MetalLB is installed by GitOps, apply the ingress VIP pool:
+To deploy or repair the final ingress path separately:
 
 ```bash
-make platform-ingress-vip
+make platform-ingress
 make platform-status
 ```
+
+`make platform-ingress` installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies the route, and removes the temporary Argo CD NodePort exposure.
 
 `make platform-status` prints the expected GUI URLs, including `argocd`, `forgejo`, `harbor`, `woodpecker`, `grafana`, and `prometheus` under your configured platform domain. For browser access from Windows, create equivalent Windows hosts-file or internal DNS records pointing those names at `rke2_ingress_vip`.
 

@@ -73,12 +73,14 @@ The playbook checks the selected GitOps profile for unresolved placeholders befo
 
 Check that the address pool was customized from placeholders to your private network range in ignored or encrypted configuration.
 
-If MetalLB is already installed, let the automation apply the configured ingress VIP from `inventory/hosts.local.ini`:
+Deploy or repair the full ingress foundation from `inventory/hosts.local.ini`:
 
 ```bash
-make platform-ingress-vip
+make platform-ingress
 make platform-status
 ```
+
+This installs MetalLB and Traefik through the RKE2 Helm controller, applies the configured app VIP, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies it on 443, and removes the temporary Argo CD NodePort exposure.
 
 ## API VIP or API DNS does not answer
 

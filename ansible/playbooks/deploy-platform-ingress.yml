@@ -1,0 +1,438 @@
+---
+- name: Deploy platform ingress foundation and publish Argo CD
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
+    platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    platform_argocd_host: "argocd.{{ platform_domain_effective }}"
+    platform_metallb_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_CHART_VERSION') }}"
+    platform_traefik_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_VERSION') }}"
+    platform_metallb_chart_version_effective: "{{ platform_metallb_chart_version | default(platform_metallb_chart_version_from_env, true) }}"
+    platform_traefik_chart_version_effective: "{{ platform_traefik_chart_version | default(platform_traefik_chart_version_from_env, true) }}"
+    platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
+    platform_ingress_firewalld_ports:
+      - 80/tcp
+      - 443/tcp
+  tasks:
+    - name: Require platform ingress settings
+      ansible.builtin.assert:
+        that:
+          - rke2_ingress_vip_effective | length > 0
+          - not (rke2_ingress_vip_effective is match("^<.*>$"))
+          - platform_domain_effective | length > 0
+          - not (platform_domain_effective is match("^<.*>$"))
+        fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
+      run_once: true
+
+    - name: Check firewalld state
+      ansible.builtin.command: firewall-cmd --state
+      register: platform_ingress_firewalld_state
+      changed_when: false
+      failed_when: false
+
+    - name: Query platform ingress firewalld ports
+      ansible.builtin.command: "firewall-cmd --permanent --query-port={{ item }}"
+      register: platform_ingress_firewalld_port_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ platform_ingress_firewalld_ports }}"
+      when: platform_ingress_firewalld_state.rc == 0
+
+    - name: Open platform ingress firewalld ports
+      ansible.builtin.command: "firewall-cmd --permanent --add-port={{ item.item }}"
+      changed_when: true
+      loop: "{{ platform_ingress_firewalld_port_queries.results | default([]) }}"
+      when:
+        - platform_ingress_firewalld_state.rc == 0
+        - item.rc != 0
+      notify: Reload firewalld
+
+    - name: Show skipped ingress firewalld configuration
+      ansible.builtin.debug:
+        msg: "firewalld is not active on this node; skipping 80/443 firewalld configuration."
+      when: platform_ingress_firewalld_state.rc != 0
+
+    - name: Reload ingress firewall changes before verification
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify RKE2 HelmChart CRD exists
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get crd helmcharts.helm.cattle.io
+      register: platform_ingress_helmchart_crd
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Install or update MetalLB through the RKE2 Helm controller
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+        stdin: |
+          ---
+          apiVersion: helm.cattle.io/v1
+          kind: HelmChart
+          metadata:
+            name: platform-metallb
+            namespace: kube-system
+          spec:
+            repo: https://metallb.github.io/metallb
+            chart: metallb
+          {% if platform_metallb_chart_version_effective | length > 0 %}
+            version: {{ platform_metallb_chart_version_effective }}
+          {% endif %}
+            targetNamespace: metallb-system
+            createNamespace: true
+            valuesContent: |-
+              controller:
+                enabled: true
+              speaker:
+                enabled: true
+      register: platform_metallb_helmchart_apply
+      changed_when: "'created' in platform_metallb_helmchart_apply.stdout or 'configured' in platform_metallb_helmchart_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for MetalLB CRDs
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get crd ipaddresspools.metallb.io l2advertisements.metallb.io
+      register: platform_metallb_crds
+      retries: 60
+      delay: 10
+      until: platform_metallb_crds.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for MetalLB controller
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        for deployment in platform-metallb-controller metallb-controller; do
+          if "$K" --kubeconfig "$C" -n metallb-system get "deployment/${deployment}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n metallb-system rollout status "deployment/${deployment}" --timeout=10s
+            exit 0
+          fi
+        done
+        "$K" --kubeconfig "$C" -n metallb-system get deployment -o wide || true
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_metallb_controller_rollout
+      retries: 60
+      delay: 10
+      until: platform_metallb_controller_rollout.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for MetalLB speaker
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        for daemonset in platform-metallb-speaker metallb-speaker; do
+          if "$K" --kubeconfig "$C" -n metallb-system get "daemonset/${daemonset}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n metallb-system rollout status "daemonset/${daemonset}" --timeout=10s
+            exit 0
+          fi
+        done
+        "$K" --kubeconfig "$C" -n metallb-system get daemonset -o wide || true
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_metallb_speaker_rollout
+      retries: 60
+      delay: 10
+      until: platform_metallb_speaker_rollout.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Apply platform ingress VIP pool
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+        stdin: |
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: platform-ingress
+            namespace: metallb-system
+          spec:
+            addresses:
+              - {{ rke2_ingress_vip_effective }}/32
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: platform-ingress
+            namespace: metallb-system
+          spec:
+            ipAddressPools:
+              - platform-ingress
+      register: platform_metallb_pool_apply
+      changed_when: "'created' in platform_metallb_pool_apply.stdout or 'configured' in platform_metallb_pool_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Install or update Traefik through the RKE2 Helm controller
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+        stdin: |
+          ---
+          apiVersion: helm.cattle.io/v1
+          kind: HelmChart
+          metadata:
+            name: platform-traefik
+            namespace: kube-system
+          spec:
+            repo: https://traefik.github.io/charts
+            chart: traefik
+          {% if platform_traefik_chart_version_effective | length > 0 %}
+            version: {{ platform_traefik_chart_version_effective }}
+          {% endif %}
+            targetNamespace: traefik
+            createNamespace: true
+            valuesContent: |-
+              deployment:
+                replicas: 3
+              podDisruptionBudget:
+                enabled: true
+                minAvailable: 2
+              ingressClass:
+                enabled: true
+                isDefaultClass: true
+              providers:
+                kubernetesCRD:
+                  enabled: true
+                kubernetesIngress:
+                  enabled: true
+                  publishedService:
+                    enabled: true
+              service:
+                enabled: true
+                type: LoadBalancer
+                spec:
+                  loadBalancerIP: {{ rke2_ingress_vip_effective }}
+              ports:
+                web:
+                  redirections:
+                    entryPoint:
+                      to: websecure
+                      scheme: https
+                      permanent: true
+                websecure:
+                  tls:
+                    enabled: true
+              logs:
+                general:
+                  level: INFO
+                access:
+                  enabled: true
+              metrics:
+                prometheus:
+                  enabled: true
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+      register: platform_traefik_helmchart_apply
+      changed_when: "'created' in platform_traefik_helmchart_apply.stdout or 'configured' in platform_traefik_helmchart_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for Traefik deployment
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        for deployment in platform-traefik traefik; do
+          if "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n traefik rollout status "deployment/${deployment}" --timeout=10s
+            exit 0
+          fi
+        done
+        "$K" --kubeconfig "$C" -n traefik get deployment -o wide || true
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_traefik_rollout
+      retries: 60
+      delay: 10
+      until: platform_traefik_rollout.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for Traefik service to receive ingress VIP
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        for service in platform-traefik traefik; do
+          if "$K" --kubeconfig "$C" -n traefik get "service/${service}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n traefik get "service/${service}" \
+              -o jsonpath='{.status.loadBalancer.ingress[*].ip}' |
+              grep -Fw "{{ rke2_ingress_vip_effective }}"
+            exit $?
+          fi
+        done
+        "$K" --kubeconfig "$C" -n traefik get svc -o wide || true
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_traefik_vip
+      retries: 60
+      delay: 10
+      until: platform_traefik_vip.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Configure Argo CD server for TLS termination at Traefik
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - -n
+          - argocd
+          - patch
+          - configmap
+          - argocd-cmd-params-cm
+          - --type
+          - merge
+          - -p
+          - '{"data":{"server.insecure":"true"}}'
+      register: platform_argocd_insecure_patch
+      changed_when: "'patched' in platform_argocd_insecure_patch.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Restart Argo CD server after TLS termination change
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n argocd rollout restart deployment/argocd-server
+      register: platform_argocd_server_restart
+      changed_when: "'restarted' in platform_argocd_server_restart.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for Argo CD server after restart
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n argocd rollout status deployment/argocd-server --timeout=10s
+      register: platform_argocd_server_rollout
+      retries: 60
+      delay: 10
+      until: platform_argocd_server_rollout.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Publish Argo CD through Traefik ingress
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+        stdin: |
+          ---
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: argocd-server
+            namespace: argocd
+            annotations:
+              traefik.ingress.kubernetes.io/router.entrypoints: websecure
+              traefik.ingress.kubernetes.io/router.tls: "true"
+          spec:
+            ingressClassName: traefik
+            rules:
+              - host: {{ platform_argocd_host }}
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: argocd-server
+                          port:
+                            number: 80
+            tls:
+              - hosts:
+                  - {{ platform_argocd_host }}
+      register: platform_argocd_ingress_apply
+      changed_when: "'created' in platform_argocd_ingress_apply.stdout or 'configured' in platform_argocd_ingress_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Verify Argo CD ingress over app VIP from every node
+      ansible.builtin.shell: |
+        set -o pipefail
+        code="$(curl --silent --show-error --insecure --output /dev/null \
+          --write-out '%{http_code}' \
+          --connect-timeout 5 \
+          --max-time 20 \
+          --resolve {{ platform_argocd_host }}:443:{{ rke2_ingress_vip_effective }} \
+          https://{{ platform_argocd_host }}/)"
+        printf '%s\n' "${code}"
+        case "${code}" in
+          200|301|302|303|307|308|401|403) exit 0 ;;
+          *) exit 1 ;;
+        esac
+      args:
+        executable: /bin/bash
+      register: platform_argocd_ingress_check
+      retries: 30
+      delay: 10
+      until: platform_argocd_ingress_check.rc == 0
+      changed_when: false
+
+    - name: Remove temporary Argo CD bootstrap NodePort after ingress is ready
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n argocd delete service/{{ platform_argocd_bootstrap_service_name }} --ignore-not-found=true
+      register: platform_argocd_bootstrap_unexpose
+      changed_when: "'deleted' in platform_argocd_bootstrap_unexpose.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Show platform ingress access summary
+      ansible.builtin.debug:
+        msg: |
+          Platform ingress is ready.
+
+          App VIP:
+          - {{ rke2_ingress_vip_effective }}
+
+          Argo CD URL:
+          - https://{{ platform_argocd_host }}
+
+          Windows/internal DNS entry:
+          {{ rke2_ingress_vip_effective }} {{ platform_argocd_host }}
+
+          For the full platform, also map the same VIP to:
+          forgejo.{{ platform_domain_effective }} harbor.{{ platform_domain_effective }} woodpecker.{{ platform_domain_effective }} grafana.{{ platform_domain_effective }} prometheus.{{ platform_domain_effective }}
+      run_once: true
+
+  handlers:
+    - name: Reload firewalld
+      ansible.builtin.command: firewall-cmd --reload
+      changed_when: true

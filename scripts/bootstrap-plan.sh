@@ -10,13 +10,15 @@ Recommended bootstrap order
    This runs preflight, node preparation, registry checks, and RKE2 install.
 5. Run make platform-bootstrap.
    This verifies RKE2, deploys/verifies the API VIP, writes controller hosts,
-   bootstraps Argo CD, applies the ingress VIP pool when MetalLB exists, and
-   prints the current API, service, ingress, and GUI URL report.
+   bootstraps Argo CD, installs MetalLB and Traefik, binds the app VIP,
+   publishes Argo CD on HTTPS 443, and prints the current API, service,
+   ingress, and GUI URL report.
 6. Run make platform-status whenever you want the same read-only report again.
 7. To register GitOps applications, replace or privately render profile
    placeholders, then run:
    PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd
-8. After GitOps installs MetalLB and Traefik, run make platform-ingress-vip.
+8. Use make platform-ingress to deploy or repair the MetalLB/Traefik/Argo CD
+   ingress path separately.
 9. Let Argo CD deploy Forgejo, Woodpecker, Harbor, monitoring, logging, and backups.
 10. Configure off-cluster backups.
 11. Run restore test before production use.
