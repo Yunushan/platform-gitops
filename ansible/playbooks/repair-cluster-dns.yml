@@ -11,13 +11,16 @@
     platform_dns_check_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_REPO') }}"
     platform_dns_ipv4_only_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_IPV4_ONLY') }}"
     platform_dns_probe_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_PROBE_TIMEOUT') }}"
+    platform_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_REPAIR') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
     platform_dns_check_image_effective: "{{ platform_dns_check_image | default(platform_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
     platform_dns_ipv4_only_effective: "{{ platform_dns_ipv4_only | default(platform_dns_ipv4_only_from_env, true) | default(true, true) | bool }}"
+    platform_dns_service_path_repair_effective: "{{ platform_dns_service_path_repair | default(platform_dns_service_path_repair_from_env, true) | default(true, true) | bool }}"
     platform_dns_check_job_name: platform-dns-check
+    platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
     platform_coredns_configmap: rke2-coredns-rke2-coredns
     platform_coredns_deployment: rke2-coredns-rke2-coredns
@@ -257,6 +260,8 @@
           {{ platform_dns_ipv4_only_effective | bool }}. Per-probe timeout:
           {{ platform_dns_probe_timeout_effective }}s. Ignored Kubernetes DNS
           service IPs: {{ platform_cluster_dns_service_ips_list | join(' ') }}.
+          DNS service path repair:
+          {{ 'enabled' if platform_dns_service_path_repair_effective else 'disabled' }}.
       run_once: true
 
     - name: Run cluster DNS check before repair
@@ -520,6 +525,141 @@
                   CoreDNS ConfigMap was restored. Review CoreDNS diagnostics
                   above before retrying.
               run_once: true
+
+        - name: Check Kubernetes DNS service path after CoreDNS repair
+          ansible.builtin.shell: |
+            set -e -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            JOB={{ platform_dns_service_path_job_name }}
+            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+            "$K" --kubeconfig "$C" -n kube-system apply -f -
+            deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
+            while [ "${SECONDS}" -lt "${deadline}" ]; do
+              succeeded="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+              failed="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+              if [ "${succeeded}" = "1" ] || { [ -n "${failed}" ] && [ "${failed}" != "0" ]; }; then
+                break
+              fi
+              sleep 5
+            done
+            "$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=240 || true
+          args:
+            executable: /bin/bash
+            stdin: |
+              ---
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: {{ platform_dns_service_path_job_name }}
+                namespace: kube-system
+              spec:
+                backoffLimit: 0
+                activeDeadlineSeconds: {{ platform_dns_check_timeout_effective }}
+                ttlSecondsAfterFinished: 300
+                template:
+                  spec:
+                    restartPolicy: Never
+                    nodeSelector:
+                      kubernetes.io/os: linux
+                    containers:
+                      - name: dns-service-path-check
+                        image: {{ platform_dns_check_image_effective }}
+                        imagePullPolicy: IfNotPresent
+                        command:
+                          - sh
+                          - -c
+                        args:
+                          - |
+                            set -ex
+                            REPO_URL='{{ platform_dns_check_repo_effective }}'
+                            REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
+                            PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                            DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
+                            run_bounded() {
+                              seconds="$1"
+                              shift
+                              if command -v timeout >/dev/null 2>&1; then
+                                timeout "${seconds}" "$@"
+                              else
+                                "$@"
+                              fi
+                            }
+                            echo "===== pod resolver ====="
+                            cat /etc/resolv.conf
+                            echo "===== default Kubernetes DNS service check ====="
+                            if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}"; then
+                              default_ok=true
+                            else
+                              default_ok=false
+                            fi
+                            echo "===== direct upstream DNS checks ====="
+                            direct_ok=false
+                            for dns in ${DNS_UPSTREAMS}; do
+                              echo "--- ${dns} ---"
+                              if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                                direct_ok=true
+                              fi
+                            done
+                            echo "PLATFORM_DNS_DEFAULT_RESOLUTION=${default_ok}"
+                            echo "PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=${direct_ok}"
+          register: platform_dns_service_path_check
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Detect Kubernetes DNS service path state
+          ansible.builtin.set_fact:
+            platform_dns_default_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DEFAULT_RESOLUTION=true') }}"
+            platform_dns_direct_upstream_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=true') }}"
+          run_once: true
+
+        - name: Repair Kubernetes DNS service path when upstreams work directly
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== DNS service path repair: kube-proxy ====="
+            if "$K" --kubeconfig "$C" -n kube-system get daemonset kube-proxy >/dev/null 2>&1; then
+              "$K" --kubeconfig "$C" -n kube-system rollout restart daemonset/kube-proxy || true
+              "$K" --kubeconfig "$C" -n kube-system rollout status daemonset/kube-proxy --timeout=180s || true
+            elif "$K" --kubeconfig "$C" -n kube-system get daemonset rke2-kube-proxy >/dev/null 2>&1; then
+              "$K" --kubeconfig "$C" -n kube-system rollout restart daemonset/rke2-kube-proxy || true
+              "$K" --kubeconfig "$C" -n kube-system rollout status daemonset/rke2-kube-proxy --timeout=180s || true
+            else
+              "$K" --kubeconfig "$C" -n kube-system delete pod -l k8s-app=kube-proxy --ignore-not-found=true || true
+              "$K" --kubeconfig "$C" -n kube-system get pods -o name |
+                awk -F/ '/\/kube-proxy-/ {print $2}' |
+                xargs -r "$K" --kubeconfig "$C" -n kube-system delete pod --ignore-not-found=true || true
+            fi
+            echo "===== DNS service path repair: Cilium ====="
+            if "$K" --kubeconfig "$C" -n kube-system get daemonset cilium >/dev/null 2>&1; then
+              "$K" --kubeconfig "$C" -n kube-system rollout restart daemonset/cilium || true
+              "$K" --kubeconfig "$C" -n kube-system rollout status daemonset/cilium --timeout=240s || true
+            fi
+            echo "===== DNS service path repair: CoreDNS ====="
+            "$K" --kubeconfig "$C" -n kube-system rollout restart deployment/{{ platform_coredns_deployment }} || true
+            "$K" --kubeconfig "$C" -n kube-system rollout status deployment/{{ platform_coredns_deployment }} --timeout=180s || true
+            echo "===== kube-system DNS/network pods after repair ====="
+            "$K" --kubeconfig "$C" -n kube-system get pods -o wide |
+              grep -E 'NAME|coredns|kube-proxy|cilium' || true
+          args:
+            executable: /bin/bash
+          register: platform_dns_service_path_repair
+          changed_when: true
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_direct_upstream_resolution_ok | bool
+
+        - name: Print Kubernetes DNS service path repair output
+          ansible.builtin.debug:
+            var: platform_dns_service_path_repair.stdout_lines
+          when: platform_dns_service_path_repair is defined and platform_dns_service_path_repair.stdout_lines is defined
+          run_once: true
 
         - name: Run cluster DNS check after repair
           ansible.builtin.shell: |
