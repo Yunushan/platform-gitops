@@ -10,6 +10,7 @@
     platform_profile_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
     platform_apply_gitops_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APPLY_GITOPS') }}"
     platform_argocd_bootstrap_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_MODE') }}"
+    platform_argocd_auto_core_fallback_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_AUTO_CORE_FALLBACK') }}"
     platform_argocd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_URL') }}"
     platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
     platform_argocd_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_POLL_INTERVAL') }}"
@@ -17,6 +18,7 @@
     platform_profile_effective: "{{ platform_profile | default(platform_profile_from_env, true) | default('default', true) }}"
     platform_apply_gitops_effective: "{{ platform_apply_gitops | default(platform_apply_gitops_from_env, true) | default(false, true) | bool }}"
     platform_argocd_bootstrap_mode_effective: "{{ platform_argocd_bootstrap_mode | default(platform_argocd_bootstrap_mode_from_env, true) | default('ha', true) }}"
+    platform_argocd_auto_core_fallback_effective: "{{ platform_argocd_auto_core_fallback | default(platform_argocd_auto_core_fallback_from_env, true) | default(true, true) | bool }}"
     platform_argocd_default_manifest_url: >-
       {{
         (platform_argocd_bootstrap_mode_effective == 'core')
@@ -44,6 +46,16 @@
             ['argocd-application-controller', 'argocd-redis-ha-server']
           )
       }}
+    platform_argocd_core_deployments:
+      - argocd-applicationset-controller
+      - argocd-dex-server
+      - argocd-notifications-controller
+      - argocd-redis
+      - argocd-repo-server
+      - argocd-server
+    platform_argocd_core_statefulsets:
+      - argocd-application-controller
+    platform_argocd_core_manifest_url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
     platform_project_file: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects/platform-project.yaml"
     platform_applications_file: >-
       {{
@@ -73,7 +85,8 @@
         msg: >-
           Bootstrapping Argo CD in {{ platform_argocd_bootstrap_mode_effective }} mode from
           {{ platform_argocd_manifest_url_effective }}. Rollout timeout is
-          {{ platform_argocd_rollout_timeout_effective }}s.
+          {{ platform_argocd_rollout_timeout_effective }}s. Automatic core fallback is
+          {{ 'enabled' if platform_argocd_auto_core_fallback_effective else 'disabled' }}.
       run_once: true
 
     - name: Ensure Argo CD namespace exists
@@ -95,6 +108,12 @@
         -n argocd delete
         deployment/argocd-redis-ha-haproxy
         statefulset/argocd-redis-ha-server
+        serviceaccount/argocd-redis-ha
+        serviceaccount/argocd-redis-ha-haproxy
+        role/argocd-redis-ha
+        role/argocd-redis-ha-haproxy
+        rolebinding/argocd-redis-ha
+        rolebinding/argocd-redis-ha-haproxy
         service/argocd-redis-ha
         service/argocd-redis-ha-haproxy
         service/argocd-redis-ha-announce-0
@@ -104,6 +123,8 @@
         configmap/argocd-redis-ha-health-configmap
         networkpolicy/argocd-redis-ha-proxy-network-policy
         networkpolicy/argocd-redis-ha-server-network-policy
+        poddisruptionbudget/argocd-redis-ha-haproxy
+        poddisruptionbudget/argocd-redis-ha-server
         --ignore-not-found=true
       register: platform_argocd_core_cleanup
       changed_when: "'deleted' in platform_argocd_core_cleanup.stdout"
@@ -111,7 +132,7 @@
       when: platform_argocd_bootstrap_mode_effective == 'core'
       run_once: true
 
-    - name: Apply Argo CD HA bootstrap manifest
+    - name: Apply Argo CD bootstrap manifest
       block:
         - name: Apply Argo CD bootstrap manifest with server-side apply
           ansible.builtin.command: >-
@@ -285,7 +306,112 @@
               {% else %}
               Rollout timed out before Argo CD became available. Review the diagnostic summary below.
               {% endif %}
+            platform_argocd_ha_redis_failure: >-
+              {{
+                (platform_argocd_diagnostics.stdout | default(''))
+                is search('Could not resolve the announce address|argocd-redis-ha|redis-ha-haproxy|redis-ha-server')
+              }}
           run_once: true
+
+        - name: Fall back to core Argo CD when HA Redis bootstrap is unhealthy
+          block:
+            - name: Announce automatic Argo CD core fallback
+              ansible.builtin.debug:
+                msg: >-
+                  Argo CD HA Redis did not become healthy, so the bootstrap is switching to
+                  standard/core Argo CD automatically. Re-run with
+                  PLATFORM_ARGOCD_AUTO_CORE_FALLBACK=false make platform-argocd-ha
+                  if you want strict HA-only failure behavior.
+              run_once: true
+
+            - name: Remove stale Argo CD HA Redis resources before core fallback
+              ansible.builtin.command: >-
+                /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+                -n argocd delete
+                deployment/argocd-redis-ha-haproxy
+                statefulset/argocd-redis-ha-server
+                serviceaccount/argocd-redis-ha
+                serviceaccount/argocd-redis-ha-haproxy
+                role/argocd-redis-ha
+                role/argocd-redis-ha-haproxy
+                rolebinding/argocd-redis-ha
+                rolebinding/argocd-redis-ha-haproxy
+                service/argocd-redis-ha
+                service/argocd-redis-ha-haproxy
+                service/argocd-redis-ha-announce-0
+                service/argocd-redis-ha-announce-1
+                service/argocd-redis-ha-announce-2
+                configmap/argocd-redis-ha-configmap
+                configmap/argocd-redis-ha-health-configmap
+                networkpolicy/argocd-redis-ha-proxy-network-policy
+                networkpolicy/argocd-redis-ha-server-network-policy
+                poddisruptionbudget/argocd-redis-ha-haproxy
+                poddisruptionbudget/argocd-redis-ha-server
+                --ignore-not-found=true
+              register: platform_argocd_fallback_cleanup
+              changed_when: "'deleted' in platform_argocd_fallback_cleanup.stdout"
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+
+            - name: Apply standard Argo CD manifest after HA Redis fallback
+              ansible.builtin.command: >-
+                /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+                apply --server-side --force-conflicts --field-manager=platform-gitops-bootstrap
+                -n argocd -f {{ platform_argocd_core_manifest_url }}
+              register: platform_argocd_fallback_apply
+              changed_when: >-
+                'created' in platform_argocd_fallback_apply.stdout or
+                'configured' in platform_argocd_fallback_apply.stdout or
+                'serverside-applied' in platform_argocd_fallback_apply.stdout
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+
+            - name: Wait for core Argo CD deployments after fallback
+              ansible.builtin.shell: |
+                set -o pipefail
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+                for deployment in {{ platform_argocd_core_deployments | join(' ') }}; do
+                  "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null
+                  "$K" --kubeconfig "$C" -n argocd wait --for=condition=Available "deployment/${deployment}" --timeout={{ platform_argocd_poll_interval_effective }}s
+                done
+              args:
+                executable: /bin/bash
+              register: platform_argocd_fallback_deployments
+              retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+              delay: "{{ platform_argocd_poll_interval_effective }}"
+              until: platform_argocd_fallback_deployments.rc == 0
+              changed_when: false
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+
+            - name: Wait for core Argo CD statefulsets after fallback
+              ansible.builtin.shell: |
+                set -o pipefail
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+                for statefulset in {{ platform_argocd_core_statefulsets | join(' ') }}; do
+                  "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null
+                  "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s
+                done
+              args:
+                executable: /bin/bash
+              register: platform_argocd_fallback_statefulsets
+              retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+              delay: "{{ platform_argocd_poll_interval_effective }}"
+              until: platform_argocd_fallback_statefulsets.rc == 0
+              changed_when: false
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+
+            - name: Mark Argo CD core fallback successful
+              ansible.builtin.set_fact:
+                platform_argocd_core_fallback_succeeded: true
+              run_once: true
+          when:
+            - platform_argocd_bootstrap_mode_effective == 'ha'
+            - platform_argocd_auto_core_fallback_effective | bool
+            - platform_argocd_ha_redis_failure | bool
 
         - name: Stop after Argo CD bootstrap failure
           ansible.builtin.fail:
@@ -308,6 +434,7 @@
 
               If only Argo CD HA Redis is failing and you need the UI now, bootstrap core Argo CD:
               make platform-argocd-core
+          when: not (platform_argocd_core_fallback_succeeded | default(false) | bool)
           run_once: true
 
     - name: Show skipped GitOps application registration

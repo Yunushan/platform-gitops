@@ -41,7 +41,7 @@ make platform-argocd-core
 make platform-status
 ```
 
-`make platform-argocd-core` removes stale Argo CD HA Redis bootstrap resources and applies the standard Argo CD install manifest. The default `make platform-argocd` and explicit `make platform-argocd-ha` keep using the HA manifest.
+`make platform-argocd-core` removes stale Argo CD HA Redis bootstrap resources and applies the standard Argo CD install manifest. The default `make platform-argocd` starts with the HA manifest, but automatically falls back to core mode when the known HA Redis announce-service bootstrap failure is detected. Use `make platform-argocd-ha` for strict HA-only behavior with no automatic core fallback.
 
 To register platform applications, provide the repository URL and explicitly allow GitOps app registration:
 
