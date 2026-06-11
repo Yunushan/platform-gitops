@@ -9,10 +9,12 @@
     platform_dns_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_TIMEOUT') }}"
     platform_dns_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_IMAGE') }}"
     platform_dns_check_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_REPO') }}"
+    platform_dns_ipv4_only_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_IPV4_ONLY') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_check_image_effective: "{{ platform_dns_check_image | default(platform_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
+    platform_dns_ipv4_only_effective: "{{ platform_dns_ipv4_only | default(platform_dns_ipv4_only_from_env, true) | default(true, true) | bool }}"
     platform_dns_check_job_name: platform-dns-check
     platform_coredns_configmap: rke2-coredns-rke2-coredns
     platform_coredns_deployment: rke2-coredns-rke2-coredns
@@ -73,7 +75,8 @@
         msg: >-
           Checking pod DNS with {{ platform_dns_check_image_effective }} against
           {{ platform_dns_check_repo_effective }}. CoreDNS repair upstreams are:
-          {{ platform_dns_upstreams_effective }}.
+          {{ platform_dns_upstreams_effective }}. IPv4-only external DNS mode:
+          {{ platform_dns_ipv4_only_effective | bool }}.
       run_once: true
 
     - name: Run cluster DNS check before repair
@@ -174,69 +177,112 @@
             var: platform_dns_diagnostics_before_repair.stdout_lines
           run_once: true
 
-        - name: Patch CoreDNS forward upstreams
-          ansible.builtin.shell: |
-            set -e -o pipefail
-            K=/var/lib/rancher/rke2/bin/kubectl
-            C=/etc/rancher/rke2/rke2.yaml
-            UPSTREAMS="{{ platform_dns_upstreams_effective }}"
-            cat >/tmp/platform-coredns-patch.yaml <<EOF
-            data:
-              Corefile: |
-                .:53 {
-                    errors
-                    health
-                    ready
-                    kubernetes cluster.local cluster.local in-addr.arpa ip6.arpa {
-                      pods insecure
-                      fallthrough in-addr.arpa ip6.arpa
-                    }
-                    hosts /etc/coredns/NodeHosts {
-                      ttl 60
-                      reload 15s
-                      fallthrough
-                    }
-                    prometheus :9153
-                    forward . ${UPSTREAMS} {
-                      max_concurrent 1000
-                    }
-                    cache 30
-                    loop
-                    reload
-                    loadbalance
-                    import /etc/coredns/custom/*.override
-                }
-                import /etc/coredns/custom/*.server
-            EOF
-            "$K" --kubeconfig "$C" -n kube-system patch configmap {{ platform_coredns_configmap }} \
-              --type merge --patch-file /tmp/platform-coredns-patch.yaml
-          args:
-            executable: /bin/bash
-          register: platform_coredns_patch
-          changed_when: "'patched' in platform_coredns_patch.stdout"
-          delegate_to: "{{ rke2_first_server }}"
-          run_once: true
+        - name: Apply CoreDNS repair with rollback guard
+          block:
+            - name: Back up current CoreDNS ConfigMap
+              ansible.builtin.shell: |
+                set -e -o pipefail
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+                "$K" --kubeconfig "$C" -n kube-system get configmap {{ platform_coredns_configmap }} \
+                  -o yaml >/tmp/platform-coredns-before-repair.yaml
+              args:
+                executable: /bin/bash
+              changed_when: false
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
 
-        - name: Restart CoreDNS
-          ansible.builtin.command: >-
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-            -n kube-system rollout restart deployment/{{ platform_coredns_deployment }}
-          register: platform_coredns_restart
-          changed_when: "'restarted' in platform_coredns_restart.stdout"
-          delegate_to: "{{ rke2_first_server }}"
-          run_once: true
+            - name: Patch CoreDNS forward upstreams
+              ansible.builtin.shell: |
+                set -e -o pipefail
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+                UPSTREAMS="{{ platform_dns_upstreams_effective }}"
+                cat >/tmp/platform-coredns-patch.yaml <<EOF
+                data:
+                  Corefile: |
+                    .:53 {
+                        errors
+                        health
+                        ready
+                        kubernetes cluster.local cluster.local in-addr.arpa ip6.arpa {
+                          pods insecure
+                          fallthrough in-addr.arpa ip6.arpa
+                        }
+                        hosts /etc/coredns/NodeHosts {
+                          ttl 60
+                          reload 15s
+                          fallthrough
+                        }
+                        prometheus :9153
+                {% if platform_dns_ipv4_only_effective | bool %}
+                        template IN AAAA . {
+                          rcode NOERROR
+                        }
+                {% endif %}
+                        forward . ${UPSTREAMS} {
+                          max_concurrent 1000
+                        }
+                        cache 30
+                        loop
+                        reload
+                        loadbalance
+                        import /etc/coredns/custom/*.override
+                    }
+                    import /etc/coredns/custom/*.server
+                EOF
+                "$K" --kubeconfig "$C" -n kube-system patch configmap {{ platform_coredns_configmap }} \
+                  --type merge --patch-file /tmp/platform-coredns-patch.yaml
+              args:
+                executable: /bin/bash
+              register: platform_coredns_patch
+              changed_when: "'patched' in platform_coredns_patch.stdout"
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
 
-        - name: Wait for CoreDNS rollout
-          ansible.builtin.command: >-
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-            -n kube-system rollout status deployment/{{ platform_coredns_deployment }} --timeout=10s
-          register: platform_coredns_rollout
-          retries: 30
-          delay: 10
-          until: platform_coredns_rollout.rc == 0
-          changed_when: false
-          delegate_to: "{{ rke2_first_server }}"
-          run_once: true
+            - name: Restart CoreDNS
+              ansible.builtin.command: >-
+                /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+                -n kube-system rollout restart deployment/{{ platform_coredns_deployment }}
+              register: platform_coredns_restart
+              changed_when: "'restarted' in platform_coredns_restart.stdout"
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+
+            - name: Wait for CoreDNS rollout
+              ansible.builtin.command: >-
+                /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+                -n kube-system rollout status deployment/{{ platform_coredns_deployment }} --timeout=10s
+              register: platform_coredns_rollout
+              retries: 30
+              delay: 10
+              until: platform_coredns_rollout.rc == 0
+              changed_when: false
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+          rescue:
+            - name: Roll back CoreDNS ConfigMap after failed repair rollout
+              ansible.builtin.shell: |
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+                if [ -f /tmp/platform-coredns-before-repair.yaml ]; then
+                  "$K" --kubeconfig "$C" apply -f /tmp/platform-coredns-before-repair.yaml || true
+                  "$K" --kubeconfig "$C" -n kube-system rollout restart deployment/{{ platform_coredns_deployment }} || true
+                  "$K" --kubeconfig "$C" -n kube-system rollout status deployment/{{ platform_coredns_deployment }} --timeout=120s || true
+                fi
+              args:
+                executable: /bin/bash
+              changed_when: true
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+
+            - name: Stop after failed CoreDNS repair rollout
+              ansible.builtin.fail:
+                msg: >-
+                  CoreDNS repair did not roll out cleanly, so the previous
+                  CoreDNS ConfigMap was restored. Review CoreDNS diagnostics
+                  above before retrying.
+              run_once: true
 
         - name: Run cluster DNS check after repair
           ansible.builtin.shell: |
@@ -313,6 +359,11 @@
 
               Set explicit DNS servers and retry:
               PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+
+              This playbook defaults to IPv4-only external DNS mode so Helm jobs
+              do not choose unreachable public IPv6 addresses on IPv4-only networks.
+              If your environment has working IPv6 egress, disable that mode with:
+              PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
           when: platform_dns_check_after.rc != 0
           run_once: true
 

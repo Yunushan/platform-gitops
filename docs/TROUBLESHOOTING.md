@@ -124,6 +124,12 @@ To shorten or extend the DNS test window:
 PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
 ```
 
+If the DNS check resolves a public IPv6 address and then fails with `network is unreachable`, keep the default IPv4-only DNS repair mode enabled. The repair suppresses external AAAA answers through CoreDNS so in-cluster Helm jobs use IPv4. Disable it only on networks with working IPv6 egress:
+
+```bash
+PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
+```
+
 ## API VIP or API DNS does not answer
 
 If all RKE2 nodes are `Ready` but the VIP or API DNS fails:

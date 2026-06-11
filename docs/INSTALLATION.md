@@ -254,7 +254,13 @@ To limit ingress rollout waiting, set the timeout in seconds:
 PLATFORM_INGRESS_ROLLOUT_TIMEOUT=180 make platform-ingress
 ```
 
-`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. It then installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies the route, and removes the temporary Argo CD NodePort exposure.
+`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
+
+```bash
+PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
+```
+
+It then installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies the route, and removes the temporary Argo CD NodePort exposure.
 
 `make platform-status` prints the expected GUI URLs, including `argocd`, `forgejo`, `harbor`, `woodpecker`, `grafana`, and `prometheus` under your configured platform domain. For browser access from Windows, create equivalent Windows hosts-file or internal DNS records pointing those names at `rke2_ingress_vip`.
 
