@@ -166,7 +166,7 @@ sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERS
 
 Never store the real token in git.
 
-## Step 5: Bootstrap Argo CD
+## Step 5: Bootstrap the platform control plane
 
 Before bootstrapping GitOps, deploy and verify the Kubernetes API VIP:
 
@@ -185,6 +185,54 @@ kubectl --kubeconfig <PATH_TO_PRIVATE_KUBECONFIG> --server=https://<VIP_DNS_NAME
 ```
 
 `make rke2-api-vip` deploys kube-vip as a control-plane DaemonSet in ARP mode. It uses `rke2_api_vip`, `rke2_api_dns`, and the node default interface unless `kube_vip_interface` is set. Pin kube-vip with `kube_vip_version`, `kube_vip_image`, or the matching `KUBE_VIP_*` environment variables.
+
+For the normal post-RKE2 flow, use the higher-level automation:
+
+```bash
+make platform-bootstrap
+```
+
+This verifies RKE2, deploys/verifies the API VIP, writes controller host entries, bootstraps Argo CD, applies the MetalLB ingress VIP pool when MetalLB is already installed, and prints an access report with API endpoints, GUI URLs, service state, ingress state, and the next command when something is not deployed yet.
+
+To show the same report later without changing the cluster:
+
+```bash
+make platform-status
+```
+
+To install only Argo CD:
+
+```bash
+make platform-argocd
+```
+
+To register platform applications in Argo CD, first replace or privately render all placeholders in the selected GitOps profile. Then run:
+
+```bash
+export PLATFORM_REPO_URL=<THIS_REPO_URL>
+export PLATFORM_APPLY_GITOPS=true
+export PLATFORM_PROFILE=default
+make platform-argocd
+```
+
+For the premium profile:
+
+```bash
+export PLATFORM_PROFILE=premium-3node
+```
+
+If unresolved placeholders remain, the playbook stops before registering applications so Argo CD does not sync incomplete production configuration.
+
+After MetalLB is installed by GitOps, apply the ingress VIP pool:
+
+```bash
+make platform-ingress-vip
+make platform-status
+```
+
+`make platform-status` prints the expected GUI URLs, including `argocd`, `forgejo`, `harbor`, `woodpecker`, `grafana`, and `prometheus` under your configured platform domain. For browser access from Windows, create equivalent Windows hosts-file or internal DNS records pointing those names at `rke2_ingress_vip`.
+
+The legacy local-kubeconfig bootstrap script remains available:
 
 ```bash
 export PLATFORM_REPO_URL=<THIS_REPO_URL>

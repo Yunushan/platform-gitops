@@ -1,0 +1,206 @@
+---
+- name: Bootstrap Argo CD and optional platform GitOps applications
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_URL') }}"
+    platform_profile_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
+    platform_apply_gitops_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APPLY_GITOPS') }}"
+    platform_argocd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_URL') }}"
+    platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
+    platform_repo_url_effective: "{{ platform_repo_url | default(platform_repo_url_from_env, true) }}"
+    platform_profile_effective: "{{ platform_profile | default(platform_profile_from_env, true) | default('default', true) }}"
+    platform_apply_gitops_effective: "{{ platform_apply_gitops | default(platform_apply_gitops_from_env, true) | default(false, true) | bool }}"
+    platform_argocd_manifest_url_effective: "{{ platform_argocd_manifest_url | default(platform_argocd_manifest_url_from_env, true) | default('https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/ha/install.yaml', true) }}"
+    platform_argocd_rollout_timeout_effective: "{{ platform_argocd_rollout_timeout | default(platform_argocd_rollout_timeout_from_env, true) | default('600s', true) }}"
+    platform_project_file: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects/platform-project.yaml"
+    platform_applications_file: >-
+      {{
+        (platform_profile_effective == 'premium-3node')
+        | ternary(
+            playbook_dir + '/../../gitops/clusters/rke2-main/premium-3node/platform-apps.yaml',
+            playbook_dir + '/../../gitops/clusters/rke2-main/platform-apps.yaml'
+          )
+      }}
+  tasks:
+    - name: Require a supported platform profile
+      ansible.builtin.assert:
+        that:
+          - platform_profile_effective in ['default', 'premium-3node']
+        fail_msg: "PLATFORM_PROFILE must be default or premium-3node."
+      run_once: true
+
+    - name: Ensure Argo CD namespace exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+          create namespace argocd --dry-run=client -o yaml |
+          /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+      register: platform_argocd_namespace
+      changed_when: "'created' in platform_argocd_namespace.stdout or 'configured' in platform_argocd_namespace.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Apply Argo CD HA bootstrap manifest
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        apply -n argocd -f {{ platform_argocd_manifest_url_effective }}
+      register: platform_argocd_apply
+      changed_when: "'created' in platform_argocd_apply.stdout or 'configured' in platform_argocd_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for Argo CD workloads to become available
+      block:
+        - name: Poll Argo CD rollout state
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" -n argocd wait --for=condition=Available deployment --all --timeout={{ platform_argocd_rollout_timeout_effective }}
+            for resource in $("$K" --kubeconfig "$C" -n argocd get statefulset -o name 2>/dev/null); do
+              "$K" --kubeconfig "$C" -n argocd rollout status "$resource" --timeout={{ platform_argocd_rollout_timeout_effective }}
+            done
+          args:
+            executable: /bin/bash
+          register: platform_argocd_rollout
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect Argo CD bootstrap diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== argocd pods ====="
+            "$K" --kubeconfig "$C" -n argocd get pods -o wide || true
+            echo "===== argocd services ====="
+            "$K" --kubeconfig "$C" -n argocd get svc -o wide || true
+            echo "===== argocd events ====="
+            "$K" --kubeconfig "$C" -n argocd get events --sort-by=.lastTimestamp | tail -120 || true
+          args:
+            executable: /bin/bash
+          register: platform_argocd_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print Argo CD bootstrap diagnostics
+          ansible.builtin.debug:
+            var: platform_argocd_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after Argo CD bootstrap failure
+          ansible.builtin.fail:
+            msg: "Argo CD did not become available within {{ platform_argocd_rollout_timeout_effective }}. Review diagnostics above."
+          run_once: true
+
+    - name: Show skipped GitOps application registration
+      ansible.builtin.debug:
+        msg: >-
+          Argo CD is installed. GitOps applications were not registered because PLATFORM_APPLY_GITOPS is not true.
+          To register platform applications, set PLATFORM_REPO_URL and run:
+          PLATFORM_APPLY_GITOPS=true make platform-argocd
+      when: not platform_apply_gitops_effective
+      run_once: true
+
+    - name: Require repository URL when applying GitOps applications
+      ansible.builtin.assert:
+        that:
+          - platform_repo_url_effective | length > 0
+          - not (platform_repo_url_effective is match("^<.*>$"))
+        fail_msg: "Set PLATFORM_REPO_URL to the Git repository URL before running with PLATFORM_APPLY_GITOPS=true."
+      when: platform_apply_gitops_effective
+      run_once: true
+
+    - name: Check selected GitOps profile for unresolved placeholders
+      ansible.builtin.shell: |
+        set -o pipefail
+        paths=(
+        {% if platform_profile_effective == 'premium-3node' %}
+          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
+          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects"
+          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps"
+          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/apps/metallb"
+        {% else %}
+          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/platform-apps.yaml"
+          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects"
+          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/apps"
+        {% endif %}
+        )
+        for path in "${paths[@]}"; do
+          if [ -f "$path" ]; then
+            grep -nE '<[A-Z0-9_]+>' "$path" | grep -v '<THIS_REPO_URL>' || true
+          elif [ -d "$path" ]; then
+            find "$path" -type f \( -name '*.yaml' -o -name '*.yml' \) \
+              ! -name '*.example.yaml' ! -name '*.example.yml' -print0 |
+              xargs -0r grep -nE '<[A-Z0-9_]+>' 2>/dev/null | grep -v '<THIS_REPO_URL>' || true
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: platform_placeholder_scan
+      changed_when: false
+      failed_when: false
+      become: false
+      delegate_to: localhost
+      when: platform_apply_gitops_effective
+      run_once: true
+
+    - name: Stop before applying incomplete GitOps profile
+      ansible.builtin.fail:
+        msg: |
+          The selected GitOps profile still has unresolved placeholders, so it was not registered in Argo CD.
+
+          Configure these values through committed safe defaults, ignored local rendering, SOPS, External Secrets, or another private secret/config flow, then rerun:
+          PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd
+
+          Unresolved placeholders:
+          {{ platform_placeholder_scan.stdout }}
+      when:
+        - platform_apply_gitops_effective
+        - platform_placeholder_scan.stdout | length > 0
+      run_once: true
+
+    - name: Apply platform Argo CD project
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+        stdin: "{{ lookup('ansible.builtin.file', platform_project_file) }}"
+      register: platform_project_apply
+      changed_when: "'created' in platform_project_apply.stdout or 'configured' in platform_project_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      when: platform_apply_gitops_effective
+      run_once: true
+
+    - name: Register platform applications in Argo CD
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+        stdin: "{{ lookup('ansible.builtin.file', platform_applications_file) | replace('<THIS_REPO_URL>', platform_repo_url_effective) }}"
+      register: platform_applications_apply
+      changed_when: "'created' in platform_applications_apply.stdout or 'configured' in platform_applications_apply.stdout"
+      no_log: true
+      delegate_to: "{{ rke2_first_server }}"
+      when: platform_apply_gitops_effective
+      run_once: true
+
+    - name: Show Argo CD access commands
+      ansible.builtin.debug:
+        msg:
+          - "Argo CD is installed in namespace argocd."
+          - "Port-forward access: kubectl -n argocd port-forward svc/argocd-server 8080:443 --address 0.0.0.0"
+          - "Browser URL through port-forward: https://127.0.0.1:8080"
+          - "Initial admin password command: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"
+          - "Run make platform-status for the current API, ingress, and GUI URL report."
+      run_once: true

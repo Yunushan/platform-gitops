@@ -4,9 +4,38 @@
 
 Check that you replaced `<THIS_REPO_URL>` at bootstrap time and configured repository credentials in Argo CD using a private secret flow.
 
+Run the automated platform report:
+
+```bash
+make platform-status
+```
+
+It prints API VIP readiness, Argo CD pods/services, registered Argo CD Applications, ingress state, expected GUI URLs, and the next command when the GUI layer is not deployed yet.
+
+To bootstrap Argo CD without manually copying commands:
+
+```bash
+make platform-argocd
+```
+
+To register platform applications, provide the repository URL and explicitly allow GitOps app registration:
+
+```bash
+PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd
+```
+
+The playbook checks the selected GitOps profile for unresolved placeholders before it registers applications. This prevents Argo CD from syncing incomplete domains, storage sizes, backup targets, or secret references.
+
 ## MetalLB does not assign addresses
 
 Check that the address pool was customized from placeholders to your private network range in ignored or encrypted configuration.
+
+If MetalLB is already installed, let the automation apply the configured ingress VIP from `inventory/hosts.local.ini`:
+
+```bash
+make platform-ingress-vip
+make platform-status
+```
 
 ## API VIP or API DNS does not answer
 

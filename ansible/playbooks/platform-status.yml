@@ -1,0 +1,136 @@
+---
+- name: Show platform access, deployment, and readiness status
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_api_vip_effective: "{{ rke2_api_vip | default('', true) }}"
+    rke2_api_dns_effective: "{{ rke2_api_dns | default('', true) }}"
+    rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
+    platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    platform_ingress_hosts:
+      - argocd
+      - forgejo
+      - harbor
+      - woodpecker
+      - grafana
+      - prometheus
+  tasks:
+    - name: Require platform access settings
+      ansible.builtin.assert:
+        that:
+          - rke2_api_vip_effective | length > 0
+          - not (rke2_api_vip_effective is match("^<.*>$"))
+          - rke2_api_dns_effective | length > 0
+          - not (rke2_api_dns_effective is match("^<.*>$"))
+          - rke2_ingress_vip_effective | length > 0
+          - not (rke2_ingress_vip_effective is match("^<.*>$"))
+          - platform_domain_effective | length > 0
+          - not (platform_domain_effective is match("^<.*>$"))
+        fail_msg: "Set rke2_api_vip, rke2_api_dns, rke2_ingress_vip, and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
+      run_once: true
+
+    - name: Build and print platform status report
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        API_VIP="{{ rke2_api_vip_effective }}"
+        API_DNS="{{ rke2_api_dns_effective }}"
+        INGRESS_VIP="{{ rke2_ingress_vip_effective }}"
+        DOMAIN="{{ platform_domain_effective }}"
+        GUI_HOSTS="{{ platform_ingress_hosts | join(' ') }}"
+
+        echo "===== Platform access summary ====="
+        echo "Kubernetes API VIP: https://${API_VIP}:6443"
+        echo "Kubernetes API DNS: https://${API_DNS}:6443"
+        echo "Ingress/App VIP: ${INGRESS_VIP}"
+        echo
+        echo "Expected GUI URLs:"
+        for host in ${GUI_HOSTS}; do
+          echo "  https://${host}.${DOMAIN}"
+        done
+        echo
+        echo "Windows/internal DNS entry for GUI hosts:"
+        printf '  %s' "${INGRESS_VIP}"
+        for host in ${GUI_HOSTS}; do
+          printf ' %s.%s' "${host}" "${DOMAIN}"
+        done
+        printf '\n'
+        echo
+        echo "Controller/WSL API hosts entry:"
+        echo "  ${API_VIP} ${API_DNS} rke2-api"
+        echo
+
+        echo "===== API readiness ====="
+        "$K" --kubeconfig "$C" --server="https://${API_VIP}:6443" get --raw=/readyz 2>&1 || true
+        "$K" --kubeconfig "$C" --server="https://${API_DNS}:6443" get --raw=/readyz 2>&1 || true
+        echo
+
+        echo "===== Nodes ====="
+        "$K" --kubeconfig "$C" get nodes -o wide || true
+        echo
+
+        echo "===== Core services ====="
+        "$K" --kubeconfig "$C" get svc -A || true
+        echo
+
+        echo "===== Ingresses ====="
+        if ! "$K" --kubeconfig "$C" get ingress -A; then
+          true
+        fi
+        echo
+
+        echo "===== Argo CD ====="
+        if "$K" --kubeconfig "$C" get ns argocd >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n argocd get pods,svc -o wide || true
+          if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o wide || true
+          fi
+          echo "Argo CD port-forward URL: https://127.0.0.1:8080"
+          echo "Argo CD port-forward command: kubectl -n argocd port-forward svc/argocd-server 8080:443 --address 0.0.0.0"
+          echo "Argo CD initial password command: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"
+        else
+          echo "Argo CD is not installed yet. Run: make platform-argocd"
+        fi
+        echo
+
+        echo "===== Ingress controller / MetalLB ====="
+        if "$K" --kubeconfig "$C" get crd ipaddresspools.metallb.io >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n metallb-system get ipaddresspool,l2advertisement,pods -o wide || true
+        else
+          echo "MetalLB CRDs are not installed yet."
+        fi
+        if "$K" --kubeconfig "$C" -n traefik get svc traefik >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n traefik get svc,pods -o wide || true
+        else
+          echo "Traefik is not installed yet."
+        fi
+        echo
+
+        echo "===== GUI exposure verdict ====="
+        ingress_count="$("$K" --kubeconfig "$C" get ingress -A --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        traefik_ip="$("$K" --kubeconfig "$C" -n traefik get svc traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}' 2>/dev/null || true)"
+        if [ "${ingress_count}" = "0" ]; then
+          echo "No GUI ingresses are deployed yet. API VIP is ready, but app pages are not published."
+          echo "Next automation path:"
+          echo "  make platform-argocd"
+          echo "  PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd"
+          echo "  make platform-ingress-vip"
+        elif ! printf '%s\n' "${traefik_ip}" | grep -Fw "${INGRESS_VIP}" >/dev/null; then
+          echo "GUI ingresses exist, but Traefik does not yet show the expected ingress VIP."
+          echo "Run: make platform-ingress-vip"
+        else
+          echo "GUI ingress path appears ready on ${INGRESS_VIP}."
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_status_report
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print platform status report
+      ansible.builtin.debug:
+        var: platform_status_report.stdout_lines
+      run_once: true

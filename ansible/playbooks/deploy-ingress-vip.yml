@@ -1,0 +1,91 @@
+---
+- name: Apply platform ingress VIP to MetalLB when available
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
+    platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+  tasks:
+    - name: Require ingress VIP settings
+      ansible.builtin.assert:
+        that:
+          - rke2_ingress_vip_effective | length > 0
+          - not (rke2_ingress_vip_effective is match("^<.*>$"))
+          - platform_domain_effective | length > 0
+          - not (platform_domain_effective is match("^<.*>$"))
+        fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
+      run_once: true
+
+    - name: Apply MetalLB address pool if CRDs exist
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" get crd ipaddresspools.metallb.io >/dev/null 2>&1; then
+          echo "MetalLB CRDs are not installed yet. Skipping ingress VIP pool for now."
+          echo "After GitOps installs MetalLB, rerun: make platform-ingress-vip"
+          exit 0
+        fi
+        "$K" --kubeconfig "$C" apply -f -
+      args:
+        executable: /bin/bash
+        stdin: |
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: platform-ingress
+            namespace: metallb-system
+          spec:
+            addresses:
+              - {{ rke2_ingress_vip_effective }}/32
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: platform-ingress
+            namespace: metallb-system
+          spec:
+            ipAddressPools:
+              - platform-ingress
+      register: platform_ingress_vip_apply
+      changed_when: "'created' in platform_ingress_vip_apply.stdout or 'configured' in platform_ingress_vip_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print MetalLB ingress VIP result
+      ansible.builtin.debug:
+        var: platform_ingress_vip_apply.stdout_lines
+      run_once: true
+
+    - name: Wait for Traefik to receive the ingress VIP when Traefik exists
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" -n traefik get svc traefik >/dev/null 2>&1; then
+          echo "Traefik service is not installed yet. Skipping LoadBalancer VIP wait."
+          exit 0
+        fi
+        "$K" --kubeconfig "$C" -n traefik get svc traefik \
+          -o jsonpath='{.status.loadBalancer.ingress[*].ip}' |
+          grep -Fw "{{ rke2_ingress_vip_effective }}"
+      args:
+        executable: /bin/bash
+      register: platform_traefik_vip_wait
+      changed_when: false
+      failed_when: false
+      retries: 30
+      delay: 10
+      until: platform_traefik_vip_wait.rc == 0 or 'Traefik service is not installed yet' in platform_traefik_vip_wait.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Show expected platform GUI hostnames
+      ansible.builtin.debug:
+        msg:
+          - "Ingress VIP: {{ rke2_ingress_vip_effective }}"
+          - "Expected GUI hostnames: argocd.{{ platform_domain_effective }}, forgejo.{{ platform_domain_effective }}, harbor.{{ platform_domain_effective }}, woodpecker.{{ platform_domain_effective }}, grafana.{{ platform_domain_effective }}, prometheus.{{ platform_domain_effective }}"
+          - "If browsing from Windows, add those names to the Windows hosts file or internal DNS, pointing at the ingress VIP."
+      run_once: true

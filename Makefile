@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan platform-bootstrap platform-argocd platform-ingress-vip platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -10,6 +10,10 @@ help:
 	@echo "  validate        Run repository validation"
 	@echo "  no-secrets      Scan repository for obvious secrets/private data"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
+	@echo "  platform-bootstrap  Verify RKE2/API VIP, bootstrap Argo CD, configure app VIP when ready, and print access report"
+	@echo "  platform-argocd  Bootstrap Argo CD; set PLATFORM_APPLY_GITOPS=true and PLATFORM_REPO_URL to register apps"
+	@echo "  platform-ingress-vip  Apply MetalLB ingress VIP pool after MetalLB is installed"
+	@echo "  platform-status  Show API, app VIP, Argo CD, ingress, service, and GUI URL status"
 	@echo "  rke2-preflight  Check Ansible SSH/sudo and write node /etc/hosts"
 	@echo "  rke2-controller-hosts  Write platform /etc/hosts on the Ansible controller"
 	@echo "  rke2-prepare    Prepare Linux nodes through Ansible"
@@ -39,6 +43,17 @@ no-secrets:
 
 bootstrap-plan:
 	@bash scripts/bootstrap-plan.sh
+
+platform-bootstrap: rke2-verify rke2-api-vip rke2-controller-hosts platform-argocd platform-ingress-vip platform-status
+
+platform-argocd:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/bootstrap-argocd.yml
+
+platform-ingress-vip:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/deploy-ingress-vip.yml
+
+platform-status:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/platform-status.yml
 
 rke2-preflight:
 	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/preflight.yml
