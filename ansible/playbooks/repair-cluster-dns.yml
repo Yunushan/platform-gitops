@@ -13,6 +13,7 @@
     platform_dns_probe_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_PROBE_TIMEOUT') }}"
     platform_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_REPAIR') }}"
     platform_dns_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
+    platform_dns_service_path_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
@@ -21,6 +22,8 @@
     platform_dns_ipv4_only_effective: "{{ platform_dns_ipv4_only | default(platform_dns_ipv4_only_from_env, true) | default(true, true) | bool }}"
     platform_dns_service_path_repair_effective: "{{ platform_dns_service_path_repair | default(platform_dns_service_path_repair_from_env, true) | default(true, true) | bool }}"
     platform_dns_service_path_rollout_timeout_effective: "{{ platform_dns_service_path_rollout_timeout | default(platform_dns_service_path_rollout_timeout_from_env, true) | default(120, true) | int }}"
+    platform_dns_service_path_poll_interval_effective: "{{ platform_dns_service_path_poll_interval | default(platform_dns_service_path_poll_interval_from_env, true) | default(5, true) | int }}"
+    platform_dns_service_path_rollout_retries_effective: "{{ (((platform_dns_service_path_rollout_timeout_effective | int) / (platform_dns_service_path_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
@@ -122,6 +125,7 @@
           - (platform_dns_check_timeout_effective | int) > 0
           - (platform_dns_probe_timeout_effective | int) > 0
           - (platform_dns_service_path_rollout_timeout_effective | int) > 0
+          - (platform_dns_service_path_poll_interval_effective | int) > 0
           - (platform_dns_probe_timeout_effective | int) < (platform_dns_check_timeout_effective | int)
           - platform_dns_check_image_effective | length > 0
           - platform_dns_check_repo_effective | length > 0
@@ -274,6 +278,8 @@
           {{ 'enabled' if platform_dns_service_path_repair_effective else 'disabled' }}.
           DNS service path rollout timeout:
           {{ platform_dns_service_path_rollout_timeout_effective }}s per component.
+          DNS service path poll interval:
+          {{ platform_dns_service_path_poll_interval_effective }}s.
       run_once: true
 
     - name: Run cluster DNS check before repair
@@ -725,39 +731,21 @@
           when: platform_dns_service_path_state_before_repair is defined and platform_dns_service_path_state_before_repair.stdout_lines is defined
           run_once: true
 
-        - name: Repair kube-proxy DNS service path component
+        - name: Detect kube-proxy DNS service path component
           ansible.builtin.shell: |
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            TIMEOUT={{ platform_dns_service_path_rollout_timeout_effective }}
-            run_bounded() {
-              seconds="$1"
-              shift
-              if command -v timeout >/dev/null 2>&1; then
-                timeout "${seconds}" "$@"
-              else
-                "$@"
-              fi
-            }
             if "$K" --kubeconfig "$C" -n kube-system get daemonset kube-proxy >/dev/null 2>&1; then
-              "$K" --kubeconfig "$C" -n kube-system rollout restart daemonset/kube-proxy || true
-              run_bounded "$((TIMEOUT + 15))" "$K" --kubeconfig "$C" -n kube-system rollout status daemonset/kube-proxy --timeout="${TIMEOUT}s" || true
+              echo daemonset/kube-proxy
             elif "$K" --kubeconfig "$C" -n kube-system get daemonset rke2-kube-proxy >/dev/null 2>&1; then
-              "$K" --kubeconfig "$C" -n kube-system rollout restart daemonset/rke2-kube-proxy || true
-              run_bounded "$((TIMEOUT + 15))" "$K" --kubeconfig "$C" -n kube-system rollout status daemonset/rke2-kube-proxy --timeout="${TIMEOUT}s" || true
+              echo daemonset/rke2-kube-proxy
             else
-              echo "No kube-proxy DaemonSet found; deleting kube-proxy pods by common labels/names if present."
-              "$K" --kubeconfig "$C" -n kube-system delete pod -l k8s-app=kube-proxy --ignore-not-found=true || true
-              "$K" --kubeconfig "$C" -n kube-system get pods -o name |
-                awk -F/ '/\/kube-proxy-/ {print $2}' |
-                xargs -r "$K" --kubeconfig "$C" -n kube-system delete pod --ignore-not-found=true || true
+              echo none
             fi
-            "$K" --kubeconfig "$C" -n kube-system get ds,pods -o wide |
-              grep -E 'NAME|kube-proxy' || true
           args:
             executable: /bin/bash
-          register: platform_dns_service_path_kube_proxy_repair
-          changed_when: true
+          register: platform_dns_kube_proxy_workload
+          changed_when: false
           failed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
@@ -765,32 +753,101 @@
             - platform_dns_service_path_repair_effective | bool
             - not (platform_dns_default_resolution_ok | bool)
 
-        - name: Repair Cilium DNS service path component
+        - name: Restart kube-proxy DNS service path component
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout restart {{ platform_dns_kube_proxy_workload.stdout }}
+          register: platform_dns_service_path_kube_proxy_restart
+          changed_when: "'restarted' in platform_dns_service_path_kube_proxy_restart.stdout"
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_kube_proxy_workload.stdout | default('none') != 'none'
+
+        - name: Poll kube-proxy DNS service path component
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout status {{ platform_dns_kube_proxy_workload.stdout }}
+            --timeout={{ platform_dns_service_path_poll_interval_effective }}s
+          register: platform_dns_service_path_kube_proxy_rollout
+          retries: "{{ platform_dns_service_path_rollout_retries_effective }}"
+          delay: "{{ platform_dns_service_path_poll_interval_effective }}"
+          until: platform_dns_service_path_kube_proxy_rollout.rc == 0
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_kube_proxy_workload.stdout | default('none') != 'none'
+
+        - name: Delete kube-proxy pods when no DaemonSet exists
           ansible.builtin.shell: |
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            TIMEOUT={{ platform_dns_service_path_rollout_timeout_effective }}
-            run_bounded() {
-              seconds="$1"
-              shift
-              if command -v timeout >/dev/null 2>&1; then
-                timeout "${seconds}" "$@"
-              else
-                "$@"
-              fi
-            }
-            if "$K" --kubeconfig "$C" -n kube-system get daemonset cilium >/dev/null 2>&1; then
-              "$K" --kubeconfig "$C" -n kube-system rollout restart daemonset/cilium || true
-              run_bounded "$((TIMEOUT + 15))" "$K" --kubeconfig "$C" -n kube-system rollout status daemonset/cilium --timeout="${TIMEOUT}s" || true
-            else
-              echo "No Cilium DaemonSet found; skipping Cilium restart."
-            fi
+            "$K" --kubeconfig "$C" -n kube-system delete pod -l k8s-app=kube-proxy --ignore-not-found=true || true
+            "$K" --kubeconfig "$C" -n kube-system get pods -o name |
+              awk -F/ '/\/kube-proxy-/ {print $2}' |
+              xargs -r "$K" --kubeconfig "$C" -n kube-system delete pod --ignore-not-found=true || true
+            "$K" --kubeconfig "$C" -n kube-system get pods -o wide |
+              grep -E 'NAME|kube-proxy' || true
+          args:
+            executable: /bin/bash
+          register: platform_dns_service_path_kube_proxy_delete
+          changed_when: "'deleted' in platform_dns_service_path_kube_proxy_delete.stdout"
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_kube_proxy_workload.stdout | default('none') == 'none'
+
+        - name: Restart Cilium DNS service path component
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout restart daemonset/cilium
+          register: platform_dns_service_path_cilium_restart
+          changed_when: "'restarted' in platform_dns_service_path_cilium_restart.stdout"
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+
+        - name: Poll Cilium DNS service path component
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout status daemonset/cilium
+            --timeout={{ platform_dns_service_path_poll_interval_effective }}s
+          register: platform_dns_service_path_cilium_rollout
+          retries: "{{ platform_dns_service_path_rollout_retries_effective }}"
+          delay: "{{ platform_dns_service_path_poll_interval_effective }}"
+          until: platform_dns_service_path_cilium_rollout.rc == 0
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_cilium_restart.rc | default(1) == 0
+
+        - name: Show Cilium DNS service path component
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
             "$K" --kubeconfig "$C" -n kube-system get ds,pods -o wide |
               grep -E 'NAME|cilium' || true
           args:
             executable: /bin/bash
-          register: platform_dns_service_path_cilium_repair
-          changed_when: true
+          register: platform_dns_service_path_cilium_state
+          changed_when: false
           failed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
@@ -798,34 +855,36 @@
             - platform_dns_service_path_repair_effective | bool
             - not (platform_dns_default_resolution_ok | bool)
 
-        - name: Repair CoreDNS DNS service path component
-          ansible.builtin.shell: |
-            K=/var/lib/rancher/rke2/bin/kubectl
-            C=/etc/rancher/rke2/rke2.yaml
-            TIMEOUT={{ platform_dns_service_path_rollout_timeout_effective }}
-            run_bounded() {
-              seconds="$1"
-              shift
-              if command -v timeout >/dev/null 2>&1; then
-                timeout "${seconds}" "$@"
-              else
-                "$@"
-              fi
-            }
-            "$K" --kubeconfig "$C" -n kube-system rollout restart deployment/{{ platform_coredns_deployment }} || true
-            run_bounded "$((TIMEOUT + 15))" "$K" --kubeconfig "$C" -n kube-system rollout status deployment/{{ platform_coredns_deployment }} --timeout="${TIMEOUT}s" || true
-            "$K" --kubeconfig "$C" -n kube-system get pods -o wide |
-              grep -E 'NAME|coredns' || true
-          args:
-            executable: /bin/bash
-          register: platform_dns_service_path_coredns_repair
-          changed_when: true
+        - name: Restart CoreDNS DNS service path component
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout restart deployment/{{ platform_coredns_deployment }}
+          register: platform_dns_service_path_coredns_restart
+          changed_when: "'restarted' in platform_dns_service_path_coredns_restart.stdout"
           failed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
             - not (platform_dns_default_resolution_ok | bool)
+
+        - name: Poll CoreDNS DNS service path component
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout status deployment/{{ platform_coredns_deployment }}
+            --timeout={{ platform_dns_service_path_poll_interval_effective }}s
+          register: platform_dns_service_path_coredns_rollout
+          retries: "{{ platform_dns_service_path_rollout_retries_effective }}"
+          delay: "{{ platform_dns_service_path_poll_interval_effective }}"
+          until: platform_dns_service_path_coredns_rollout.rc == 0
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_coredns_restart.rc | default(1) == 0
 
         - name: Collect Kubernetes DNS service path state after component repair
           ansible.builtin.shell: |
@@ -849,11 +908,11 @@
           ansible.builtin.debug:
             msg:
               - "kube-proxy repair:"
-              - "{{ platform_dns_service_path_kube_proxy_repair.stdout_lines | default(['not run']) }}"
+              - "{{ platform_dns_service_path_kube_proxy_rollout.stdout_lines | default(platform_dns_service_path_kube_proxy_delete.stdout_lines | default(['not run'])) }}"
               - "Cilium repair:"
-              - "{{ platform_dns_service_path_cilium_repair.stdout_lines | default(['not run']) }}"
+              - "{{ platform_dns_service_path_cilium_rollout.stdout_lines | default(platform_dns_service_path_cilium_state.stdout_lines | default(['not run'])) }}"
               - "CoreDNS repair:"
-              - "{{ platform_dns_service_path_coredns_repair.stdout_lines | default(['not run']) }}"
+              - "{{ platform_dns_service_path_coredns_rollout.stdout_lines | default(['not run']) }}"
               - "Post-repair state:"
               - "{{ platform_dns_service_path_state_after_repair.stdout_lines | default(['not collected']) }}"
           when:
@@ -994,13 +1053,13 @@
             echo "===== DNS service path repair output ====="
             cat <<'PLATFORM_DNS_SERVICE_PATH_REPAIR_OUTPUT'
             kube-proxy:
-            {{ platform_dns_service_path_kube_proxy_repair.stdout | default('not run') }}
+            {{ platform_dns_service_path_kube_proxy_rollout.stdout | default(platform_dns_service_path_kube_proxy_delete.stdout | default('not run')) }}
 
             cilium:
-            {{ platform_dns_service_path_cilium_repair.stdout | default('not run') }}
+            {{ platform_dns_service_path_cilium_rollout.stdout | default(platform_dns_service_path_cilium_state.stdout | default('not run')) }}
 
             coredns:
-            {{ platform_dns_service_path_coredns_repair.stdout | default('not run') }}
+            {{ platform_dns_service_path_coredns_rollout.stdout | default('not run') }}
             PLATFORM_DNS_SERVICE_PATH_REPAIR_OUTPUT
             echo "===== kube-proxy and Cilium workloads ====="
             "$K" --kubeconfig "$C" -n kube-system get ds,pods -o wide | grep -E 'NAME|kube-proxy|cilium|coredns' || true
