@@ -120,6 +120,12 @@ If direct upstream DNS works from pods but Kubernetes DNS service lookups still 
 PLATFORM_DNS_SERVICE_PATH_REPAIR=false make platform-ingress
 ```
 
+The service-path repair is split into visible kube-proxy, Cilium, and CoreDNS tasks. Each rollout waits up to 120 seconds by default. To shorten that while troubleshooting:
+
+```bash
+PLATFORM_DNS_SERVICE_PATH_ROLLOUT_TIMEOUT=45 make platform-ingress
+```
+
 To force explicit CoreDNS upstreams:
 
 ```bash
