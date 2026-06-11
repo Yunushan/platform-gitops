@@ -295,13 +295,47 @@
               '
           run_once: true
 
-    - name: Verify API VIP answers from every node
-      ansible.builtin.command: "curl -sk --connect-timeout 5 --max-time 15 https://{{ rke2_api_vip_effective }}:6443/readyz"
-      register: kube_vip_readyz
+    - name: Verify API VIP TCP/TLS path from every node
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl --silent --show-error --insecure --output /tmp/kube-vip-readyz-body \
+          --write-out '%{http_code}' \
+          --connect-timeout 5 \
+          --max-time 15 \
+          https://{{ rke2_api_vip_effective }}:6443/readyz
+      args:
+        executable: /bin/bash
+      register: kube_vip_readyz_http
       changed_when: false
       retries: 18
       delay: 10
-      until: kube_vip_readyz.rc == 0 and 'ok' in kube_vip_readyz.stdout
+      until:
+        - kube_vip_readyz_http.rc == 0
+        - kube_vip_readyz_http.stdout in ['200', '401']
+
+    - name: Verify authenticated API readiness through VIP
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        --server=https://{{ rke2_api_vip_effective }}:6443 get --raw=/readyz
+      register: kube_vip_authenticated_readyz
+      changed_when: false
+      retries: 18
+      delay: 10
+      until: kube_vip_authenticated_readyz.rc == 0 and 'ok' in kube_vip_authenticated_readyz.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Verify authenticated API readiness through API DNS
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        --server=https://{{ rke2_api_dns_effective }}:6443 get --raw=/readyz
+      register: kube_vip_authenticated_dns_readyz
+      changed_when: false
+      retries: 18
+      delay: 10
+      until: kube_vip_authenticated_dns_readyz.rc == 0 and 'ok' in kube_vip_authenticated_dns_readyz.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
 
     - name: Show kube-vip pods
       ansible.builtin.command: >-
