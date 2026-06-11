@@ -11,11 +11,13 @@
     platform_apply_gitops_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APPLY_GITOPS') }}"
     platform_argocd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_URL') }}"
     platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
+    platform_argocd_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_POLL_INTERVAL') }}"
     platform_repo_url_effective: "{{ platform_repo_url | default(platform_repo_url_from_env, true) }}"
     platform_profile_effective: "{{ platform_profile | default(platform_profile_from_env, true) | default('default', true) }}"
     platform_apply_gitops_effective: "{{ platform_apply_gitops | default(platform_apply_gitops_from_env, true) | default(false, true) | bool }}"
     platform_argocd_manifest_url_effective: "{{ platform_argocd_manifest_url | default(platform_argocd_manifest_url_from_env, true) | default('https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/ha/install.yaml', true) }}"
-    platform_argocd_rollout_timeout_effective: "{{ platform_argocd_rollout_timeout | default(platform_argocd_rollout_timeout_from_env, true) | default('600s', true) }}"
+    platform_argocd_rollout_timeout_effective: "{{ platform_argocd_rollout_timeout | default(platform_argocd_rollout_timeout_from_env, true) | default('600', true) | string | regex_replace('s$', '') | int }}"
+    platform_argocd_poll_interval_effective: "{{ platform_argocd_poll_interval | default(platform_argocd_poll_interval_from_env, true) | default(10, true) | int }}"
     platform_project_file: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects/platform-project.yaml"
     platform_applications_file: >-
       {{
@@ -94,20 +96,55 @@
               make platform-argocd
           run_once: true
 
+    - name: Show Argo CD workload snapshot before rollout wait
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" -n argocd get deployment,statefulset,pods -o wide || true
+      args:
+        executable: /bin/bash
+      register: platform_argocd_initial_snapshot
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Argo CD workload snapshot before rollout wait
+      ansible.builtin.debug:
+        var: platform_argocd_initial_snapshot.stdout_lines
+      run_once: true
+
     - name: Wait for Argo CD workloads to become available
       block:
-        - name: Poll Argo CD rollout state
+        - name: Poll Argo CD deployment availability
           ansible.builtin.shell: |
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            "$K" --kubeconfig "$C" -n argocd wait --for=condition=Available deployment --all --timeout={{ platform_argocd_rollout_timeout_effective }}
+            "$K" --kubeconfig "$C" -n argocd wait --for=condition=Available deployment --all --timeout={{ platform_argocd_poll_interval_effective }}s
+          args:
+            executable: /bin/bash
+          register: platform_argocd_deployment_rollout
+          retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ platform_argocd_poll_interval_effective }}"
+          until: platform_argocd_deployment_rollout.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Poll Argo CD statefulset rollout
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
             for resource in $("$K" --kubeconfig "$C" -n argocd get statefulset -o name 2>/dev/null); do
-              "$K" --kubeconfig "$C" -n argocd rollout status "$resource" --timeout={{ platform_argocd_rollout_timeout_effective }}
+              "$K" --kubeconfig "$C" -n argocd rollout status "$resource" --timeout={{ platform_argocd_poll_interval_effective }}s
             done
           args:
             executable: /bin/bash
-          register: platform_argocd_rollout
+          register: platform_argocd_statefulset_rollout
+          retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ platform_argocd_poll_interval_effective }}"
+          until: platform_argocd_statefulset_rollout.rc == 0
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
@@ -118,8 +155,18 @@
             C=/etc/rancher/rke2/rke2.yaml
             echo "===== argocd pods ====="
             "$K" --kubeconfig "$C" -n argocd get pods -o wide || true
+            echo "===== argocd workloads ====="
+            "$K" --kubeconfig "$C" -n argocd get deployment,statefulset,replicaset -o wide || true
             echo "===== argocd services ====="
             "$K" --kubeconfig "$C" -n argocd get svc -o wide || true
+            echo "===== argocd images ====="
+            "$K" --kubeconfig "$C" -n argocd get pods -o jsonpath='{range .items[*]}pod:{.metadata.name}{"\n"}{range .spec.initContainers[*]}  init:{.name}={.image}{"\n"}{end}{range .spec.containers[*]}  container:{.name}={.image}{"\n"}{end}{end}' || true
+            echo
+            echo "===== argocd pod events/details ====="
+            for pod in $("$K" --kubeconfig "$C" -n argocd get pods -o name 2>/dev/null); do
+              echo "--- ${pod} ---"
+              "$K" --kubeconfig "$C" -n argocd describe "${pod}" | sed -n '/Containers:/,/Conditions:/p;/Events:/,$p' || true
+            done
             echo "===== argocd events ====="
             "$K" --kubeconfig "$C" -n argocd get events --sort-by=.lastTimestamp | tail -120 || true
           args:
@@ -137,7 +184,7 @@
 
         - name: Stop after Argo CD bootstrap failure
           ansible.builtin.fail:
-            msg: "Argo CD did not become available within {{ platform_argocd_rollout_timeout_effective }}. Review diagnostics above."
+            msg: "Argo CD did not become available within {{ platform_argocd_rollout_timeout_effective }}s. Review diagnostics above."
           run_once: true
 
     - name: Show skipped GitOps application registration

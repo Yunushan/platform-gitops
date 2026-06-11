@@ -20,6 +20,12 @@ make platform-argocd
 
 If Argo CD bootstrap fails with `metadata.annotations: Too long` for `applicationsets.argoproj.io`, rerun `make platform-argocd` after updating to this version of the playbook. The bootstrap uses server-side apply so large Argo CD CRDs are not stored in the client-side `last-applied` annotation.
 
+If the playbook is waiting at Argo CD rollout, it polls for up to 600 seconds by default and prints pod/event diagnostics on failure. To extend the wait for slow image pulls:
+
+```bash
+PLATFORM_ARGOCD_ROLLOUT_TIMEOUT=1200 make platform-argocd
+```
+
 To register platform applications, provide the repository URL and explicitly allow GitOps app registration:
 
 ```bash
