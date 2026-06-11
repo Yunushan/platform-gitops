@@ -94,6 +94,18 @@ To wait longer on slow chart/image pulls:
 PLATFORM_INGRESS_ROLLOUT_TIMEOUT=1200 make platform-ingress
 ```
 
+If `helm-install-platform-metallb` or `helm-install-platform-traefik` stays `Running` for many minutes with restarts, rerun:
+
+```bash
+make platform-ingress
+```
+
+The ingress playbook cleans stale platform Helm install jobs before retrying by default and prints HelmChart/job/pod logs if CRDs still do not appear. To disable cleanup while debugging:
+
+```bash
+PLATFORM_INGRESS_CLEANUP_HELM_JOBS=false make platform-ingress
+```
+
 ## API VIP or API DNS does not answer
 
 If all RKE2 nodes are `Ready` but the VIP or API DNS fails:

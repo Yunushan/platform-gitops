@@ -12,10 +12,12 @@
     platform_traefik_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_VERSION') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
+    platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
     platform_metallb_chart_version_effective: "{{ platform_metallb_chart_version | default(platform_metallb_chart_version_from_env, true) }}"
     platform_traefik_chart_version_effective: "{{ platform_traefik_chart_version | default(platform_traefik_chart_version_from_env, true) }}"
     platform_ingress_rollout_timeout_effective: "{{ platform_ingress_rollout_timeout | default(platform_ingress_rollout_timeout_from_env, true) | default('600', true) | string | regex_replace('s$', '') | int }}"
     platform_ingress_poll_interval_effective: "{{ platform_ingress_poll_interval | default(platform_ingress_poll_interval_from_env, true) | default(10, true) | int }}"
+    platform_ingress_cleanup_helm_jobs_effective: "{{ platform_ingress_cleanup_helm_jobs | default(platform_ingress_cleanup_helm_jobs_from_env, true) | default(true, true) | bool }}"
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
     platform_ingress_firewalld_ports:
@@ -38,7 +40,8 @@
       ansible.builtin.debug:
         msg: >-
           Platform ingress rollout timeout is {{ platform_ingress_rollout_timeout_effective }}s
-          with {{ platform_ingress_poll_interval_effective }}s polling.
+          with {{ platform_ingress_poll_interval_effective }}s polling. Stale Helm job cleanup is
+          {{ 'enabled' if platform_ingress_cleanup_helm_jobs_effective else 'disabled' }}.
       run_once: true
 
     - name: Check firewalld state
@@ -79,6 +82,16 @@
       register: platform_ingress_helmchart_crd
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Clean stale MetalLB Helm install job before retry
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n kube-system delete job/helm-install-platform-metallb --ignore-not-found=true
+      register: platform_metallb_helm_job_cleanup
+      changed_when: "'deleted' in platform_metallb_helm_job_cleanup.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      when: platform_ingress_cleanup_helm_jobs_effective | bool
       run_once: true
 
     - name: Install or update MetalLB through the RKE2 Helm controller
@@ -132,8 +145,21 @@
             C=/etc/rancher/rke2/rke2.yaml
             echo "===== HelmChart resources ====="
             "$K" --kubeconfig "$C" -n kube-system get helmchart,helmchartconfig 2>/dev/null | grep -E 'platform-metallb|NAME' || true
+            echo "===== platform-metallb HelmChart detail ====="
+            "$K" --kubeconfig "$C" -n kube-system describe helmchart platform-metallb || true
             echo "===== kube-system Helm jobs/pods ====="
             "$K" --kubeconfig "$C" -n kube-system get jobs,pods -o wide | grep -E 'helm-install|platform-metallb|metallb|NAME' || true
+            echo "===== platform-metallb Helm job detail ====="
+            "$K" --kubeconfig "$C" -n kube-system describe job helm-install-platform-metallb || true
+            echo "===== platform-metallb Helm pod logs ====="
+            for pod in $("$K" --kubeconfig "$C" -n kube-system get pods -l job-name=helm-install-platform-metallb -o name 2>/dev/null); do
+              echo "--- ${pod} describe ---"
+              "$K" --kubeconfig "$C" -n kube-system describe "${pod}" || true
+              echo "--- ${pod} current logs ---"
+              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --tail=240 || true
+              echo "--- ${pod} previous logs ---"
+              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --previous --tail=240 || true
+            done
             echo "===== MetalLB namespace ====="
             "$K" --kubeconfig "$C" get ns metallb-system -o wide || true
             echo "===== MetalLB pods ====="
@@ -165,6 +191,10 @@
 
               Review the diagnostics above. Common causes are Helm chart download failure,
               registry/network/proxy issues, or an RKE2 Helm controller failure.
+
+              This playbook now cleans stale helm-install-platform-metallb jobs before retrying by default.
+              To disable that cleanup:
+              PLATFORM_INGRESS_CLEANUP_HELM_JOBS=false make platform-ingress
           run_once: true
 
     - name: Wait for MetalLB controller
@@ -241,6 +271,16 @@
       register: platform_metallb_pool_apply
       changed_when: "'created' in platform_metallb_pool_apply.stdout or 'configured' in platform_metallb_pool_apply.stdout"
       delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Clean stale Traefik Helm install job before retry
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n kube-system delete job/helm-install-platform-traefik --ignore-not-found=true
+      register: platform_traefik_helm_job_cleanup
+      changed_when: "'deleted' in platform_traefik_helm_job_cleanup.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      when: platform_ingress_cleanup_helm_jobs_effective | bool
       run_once: true
 
     - name: Install or update Traefik through the RKE2 Helm controller
