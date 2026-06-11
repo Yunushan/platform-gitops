@@ -182,15 +182,41 @@
             var: platform_argocd_diagnostics.stdout_lines
           run_once: true
 
+        - name: Classify Argo CD bootstrap failure
+          ansible.builtin.set_fact:
+            platform_argocd_failure_cause: >-
+              {% set diagnostics = platform_argocd_diagnostics.stdout | default('') %}
+              {% if diagnostics is search('ImagePullBackOff|ErrImagePull|Failed to pull image|failed to pull and unpack image|TLS handshake timeout|i/o timeout|connection timed out|pull access denied') %}
+              Image pull or registry access problem. Check registry egress, proxy, DNS, MTU, TLS inspection, or internal mirror configuration.
+              {% elif diagnostics is search('CrashLoopBackOff|Back-off restarting failed container|Error:|panic:|fatal') %}
+              Argo CD pod crash. Review the pod logs and events in the diagnostic summary.
+              {% elif diagnostics is search('FailedScheduling|0/[0-9]+ nodes are available|Insufficient cpu|Insufficient memory|node affinity|taint') %}
+              Scheduling or node resource problem. Check CPU, memory, taints, and node readiness.
+              {% elif diagnostics is search('CreateContainerConfigError|CreateContainerError|RunContainerError') %}
+              Container configuration/startup problem. Review pod descriptions and events.
+              {% else %}
+              Rollout timed out before Argo CD became available. Review the diagnostic summary below.
+              {% endif %}
+          run_once: true
+
         - name: Stop after Argo CD bootstrap failure
           ansible.builtin.fail:
             msg: |
               Argo CD did not become available within {{ platform_argocd_rollout_timeout_effective }}s.
 
-              Review the diagnostics above. To collect the live state again without changing the cluster, run:
+              Likely cause:
+              {{ platform_argocd_failure_cause | trim }}
+
+              Diagnostic summary:
+              {% for line in (platform_argocd_diagnostics.stdout_lines | default([]))[0:180] %}
+              {{ line }}
+              {% endfor %}
+
+              To collect the live state again without changing the cluster, run:
               make platform-argocd-diagnose
 
-              Common causes are slow/blocked image pulls, registry egress/proxy issues, insufficient node resources, or pods waiting on scheduling.
+              If the summary points to slow image pulls only, retry with:
+              PLATFORM_ARGOCD_ROLLOUT_TIMEOUT=1200 make platform-argocd
           run_once: true
 
     - name: Show skipped GitOps application registration
