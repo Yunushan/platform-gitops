@@ -29,8 +29,8 @@
           - not (rke2_ingress_vip_effective is match("^<.*>$"))
           - platform_domain_effective | length > 0
           - not (platform_domain_effective is match("^<.*>$"))
-          - platform_ingress_rollout_timeout_effective > 0
-          - platform_ingress_poll_interval_effective > 0
+          - platform_ingress_rollout_timeout_effective | int > 0
+          - platform_ingress_poll_interval_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
