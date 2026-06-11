@@ -16,6 +16,10 @@
     kube_vip_interface_effective: "{{ kube_vip_interface | default(kube_vip_interface_from_env, true) | default(ansible_default_ipv4.interface, true) }}"
     kube_vip_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_ROLLOUT_TIMEOUT') }}"
     kube_vip_rollout_timeout_effective: "{{ kube_vip_rollout_timeout | default(kube_vip_rollout_timeout_from_env, true) | default('180s', true) }}"
+    kube_vip_registry_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_REGISTRY_CHECK_TIMEOUT') }}"
+    kube_vip_registry_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_REGISTRY_CONNECT_TIMEOUT') }}"
+    kube_vip_registry_check_timeout_effective: "{{ kube_vip_registry_check_timeout | default(kube_vip_registry_check_timeout_from_env, true) | default(30, true) | int }}"
+    kube_vip_registry_connect_timeout_effective: "{{ kube_vip_registry_connect_timeout | default(kube_vip_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
   tasks:
     - name: Require kube-vip API VIP settings
       ansible.builtin.assert:
@@ -36,6 +40,32 @@
           Deploying kube-vip API VIP {{ rke2_api_vip_effective }} on interface {{ kube_vip_interface_effective }}
           with image {{ kube_vip_image_effective }}.
       run_once: true
+
+    - name: Verify kube-vip image registry is reachable from nodes
+      ansible.builtin.shell: |
+        set -o pipefail
+        curl --silent --show-error --location --output /dev/null \
+          --write-out 'http_code=%{http_code} remote_ip=%{remote_ip} time_connect=%{time_connect} time_appconnect=%{time_appconnect} time_total=%{time_total}\n' \
+          --connect-timeout {{ kube_vip_registry_connect_timeout_effective }} \
+          --max-time {{ kube_vip_registry_check_timeout_effective }} \
+          https://ghcr.io/v2/
+      args:
+        executable: /bin/bash
+      register: kube_vip_registry_check
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when kube-vip image registry is unreachable
+      ansible.builtin.fail:
+        msg: |
+          {{ inventory_hostname }} cannot reach ghcr.io for the default kube-vip image {{ kube_vip_image_effective }}.
+
+          Failed check output:
+          {{ kube_vip_registry_check.stdout }}
+          {{ kube_vip_registry_check.stderr }}
+
+          Fix node egress/proxy/mirror access to ghcr.io, or set kube_vip_image to an internal mirrored image.
+      when: kube_vip_registry_check.rc != 0
 
     - name: Apply kube-vip RBAC and DaemonSet
       ansible.builtin.shell: |
@@ -201,7 +231,19 @@
 
         - name: Stop after kube-vip rollout failure
           ansible.builtin.fail:
-            msg: "kube-vip DaemonSet did not become available within {{ kube_vip_rollout_timeout_effective }}. Review diagnostics above."
+            msg: |
+              kube-vip DaemonSet did not become available within {{ kube_vip_rollout_timeout_effective }}.
+
+              Review the kube-vip diagnostics printed above. To inspect the live state again:
+
+              ansible -i inventory/hosts.local.ini node-1 -b -m shell -a '
+              K=/var/lib/rancher/rke2/bin/kubectl
+              C=/etc/rancher/rke2/rke2.yaml
+              $K --kubeconfig "$C" -n kube-system get ds kube-vip-ds -o wide
+              $K --kubeconfig "$C" -n kube-system get pods -l app.kubernetes.io/name=kube-vip -o wide
+              $K --kubeconfig "$C" -n kube-system describe pod -l app.kubernetes.io/name=kube-vip | sed -n "/Events:/,\$p"
+              $K --kubeconfig "$C" -n kube-system logs -l app.kubernetes.io/name=kube-vip --all-containers --tail=120 || true
+              '
           run_once: true
 
     - name: Verify API VIP answers from every node
