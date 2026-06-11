@@ -18,6 +18,7 @@
     platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
     platform_dns_ipv4_only_effective: "{{ platform_dns_ipv4_only | default(platform_dns_ipv4_only_from_env, true) | default(true, true) | bool }}"
     platform_dns_check_job_name: platform-dns-check
+    platform_dns_upstream_selection_job_name: platform-dns-upstream-select
     platform_coredns_configmap: rke2-coredns-rke2-coredns
     platform_coredns_deployment: rke2-coredns-rke2-coredns
   tasks:
@@ -92,9 +93,9 @@
           }}
       run_once: true
 
-    - name: Select CoreDNS upstreams
+    - name: Select CoreDNS upstream candidates
       ansible.builtin.set_fact:
-        platform_dns_upstreams_effective: >-
+        platform_dns_upstream_candidates_effective: >-
           {{
             ((platform_dns_upstreams_raw | trim | length) > 0)
             | ternary(platform_dns_upstreams_raw | regex_replace(',', ' '), platform_node_nameservers_detected)
@@ -103,7 +104,7 @@
           }}
       run_once: true
 
-    - name: Require DNS upstreams for repair fallback
+    - name: Require DNS upstream candidates for repair fallback
       ansible.builtin.assert:
         that:
           - (platform_dns_check_timeout_effective | int) > 0
@@ -111,14 +112,140 @@
           - (platform_dns_probe_timeout_effective | int) < (platform_dns_check_timeout_effective | int)
           - platform_dns_check_image_effective | length > 0
           - platform_dns_check_repo_effective | length > 0
-          - platform_dns_upstreams_effective | length > 0
-          - (platform_dns_upstreams_effective.split() | intersect(platform_cluster_dns_service_ips_list) | length) == 0
+          - platform_dns_upstream_candidates_effective | length > 0
+          - (platform_dns_upstream_candidates_effective.split() | intersect(platform_cluster_dns_service_ips_list) | length) == 0
         fail_msg: >-
           Could not auto-detect valid non-cluster DNS upstreams from node resolver configuration.
           Detected node resolver candidates were: {{ platform_node_nameservers_detected_all | default('') }}.
           Ignored Kubernetes DNS service IPs were: {{ platform_cluster_dns_service_ips_list | default([]) | join(' ') }}.
           Set PLATFORM_DNS_UPSTREAMS, for example:
           PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+      run_once: true
+
+    - name: Select reachable DNS upstreams from inside the cluster
+      ansible.builtin.shell: |
+        set -e -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        JOB={{ platform_dns_upstream_selection_job_name }}
+        "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+        "$K" --kubeconfig "$C" -n kube-system apply -f -
+        deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
+        while [ "${SECONDS}" -lt "${deadline}" ]; do
+          succeeded="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+          failed="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+          if [ "${succeeded}" = "1" ] || { [ -n "${failed}" ] && [ "${failed}" != "0" ]; }; then
+            break
+          fi
+          sleep 5
+        done
+        logs="$("$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=240 || true)"
+        printf '%s\n' "${logs}"
+        selected="$(printf '%s\n' "${logs}" | awk -F= '/^PLATFORM_DNS_SELECTED_UPSTREAMS=/{print $2; exit}')"
+        if [ -n "${selected}" ]; then
+          echo "ANSIBLE_SELECTED_UPSTREAMS=${selected}"
+          exit 0
+        fi
+        echo "No reachable DNS upstream candidates were selected from inside the cluster." >&2
+        exit 1
+      args:
+        executable: /bin/bash
+        stdin: |
+          ---
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: {{ platform_dns_upstream_selection_job_name }}
+            namespace: kube-system
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: {{ platform_dns_check_timeout_effective }}
+            ttlSecondsAfterFinished: 300
+            template:
+              spec:
+                restartPolicy: Never
+                nodeSelector:
+                  kubernetes.io/os: linux
+                containers:
+                  - name: dns-upstream-select
+                    image: {{ platform_dns_check_image_effective }}
+                    imagePullPolicy: IfNotPresent
+                    command:
+                      - sh
+                      - -c
+                    args:
+                      - |
+                        set -ex
+                        REPO_URL='{{ platform_dns_check_repo_effective }}'
+                        REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
+                        PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                        DNS_CANDIDATES='{{ platform_dns_upstream_candidates_effective }}'
+                        run_bounded() {
+                          seconds="$1"
+                          shift
+                          if command -v timeout >/dev/null 2>&1; then
+                            timeout "${seconds}" "$@"
+                          else
+                            "$@"
+                          fi
+                        }
+                        echo "===== pod resolver ====="
+                        cat /etc/resolv.conf
+                        echo "===== DNS upstream candidates ====="
+                        printf '%s\n' "${DNS_CANDIDATES}"
+                        if ! command -v nslookup >/dev/null 2>&1; then
+                          echo "nslookup is missing from the DNS check image." >&2
+                          exit 1
+                        fi
+                        selected=""
+                        for dns in ${DNS_CANDIDATES}; do
+                          echo "===== checking upstream ${dns} ====="
+                          if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                            selected="${selected} ${dns}"
+                          else
+                            echo "upstream ${dns} did not resolve ${REPO_HOST} from a pod"
+                          fi
+                        done
+                        selected="$(printf '%s' "${selected}" | xargs)"
+                        echo "PLATFORM_DNS_SELECTED_UPSTREAMS=${selected}"
+                        test -n "${selected}"
+      register: platform_dns_upstream_selection
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Select CoreDNS upstreams that passed pod reachability checks
+      ansible.builtin.set_fact:
+        platform_dns_upstreams_effective: >-
+          {{
+            (
+              platform_dns_upstream_selection.stdout_lines
+              | select('match', '^ANSIBLE_SELECTED_UPSTREAMS=')
+              | list
+              | first
+              | default('')
+              | regex_replace('^ANSIBLE_SELECTED_UPSTREAMS=', '')
+            )
+            | trim
+          }}
+      run_once: true
+
+    - name: Require reachable DNS upstreams selected from inside the cluster
+      ansible.builtin.assert:
+        that:
+          - platform_dns_upstreams_effective | length > 0
+        fail_msg: |
+          No discovered DNS upstream resolved {{ platform_dns_check_repo_effective }} from inside the cluster.
+
+          Candidate upstreams were:
+          {{ platform_dns_upstream_candidates_effective }}
+
+          Upstream selection output was:
+          {{ platform_dns_upstream_selection.stdout | default('') }}
+          {{ platform_dns_upstream_selection.stderr | default('') }}
+
+          Fix pod egress to your DNS servers, or set PLATFORM_DNS_UPSTREAMS to DNS servers reachable from pods.
       run_once: true
 
     - name: Show cluster DNS check settings
