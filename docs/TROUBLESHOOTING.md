@@ -106,6 +106,24 @@ The ingress playbook cleans stale platform Helm install jobs before retrying by 
 PLATFORM_INGRESS_CLEANUP_HELM_JOBS=false make platform-ingress
 ```
 
+If Helm logs show `lookup ... on ...:53: i/o timeout`, pod DNS cannot resolve external chart repositories through CoreDNS. The `platform-ingress` target runs DNS repair first. To run that step directly:
+
+```bash
+make platform-dns-repair
+```
+
+To force explicit CoreDNS upstreams:
+
+```bash
+PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+```
+
+To shorten or extend the DNS test window:
+
+```bash
+PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
+```
+
 ## API VIP or API DNS does not answer
 
 If all RKE2 nodes are `Ready` but the VIP or API DNS fails:

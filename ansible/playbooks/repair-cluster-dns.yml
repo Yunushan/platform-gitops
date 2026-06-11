@@ -1,0 +1,323 @@
+---
+- name: Verify and repair cluster DNS for platform bootstrap jobs
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_dns_upstreams_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_UPSTREAMS') }}"
+    platform_dns_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_TIMEOUT') }}"
+    platform_dns_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_IMAGE') }}"
+    platform_dns_check_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_REPO') }}"
+    platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
+    platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
+    platform_dns_check_image_effective: "{{ platform_dns_check_image | default(platform_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
+    platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
+    platform_dns_check_job_name: platform-dns-check
+    platform_coredns_configmap: rke2-coredns-rke2-coredns
+    platform_coredns_deployment: rke2-coredns-rke2-coredns
+  tasks:
+    - name: Read node resolver nameservers
+      ansible.builtin.shell: |
+        awk '
+          $1 == "nameserver" && $2 !~ /^127[.]/ && $2 != "::1" {
+            print $2
+          }
+        ' /etc/resolv.conf | xargs
+      args:
+        executable: /bin/bash
+      register: platform_node_nameservers
+      changed_when: false
+
+    - name: Detect CoreDNS upstreams from node resolvers
+      ansible.builtin.set_fact:
+        platform_node_nameservers_detected: >-
+          {{
+            (groups['rke2_servers']
+              | map('extract', hostvars, 'platform_node_nameservers')
+              | selectattr('stdout', 'defined')
+              | map(attribute='stdout')
+              | join(' ')
+            ).split()
+              | unique
+              | join(' ')
+          }}
+      run_once: true
+
+    - name: Select CoreDNS upstreams
+      ansible.builtin.set_fact:
+        platform_dns_upstreams_effective: >-
+          {{
+            ((platform_dns_upstreams_raw | trim | length) > 0)
+            | ternary(platform_dns_upstreams_raw | regex_replace(',', ' '), platform_node_nameservers_detected)
+            | trim
+            | regex_replace('\s+', ' ')
+          }}
+      run_once: true
+
+    - name: Require DNS upstreams for repair fallback
+      ansible.builtin.assert:
+        that:
+          - platform_dns_check_timeout_effective | int > 0
+          - platform_dns_check_image_effective | length > 0
+          - platform_dns_check_repo_effective | length > 0
+          - platform_dns_upstreams_effective | length > 0
+        fail_msg: >-
+          Could not auto-detect non-loopback nameservers from /etc/resolv.conf.
+          Set PLATFORM_DNS_UPSTREAMS, for example:
+          PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+      run_once: true
+
+    - name: Show cluster DNS check settings
+      ansible.builtin.debug:
+        msg: >-
+          Checking pod DNS with {{ platform_dns_check_image_effective }} against
+          {{ platform_dns_check_repo_effective }}. CoreDNS repair upstreams are:
+          {{ platform_dns_upstreams_effective }}.
+      run_once: true
+
+    - name: Run cluster DNS check before repair
+      ansible.builtin.shell: |
+        set -e -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        JOB={{ platform_dns_check_job_name }}
+        "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+        "$K" --kubeconfig "$C" -n kube-system apply -f -
+        deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
+        while [ "${SECONDS}" -lt "${deadline}" ]; do
+          succeeded="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+          failed="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+          if [ "${succeeded}" = "1" ]; then
+            "$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=120 || true
+            exit 0
+          fi
+          if [ -n "${failed}" ] && [ "${failed}" != "0" ]; then
+            "$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=120 || true
+            exit 1
+          fi
+          sleep 5
+        done
+        "$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=120 || true
+        exit 1
+      args:
+        executable: /bin/bash
+        stdin: |
+          ---
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: {{ platform_dns_check_job_name }}
+            namespace: kube-system
+          spec:
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 300
+            template:
+              spec:
+                restartPolicy: Never
+                nodeSelector:
+                  kubernetes.io/os: linux
+                containers:
+                  - name: helm
+                    image: {{ platform_dns_check_image_effective }}
+                    imagePullPolicy: IfNotPresent
+                    command:
+                      - sh
+                      - -c
+                    args:
+                      - |
+                        set -ex
+                        cat /etc/resolv.conf
+                        helm repo add platform-dns-check {{ platform_dns_check_repo_effective }}
+                        helm repo update
+      register: platform_dns_check_before
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Show healthy cluster DNS
+      ansible.builtin.debug:
+        msg: "Cluster DNS already resolves external chart repositories from pods."
+      when: platform_dns_check_before.rc == 0
+      run_once: true
+
+    - name: Repair CoreDNS upstreams when pod DNS check fails
+      when: platform_dns_check_before.rc != 0
+      block:
+        - name: Collect cluster DNS diagnostics before repair
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== DNS check job logs ====="
+            "$K" --kubeconfig "$C" -n kube-system logs -l job-name={{ platform_dns_check_job_name }} --tail=160 || true
+            echo "===== CoreDNS service/endpoints ====="
+            "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice -l k8s-app=kube-dns -o wide || true
+            "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice | grep -E 'coredns|kube-dns|NAME' || true
+            echo "===== CoreDNS pods ====="
+            "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns -o wide || true
+            echo "===== CoreDNS logs ====="
+            "$K" --kubeconfig "$C" -n kube-system logs -l k8s-app=kube-dns --tail=160 || true
+            echo "===== CoreDNS Corefile ====="
+            "$K" --kubeconfig "$C" -n kube-system get configmap {{ platform_coredns_configmap }} -o jsonpath='{.data.Corefile}' || true
+            echo
+          args:
+            executable: /bin/bash
+          register: platform_dns_diagnostics_before_repair
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print cluster DNS diagnostics before repair
+          ansible.builtin.debug:
+            var: platform_dns_diagnostics_before_repair.stdout_lines
+          run_once: true
+
+        - name: Patch CoreDNS forward upstreams
+          ansible.builtin.shell: |
+            set -e -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            UPSTREAMS="{{ platform_dns_upstreams_effective }}"
+            cat >/tmp/platform-coredns-patch.yaml <<EOF
+            data:
+              Corefile: |
+                .:53 {
+                    errors
+                    health
+                    ready
+                    kubernetes cluster.local cluster.local in-addr.arpa ip6.arpa {
+                      pods insecure
+                      fallthrough in-addr.arpa ip6.arpa
+                    }
+                    hosts /etc/coredns/NodeHosts {
+                      ttl 60
+                      reload 15s
+                      fallthrough
+                    }
+                    prometheus :9153
+                    forward . ${UPSTREAMS} {
+                      max_concurrent 1000
+                    }
+                    cache 30
+                    loop
+                    reload
+                    loadbalance
+                    import /etc/coredns/custom/*.override
+                }
+                import /etc/coredns/custom/*.server
+            EOF
+            "$K" --kubeconfig "$C" -n kube-system patch configmap {{ platform_coredns_configmap }} \
+              --type merge --patch-file /tmp/platform-coredns-patch.yaml
+          args:
+            executable: /bin/bash
+          register: platform_coredns_patch
+          changed_when: "'patched' in platform_coredns_patch.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Restart CoreDNS
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout restart deployment/{{ platform_coredns_deployment }}
+          register: platform_coredns_restart
+          changed_when: "'restarted' in platform_coredns_restart.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for CoreDNS rollout
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout status deployment/{{ platform_coredns_deployment }} --timeout=10s
+          register: platform_coredns_rollout
+          retries: 30
+          delay: 10
+          until: platform_coredns_rollout.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Run cluster DNS check after repair
+          ansible.builtin.shell: |
+            set -e -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            JOB={{ platform_dns_check_job_name }}
+            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+            "$K" --kubeconfig "$C" -n kube-system apply -f -
+            deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
+            while [ "${SECONDS}" -lt "${deadline}" ]; do
+              succeeded="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+              failed="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+              if [ "${succeeded}" = "1" ]; then
+                "$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=120 || true
+                exit 0
+              fi
+              if [ -n "${failed}" ] && [ "${failed}" != "0" ]; then
+                "$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=120 || true
+                exit 1
+              fi
+              sleep 5
+            done
+            "$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=120 || true
+            exit 1
+          args:
+            executable: /bin/bash
+            stdin: |
+              ---
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: {{ platform_dns_check_job_name }}
+                namespace: kube-system
+              spec:
+                backoffLimit: 0
+                ttlSecondsAfterFinished: 300
+                template:
+                  spec:
+                    restartPolicy: Never
+                    nodeSelector:
+                      kubernetes.io/os: linux
+                    containers:
+                      - name: helm
+                        image: {{ platform_dns_check_image_effective }}
+                        imagePullPolicy: IfNotPresent
+                        command:
+                          - sh
+                          - -c
+                        args:
+                          - |
+                            set -ex
+                            cat /etc/resolv.conf
+                            helm repo add platform-dns-check {{ platform_dns_check_repo_effective }}
+                            helm repo update
+          register: platform_dns_check_after
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Stop when cluster DNS still fails after repair
+          ansible.builtin.fail:
+            msg: |
+              Cluster pod DNS still cannot resolve external chart repositories after CoreDNS repair.
+
+              The first failure was:
+              {{ platform_dns_check_before.stdout }}
+              {{ platform_dns_check_before.stderr }}
+
+              The post-repair failure was:
+              {{ platform_dns_check_after.stdout }}
+              {{ platform_dns_check_after.stderr }}
+
+              Set explicit DNS servers and retry:
+              PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+          when: platform_dns_check_after.rc != 0
+          run_once: true
+
+        - name: Show repaired cluster DNS
+          ansible.builtin.debug:
+            msg: "Cluster DNS repair succeeded. Continuing with platform ingress."
+          when: platform_dns_check_after.rc == 0
+          run_once: true
