@@ -8,12 +8,16 @@
     rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
     platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
     platform_argocd_host: "argocd.{{ platform_domain_effective }}"
+    platform_metallb_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_CHART_REPO') }}"
     platform_metallb_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_CHART_VERSION') }}"
+    platform_traefik_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_REPO') }}"
     platform_traefik_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_VERSION') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
+    platform_metallb_chart_repo_effective: "{{ platform_metallb_chart_repo | default(platform_metallb_chart_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
     platform_metallb_chart_version_effective: "{{ platform_metallb_chart_version | default(platform_metallb_chart_version_from_env, true) }}"
+    platform_traefik_chart_repo_effective: "{{ platform_traefik_chart_repo | default(platform_traefik_chart_repo_from_env, true) | default('https://traefik.github.io/charts', true) }}"
     platform_traefik_chart_version_effective: "{{ platform_traefik_chart_version | default(platform_traefik_chart_version_from_env, true) }}"
     platform_ingress_rollout_timeout_effective: "{{ platform_ingress_rollout_timeout | default(platform_ingress_rollout_timeout_from_env, true) | default('600', true) | string | regex_replace('s$', '') | int }}"
     platform_ingress_poll_interval_effective: "{{ platform_ingress_poll_interval | default(platform_ingress_poll_interval_from_env, true) | default(10, true) | int }}"
@@ -31,6 +35,8 @@
           - not (rke2_ingress_vip_effective is match("^<.*>$"))
           - platform_domain_effective | length > 0
           - not (platform_domain_effective is match("^<.*>$"))
+          - platform_metallb_chart_repo_effective | length > 0
+          - platform_traefik_chart_repo_effective | length > 0
           - platform_ingress_rollout_timeout_effective | int > 0
           - platform_ingress_poll_interval_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
@@ -42,6 +48,8 @@
           Platform ingress rollout timeout is {{ platform_ingress_rollout_timeout_effective }}s
           with {{ platform_ingress_poll_interval_effective }}s polling. Stale Helm job cleanup is
           {{ 'enabled' if platform_ingress_cleanup_helm_jobs_effective else 'disabled' }}.
+          MetalLB chart repo: {{ platform_metallb_chart_repo_effective }}.
+          Traefik chart repo: {{ platform_traefik_chart_repo_effective }}.
       run_once: true
 
     - name: Check firewalld state
@@ -108,7 +116,7 @@
             name: platform-metallb
             namespace: kube-system
           spec:
-            repo: https://metallb.github.io/metallb
+            repo: {{ platform_metallb_chart_repo_effective }}
             chart: metallb
           {% if platform_metallb_chart_version_effective | length > 0 %}
             version: {{ platform_metallb_chart_version_effective }}
@@ -297,7 +305,7 @@
             name: platform-traefik
             namespace: kube-system
           spec:
-            repo: https://traefik.github.io/charts
+            repo: {{ platform_traefik_chart_repo_effective }}
             chart: traefik
           {% if platform_traefik_chart_version_effective | length > 0 %}
             version: {{ platform_traefik_chart_version_effective }}

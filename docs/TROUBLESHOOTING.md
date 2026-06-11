@@ -124,10 +124,26 @@ To shorten or extend the DNS test window:
 PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
 ```
 
+To make each in-pod HTTPS/Helm probe fail faster while keeping the outer check window:
+
+```bash
+PLATFORM_DNS_PROBE_TIMEOUT=10 PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
+```
+
 If the DNS check resolves a public IPv6 address and then fails with `network is unreachable`, keep the default IPv4-only DNS repair mode enabled. The repair suppresses external AAAA answers through CoreDNS so in-cluster Helm jobs use IPv4. Disable it only on networks with working IPv6 egress:
 
 ```bash
 PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
+```
+
+If resolution succeeds but the repository HTTPS index probe or Helm command times out, the problem is pod egress rather than CoreDNS. Check firewall, NAT/masquerade, proxy policy, TLS inspection, or use an internal chart mirror reachable from pods.
+
+When using internal chart mirrors, override the platform chart repos:
+
+```bash
+PLATFORM_METALLB_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/metallb" \
+PLATFORM_TRAEFIK_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/traefik" \
+make platform-ingress
 ```
 
 ## API VIP or API DNS does not answer

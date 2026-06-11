@@ -10,8 +10,10 @@
     platform_dns_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_IMAGE') }}"
     platform_dns_check_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_REPO') }}"
     platform_dns_ipv4_only_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_IPV4_ONLY') }}"
+    platform_dns_probe_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_PROBE_TIMEOUT') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
+    platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
     platform_dns_check_image_effective: "{{ platform_dns_check_image | default(platform_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
     platform_dns_ipv4_only_effective: "{{ platform_dns_ipv4_only | default(platform_dns_ipv4_only_from_env, true) | default(true, true) | bool }}"
@@ -60,7 +62,9 @@
     - name: Require DNS upstreams for repair fallback
       ansible.builtin.assert:
         that:
-          - platform_dns_check_timeout_effective | int > 0
+          - (platform_dns_check_timeout_effective | int) > 0
+          - (platform_dns_probe_timeout_effective | int) > 0
+          - (platform_dns_probe_timeout_effective | int) < (platform_dns_check_timeout_effective | int)
           - platform_dns_check_image_effective | length > 0
           - platform_dns_check_repo_effective | length > 0
           - platform_dns_upstreams_effective | length > 0
@@ -76,7 +80,8 @@
           Checking pod DNS with {{ platform_dns_check_image_effective }} against
           {{ platform_dns_check_repo_effective }}. CoreDNS repair upstreams are:
           {{ platform_dns_upstreams_effective }}. IPv4-only external DNS mode:
-          {{ platform_dns_ipv4_only_effective | bool }}.
+          {{ platform_dns_ipv4_only_effective | bool }}. Per-probe timeout:
+          {{ platform_dns_probe_timeout_effective }}s.
       run_once: true
 
     - name: Run cluster DNS check before repair
@@ -114,6 +119,7 @@
             namespace: kube-system
           spec:
             backoffLimit: 0
+            activeDeadlineSeconds: {{ platform_dns_check_timeout_effective }}
             ttlSecondsAfterFinished: 300
             template:
               spec:
@@ -130,9 +136,57 @@
                     args:
                       - |
                         set -ex
+                        REPO_URL='{{ platform_dns_check_repo_effective }}'
+                        REPO_INDEX="${REPO_URL%/}/index.yaml"
+                        REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
+                        PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                        run_bounded() {
+                          seconds="$1"
+                          shift
+                          if command -v timeout >/dev/null 2>&1; then
+                            timeout "${seconds}" "$@"
+                          else
+                            "$@"
+                          fi
+                        }
+                        echo "===== pod resolver ====="
                         cat /etc/resolv.conf
-                        helm repo add platform-dns-check {{ platform_dns_check_repo_effective }}
-                        helm repo update
+                        echo "===== repository host ====="
+                        printf '%s\n' "${REPO_HOST}"
+                        echo "===== IPv4 resolution ====="
+                        (getent ahostsv4 "${REPO_HOST}" || nslookup "${REPO_HOST}" || true)
+                        echo "===== IPv6 resolution ====="
+                        (getent ahostsv6 "${REPO_HOST}" || true)
+                        echo "===== repository HTTPS index probe ====="
+                        if command -v curl >/dev/null 2>&1; then
+                          run_bounded "${PROBE_TIMEOUT}" curl --fail --silent --show-error --location \
+                            --connect-timeout "${PROBE_TIMEOUT}" --max-time "${PROBE_TIMEOUT}" \
+                            --output /dev/null "${REPO_INDEX}" || {
+                              rc="$?"
+                              echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                              exit "${rc}"
+                            }
+                        elif command -v wget >/dev/null 2>&1; then
+                          run_bounded "${PROBE_TIMEOUT}" wget -S -T "${PROBE_TIMEOUT}" \
+                            -O /dev/null "${REPO_INDEX}" || {
+                              rc="$?"
+                              echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                              exit "${rc}"
+                            }
+                        else
+                          echo "No curl or wget found in check image; skipping direct HTTPS index probe."
+                        fi
+                        echo "===== helm repo add ====="
+                        run_bounded "${PROBE_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" || {
+                          rc="$?"
+                          echo "helm repo add failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                          exit "${rc}"
+                        }
+                        run_bounded "${PROBE_TIMEOUT}" helm repo update || {
+                          rc="$?"
+                          echo "helm repo update failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                          exit "${rc}"
+                        }
       register: platform_dns_check_before
       changed_when: false
       failed_when: false
@@ -319,6 +373,7 @@
                 namespace: kube-system
               spec:
                 backoffLimit: 0
+                activeDeadlineSeconds: {{ platform_dns_check_timeout_effective }}
                 ttlSecondsAfterFinished: 300
                 template:
                   spec:
@@ -335,9 +390,57 @@
                         args:
                           - |
                             set -ex
+                            REPO_URL='{{ platform_dns_check_repo_effective }}'
+                            REPO_INDEX="${REPO_URL%/}/index.yaml"
+                            REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
+                            PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                            run_bounded() {
+                              seconds="$1"
+                              shift
+                              if command -v timeout >/dev/null 2>&1; then
+                                timeout "${seconds}" "$@"
+                              else
+                                "$@"
+                              fi
+                            }
+                            echo "===== pod resolver ====="
                             cat /etc/resolv.conf
-                            helm repo add platform-dns-check {{ platform_dns_check_repo_effective }}
-                            helm repo update
+                            echo "===== repository host ====="
+                            printf '%s\n' "${REPO_HOST}"
+                            echo "===== IPv4 resolution ====="
+                            (getent ahostsv4 "${REPO_HOST}" || nslookup "${REPO_HOST}" || true)
+                            echo "===== IPv6 resolution ====="
+                            (getent ahostsv6 "${REPO_HOST}" || true)
+                            echo "===== repository HTTPS index probe ====="
+                            if command -v curl >/dev/null 2>&1; then
+                              run_bounded "${PROBE_TIMEOUT}" curl --fail --silent --show-error --location \
+                                --connect-timeout "${PROBE_TIMEOUT}" --max-time "${PROBE_TIMEOUT}" \
+                                --output /dev/null "${REPO_INDEX}" || {
+                                  rc="$?"
+                                  echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                                  exit "${rc}"
+                                }
+                            elif command -v wget >/dev/null 2>&1; then
+                              run_bounded "${PROBE_TIMEOUT}" wget -S -T "${PROBE_TIMEOUT}" \
+                                -O /dev/null "${REPO_INDEX}" || {
+                                  rc="$?"
+                                  echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                                  exit "${rc}"
+                                }
+                            else
+                              echo "No curl or wget found in check image; skipping direct HTTPS index probe."
+                            fi
+                            echo "===== helm repo add ====="
+                            run_bounded "${PROBE_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" || {
+                              rc="$?"
+                              echo "helm repo add failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                              exit "${rc}"
+                            }
+                            run_bounded "${PROBE_TIMEOUT}" helm repo update || {
+                              rc="$?"
+                              echo "helm repo update failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                              exit "${rc}"
+                            }
           register: platform_dns_check_after
           changed_when: false
           failed_when: false
@@ -347,7 +450,7 @@
         - name: Stop when cluster DNS still fails after repair
           ansible.builtin.fail:
             msg: |
-              Cluster pod DNS still cannot resolve external chart repositories after CoreDNS repair.
+              Cluster pods still cannot reach external chart repositories after CoreDNS repair.
 
               The first failure was:
               {{ platform_dns_check_before.stdout }}
@@ -359,6 +462,10 @@
 
               Set explicit DNS servers and retry:
               PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+
+              If the output shows successful resolution but the HTTPS index probe
+              or Helm command times out, fix pod egress/NAT/firewall/proxy access
+              to the chart repository, or configure an internal chart mirror.
 
               This playbook defaults to IPv4-only external DNS mode so Helm jobs
               do not choose unreachable public IPv6 addresses on IPv4-only networks.

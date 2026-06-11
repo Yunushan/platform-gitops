@@ -254,6 +254,14 @@ To limit ingress rollout waiting, set the timeout in seconds:
 PLATFORM_INGRESS_ROLLOUT_TIMEOUT=180 make platform-ingress
 ```
 
+If your enterprise network requires internal Helm mirrors:
+
+```bash
+PLATFORM_METALLB_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/metallb" \
+PLATFORM_TRAEFIK_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/traefik" \
+make platform-ingress
+```
+
 `make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
 
 ```bash
