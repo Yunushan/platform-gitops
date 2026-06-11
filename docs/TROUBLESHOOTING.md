@@ -34,6 +34,15 @@ make platform-argocd-diagnose
 
 The diagnostic target prints pods, workloads, services, CRDs, images, pod events/details, recent logs, recent events, and registry reachability checks for the image registries detected in Argo CD pods.
 
+If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
+
+```bash
+make platform-argocd-core
+make platform-status
+```
+
+`make platform-argocd-core` removes stale Argo CD HA Redis bootstrap resources and applies the standard Argo CD install manifest. The default `make platform-argocd` and explicit `make platform-argocd-ha` keep using the HA manifest.
+
 To register platform applications, provide the repository URL and explicitly allow GitOps app registration:
 
 ```bash

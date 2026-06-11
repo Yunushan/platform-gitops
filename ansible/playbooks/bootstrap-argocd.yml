@@ -9,15 +9,41 @@
     platform_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_URL') }}"
     platform_profile_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
     platform_apply_gitops_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APPLY_GITOPS') }}"
+    platform_argocd_bootstrap_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_MODE') }}"
     platform_argocd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_URL') }}"
     platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
     platform_argocd_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_POLL_INTERVAL') }}"
     platform_repo_url_effective: "{{ platform_repo_url | default(platform_repo_url_from_env, true) }}"
     platform_profile_effective: "{{ platform_profile | default(platform_profile_from_env, true) | default('default', true) }}"
     platform_apply_gitops_effective: "{{ platform_apply_gitops | default(platform_apply_gitops_from_env, true) | default(false, true) | bool }}"
-    platform_argocd_manifest_url_effective: "{{ platform_argocd_manifest_url | default(platform_argocd_manifest_url_from_env, true) | default('https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/ha/install.yaml', true) }}"
+    platform_argocd_bootstrap_mode_effective: "{{ platform_argocd_bootstrap_mode | default(platform_argocd_bootstrap_mode_from_env, true) | default('ha', true) }}"
+    platform_argocd_default_manifest_url: >-
+      {{
+        (platform_argocd_bootstrap_mode_effective == 'core')
+        | ternary(
+            'https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml',
+            'https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/ha/install.yaml'
+          )
+      }}
+    platform_argocd_manifest_url_effective: "{{ platform_argocd_manifest_url | default(platform_argocd_manifest_url_from_env, true) | default(platform_argocd_default_manifest_url, true) }}"
     platform_argocd_rollout_timeout_effective: "{{ platform_argocd_rollout_timeout | default(platform_argocd_rollout_timeout_from_env, true) | default('600', true) | string | regex_replace('s$', '') | int }}"
     platform_argocd_poll_interval_effective: "{{ platform_argocd_poll_interval | default(platform_argocd_poll_interval_from_env, true) | default(10, true) | int }}"
+    platform_argocd_deployments_effective: >-
+      {{
+        (platform_argocd_bootstrap_mode_effective == 'core')
+        | ternary(
+            ['argocd-applicationset-controller', 'argocd-dex-server', 'argocd-notifications-controller', 'argocd-redis', 'argocd-repo-server', 'argocd-server'],
+            ['argocd-applicationset-controller', 'argocd-dex-server', 'argocd-notifications-controller', 'argocd-redis-ha-haproxy', 'argocd-repo-server', 'argocd-server']
+          )
+      }}
+    platform_argocd_statefulsets_effective: >-
+      {{
+        (platform_argocd_bootstrap_mode_effective == 'core')
+        | ternary(
+            ['argocd-application-controller'],
+            ['argocd-application-controller', 'argocd-redis-ha-server']
+          )
+      }}
     platform_project_file: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects/platform-project.yaml"
     platform_applications_file: >-
       {{
@@ -35,6 +61,21 @@
         fail_msg: "PLATFORM_PROFILE must be default or premium-3node."
       run_once: true
 
+    - name: Require a supported Argo CD bootstrap mode
+      ansible.builtin.assert:
+        that:
+          - platform_argocd_bootstrap_mode_effective in ['ha', 'core']
+        fail_msg: "PLATFORM_ARGOCD_BOOTSTRAP_MODE must be ha or core."
+      run_once: true
+
+    - name: Show Argo CD bootstrap mode
+      ansible.builtin.debug:
+        msg: >-
+          Bootstrapping Argo CD in {{ platform_argocd_bootstrap_mode_effective }} mode from
+          {{ platform_argocd_manifest_url_effective }}. Rollout timeout is
+          {{ platform_argocd_rollout_timeout_effective }}s.
+      run_once: true
+
     - name: Ensure Argo CD namespace exists
       ansible.builtin.shell: |
         set -o pipefail
@@ -48,9 +89,31 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Remove stale Argo CD HA Redis resources for core bootstrap mode
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n argocd delete
+        deployment/argocd-redis-ha-haproxy
+        statefulset/argocd-redis-ha-server
+        service/argocd-redis-ha
+        service/argocd-redis-ha-haproxy
+        service/argocd-redis-ha-announce-0
+        service/argocd-redis-ha-announce-1
+        service/argocd-redis-ha-announce-2
+        configmap/argocd-redis-ha-configmap
+        configmap/argocd-redis-ha-health-configmap
+        networkpolicy/argocd-redis-ha-proxy-network-policy
+        networkpolicy/argocd-redis-ha-server-network-policy
+        --ignore-not-found=true
+      register: platform_argocd_core_cleanup
+      changed_when: "'deleted' in platform_argocd_core_cleanup.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      when: platform_argocd_bootstrap_mode_effective == 'core'
+      run_once: true
+
     - name: Apply Argo CD HA bootstrap manifest
       block:
-        - name: Apply Argo CD HA bootstrap manifest with server-side apply
+        - name: Apply Argo CD bootstrap manifest with server-side apply
           ansible.builtin.command: >-
             /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
             apply --server-side --force-conflicts --field-manager=platform-gitops-bootstrap
@@ -120,7 +183,10 @@
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            "$K" --kubeconfig "$C" -n argocd wait --for=condition=Available deployment --all --timeout={{ platform_argocd_poll_interval_effective }}s
+            for deployment in {{ platform_argocd_deployments_effective | join(' ') }}; do
+              "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null
+              "$K" --kubeconfig "$C" -n argocd wait --for=condition=Available "deployment/${deployment}" --timeout={{ platform_argocd_poll_interval_effective }}s
+            done
           args:
             executable: /bin/bash
           register: platform_argocd_deployment_rollout
@@ -136,8 +202,9 @@
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            for resource in $("$K" --kubeconfig "$C" -n argocd get statefulset -o name 2>/dev/null); do
-              "$K" --kubeconfig "$C" -n argocd rollout status "$resource" --timeout={{ platform_argocd_poll_interval_effective }}s
+            for statefulset in {{ platform_argocd_statefulsets_effective | join(' ') }}; do
+              "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null
+              "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s
             done
           args:
             executable: /bin/bash
@@ -153,6 +220,25 @@
           ansible.builtin.shell: |
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
+            echo "===== failing argocd pods first ====="
+            failing_pods="$("$K" --kubeconfig "$C" -n argocd get pods --no-headers 2>/dev/null |
+              awk '$3 != "Running" { print $1; next } { split($2, ready, "/"); if (ready[1] != ready[2]) print $1 }')"
+            if [ -z "${failing_pods}" ]; then
+              echo "No failing Argo CD pods detected by status."
+            else
+              "$K" --kubeconfig "$C" -n argocd get pods -o wide | awk 'NR==1 { print; next } $3 != "Running" { print; next } { split($2, ready, "/"); if (ready[1] != ready[2]) print }'
+              for pod_name in ${failing_pods}; do
+                echo "--- failing pod/${pod_name} status ---"
+                "$K" --kubeconfig "$C" -n argocd describe "pod/${pod_name}" | sed -n '/Init Containers:/,/Conditions:/p;/Containers:/,/Conditions:/p;/Events:/,$p' || true
+                for container_name in $("$K" --kubeconfig "$C" -n argocd get "pod/${pod_name}" -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null); do
+                  echo "--- failing pod/${pod_name} logs container/${container_name} current ---"
+                  "$K" --kubeconfig "$C" -n argocd logs "pod/${pod_name}" -c "${container_name}" --tail=80 || true
+                  echo "--- failing pod/${pod_name} logs container/${container_name} previous ---"
+                  "$K" --kubeconfig "$C" -n argocd logs "pod/${pod_name}" -c "${container_name}" --previous --tail=80 || true
+                done
+              done
+            fi
+            echo
             echo "===== argocd pods ====="
             "$K" --kubeconfig "$C" -n argocd get pods -o wide || true
             echo "===== argocd workloads ====="
@@ -188,6 +274,8 @@
               {% set diagnostics = platform_argocd_diagnostics.stdout | default('') %}
               {% if diagnostics is search('ImagePullBackOff|ErrImagePull|Failed to pull image|failed to pull and unpack image|TLS handshake timeout|i/o timeout|connection timed out|pull access denied') %}
               Image pull or registry access problem. Check registry egress, proxy, DNS, MTU, TLS inspection, or internal mirror configuration.
+              {% elif diagnostics is search('argocd-redis-ha|redis-ha-haproxy|redis-ha-server') %}
+              Argo CD HA Redis is not healthy. Review the failing Redis HA pod logs first. To continue bootstrap with the simpler non-HA control plane while troubleshooting HA Redis separately, run: make platform-argocd-core
               {% elif diagnostics is search('CrashLoopBackOff|Back-off restarting failed container|Error:|panic:|fatal') %}
               Argo CD pod crash. Review the pod logs and events in the diagnostic summary.
               {% elif diagnostics is search('FailedScheduling|0/[0-9]+ nodes are available|Insufficient cpu|Insufficient memory|node affinity|taint') %}
@@ -217,6 +305,9 @@
 
               If the summary points to slow image pulls only, retry with:
               PLATFORM_ARGOCD_ROLLOUT_TIMEOUT=1200 make platform-argocd
+
+              If only Argo CD HA Redis is failing and you need the UI now, bootstrap core Argo CD:
+              make platform-argocd-core
           run_once: true
 
     - name: Show skipped GitOps application registration

@@ -17,6 +17,26 @@
         CONNECT_TIMEOUT={{ platform_argocd_registry_connect_timeout_effective }}
         MAX_TIMEOUT={{ platform_argocd_registry_timeout_effective }}
 
+        echo "===== failing argocd pods first ====="
+        failing_pods="$("$K" --kubeconfig "$C" -n argocd get pods --no-headers 2>/dev/null |
+          awk '$3 != "Running" { print $1; next } { split($2, ready, "/"); if (ready[1] != ready[2]) print $1 }')"
+        if [ -z "${failing_pods}" ]; then
+          echo "No failing Argo CD pods detected by status."
+        else
+          "$K" --kubeconfig "$C" -n argocd get pods -o wide | awk 'NR==1 { print; next } $3 != "Running" { print; next } { split($2, ready, "/"); if (ready[1] != ready[2]) print }'
+          for pod_name in ${failing_pods}; do
+            echo "--- failing pod/${pod_name} status ---"
+            "$K" --kubeconfig "$C" -n argocd describe "pod/${pod_name}" | sed -n '/Init Containers:/,/Conditions:/p;/Containers:/,/Conditions:/p;/Events:/,$p' || true
+            for container_name in $("$K" --kubeconfig "$C" -n argocd get "pod/${pod_name}" -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null); do
+              echo "--- failing pod/${pod_name} logs container/${container_name} current ---"
+              "$K" --kubeconfig "$C" -n argocd logs "pod/${pod_name}" -c "${container_name}" --tail=120 || true
+              echo "--- failing pod/${pod_name} logs container/${container_name} previous ---"
+              "$K" --kubeconfig "$C" -n argocd logs "pod/${pod_name}" -c "${container_name}" --previous --tail=120 || true
+            done
+          done
+        fi
+        echo
+
         echo "===== argocd namespace ====="
         "$K" --kubeconfig "$C" get namespace argocd -o wide || true
         echo
