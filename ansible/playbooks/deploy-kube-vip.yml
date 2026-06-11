@@ -234,7 +234,12 @@
             msg: |
               kube-vip DaemonSet did not become available within {{ kube_vip_rollout_timeout_effective }}.
 
-              Review the kube-vip diagnostics printed above. To inspect the live state again:
+              Diagnostic summary:
+              {% for line in (kube_vip_rollout_diagnostics.stdout_lines | default([]))[0:160] %}
+              {{ line }}
+              {% endfor %}
+
+              To inspect the live state again:
 
               ansible -i inventory/hosts.local.ini node-1 -b -m shell -a '
               K=/var/lib/rancher/rke2/bin/kubectl
