@@ -28,6 +28,8 @@ Then retest the same `curl` commands. `make rke2-api-vip` deploys kube-vip as a 
 
 If kube-vip pods enter `CrashLoopBackOff` while the image is already present, check the pod logs. On SELinux-enforcing enterprise Linux nodes, kube-vip may need IPVS modules loaded on the host before the container starts. `make rke2-api-vip` loads and persists `ip_vs` and `ip_vs_rr` for this reason.
 
+If logs show an invalid CIDR like `invalid CIDR address: <VIP>32`, use the default `kube_vip_subnet=/32` value. The slash is required by kube-vip when building the VIP CIDR.
+
 ## Ansible or host resolution fails
 
 Run:

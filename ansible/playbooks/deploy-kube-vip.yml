@@ -18,8 +18,10 @@
     kube_vip_rollout_timeout_effective: "{{ kube_vip_rollout_timeout | default(kube_vip_rollout_timeout_from_env, true) | default('180s', true) }}"
     kube_vip_registry_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_REGISTRY_CHECK_TIMEOUT') }}"
     kube_vip_registry_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_REGISTRY_CONNECT_TIMEOUT') }}"
+    kube_vip_subnet_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_SUBNET') }}"
     kube_vip_registry_check_timeout_effective: "{{ kube_vip_registry_check_timeout | default(kube_vip_registry_check_timeout_from_env, true) | default(30, true) | int }}"
     kube_vip_registry_connect_timeout_effective: "{{ kube_vip_registry_connect_timeout | default(kube_vip_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
+    kube_vip_subnet_effective: "{{ kube_vip_subnet | default(kube_vip_subnet_from_env, true) | default('/32', true) }}"
     kube_vip_kernel_modules:
       - ip_vs
       - ip_vs_rr
@@ -42,6 +44,13 @@
         msg: >-
           Deploying kube-vip API VIP {{ rke2_api_vip_effective }} on interface {{ kube_vip_interface_effective }}
           with image {{ kube_vip_image_effective }}.
+      run_once: true
+
+    - name: Normalize kube-vip subnet suffix
+      ansible.builtin.assert:
+        that:
+          - kube_vip_subnet_effective is match("^/[0-9]+$")
+        fail_msg: "kube_vip_subnet must include the slash prefix, for example /32."
       run_once: true
 
     - name: Persist kube-vip IPVS kernel modules
@@ -182,7 +191,11 @@
                       - name: vip_interface
                         value: {{ kube_vip_interface_effective }}
                       - name: vip_subnet
-                        value: "32"
+                        value: {{ kube_vip_subnet_effective }}
+                      - name: vip_nodename
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: spec.nodeName
                       - name: cp_enable
                         value: "true"
                       - name: cp_namespace
