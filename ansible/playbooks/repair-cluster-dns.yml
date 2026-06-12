@@ -11,6 +11,7 @@
     platform_dns_check_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_REPO') }}"
     platform_dns_ipv4_only_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_IPV4_ONLY') }}"
     platform_dns_probe_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_PROBE_TIMEOUT') }}"
+    platform_dns_helm_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_HELM_TIMEOUT') }}"
     platform_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_REPAIR') }}"
     platform_dns_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
     platform_dns_service_path_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL') }}"
@@ -19,6 +20,8 @@
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
+    platform_dns_helm_timeout_effective: "{{ platform_dns_helm_timeout | default(platform_dns_helm_timeout_from_env, true) | default(90, true) | int }}"
+    platform_dns_chart_check_timeout_effective: "{{ [platform_dns_check_timeout_effective | int, ((platform_dns_helm_timeout_effective | int) * 2 + (platform_dns_probe_timeout_effective | int) * 4 + 30)] | max }}"
     platform_dns_check_image_effective: "{{ platform_dns_check_image | default(platform_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
     platform_dns_ipv4_only_effective: "{{ platform_dns_ipv4_only | default(platform_dns_ipv4_only_from_env, true) | default(true, true) | bool }}"
@@ -132,6 +135,7 @@
         that:
           - (platform_dns_check_timeout_effective | int) > 0
           - (platform_dns_probe_timeout_effective | int) > 0
+          - (platform_dns_helm_timeout_effective | int) > 0
           - (platform_dns_service_path_rollout_timeout_effective | int) > 0
           - (platform_dns_service_path_poll_interval_effective | int) > 0
           - (platform_dns_kube_proxy_delete_timeout_effective | int) > 0
@@ -283,6 +287,10 @@
           {{ platform_dns_ipv4_only_effective | bool }}. Per-probe timeout:
           {{ platform_dns_probe_timeout_effective }}s. Ignored Kubernetes DNS
           service IPs: {{ platform_cluster_dns_service_ips_list | join(' ') }}.
+          Helm repository timeout:
+          {{ platform_dns_helm_timeout_effective }}s per Helm command.
+          Chart check timeout:
+          {{ platform_dns_chart_check_timeout_effective }}s.
           DNS service path repair:
           {{ 'enabled' if platform_dns_service_path_repair_effective else 'disabled' }}.
           DNS service path rollout timeout:
@@ -301,7 +309,7 @@
         JOB={{ platform_dns_check_job_name }}
         "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
         "$K" --kubeconfig "$C" -n kube-system apply -f -
-        deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
+        deadline=$((SECONDS + {{ platform_dns_chart_check_timeout_effective }}))
         while [ "${SECONDS}" -lt "${deadline}" ]; do
           succeeded="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
           failed="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
@@ -328,7 +336,7 @@
             namespace: kube-system
           spec:
             backoffLimit: 0
-            activeDeadlineSeconds: {{ platform_dns_check_timeout_effective }}
+            activeDeadlineSeconds: {{ platform_dns_chart_check_timeout_effective }}
             ttlSecondsAfterFinished: 300
             template:
               spec:
@@ -349,6 +357,7 @@
                         REPO_INDEX="${REPO_URL%/}/index.yaml"
                         REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
                         PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                        HELM_TIMEOUT={{ platform_dns_helm_timeout_effective }}
                         DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
                         run_bounded() {
                           seconds="$1"
@@ -392,14 +401,14 @@
                           echo "No curl or wget found in check image; skipping direct HTTPS index probe."
                         fi
                         echo "===== helm repo add ====="
-                        run_bounded "${PROBE_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" || {
+                        run_bounded "${HELM_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" || {
                           rc="$?"
-                          echo "helm repo add failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                          echo "helm repo add failed or timed out after ${HELM_TIMEOUT}s with rc=${rc}" >&2
                           exit "${rc}"
                         }
-                        run_bounded "${PROBE_TIMEOUT}" helm repo update || {
+                        run_bounded "${HELM_TIMEOUT}" helm repo update || {
                           rc="$?"
-                          echo "helm repo update failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                          echo "helm repo update failed or timed out after ${HELM_TIMEOUT}s with rc=${rc}" >&2
                           exit "${rc}"
                         }
       register: platform_dns_check_before
@@ -1210,6 +1219,9 @@
           register: platform_dns_service_path_check_after_component_repair
           changed_when: false
           failed_when: false
+          retries: "{{ platform_dns_service_path_rollout_retries_effective }}"
+          delay: "{{ platform_dns_service_path_poll_interval_effective }}"
+          until: platform_dns_service_path_check_after_component_repair.stdout is search('PLATFORM_DNS_DEFAULT_RESOLUTION=true')
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
           when:
@@ -1245,7 +1257,7 @@
             JOB={{ platform_dns_check_job_name }}
             "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
             "$K" --kubeconfig "$C" -n kube-system apply -f -
-            deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
+            deadline=$((SECONDS + {{ platform_dns_chart_check_timeout_effective }}))
             while [ "${SECONDS}" -lt "${deadline}" ]; do
               succeeded="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
               failed="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
@@ -1272,7 +1284,7 @@
                 namespace: kube-system
               spec:
                 backoffLimit: 0
-                activeDeadlineSeconds: {{ platform_dns_check_timeout_effective }}
+                activeDeadlineSeconds: {{ platform_dns_chart_check_timeout_effective }}
                 ttlSecondsAfterFinished: 300
                 template:
                   spec:
@@ -1293,6 +1305,7 @@
                             REPO_INDEX="${REPO_URL%/}/index.yaml"
                             REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
                             PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                            HELM_TIMEOUT={{ platform_dns_helm_timeout_effective }}
                             DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
                             run_bounded() {
                               seconds="$1"
@@ -1336,14 +1349,14 @@
                               echo "No curl or wget found in check image; skipping direct HTTPS index probe."
                             fi
                             echo "===== helm repo add ====="
-                            run_bounded "${PROBE_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" || {
+                            run_bounded "${HELM_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" || {
                               rc="$?"
-                              echo "helm repo add failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                              echo "helm repo add failed or timed out after ${HELM_TIMEOUT}s with rc=${rc}" >&2
                               exit "${rc}"
                             }
-                            run_bounded "${PROBE_TIMEOUT}" helm repo update || {
+                            run_bounded "${HELM_TIMEOUT}" helm repo update || {
                               rc="$?"
-                              echo "helm repo update failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
+                              echo "helm repo update failed or timed out after ${HELM_TIMEOUT}s with rc=${rc}" >&2
                               exit "${rc}"
                             }
           register: platform_dns_check_after

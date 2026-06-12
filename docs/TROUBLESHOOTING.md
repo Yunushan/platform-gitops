@@ -161,10 +161,16 @@ To shorten or extend the DNS test window:
 PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
 ```
 
-To make each in-pod HTTPS/Helm probe fail faster while keeping the outer check window:
+To make each in-pod DNS/HTTPS probe fail faster while keeping the outer check window:
 
 ```bash
 PLATFORM_DNS_PROBE_TIMEOUT=10 PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
+```
+
+Helm repository add/update uses a separate timeout because chart repository access can be slower than DNS probes. The default is 90 seconds per Helm command:
+
+```bash
+PLATFORM_DNS_HELM_TIMEOUT=180 make platform-ingress
 ```
 
 If the DNS check resolves a public IPv6 address and then fails with `network is unreachable`, keep the default IPv4-only DNS repair mode enabled. The repair suppresses external AAAA answers through CoreDNS so in-cluster Helm jobs use IPv4. Disable it only on networks with working IPv6 egress:
@@ -173,7 +179,7 @@ If the DNS check resolves a public IPv6 address and then fails with `network is 
 PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
 ```
 
-If resolution succeeds but Helm repository add/update times out, the problem is pod egress rather than CoreDNS. Check firewall, NAT/masquerade, proxy policy, TLS inspection, or use an internal chart mirror reachable from pods. The direct repository HTTPS index probe is diagnostic only; the playbook no longer fails before the Helm repository check just because `curl` or `wget` behaves differently from the pod resolver.
+If resolution succeeds but Helm repository add/update times out, the problem is pod egress rather than CoreDNS, or the Helm timeout is too short for your network path. Check firewall, NAT/masquerade, proxy policy, TLS inspection, or use an internal chart mirror reachable from pods. The direct repository HTTPS index probe is diagnostic only; the playbook no longer fails before the Helm repository check just because `curl` or `wget` behaves differently from the pod resolver.
 
 When using internal chart mirrors, override the platform chart repos:
 
