@@ -128,6 +128,12 @@ PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL=5 \
 make platform-ingress
 ```
 
+The static kube-proxy delete request is non-blocking and uses a 30-second Kubernetes API request timeout by default. To make that fail faster:
+
+```bash
+PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT=10 make platform-ingress
+```
+
 To force explicit CoreDNS upstreams:
 
 ```bash

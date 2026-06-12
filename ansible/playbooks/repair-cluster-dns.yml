@@ -14,6 +14,7 @@
     platform_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_REPAIR') }}"
     platform_dns_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
     platform_dns_service_path_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL') }}"
+    platform_dns_kube_proxy_delete_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
@@ -24,6 +25,7 @@
     platform_dns_service_path_rollout_timeout_effective: "{{ platform_dns_service_path_rollout_timeout | default(platform_dns_service_path_rollout_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_service_path_poll_interval_effective: "{{ platform_dns_service_path_poll_interval | default(platform_dns_service_path_poll_interval_from_env, true) | default(5, true) | int }}"
     platform_dns_service_path_rollout_retries_effective: "{{ (((platform_dns_service_path_rollout_timeout_effective | int) / (platform_dns_service_path_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+    platform_dns_kube_proxy_delete_timeout_effective: "{{ platform_dns_kube_proxy_delete_timeout | default(platform_dns_kube_proxy_delete_timeout_from_env, true) | default(30, true) | int }}"
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
@@ -126,6 +128,7 @@
           - (platform_dns_probe_timeout_effective | int) > 0
           - (platform_dns_service_path_rollout_timeout_effective | int) > 0
           - (platform_dns_service_path_poll_interval_effective | int) > 0
+          - (platform_dns_kube_proxy_delete_timeout_effective | int) > 0
           - (platform_dns_probe_timeout_effective | int) < (platform_dns_check_timeout_effective | int)
           - platform_dns_check_image_effective | length > 0
           - platform_dns_check_repo_effective | length > 0
@@ -280,6 +283,8 @@
           {{ platform_dns_service_path_rollout_timeout_effective }}s per component.
           DNS service path poll interval:
           {{ platform_dns_service_path_poll_interval_effective }}s.
+          Static kube-proxy delete request timeout:
+          {{ platform_dns_kube_proxy_delete_timeout_effective }}s.
       run_once: true
 
     - name: Run cluster DNS check before repair
@@ -816,13 +821,17 @@
 
         - name: Delete kube-proxy pods when no DaemonSet exists
           ansible.builtin.shell: |
+            set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            "$K" --kubeconfig "$C" -n kube-system delete pod -l k8s-app=kube-proxy --ignore-not-found=true || true
-            "$K" --kubeconfig "$C" -n kube-system get pods -o name |
+            request_timeout={{ platform_dns_kube_proxy_delete_timeout_effective }}s
+            "$K" --kubeconfig "$C" --request-timeout="${request_timeout}" -n kube-system \
+              delete pod -l k8s-app=kube-proxy --ignore-not-found=true --wait=false || true
+            "$K" --kubeconfig "$C" --request-timeout="${request_timeout}" -n kube-system get pods -o name |
               awk -F/ '/\/kube-proxy-/ {print $2}' |
-              xargs -r "$K" --kubeconfig "$C" -n kube-system delete pod --ignore-not-found=true || true
-            "$K" --kubeconfig "$C" -n kube-system get pods -o wide |
+              xargs -r "$K" --kubeconfig "$C" --request-timeout="${request_timeout}" -n kube-system \
+                delete pod --ignore-not-found=true --wait=false || true
+            "$K" --kubeconfig "$C" --request-timeout="${request_timeout}" -n kube-system get pods -o wide |
               grep -E 'NAME|kube-proxy' || true
           args:
             executable: /bin/bash
