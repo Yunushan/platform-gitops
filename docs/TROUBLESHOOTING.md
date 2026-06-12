@@ -105,7 +105,13 @@ If Traefik still times out, the final failure message includes a compact status 
 
 The Traefik rollout poll is an instant readiness check, so the retry counter maps closely to `PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT` and `PLATFORM_INGRESS_POLL_INTERVAL` without an extra hidden `kubectl rollout status` wait on every attempt.
 
-If that summary shows `helm-install-platform-traefik` in `BackOff` or repeatedly `Running` with no Traefik deployment created, the Helm install job is failing before Traefik starts. Rerun `make platform-ingress` with the current playbook so stale Helm jobs are cleaned and schema-compatible chart values are applied. If it still fails, read the `Helm install pod log tail` in the final failure summary; it normally shows the exact rejected value or chart download problem.
+If that summary shows `helm-install-platform-traefik` in `BackOff` or repeatedly `Running` with no Traefik deployment created, the Helm install job is failing before Traefik starts. Rerun `make platform-ingress` with the current playbook so stale Helm jobs are cleaned, schema-compatible chart values are applied, and pod DNS is verified against both MetalLB and Traefik chart repositories. If it still fails, read the `Helm install pod log tail` in the final failure summary; it normally shows the exact rejected value, DNS lookup error, or chart download problem.
+
+To run only the Traefik chart-repository DNS repair:
+
+```bash
+make platform-dns-repair-traefik
+```
 
 If applying the app VIP fails with `failed calling webhook` or `context deadline exceeded` for `metallb-webhook-service`, the Kubernetes API server could not reach MetalLB's validating webhook yet. The ingress playbook now waits for the webhook service endpoints and runs a server-side dry-run of the MetalLB pool before creating the real resources. To wait longer for that webhook phase:
 

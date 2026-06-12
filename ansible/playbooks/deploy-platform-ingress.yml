@@ -1006,7 +1006,11 @@
 
               Review the diagnostics above. Common causes are slow or blocked
               image pulls, Helm chart install failure, insufficient resources,
-              pod scheduling problems, or CNI/service networking issues.
+              pod scheduling problems, CNI/service networking issues, or pod DNS
+              failing to resolve the Traefik chart repository. If the Helm log
+              shows lookup errors for {{ platform_traefik_chart_repo_effective }},
+              run:
+              make platform-dns-repair-traefik
 
               To wait longer:
               PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=1200 make platform-ingress

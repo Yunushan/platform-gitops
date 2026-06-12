@@ -286,7 +286,7 @@ PLATFORM_TRAEFIK_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/traefik" \
 make platform-ingress
 ```
 
-`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
+`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. It checks the MetalLB chart repository and then the Traefik chart repository before installing either controller. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
 
 ```bash
 PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
