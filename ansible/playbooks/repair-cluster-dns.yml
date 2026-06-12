@@ -380,15 +380,13 @@
                             --connect-timeout "${PROBE_TIMEOUT}" --max-time "${PROBE_TIMEOUT}" \
                             --output /dev/null "${REPO_INDEX}" || {
                               rc="$?"
-                              echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
-                              exit "${rc}"
+                              echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}; continuing to Helm repo check." >&2
                             }
                         elif command -v wget >/dev/null 2>&1; then
                           run_bounded "${PROBE_TIMEOUT}" wget -S -T "${PROBE_TIMEOUT}" \
                             -O /dev/null "${REPO_INDEX}" || {
                               rc="$?"
-                              echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
-                              exit "${rc}"
+                              echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}; continuing to Helm repo check." >&2
                             }
                         else
                           echo "No curl or wget found in check image; skipping direct HTTPS index probe."
@@ -1326,15 +1324,13 @@
                                 --connect-timeout "${PROBE_TIMEOUT}" --max-time "${PROBE_TIMEOUT}" \
                                 --output /dev/null "${REPO_INDEX}" || {
                                   rc="$?"
-                                  echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
-                                  exit "${rc}"
+                                  echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}; continuing to Helm repo check." >&2
                                 }
                             elif command -v wget >/dev/null 2>&1; then
                               run_bounded "${PROBE_TIMEOUT}" wget -S -T "${PROBE_TIMEOUT}" \
                                 -O /dev/null "${REPO_INDEX}" || {
                                   rc="$?"
-                                  echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}" >&2
-                                  exit "${rc}"
+                                  echo "Repository HTTPS index probe failed or timed out after ${PROBE_TIMEOUT}s with rc=${rc}; continuing to Helm repo check." >&2
                                 }
                             else
                               echo "No curl or wget found in check image; skipping direct HTTPS index probe."
@@ -1423,7 +1419,7 @@
           run_once: true
           when: platform_dns_check_after.rc != 0
 
-        - name: Stop when cluster DNS still fails after repair
+        - name: Stop when cluster chart repository access still fails after repair
           ansible.builtin.fail:
             msg: |
               Cluster pods still cannot reach external chart repositories after CoreDNS repair.
@@ -1445,7 +1441,13 @@
               - Direct CoreDNS endpoint resolution: {{ platform_dns_coredns_endpoint_resolution_ok | default(false) }}
               - Direct upstream DNS resolution: {{ platform_dns_direct_upstream_resolution_ok | default(false) }}
 
-              {% if platform_dns_direct_upstream_resolution_ok | default(false) and platform_dns_coredns_endpoint_resolution_ok | default(false) and not (platform_dns_service_ip_resolution_ok | default(false)) %}
+              {% if platform_dns_default_resolution_ok | default(false) %}
+              Classification: Kubernetes pod DNS is working through the normal
+              resolver path. The remaining failure is chart repository access
+              through the Helm check image, not CoreDNS service-path repair.
+              The direct HTTPS index probe is diagnostic only; Helm repo
+              add/update is the authoritative chart repository check.
+              {% elif platform_dns_direct_upstream_resolution_ok | default(false) and platform_dns_coredns_endpoint_resolution_ok | default(false) and not (platform_dns_service_ip_resolution_ok | default(false)) %}
               Classification: direct upstream and CoreDNS endpoint DNS work, but
               the Kubernetes DNS service IP does not. Focus on kube-proxy service
               rules, iptables/nftables compatibility, and service VIP translation.
@@ -1455,8 +1457,8 @@
               check pod and CoreDNS pods.
               {% endif %}
 
-              If direct upstream DNS checks succeed but Kubernetes DNS service IP
-              checks fail, the remaining problem is cluster service or pod-to-pod
+              If normal pod DNS resolution fails while direct upstream DNS checks
+              succeed, the remaining problem is cluster service or pod-to-pod
               networking, not upstream DNS. This playbook already attempted the
               automatic service-path repair: CNI sysctls, firewalld overlay ports,
               kube-proxy, Cilium, and CoreDNS restart.
@@ -1468,9 +1470,9 @@
               If no upstream DNS checks succeed, set explicit DNS servers and retry:
               PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
 
-              If the output shows successful resolution but the HTTPS index probe
-              or Helm command times out, fix pod egress/NAT/firewall/proxy access
-              to the chart repository, or configure an internal chart mirror.
+              If the output shows successful resolution but Helm command times
+              out, fix pod egress/NAT/firewall/proxy access to the chart
+              repository, or configure an internal chart mirror.
 
               This playbook defaults to IPv4-only external DNS mode so Helm jobs
               do not choose unreachable public IPv6 addresses on IPv4-only networks.

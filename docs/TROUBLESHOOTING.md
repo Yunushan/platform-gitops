@@ -173,7 +173,7 @@ If the DNS check resolves a public IPv6 address and then fails with `network is 
 PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
 ```
 
-If resolution succeeds but the repository HTTPS index probe or Helm command times out, the problem is pod egress rather than CoreDNS. Check firewall, NAT/masquerade, proxy policy, TLS inspection, or use an internal chart mirror reachable from pods.
+If resolution succeeds but Helm repository add/update times out, the problem is pod egress rather than CoreDNS. Check firewall, NAT/masquerade, proxy policy, TLS inspection, or use an internal chart mirror reachable from pods. The direct repository HTTPS index probe is diagnostic only; the playbook no longer fails before the Helm repository check just because `curl` or `wget` behaves differently from the pod resolver.
 
 When using internal chart mirrors, override the platform chart repos:
 
