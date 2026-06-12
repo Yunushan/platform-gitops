@@ -94,6 +94,13 @@ To wait longer on slow chart/image pulls:
 PLATFORM_INGRESS_ROLLOUT_TIMEOUT=1200 make platform-ingress
 ```
 
+Traefik has its own rollout/VIP wait. If the playbook is waiting at `Wait for Traefik deployment`, use this instead of changing every ingress phase:
+
+```bash
+PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=180 make platform-ingress
+PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=1200 make platform-ingress
+```
+
 If applying the app VIP fails with `failed calling webhook` or `context deadline exceeded` for `metallb-webhook-service`, the Kubernetes API server could not reach MetalLB's validating webhook yet. The ingress playbook now waits for the webhook service endpoints and runs a server-side dry-run of the MetalLB pool before creating the real resources. To wait longer for that webhook phase:
 
 ```bash

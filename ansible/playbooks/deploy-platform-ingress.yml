@@ -12,6 +12,7 @@
     platform_metallb_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_CHART_VERSION') }}"
     platform_traefik_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_REPO') }}"
     platform_traefik_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_VERSION') }}"
+    platform_traefik_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
@@ -28,8 +29,10 @@
     platform_metallb_webhook_timeout_effective: "{{ platform_metallb_webhook_timeout | default(platform_metallb_webhook_timeout_from_env, true) | default(platform_ingress_rollout_timeout_effective, true) | string | regex_replace('s$', '') | int }}"
     platform_metallb_webhook_probe_timeout_effective: "{{ platform_metallb_webhook_probe_timeout | default(platform_metallb_webhook_probe_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_metallb_webhook_repair_effective: "{{ platform_metallb_webhook_repair | default(platform_metallb_webhook_repair_from_env, true) | default(true, true) | bool }}"
+    platform_traefik_rollout_timeout_effective: "{{ platform_traefik_rollout_timeout | default(platform_traefik_rollout_timeout_from_env, true) | default(platform_ingress_rollout_timeout_effective, true) | string | regex_replace('s$', '') | int }}"
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+    platform_traefik_wait_retries: "{{ (((platform_traefik_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
     platform_ingress_firewalld_ports:
       - 80/tcp
@@ -48,6 +51,7 @@
           - platform_ingress_poll_interval_effective | int > 0
           - platform_metallb_webhook_timeout_effective | int > 0
           - platform_metallb_webhook_probe_timeout_effective | int > 0
+          - platform_traefik_rollout_timeout_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -63,6 +67,7 @@
           with {{ platform_metallb_webhook_probe_timeout_effective }}s per webhook probe.
           MetalLB webhook auto-repair is
           {{ 'enabled' if platform_metallb_webhook_repair_effective else 'disabled' }}.
+          Traefik rollout timeout is {{ platform_traefik_rollout_timeout_effective }}s.
       run_once: true
 
     - name: Check firewalld state
@@ -864,52 +869,181 @@
       run_once: true
 
     - name: Wait for Traefik deployment
-      ansible.builtin.shell: |
-        set -eu
-        K=/var/lib/rancher/rke2/bin/kubectl
-        C=/etc/rancher/rke2/rke2.yaml
-        for deployment in platform-traefik traefik; do
-          if "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n traefik rollout status "deployment/${deployment}" --timeout={{ platform_ingress_poll_interval_effective }}s
-            exit 0
-          fi
-        done
-        "$K" --kubeconfig "$C" -n traefik get deployment -o wide || true
-        exit 1
-      args:
-        executable: /bin/bash
-      register: platform_traefik_rollout
-      retries: "{{ platform_ingress_wait_retries }}"
-      delay: "{{ platform_ingress_poll_interval_effective }}"
-      until: platform_traefik_rollout.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll Traefik deployment rollout
+          ansible.builtin.shell: |
+            set -eu
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            for deployment in platform-traefik traefik; do
+              if "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n traefik rollout status "deployment/${deployment}" --timeout={{ platform_ingress_poll_interval_effective }}s
+                exit 0
+              fi
+            done
+            "$K" --kubeconfig "$C" -n traefik get deployment -o wide || true
+            exit 1
+          args:
+            executable: /bin/bash
+          register: platform_traefik_rollout
+          retries: "{{ platform_traefik_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_rollout.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect Traefik rollout diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== HelmChart resources ====="
+            "$K" --kubeconfig "$C" -n kube-system get helmchart,helmchartconfig 2>/dev/null | grep -E 'platform-traefik|NAME' || true
+            echo "===== platform-traefik HelmChart detail ====="
+            "$K" --kubeconfig "$C" -n kube-system describe helmchart platform-traefik || true
+            echo "===== platform-traefik Helm job ====="
+            "$K" --kubeconfig "$C" -n kube-system get job,pods -o wide | grep -E 'helm-install-platform-traefik|platform-traefik|traefik|NAME' || true
+            "$K" --kubeconfig "$C" -n kube-system describe job helm-install-platform-traefik || true
+            echo "===== platform-traefik Helm pod logs ====="
+            for pod in $("$K" --kubeconfig "$C" -n kube-system get pods -l job-name=helm-install-platform-traefik -o name 2>/dev/null); do
+              echo "--- ${pod} describe ---"
+              "$K" --kubeconfig "$C" -n kube-system describe "${pod}" || true
+              echo "--- ${pod} current logs ---"
+              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --tail=240 || true
+              echo "--- ${pod} previous logs ---"
+              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --previous --tail=240 || true
+            done
+            echo "===== Traefik namespace workloads ====="
+            "$K" --kubeconfig "$C" get ns traefik -o wide || true
+            "$K" --kubeconfig "$C" -n traefik get deploy,rs,pods,svc,endpoints,endpointslices -o wide || true
+            echo "===== Traefik images ====="
+            "$K" --kubeconfig "$C" -n traefik get pods \
+              -o jsonpath='{range .items[*]}{.metadata.name}{": "}{range .spec.initContainers[*]}init:{.name}={.image}{" "}{end}{range .spec.containers[*]}container:{.name}={.image}{" "}{end}{"\n"}{end}' 2>/dev/null || true
+            echo "===== Traefik pod details ====="
+            "$K" --kubeconfig "$C" -n traefik describe pods || true
+            echo "===== Traefik pod logs ====="
+            for pod in $("$K" --kubeconfig "$C" -n traefik get pods -o name 2>/dev/null); do
+              echo "--- ${pod} current logs ---"
+              "$K" --kubeconfig "$C" -n traefik logs "${pod}" --all-containers --tail=180 || true
+              echo "--- ${pod} previous logs ---"
+              "$K" --kubeconfig "$C" -n traefik logs "${pod}" --all-containers --previous --tail=180 || true
+            done
+            echo "===== Recent Traefik events ====="
+            "$K" --kubeconfig "$C" get events -A --sort-by=.lastTimestamp |
+              grep -E 'traefik|platform-traefik|helm-install|Failed|BackOff|ErrImagePull|ImagePullBackOff|Unhealthy|FailedScheduling' | tail -160 || true
+          args:
+            executable: /bin/bash
+          register: platform_traefik_rollout_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print Traefik rollout error
+          ansible.builtin.debug:
+            msg:
+              - "{{ platform_traefik_rollout.stdout_lines | default([]) }}"
+              - "{{ platform_traefik_rollout.stderr_lines | default([]) }}"
+          run_once: true
+
+        - name: Print Traefik rollout diagnostics
+          ansible.builtin.debug:
+            var: platform_traefik_rollout_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after Traefik rollout failure
+          ansible.builtin.fail:
+            msg: |
+              Traefik did not become available within {{ platform_traefik_rollout_timeout_effective }}s.
+
+              Review the diagnostics above. Common causes are slow or blocked
+              image pulls, Helm chart install failure, insufficient resources,
+              pod scheduling problems, or CNI/service networking issues.
+
+              To wait longer:
+              PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=1200 make platform-ingress
+
+              To fail faster while debugging:
+              PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=180 make platform-ingress
+          run_once: true
 
     - name: Wait for Traefik service to receive ingress VIP
-      ansible.builtin.shell: |
-        set -eu
-        K=/var/lib/rancher/rke2/bin/kubectl
-        C=/etc/rancher/rke2/rke2.yaml
-        for service in platform-traefik traefik; do
-          if "$K" --kubeconfig "$C" -n traefik get "service/${service}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n traefik get "service/${service}" \
-              -o jsonpath='{.status.loadBalancer.ingress[*].ip}' |
-              grep -Fw "{{ rke2_ingress_vip_effective }}"
-            exit $?
-          fi
-        done
-        "$K" --kubeconfig "$C" -n traefik get svc -o wide || true
-        exit 1
-      args:
-        executable: /bin/bash
-      register: platform_traefik_vip
-      retries: "{{ platform_ingress_wait_retries }}"
-      delay: "{{ platform_ingress_poll_interval_effective }}"
-      until: platform_traefik_vip.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll Traefik service ingress VIP
+          ansible.builtin.shell: |
+            set -eu
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            for service in platform-traefik traefik; do
+              if "$K" --kubeconfig "$C" -n traefik get "service/${service}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n traefik get "service/${service}" \
+                  -o jsonpath='{.status.loadBalancer.ingress[*].ip}' |
+                  grep -Fw "{{ rke2_ingress_vip_effective }}"
+                exit $?
+              fi
+            done
+            "$K" --kubeconfig "$C" -n traefik get svc -o wide || true
+            exit 1
+          args:
+            executable: /bin/bash
+          register: platform_traefik_vip
+          retries: "{{ platform_traefik_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_vip.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect Traefik service VIP diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== Traefik services ====="
+            "$K" --kubeconfig "$C" -n traefik get svc,endpoints,endpointslices,pods -o wide || true
+            echo "===== Traefik service details ====="
+            for service in platform-traefik traefik; do
+              "$K" --kubeconfig "$C" -n traefik describe "service/${service}" || true
+            done
+            echo "===== MetalLB pools and advertisements ====="
+            "$K" --kubeconfig "$C" -n metallb-system get ipaddresspool,l2advertisement -o wide || true
+            "$K" --kubeconfig "$C" -n metallb-system describe ipaddresspool platform-ingress || true
+            "$K" --kubeconfig "$C" -n metallb-system describe l2advertisement platform-ingress || true
+            echo "===== MetalLB controller and speaker state ====="
+            "$K" --kubeconfig "$C" -n metallb-system get deploy,ds,pods -o wide || true
+            echo "===== MetalLB logs ====="
+            "$K" --kubeconfig "$C" -n metallb-system logs -l app.kubernetes.io/component=controller --all-containers --tail=180 || true
+            "$K" --kubeconfig "$C" -n metallb-system logs -l app.kubernetes.io/component=speaker --all-containers --tail=180 || true
+            "$K" --kubeconfig "$C" -n metallb-system logs -l component=controller --all-containers --tail=180 || true
+            "$K" --kubeconfig "$C" -n metallb-system logs -l component=speaker --all-containers --tail=180 || true
+            echo "===== Recent ingress VIP events ====="
+            "$K" --kubeconfig "$C" get events -A --sort-by=.lastTimestamp |
+              grep -E 'traefik|platform-traefik|metallb|LoadBalancer|{{ rke2_ingress_vip_effective }}|Failed|error|warning' | tail -160 || true
+          args:
+            executable: /bin/bash
+          register: platform_traefik_vip_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print Traefik service VIP diagnostics
+          ansible.builtin.debug:
+            var: platform_traefik_vip_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Stop after Traefik service VIP failure
+          ansible.builtin.fail:
+            msg: |
+              Traefik service did not receive the expected ingress VIP
+              {{ rke2_ingress_vip_effective }} within {{ platform_traefik_rollout_timeout_effective }}s.
+
+              Review the diagnostics above. Common causes are MetalLB address
+              pool mismatch, L2Advertisement problems, speaker/controller issues,
+              or the requested VIP already being used on the network.
+
+              To wait longer:
+              PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=1200 make platform-ingress
+          run_once: true
 
     - name: Configure Argo CD server for TLS termination at Traefik
       ansible.builtin.command:
