@@ -128,6 +128,8 @@ PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL=5 \
 make platform-ingress
 ```
 
+After those component restarts, the playbook re-detects the current CoreDNS endpoint IPs and reruns the service-path DNS probe before printing the final classification. This avoids diagnosing stale CoreDNS pod IPs after a rollout.
+
 The static kube-proxy delete request is non-blocking and uses a 30-second Kubernetes API request timeout by default. To make that fail faster:
 
 ```bash

@@ -1085,6 +1085,160 @@
             - not (platform_dns_default_resolution_ok | bool)
           run_once: true
 
+        - name: Detect CoreDNS endpoint IPs after DNS service path component repair
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" -n kube-system get endpoints -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[*].subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null || true
+          args:
+            executable: /bin/bash
+          register: platform_coredns_endpoint_ips_after_component_repair
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+
+        - name: Select current CoreDNS endpoint IPs for final DNS service path check
+          ansible.builtin.set_fact:
+            platform_coredns_endpoint_ips_effective: "{{ platform_coredns_endpoint_ips_after_component_repair.stdout | default(platform_coredns_endpoint_ips_effective, true) | trim }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+
+        - name: Check Kubernetes DNS service path after component repair
+          ansible.builtin.shell: |
+            set -e -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            JOB={{ platform_dns_service_path_job_name }}
+            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+            "$K" --kubeconfig "$C" -n kube-system apply -f -
+            deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
+            while [ "${SECONDS}" -lt "${deadline}" ]; do
+              succeeded="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+              failed="$("$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+              if [ "${succeeded}" = "1" ] || { [ -n "${failed}" ] && [ "${failed}" != "0" ]; }; then
+                break
+              fi
+              sleep 5
+            done
+            "$K" --kubeconfig "$C" -n kube-system logs -l job-name="${JOB}" --tail=240 || true
+          args:
+            executable: /bin/bash
+            stdin: |
+              ---
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: {{ platform_dns_service_path_job_name }}
+                namespace: kube-system
+              spec:
+                backoffLimit: 0
+                activeDeadlineSeconds: {{ platform_dns_check_timeout_effective }}
+                ttlSecondsAfterFinished: 300
+                template:
+                  spec:
+                    restartPolicy: Never
+                    nodeSelector:
+                      kubernetes.io/os: linux
+                    containers:
+                      - name: dns-service-path-check
+                        image: {{ platform_dns_check_image_effective }}
+                        imagePullPolicy: IfNotPresent
+                        command:
+                          - sh
+                          - -c
+                        args:
+                          - |
+                            set -ex
+                            REPO_URL='{{ platform_dns_check_repo_effective }}'
+                            REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
+                            PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                            DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
+                            KUBE_DNS_SERVICE_IPS='{{ platform_cluster_dns_service_ips_list | join(' ') }}'
+                            COREDNS_ENDPOINT_IPS='{{ platform_coredns_endpoint_ips_effective }}'
+                            run_bounded() {
+                              seconds="$1"
+                              shift
+                              if command -v timeout >/dev/null 2>&1; then
+                                timeout "${seconds}" "$@"
+                              else
+                                "$@"
+                              fi
+                            }
+                            echo "===== pod resolver ====="
+                            cat /etc/resolv.conf
+                            echo "===== current CoreDNS endpoint IPs ====="
+                            printf '%s\n' "${COREDNS_ENDPOINT_IPS}"
+                            echo "===== default Kubernetes DNS service check ====="
+                            if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}"; then
+                              default_ok=true
+                            else
+                              default_ok=false
+                            fi
+                            echo "===== explicit Kubernetes DNS service IP checks ====="
+                            service_ip_ok=false
+                            for dns in ${KUBE_DNS_SERVICE_IPS}; do
+                              echo "--- ${dns} ---"
+                              if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                                service_ip_ok=true
+                              fi
+                            done
+                            echo "===== direct CoreDNS endpoint IP checks ====="
+                            endpoint_ok=false
+                            for dns in ${COREDNS_ENDPOINT_IPS}; do
+                              echo "--- ${dns} ---"
+                              if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                                endpoint_ok=true
+                              fi
+                            done
+                            echo "===== direct upstream DNS checks ====="
+                            direct_ok=false
+                            for dns in ${DNS_UPSTREAMS}; do
+                              echo "--- ${dns} ---"
+                              if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                                direct_ok=true
+                              fi
+                            done
+                            echo "PLATFORM_DNS_DEFAULT_RESOLUTION=${default_ok}"
+                            echo "PLATFORM_DNS_SERVICE_IP_RESOLUTION=${service_ip_ok}"
+                            echo "PLATFORM_DNS_COREDNS_ENDPOINT_RESOLUTION=${endpoint_ok}"
+                            echo "PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=${direct_ok}"
+          register: platform_dns_service_path_check_after_component_repair
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+
+        - name: Detect final Kubernetes DNS service path state after component repair
+          ansible.builtin.set_fact:
+            platform_dns_default_resolution_ok: "{{ (platform_dns_service_path_check_after_component_repair.stdout | default('')) is search('PLATFORM_DNS_DEFAULT_RESOLUTION=true') }}"
+            platform_dns_service_ip_resolution_ok: "{{ (platform_dns_service_path_check_after_component_repair.stdout | default('')) is search('PLATFORM_DNS_SERVICE_IP_RESOLUTION=true') }}"
+            platform_dns_coredns_endpoint_resolution_ok: "{{ (platform_dns_service_path_check_after_component_repair.stdout | default('')) is search('PLATFORM_DNS_COREDNS_ENDPOINT_RESOLUTION=true') }}"
+            platform_dns_direct_upstream_resolution_ok: "{{ (platform_dns_service_path_check_after_component_repair.stdout | default('')) is search('PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=true') }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - platform_dns_service_path_check_after_component_repair is defined
+            - not (platform_dns_default_resolution_ok | bool)
+
+        - name: Print final Kubernetes DNS service path check
+          ansible.builtin.debug:
+            var: platform_dns_service_path_check_after_component_repair.stdout_lines
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - platform_dns_service_path_check_after_component_repair is defined
+            - platform_dns_service_path_check_after_component_repair.stdout_lines is defined
+          run_once: true
+
         - name: Run cluster DNS check after repair
           ansible.builtin.shell: |
             set -e -o pipefail
