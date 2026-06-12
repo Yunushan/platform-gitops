@@ -874,8 +874,18 @@
             C=/etc/rancher/rke2/rke2.yaml
             for deployment in platform-traefik traefik; do
               if "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" >/dev/null 2>&1; then
-                "$K" --kubeconfig "$C" -n traefik rollout status "deployment/${deployment}" --timeout={{ platform_ingress_poll_interval_effective }}s
-                exit 0
+                "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" -o jsonpath='{.metadata.name}{" generation="}{.metadata.generation}{" observed="}{.status.observedGeneration}{" desired="}{.spec.replicas}{" updated="}{.status.updatedReplicas}{" ready="}{.status.readyReplicas}{" available="}{.status.availableReplicas}{" unavailable="}{.status.unavailableReplicas}{"\n"}'
+                "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" -o jsonpath='{.metadata.generation}{" "}{.status.observedGeneration}{" "}{.spec.replicas}{" "}{.status.updatedReplicas}{" "}{.status.readyReplicas}{" "}{.status.availableReplicas}{"\n"}' |
+                  awk '{
+                    generation=$1 + 0
+                    observed=$2 + 0
+                    desired=$3 + 0
+                    updated=$4 + 0
+                    ready=$5 + 0
+                    available=$6 + 0
+                    exit(observed >= generation && desired > 0 && updated >= desired && ready >= desired && available >= desired ? 0 : 1)
+                  }'
+                exit $?
               fi
             done
             "$K" --kubeconfig "$C" -n traefik get deployment -o wide || true
