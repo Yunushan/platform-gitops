@@ -951,10 +951,44 @@
             var: platform_traefik_rollout_diagnostics.stdout_lines
           run_once: true
 
+        - name: Summarize Traefik rollout failure
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== HelmChart status ====="
+            "$K" --kubeconfig "$C" -n kube-system get helmchart platform-traefik -o wide 2>/dev/null || true
+            echo "===== Helm install job ====="
+            "$K" --kubeconfig "$C" -n kube-system get job helm-install-platform-traefik -o wide 2>/dev/null || true
+            echo "===== Traefik deployment ====="
+            "$K" --kubeconfig "$C" -n traefik get deploy platform-traefik traefik -o wide 2>/dev/null || \
+              "$K" --kubeconfig "$C" -n traefik get deploy -o wide 2>/dev/null || true
+            echo "===== Traefik pods ====="
+            "$K" --kubeconfig "$C" -n traefik get pods -o wide 2>/dev/null || true
+            echo "===== Traefik pod waiting/termination reasons ====="
+            "$K" --kubeconfig "$C" -n traefik get pods \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" ready="}{range .status.containerStatuses[*]}{.ready}{" "}{end}{" waiting="}{range .status.containerStatuses[*]}{.state.waiting.reason}{":"}{.state.waiting.message}{" "}{end}{" terminated="}{range .status.containerStatuses[*]}{.state.terminated.reason}{":"}{.state.terminated.message}{" "}{end}{"\n"}{end}' 2>/dev/null || true
+            echo "===== Traefik images ====="
+            "$K" --kubeconfig "$C" -n traefik get pods \
+              -o jsonpath='{range .items[*]}{.metadata.name}{": "}{range .spec.initContainers[*]}init:{.name}={.image}{" "}{end}{range .spec.containers[*]}container:{.name}={.image}{" "}{end}{"\n"}{end}' 2>/dev/null || true
+            echo "===== Most relevant recent events ====="
+            "$K" --kubeconfig "$C" get events -A --sort-by=.lastTimestamp 2>/dev/null |
+              grep -E 'traefik|platform-traefik|helm-install-platform-traefik|Failed|BackOff|ErrImagePull|ImagePullBackOff|FailedScheduling|Unhealthy' |
+              tail -40 || true
+          args:
+            executable: /bin/bash
+          register: platform_traefik_rollout_summary
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Stop after Traefik rollout failure
           ansible.builtin.fail:
             msg: |
               Traefik did not become available within {{ platform_traefik_rollout_timeout_effective }}s.
+
+              Traefik failure summary:
+              {{ platform_traefik_rollout_summary.stdout | default('summary was not collected') }}
 
               Review the diagnostics above. Common causes are slow or blocked
               image pulls, Helm chart install failure, insufficient resources,
@@ -1031,11 +1065,36 @@
             var: platform_traefik_vip_diagnostics.stdout_lines
           run_once: true
 
+        - name: Summarize Traefik service VIP failure
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== Traefik services ====="
+            "$K" --kubeconfig "$C" -n traefik get svc -o wide 2>/dev/null || true
+            echo "===== MetalLB address pool ====="
+            "$K" --kubeconfig "$C" -n metallb-system get ipaddresspool,l2advertisement -o wide 2>/dev/null || true
+            echo "===== MetalLB pods ====="
+            "$K" --kubeconfig "$C" -n metallb-system get pods -o wide 2>/dev/null || true
+            echo "===== Most relevant recent events ====="
+            "$K" --kubeconfig "$C" get events -A --sort-by=.lastTimestamp 2>/dev/null |
+              grep -E 'traefik|platform-traefik|metallb|LoadBalancer|{{ rke2_ingress_vip_effective }}|Failed|error|warning' |
+              tail -40 || true
+          args:
+            executable: /bin/bash
+          register: platform_traefik_vip_summary
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Stop after Traefik service VIP failure
           ansible.builtin.fail:
             msg: |
               Traefik service did not receive the expected ingress VIP
               {{ rke2_ingress_vip_effective }} within {{ platform_traefik_rollout_timeout_effective }}s.
+
+              Traefik VIP failure summary:
+              {{ platform_traefik_vip_summary.stdout | default('summary was not collected') }}
 
               Review the diagnostics above. Common causes are MetalLB address
               pool mismatch, L2Advertisement problems, speaker/controller issues,
