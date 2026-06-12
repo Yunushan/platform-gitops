@@ -16,6 +16,7 @@
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
     platform_metallb_webhook_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_WEBHOOK_TIMEOUT') }}"
+    platform_metallb_webhook_probe_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_WEBHOOK_PROBE_TIMEOUT') }}"
     platform_metallb_chart_repo_effective: "{{ platform_metallb_chart_repo | default(platform_metallb_chart_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
     platform_metallb_chart_version_effective: "{{ platform_metallb_chart_version | default(platform_metallb_chart_version_from_env, true) }}"
     platform_traefik_chart_repo_effective: "{{ platform_traefik_chart_repo | default(platform_traefik_chart_repo_from_env, true) | default('https://traefik.github.io/charts', true) }}"
@@ -24,6 +25,7 @@
     platform_ingress_poll_interval_effective: "{{ platform_ingress_poll_interval | default(platform_ingress_poll_interval_from_env, true) | default(10, true) | int }}"
     platform_ingress_cleanup_helm_jobs_effective: "{{ platform_ingress_cleanup_helm_jobs | default(platform_ingress_cleanup_helm_jobs_from_env, true) | default(true, true) | bool }}"
     platform_metallb_webhook_timeout_effective: "{{ platform_metallb_webhook_timeout | default(platform_metallb_webhook_timeout_from_env, true) | default(platform_ingress_rollout_timeout_effective, true) | string | regex_replace('s$', '') | int }}"
+    platform_metallb_webhook_probe_timeout_effective: "{{ platform_metallb_webhook_probe_timeout | default(platform_metallb_webhook_probe_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
@@ -43,6 +45,7 @@
           - platform_ingress_rollout_timeout_effective | int > 0
           - platform_ingress_poll_interval_effective | int > 0
           - platform_metallb_webhook_timeout_effective | int > 0
+          - platform_metallb_webhook_probe_timeout_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -54,7 +57,8 @@
           {{ 'enabled' if platform_ingress_cleanup_helm_jobs_effective else 'disabled' }}.
           MetalLB chart repo: {{ platform_metallb_chart_repo_effective }}.
           Traefik chart repo: {{ platform_traefik_chart_repo_effective }}.
-          MetalLB webhook timeout is {{ platform_metallb_webhook_timeout_effective }}s.
+          MetalLB webhook timeout is {{ platform_metallb_webhook_timeout_effective }}s
+          with {{ platform_metallb_webhook_probe_timeout_effective }}s per webhook probe.
       run_once: true
 
     - name: Check firewalld state
@@ -294,10 +298,53 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Poll MetalLB webhook service path from first server
+          ansible.builtin.shell: |
+            set -eu
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            svc=""
+            for candidate in metallb-webhook-service platform-metallb-webhook-service; do
+              if "$K" --kubeconfig "$C" -n metallb-system get "service/${candidate}" >/dev/null 2>&1; then
+                svc="${candidate}"
+                break
+              fi
+            done
+            test -n "${svc}"
+            svc_ip="$("$K" --kubeconfig "$C" -n metallb-system get "service/${svc}" -o jsonpath='{.spec.clusterIP}')"
+            test -n "${svc_ip}"
+            test "${svc_ip}" != "None"
+            if ! command -v curl >/dev/null 2>&1; then
+              echo "curl is not installed on {{ rke2_first_server }}; skipping direct webhook ClusterIP probe"
+              exit 0
+            fi
+            code="$(curl --silent --show-error --insecure --output /dev/null \
+              --write-out '%{http_code}' \
+              --connect-timeout {{ platform_metallb_webhook_probe_timeout_effective }} \
+              --max-time {{ platform_metallb_webhook_probe_timeout_effective }} \
+              "https://${svc_ip}:443/" || true)"
+            echo "service=${svc} cluster_ip=${svc_ip} http_code=${code}"
+            case "${code}" in
+              000|"") exit 1 ;;
+              *) exit 0 ;;
+            esac
+          args:
+            executable: /bin/bash
+          register: platform_metallb_webhook_service_path
+          retries: "{{ platform_metallb_webhook_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_metallb_webhook_service_path.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Poll MetalLB webhook admission path
           ansible.builtin.shell: |
             set -o pipefail
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply --dry-run=server -f -
+            /var/lib/rancher/rke2/bin/kubectl \
+              --kubeconfig /etc/rancher/rke2/rke2.yaml \
+              --request-timeout={{ platform_metallb_webhook_probe_timeout_effective }}s \
+              apply --dry-run=server -f -
           args:
             executable: /bin/bash
             stdin: |
@@ -335,6 +382,18 @@
             "$K" --kubeconfig "$C" -n metallb-system get svc -o wide || true
             echo "===== MetalLB webhook endpoints ====="
             "$K" --kubeconfig "$C" -n metallb-system get endpoints,endpointslices -o wide | grep -E 'webhook|NAME' || true
+            echo "===== MetalLB webhook service ClusterIP probe from first server ====="
+            svc="$("$K" --kubeconfig "$C" -n metallb-system get svc -o name | grep -E 'metallb-webhook-service|platform-metallb-webhook-service' | head -1 | sed 's#service/##' || true)"
+            if [ -n "${svc}" ]; then
+              svc_ip="$("$K" --kubeconfig "$C" -n metallb-system get "service/${svc}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+              echo "service=${svc} cluster_ip=${svc_ip}"
+              if command -v curl >/dev/null 2>&1 && [ -n "${svc_ip}" ] && [ "${svc_ip}" != "None" ]; then
+                curl --verbose --insecure \
+                  --connect-timeout {{ platform_metallb_webhook_probe_timeout_effective }} \
+                  --max-time {{ platform_metallb_webhook_probe_timeout_effective }} \
+                  "https://${svc_ip}:443/" || true
+              fi
+            fi
             echo "===== MetalLB workloads ====="
             "$K" --kubeconfig "$C" -n metallb-system get deploy,ds,rs,pods -o wide || true
             echo "===== MetalLB validating webhooks ====="
@@ -385,7 +444,10 @@
         - name: Apply platform ingress VIP pool manifest
           ansible.builtin.shell: |
             set -o pipefail
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+            /var/lib/rancher/rke2/bin/kubectl \
+              --kubeconfig /etc/rancher/rke2/rke2.yaml \
+              --request-timeout={{ platform_metallb_webhook_probe_timeout_effective }}s \
+              apply -f -
           args:
             executable: /bin/bash
             stdin: |
@@ -423,6 +485,18 @@
             "$K" --kubeconfig "$C" -n metallb-system get svc -o wide || true
             echo "===== MetalLB webhook endpoints ====="
             "$K" --kubeconfig "$C" -n metallb-system get endpoints,endpointslices -o wide | grep -E 'webhook|NAME' || true
+            echo "===== MetalLB webhook service ClusterIP probe from first server ====="
+            svc="$("$K" --kubeconfig "$C" -n metallb-system get svc -o name | grep -E 'metallb-webhook-service|platform-metallb-webhook-service' | head -1 | sed 's#service/##' || true)"
+            if [ -n "${svc}" ]; then
+              svc_ip="$("$K" --kubeconfig "$C" -n metallb-system get "service/${svc}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+              echo "service=${svc} cluster_ip=${svc_ip}"
+              if command -v curl >/dev/null 2>&1 && [ -n "${svc_ip}" ] && [ "${svc_ip}" != "None" ]; then
+                curl --verbose --insecure \
+                  --connect-timeout {{ platform_metallb_webhook_probe_timeout_effective }} \
+                  --max-time {{ platform_metallb_webhook_probe_timeout_effective }} \
+                  "https://${svc_ip}:443/" || true
+              fi
+            fi
             echo "===== MetalLB pools and advertisements ====="
             "$K" --kubeconfig "$C" -n metallb-system get ipaddresspool,l2advertisement -o wide || true
             echo "===== MetalLB workloads ====="

@@ -260,6 +260,12 @@ MetalLB admission webhooks are checked separately before the app VIP pool is app
 PLATFORM_METALLB_WEBHOOK_TIMEOUT=1200 make platform-ingress
 ```
 
+For faster webhook troubleshooting, reduce the per-probe request timeout while keeping a short outer wait:
+
+```bash
+PLATFORM_METALLB_WEBHOOK_PROBE_TIMEOUT=3 PLATFORM_METALLB_WEBHOOK_TIMEOUT=120 make platform-ingress
+```
+
 If your enterprise network requires internal Helm mirrors:
 
 ```bash

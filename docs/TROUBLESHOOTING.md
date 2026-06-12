@@ -100,6 +100,12 @@ If applying the app VIP fails with `failed calling webhook` or `context deadline
 PLATFORM_METALLB_WEBHOOK_TIMEOUT=1200 make platform-ingress
 ```
 
+Each webhook service-path and admission probe is bounded separately so a bad webhook path does not make every retry wait on Kubernetes' default admission timeout. The default is 5 seconds per probe:
+
+```bash
+PLATFORM_METALLB_WEBHOOK_PROBE_TIMEOUT=3 PLATFORM_METALLB_WEBHOOK_TIMEOUT=120 make platform-ingress
+```
+
 If `helm-install-platform-metallb` or `helm-install-platform-traefik` stays `Running` for many minutes with restarts, rerun:
 
 ```bash
