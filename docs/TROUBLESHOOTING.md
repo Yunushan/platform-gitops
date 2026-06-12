@@ -106,6 +106,12 @@ Each webhook service-path and admission probe is bounded separately so a bad web
 PLATFORM_METALLB_WEBHOOK_PROBE_TIMEOUT=3 PLATFORM_METALLB_WEBHOOK_TIMEOUT=120 make platform-ingress
 ```
 
+When the webhook check still fails, `platform-ingress` automatically restarts the MetalLB controller, refreshes kube-proxy, restarts Cilium, and retries the webhook dry-run before stopping. Disable that recovery path only when you want diagnostics without component restarts:
+
+```bash
+PLATFORM_METALLB_WEBHOOK_REPAIR=false make platform-ingress
+```
+
 If `helm-install-platform-metallb` or `helm-install-platform-traefik` stays `Running` for many minutes with restarts, rerun:
 
 ```bash

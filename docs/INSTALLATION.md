@@ -266,6 +266,12 @@ For faster webhook troubleshooting, reduce the per-probe request timeout while k
 PLATFORM_METALLB_WEBHOOK_PROBE_TIMEOUT=3 PLATFORM_METALLB_WEBHOOK_TIMEOUT=120 make platform-ingress
 ```
 
+If the webhook path is unhealthy, the ingress playbook automatically restarts MetalLB controller, refreshes kube-proxy, restarts Cilium, and retries the webhook dry-run. To collect diagnostics without that repair pass:
+
+```bash
+PLATFORM_METALLB_WEBHOOK_REPAIR=false make platform-ingress
+```
+
 If your enterprise network requires internal Helm mirrors:
 
 ```bash
