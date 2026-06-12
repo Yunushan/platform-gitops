@@ -34,6 +34,7 @@
     platform_traefik_rollout_timeout_effective: "{{ platform_traefik_rollout_timeout | default(platform_traefik_rollout_timeout_from_env, true) | default(platform_ingress_rollout_timeout_effective, true) | string | regex_replace('s$', '') | int }}"
     platform_traefik_dns_check_image_effective: "{{ platform_traefik_dns_check_image | default(platform_traefik_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_traefik_dns_check_timeout_effective: "{{ platform_traefik_dns_check_timeout | default(platform_traefik_dns_check_timeout_from_env, true) | default(180, true) | int }}"
+    platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_traefik_wait_retries: "{{ (((platform_traefik_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
@@ -797,14 +798,169 @@
 
     - name: Verify Traefik chart repository DNS from every node
       block:
+        - name: Install per-node chart repository DNS checker on first server
+          ansible.builtin.copy:
+            dest: "{{ platform_traefik_dns_check_script_path }}"
+            owner: root
+            group: root
+            mode: "0755"
+            content: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+
+              repo_url="${1:?usage: check-chart-repo-dns-all-nodes.sh <repo-url> [check-image] [timeout-seconds] [poll-interval-seconds]}"
+              check_image="${2:-rancher/klipper-helm:v0.10.0-build20260513}"
+              timeout_seconds="${3:-180}"
+              poll_interval="${4:-5}"
+              kubectl_bin="${KUBECTL:-/var/lib/rancher/rke2/bin/kubectl}"
+              kubeconfig="${KUBECONFIG:-/etc/rancher/rke2/rke2.yaml}"
+              namespace="${CHECK_NAMESPACE:-kube-system}"
+              check_name="platform-chart-repo-dns-check"
+              check_id="$(printf '%s' "${repo_url}" | sha256sum | awk '{print substr($1, 1, 10)}')"
+              selector="app.kubernetes.io/name=${check_name},platform.gitops/check-id=${check_id}"
+
+              safe_name() {
+                printf '%s' "$1" |
+                  tr '[:upper:]' '[:lower:]' |
+                  sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//' |
+                  cut -c 1-34
+              }
+
+              cleanup_previous() {
+                "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" \
+                  delete job -l "${selector}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+              }
+
+              print_diagnostics() {
+                echo "===== per-node chart repository DNS check diagnostics ====="
+                "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs,pods -l "${selector}" -o wide || true
+                for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
+                  job_name="${job_ref#job.batch/}"
+                  echo "----- ${job_ref} -----"
+                  "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o wide || true
+                  "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" describe "${job_ref}" || true
+                  for pod_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get pods -l "job-name=${job_name}" -o name 2>/dev/null || true); do
+                    echo "----- ${pod_ref} -----"
+                    "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${pod_ref}" -o wide || true
+                    "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" logs "${pod_ref}" --all-containers --tail=160 || true
+                    "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" describe "${pod_ref}" || true
+                  done
+                done
+              }
+
+              cleanup_previous
+              nodes="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
+              expected=0
+              for node in ${nodes}; do
+                expected=$((expected + 1))
+                node_safe="$(safe_name "${node}")"
+                job_name="platform-dns-${check_id}-${node_safe}"
+                cat <<YAML | "${kubectl_bin}" --kubeconfig "${kubeconfig}" apply -f -
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: ${job_name}
+                namespace: ${namespace}
+                labels:
+                  app.kubernetes.io/name: ${check_name}
+                  platform.gitops/check-id: ${check_id}
+                  platform.gitops/node: ${node_safe}
+              spec:
+                backoffLimit: 0
+                activeDeadlineSeconds: ${timeout_seconds}
+                ttlSecondsAfterFinished: 300
+                template:
+                  metadata:
+                    labels:
+                      app.kubernetes.io/name: ${check_name}
+                      platform.gitops/check-id: ${check_id}
+                      platform.gitops/node: ${node_safe}
+                  spec:
+                    restartPolicy: Never
+                    nodeName: "${node}"
+                    tolerations:
+                      - operator: Exists
+                    containers:
+                      - name: check
+                        image: "${check_image}"
+                        imagePullPolicy: IfNotPresent
+                        env:
+                          - name: REPO_URL
+                            value: "${repo_url}"
+                        command:
+                          - sh
+                          - -c
+                        args:
+                          - |
+                            set -ex
+                            REPO_HOST="\${REPO_URL#http://}"
+                            REPO_HOST="\${REPO_HOST#https://}"
+                            REPO_HOST="\${REPO_HOST%%/*}"
+                            echo "===== pod resolver ====="
+                            cat /etc/resolv.conf
+                            echo "===== repository host ====="
+                            printf '%s\n' "\${REPO_HOST}"
+                            echo "===== IPv4 resolution ====="
+                            getent ahostsv4 "\${REPO_HOST}" || nslookup "\${REPO_HOST}" || true
+                            echo "===== helm repo add ====="
+                            helm repo add platform-chart-repo-dns-check "\${REPO_URL}"
+                            echo "===== helm repo update ====="
+                            helm repo update
+              YAML
+              done
+
+              if [ "${expected}" -eq 0 ]; then
+                echo "No Kubernetes nodes found." >&2
+                exit 1
+              fi
+
+              deadline=$((SECONDS + timeout_seconds))
+              while [ "${SECONDS}" -lt "${deadline}" ]; do
+                total=0
+                succeeded=0
+                failed=0
+                active=0
+                for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
+                  total=$((total + 1))
+                  job_name="${job_ref#job.batch/}"
+                  job_succeeded="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+                  job_failed="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+                  job_active="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.active}' 2>/dev/null || true)"
+                  if [ "${job_succeeded}" = "1" ]; then
+                    succeeded=$((succeeded + 1))
+                  fi
+                  if [ -n "${job_failed}" ] && [ "${job_failed}" != "0" ]; then
+                    failed=$((failed + 1))
+                    echo "Job ${job_name} failed."
+                  fi
+                  if [ -n "${job_active}" ] && [ "${job_active}" != "0" ]; then
+                    active=$((active + 1))
+                  fi
+                done
+
+                echo "chart repo DNS per-node status: total=${total}/${expected} succeeded=${succeeded} failed=${failed} active=${active}"
+                if [ "${total}" -eq "${expected}" ] && [ "${succeeded}" -eq "${expected}" ]; then
+                  cleanup_previous
+                  exit 0
+                fi
+                if [ "${failed}" -gt 0 ]; then
+                  break
+                fi
+                sleep "${poll_interval}"
+              done
+
+              print_diagnostics
+              exit 1
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Check Traefik chart repository DNS from pods pinned to every node
-          ansible.builtin.script:
-            cmd: >-
-              scripts/bootstrap/check-chart-repo-dns-all-nodes.sh
-              {{ platform_traefik_chart_repo_effective | quote }}
-              {{ platform_traefik_dns_check_image_effective | quote }}
-              {{ platform_traefik_dns_check_timeout_effective | quote }}
-            executable: /bin/bash
+          ansible.builtin.command:
+            argv:
+              - "{{ platform_traefik_dns_check_script_path }}"
+              - "{{ platform_traefik_chart_repo_effective }}"
+              - "{{ platform_traefik_dns_check_image_effective }}"
+              - "{{ platform_traefik_dns_check_timeout_effective }}"
           register: platform_traefik_dns_all_nodes_check
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
@@ -900,13 +1056,12 @@
           when: platform_traefik_dns_cilium_restart.rc | default(1) == 0
 
         - name: Retry Traefik chart repository DNS from every node
-          ansible.builtin.script:
-            cmd: >-
-              scripts/bootstrap/check-chart-repo-dns-all-nodes.sh
-              {{ platform_traefik_chart_repo_effective | quote }}
-              {{ platform_traefik_dns_check_image_effective | quote }}
-              {{ platform_traefik_dns_check_timeout_effective | quote }}
-            executable: /bin/bash
+          ansible.builtin.command:
+            argv:
+              - "{{ platform_traefik_dns_check_script_path }}"
+              - "{{ platform_traefik_chart_repo_effective }}"
+              - "{{ platform_traefik_dns_check_image_effective }}"
+              - "{{ platform_traefik_dns_check_timeout_effective }}"
           register: platform_traefik_dns_all_nodes_retry
           changed_when: false
           failed_when: false
@@ -935,12 +1090,20 @@
               Repository:
               {{ platform_traefik_chart_repo_effective }}
 
-              Initial check:
+              Initial check result:
+              rc={{ platform_traefik_dns_all_nodes_check.rc | default('not set') }}
+              msg={{ platform_traefik_dns_all_nodes_check.msg | default('') }}
+              stdout:
               {{ platform_traefik_dns_all_nodes_check.stdout | default('not collected') }}
+              stderr:
               {{ platform_traefik_dns_all_nodes_check.stderr | default('') }}
 
-              Retry check:
+              Retry check result:
+              rc={{ platform_traefik_dns_all_nodes_retry.rc | default('not set') }}
+              msg={{ platform_traefik_dns_all_nodes_retry.msg | default('') }}
+              stdout:
               {{ platform_traefik_dns_all_nodes_retry.stdout | default('not run') }}
+              stderr:
               {{ platform_traefik_dns_all_nodes_retry.stderr | default('') }}
 
               This is a node-specific Kubernetes service DNS path problem. Check
