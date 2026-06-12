@@ -254,6 +254,12 @@ To limit ingress rollout waiting, set the timeout in seconds:
 PLATFORM_INGRESS_ROLLOUT_TIMEOUT=180 make platform-ingress
 ```
 
+MetalLB admission webhooks are checked separately before the app VIP pool is applied. If your cluster is slow to make `metallb-webhook-service` reachable from the API server, extend only that phase:
+
+```bash
+PLATFORM_METALLB_WEBHOOK_TIMEOUT=1200 make platform-ingress
+```
+
 If your enterprise network requires internal Helm mirrors:
 
 ```bash

@@ -94,6 +94,12 @@ To wait longer on slow chart/image pulls:
 PLATFORM_INGRESS_ROLLOUT_TIMEOUT=1200 make platform-ingress
 ```
 
+If applying the app VIP fails with `failed calling webhook` or `context deadline exceeded` for `metallb-webhook-service`, the Kubernetes API server could not reach MetalLB's validating webhook yet. The ingress playbook now waits for the webhook service endpoints and runs a server-side dry-run of the MetalLB pool before creating the real resources. To wait longer for that webhook phase:
+
+```bash
+PLATFORM_METALLB_WEBHOOK_TIMEOUT=1200 make platform-ingress
+```
+
 If `helm-install-platform-metallb` or `helm-install-platform-traefik` stays `Running` for many minutes with restarts, rerun:
 
 ```bash
