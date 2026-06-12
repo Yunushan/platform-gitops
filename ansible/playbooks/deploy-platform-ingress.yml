@@ -15,6 +15,8 @@
     platform_traefik_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT') }}"
     platform_traefik_dns_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_CHECK_IMAGE') }}"
     platform_traefik_dns_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_CHECK_TIMEOUT') }}"
+    platform_traefik_dns_helm_attempts_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS') }}"
+    platform_traefik_dns_helm_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
@@ -33,7 +35,9 @@
     platform_metallb_webhook_repair_effective: "{{ platform_metallb_webhook_repair | default(platform_metallb_webhook_repair_from_env, true) | default(true, true) | bool }}"
     platform_traefik_rollout_timeout_effective: "{{ platform_traefik_rollout_timeout | default(platform_traefik_rollout_timeout_from_env, true) | default(platform_ingress_rollout_timeout_effective, true) | string | regex_replace('s$', '') | int }}"
     platform_traefik_dns_check_image_effective: "{{ platform_traefik_dns_check_image | default(platform_traefik_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
-    platform_traefik_dns_check_timeout_effective: "{{ platform_traefik_dns_check_timeout | default(platform_traefik_dns_check_timeout_from_env, true) | default(180, true) | int }}"
+    platform_traefik_dns_check_timeout_effective: "{{ platform_traefik_dns_check_timeout | default(platform_traefik_dns_check_timeout_from_env, true) | default(300, true) | string | regex_replace('s$', '') | int }}"
+    platform_traefik_dns_helm_attempts_effective: "{{ platform_traefik_dns_helm_attempts | default(platform_traefik_dns_helm_attempts_from_env, true) | default(3, true) | int }}"
+    platform_traefik_dns_helm_timeout_effective: "{{ platform_traefik_dns_helm_timeout | default(platform_traefik_dns_helm_timeout_from_env, true) | default(60, true) | string | regex_replace('s$', '') | int }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
@@ -59,6 +63,8 @@
           - platform_traefik_rollout_timeout_effective | int > 0
           - platform_traefik_dns_check_image_effective | length > 0
           - platform_traefik_dns_check_timeout_effective | int > 0
+          - platform_traefik_dns_helm_attempts_effective | int > 0
+          - platform_traefik_dns_helm_timeout_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -76,7 +82,9 @@
           {{ 'enabled' if platform_metallb_webhook_repair_effective else 'disabled' }}.
           Traefik rollout timeout is {{ platform_traefik_rollout_timeout_effective }}s.
           Traefik per-node DNS check timeout is
-          {{ platform_traefik_dns_check_timeout_effective }}s.
+          {{ platform_traefik_dns_check_timeout_effective }}s, with
+          {{ platform_traefik_dns_helm_attempts_effective }} Helm attempts and
+          {{ platform_traefik_dns_helm_timeout_effective }}s per Helm command.
       run_once: true
 
     - name: Check firewalld state
@@ -808,10 +816,12 @@
               #!/usr/bin/env bash
               set -euo pipefail
 
-              repo_url="${1:?usage: check-chart-repo-dns-all-nodes.sh <repo-url> [check-image] [timeout-seconds] [poll-interval-seconds]}"
+              repo_url="${1:?usage: check-chart-repo-dns-all-nodes.sh <repo-url> [check-image] [timeout-seconds] [poll-interval-seconds] [helm-attempts] [helm-timeout-seconds]}"
               check_image="${2:-rancher/klipper-helm:v0.10.0-build20260513}"
-              timeout_seconds="${3:-180}"
+              timeout_seconds="${3:-300}"
               poll_interval="${4:-5}"
+              helm_attempts="${5:-3}"
+              helm_timeout_seconds="${6:-60}"
               kubectl_bin="${KUBECTL:-/var/lib/rancher/rke2/bin/kubectl}"
               kubeconfig="${KUBECONFIG:-/etc/rancher/rke2/rke2.yaml}"
               namespace="${CHECK_NAMESPACE:-kube-system}"
@@ -887,12 +897,25 @@
                         env:
                           - name: REPO_URL
                             value: "${repo_url}"
+                          - name: HELM_ATTEMPTS
+                            value: "${helm_attempts}"
+                          - name: HELM_TIMEOUT_SECONDS
+                            value: "${helm_timeout_seconds}"
                         command:
                           - sh
                           - -c
                         args:
                           - |
                             set -ex
+                            run_bounded() {
+                              seconds="\$1"
+                              shift
+                              if command -v timeout >/dev/null 2>&1; then
+                                timeout "\${seconds}" "\$@"
+                              else
+                                "\$@"
+                              fi
+                            }
                             REPO_HOST="\${REPO_URL#http://}"
                             REPO_HOST="\${REPO_HOST#https://}"
                             REPO_HOST="\${REPO_HOST%%/*}"
@@ -902,10 +925,30 @@
                             printf '%s\n' "\${REPO_HOST}"
                             echo "===== IPv4 resolution ====="
                             getent ahostsv4 "\${REPO_HOST}" || nslookup "\${REPO_HOST}" || true
-                            echo "===== helm repo add ====="
-                            helm repo add platform-chart-repo-dns-check "\${REPO_URL}"
-                            echo "===== helm repo update ====="
-                            helm repo update
+                            attempt=1
+                            while [ "\${attempt}" -le "\${HELM_ATTEMPTS}" ]; do
+                              echo "===== helm repository attempt \${attempt}/\${HELM_ATTEMPTS} ====="
+                              helm repo remove platform-chart-repo-dns-check >/dev/null 2>&1 || true
+                              set +e
+                              run_bounded "\${HELM_TIMEOUT_SECONDS}" helm repo add platform-chart-repo-dns-check "\${REPO_URL}"
+                              add_rc="\$?"
+                              update_rc="not-run"
+                              if [ "\${add_rc}" -eq 0 ]; then
+                                run_bounded "\${HELM_TIMEOUT_SECONDS}" helm repo update platform-chart-repo-dns-check
+                                update_rc="\$?"
+                              fi
+                              set -e
+                              if [ "\${add_rc}" -eq 0 ] && [ "\${update_rc}" = "0" ]; then
+                                echo "Helm repository check succeeded on attempt \${attempt}."
+                                exit 0
+                              fi
+                              echo "Helm repository check attempt \${attempt}/\${HELM_ATTEMPTS} failed: repo_add_rc=\${add_rc} repo_update_rc=\${update_rc}" >&2
+                              if [ "\${attempt}" -lt "\${HELM_ATTEMPTS}" ]; then
+                                sleep 5
+                              fi
+                              attempt=\$((attempt + 1))
+                            done
+                            exit 1
               YAML
               done
 
@@ -920,6 +963,7 @@
                 succeeded=0
                 failed=0
                 active=0
+                terminal=0
                 for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
                   total=$((total + 1))
                   job_name="${job_ref#job.batch/}"
@@ -938,12 +982,17 @@
                   fi
                 done
 
-                echo "chart repo DNS per-node status: total=${total}/${expected} succeeded=${succeeded} failed=${failed} active=${active}"
+                terminal=$((succeeded + failed))
+                pending=$((expected - total))
+                if [ "${pending}" -lt 0 ]; then
+                  pending=0
+                fi
+                echo "chart repo DNS per-node status: total=${total}/${expected} pending=${pending} succeeded=${succeeded} failed=${failed} active=${active} terminal=${terminal}/${expected}"
                 if [ "${total}" -eq "${expected}" ] && [ "${succeeded}" -eq "${expected}" ]; then
                   cleanup_previous
                   exit 0
                 fi
-                if [ "${failed}" -gt 0 ]; then
+                if [ "${total}" -eq "${expected}" ] && [ "${active}" -eq 0 ] && [ "${terminal}" -eq "${expected}" ]; then
                   break
                 fi
                 sleep "${poll_interval}"
@@ -961,6 +1010,9 @@
               - "{{ platform_traefik_chart_repo_effective }}"
               - "{{ platform_traefik_dns_check_image_effective }}"
               - "{{ platform_traefik_dns_check_timeout_effective }}"
+              - "{{ platform_ingress_poll_interval_effective }}"
+              - "{{ platform_traefik_dns_helm_attempts_effective }}"
+              - "{{ platform_traefik_dns_helm_timeout_effective }}"
           register: platform_traefik_dns_all_nodes_check
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
@@ -1062,6 +1114,9 @@
               - "{{ platform_traefik_chart_repo_effective }}"
               - "{{ platform_traefik_dns_check_image_effective }}"
               - "{{ platform_traefik_dns_check_timeout_effective }}"
+              - "{{ platform_ingress_poll_interval_effective }}"
+              - "{{ platform_traefik_dns_helm_attempts_effective }}"
+              - "{{ platform_traefik_dns_helm_timeout_effective }}"
           register: platform_traefik_dns_all_nodes_retry
           changed_when: false
           failed_when: false
@@ -1109,6 +1164,9 @@
               This is a node-specific Kubernetes service DNS path problem. Check
               kube-proxy/Cilium/firewalld on the failing node shown above, or use
               an internal chart mirror reachable from every node.
+
+              To tolerate short DNS/egress flaps while debugging:
+              PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
           run_once: true
           when: platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
 

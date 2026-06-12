@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_url="${1:?usage: check-chart-repo-dns-all-nodes.sh <repo-url> [check-image] [timeout-seconds] [poll-interval-seconds]}"
+repo_url="${1:?usage: check-chart-repo-dns-all-nodes.sh <repo-url> [check-image] [timeout-seconds] [poll-interval-seconds] [helm-attempts] [helm-timeout-seconds]}"
 check_image="${2:-rancher/klipper-helm:v0.10.0-build20260513}"
-timeout_seconds="${3:-180}"
+timeout_seconds="${3:-300}"
 poll_interval="${4:-5}"
+helm_attempts="${5:-3}"
+helm_timeout_seconds="${6:-60}"
 
 kubectl_bin="${KUBECTL:-/var/lib/rancher/rke2/bin/kubectl}"
 kubeconfig="${KUBECONFIG:-/etc/rancher/rke2/rke2.yaml}"
@@ -82,12 +84,25 @@ spec:
           env:
             - name: REPO_URL
               value: "${repo_url}"
+            - name: HELM_ATTEMPTS
+              value: "${helm_attempts}"
+            - name: HELM_TIMEOUT_SECONDS
+              value: "${helm_timeout_seconds}"
           command:
             - sh
             - -c
           args:
             - |
               set -ex
+              run_bounded() {
+                seconds="\$1"
+                shift
+                if command -v timeout >/dev/null 2>&1; then
+                  timeout "\${seconds}" "\$@"
+                else
+                  "\$@"
+                fi
+              }
               REPO_HOST="\${REPO_URL#http://}"
               REPO_HOST="\${REPO_HOST#https://}"
               REPO_HOST="\${REPO_HOST%%/*}"
@@ -97,10 +112,30 @@ spec:
               printf '%s\n' "\${REPO_HOST}"
               echo "===== IPv4 resolution ====="
               getent ahostsv4 "\${REPO_HOST}" || nslookup "\${REPO_HOST}" || true
-              echo "===== helm repo add ====="
-              helm repo add platform-chart-repo-dns-check "\${REPO_URL}"
-              echo "===== helm repo update ====="
-              helm repo update
+              attempt=1
+              while [ "\${attempt}" -le "\${HELM_ATTEMPTS}" ]; do
+                echo "===== helm repository attempt \${attempt}/\${HELM_ATTEMPTS} ====="
+                helm repo remove platform-chart-repo-dns-check >/dev/null 2>&1 || true
+                set +e
+                run_bounded "\${HELM_TIMEOUT_SECONDS}" helm repo add platform-chart-repo-dns-check "\${REPO_URL}"
+                add_rc="\$?"
+                update_rc="not-run"
+                if [ "\${add_rc}" -eq 0 ]; then
+                  run_bounded "\${HELM_TIMEOUT_SECONDS}" helm repo update platform-chart-repo-dns-check
+                  update_rc="\$?"
+                fi
+                set -e
+                if [ "\${add_rc}" -eq 0 ] && [ "\${update_rc}" = "0" ]; then
+                  echo "Helm repository check succeeded on attempt \${attempt}."
+                  exit 0
+                fi
+                echo "Helm repository check attempt \${attempt}/\${HELM_ATTEMPTS} failed: repo_add_rc=\${add_rc} repo_update_rc=\${update_rc}" >&2
+                if [ "\${attempt}" -lt "\${HELM_ATTEMPTS}" ]; then
+                  sleep 5
+                fi
+                attempt=\$((attempt + 1))
+              done
+              exit 1
 YAML
 done
 
@@ -115,6 +150,7 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
   succeeded=0
   failed=0
   active=0
+  terminal=0
   for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
     total=$((total + 1))
     job_name="${job_ref#job.batch/}"
@@ -133,12 +169,17 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
     fi
   done
 
-  echo "chart repo DNS per-node status: total=${total}/${expected} succeeded=${succeeded} failed=${failed} active=${active}"
+  terminal=$((succeeded + failed))
+  pending=$((expected - total))
+  if [ "${pending}" -lt 0 ]; then
+    pending=0
+  fi
+  echo "chart repo DNS per-node status: total=${total}/${expected} pending=${pending} succeeded=${succeeded} failed=${failed} active=${active} terminal=${terminal}/${expected}"
   if [ "${total}" -eq "${expected}" ] && [ "${succeeded}" -eq "${expected}" ]; then
     cleanup_previous
     exit 0
   fi
-  if [ "${failed}" -gt 0 ]; then
+  if [ "${total}" -eq "${expected}" ] && [ "${active}" -eq 0 ] && [ "${terminal}" -eq "${expected}" ]; then
     break
   fi
   sleep "${poll_interval}"

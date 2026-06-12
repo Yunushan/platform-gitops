@@ -286,10 +286,16 @@ PLATFORM_TRAEFIK_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/traefik" \
 make platform-ingress
 ```
 
-`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. It checks the MetalLB chart repository, then the Traefik chart repository, then verifies the Traefik chart repository from a pod pinned to every Kubernetes node before installing either controller. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
+`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. It checks the MetalLB chart repository, then the Traefik chart repository, then verifies the Traefik chart repository from a pod pinned to every Kubernetes node before installing either controller. The per-node Traefik check retries Helm repository add/update inside each pinned pod and waits for all node checks before printing diagnostics. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
 
 ```bash
 PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
+```
+
+If your network has short DNS or chart-repository flaps, increase only the per-node Helm check tolerance:
+
+```bash
+PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
 ```
 
 It then installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies the route, and removes the temporary Argo CD NodePort exposure.
