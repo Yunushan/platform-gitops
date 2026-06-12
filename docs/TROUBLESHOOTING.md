@@ -114,7 +114,7 @@ make platform-dns-repair
 
 The repair excludes Kubernetes DNS service IPs from CoreDNS upstream candidates. If a node resolver points back to the cluster DNS service, forwarding CoreDNS to that address creates a DNS loop and pod lookups will time out. The playbook also tests discovered upstream candidates from inside a pod and configures CoreDNS only with candidates that resolve the chart repository from the cluster network.
 
-If direct upstream DNS works from pods but Kubernetes DNS service lookups still time out, the problem is the Kubernetes DNS service path rather than the upstream resolver. The repair now applies the CNI service-path host prerequisites on all nodes, including reverse-path-filter sysctls and Cilium VXLAN/Geneve firewalld ports, then restarts kube-proxy when present, Cilium, and CoreDNS. To disable that bootstrap repair step:
+If direct upstream DNS works from pods but Kubernetes DNS service lookups still time out, the problem is the Kubernetes DNS service path rather than the upstream resolver. The repair now applies the CNI service-path host prerequisites on all nodes, including reverse-path-filter sysctls, Cilium VXLAN/Geneve firewalld ports, trusted pod CIDR firewalld sources, and trusted Cilium firewalld interfaces, then restarts kube-proxy when present, Cilium, and CoreDNS. To disable that bootstrap repair step:
 
 ```bash
 PLATFORM_DNS_SERVICE_PATH_REPAIR=false make platform-ingress
@@ -132,6 +132,19 @@ The static kube-proxy delete request is non-blocking and uses a 30-second Kubern
 
 ```bash
 PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT=10 make platform-ingress
+```
+
+If the playbook says direct upstream DNS works but direct CoreDNS endpoint DNS fails, pod-to-pod overlay traffic is still broken. Rerun node preparation so firewalld trusts the pod CIDR and Cilium interfaces on every node:
+
+```bash
+make rke2-prepare
+make platform-ingress
+```
+
+For non-default RKE2 pod CIDRs, override the trusted CIDR:
+
+```bash
+PLATFORM_DNS_POD_CIDRS="<RKE2_POD_CIDR>" make platform-ingress
 ```
 
 To force explicit CoreDNS upstreams:
@@ -222,7 +235,7 @@ make rke2-install
 ```
 
 The playbook runs the package installer asynchronously, polls progress, starts `rke2-server` without blocking Ansible output, verifies service readiness, and prints diagnostics if install or startup exceeds the timeout.
-The `rke2-install` target also runs preflight and node preparation first, including Rocky/RHEL 10 `kernel-modules-extra`, kernel modules, swap disablement, CNI sysctls, Cilium overlay firewalld ports, and NetworkManager CNI handling.
+The `rke2-install` target also runs preflight and node preparation first, including Rocky/RHEL 10 `kernel-modules-extra`, kernel modules, swap disablement, CNI sysctls, Cilium overlay firewalld ports, trusted pod CIDR/Cilium firewalld handling, and NetworkManager CNI handling.
 
 Collect current process, service, journal, disk, and memory diagnostics:
 
@@ -316,7 +329,7 @@ For interrupted bootstrap, token mismatch, stale process, or node join recovery,
 make rke2-recover
 ```
 
-This does not delete `/var/lib/rancher/rke2` cluster data. It reuses the existing first-server token, repairs config, opens firewalld ports, restarts services in the correct order, and waits for all three nodes to report Ready.
+This does not delete `/var/lib/rancher/rke2` cluster data. It reuses the existing first-server token, repairs config, opens firewalld ports, trusts the pod CIDR/Cilium interfaces, restarts services in the correct order, and waits for all three nodes to report Ready.
 
 Recovery defaults are intentionally short: 300 seconds for service/API stages and 600 seconds for node readiness. On failure, the playbook prints service status, RKE2 journals, listeners, process state, resources, nodes, pods, and events for the failed stage.
 

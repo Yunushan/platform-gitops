@@ -15,6 +15,7 @@
     platform_dns_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
     platform_dns_service_path_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL') }}"
     platform_dns_kube_proxy_delete_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT') }}"
+    platform_dns_pod_cidrs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_POD_CIDRS') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
@@ -26,6 +27,7 @@
     platform_dns_service_path_poll_interval_effective: "{{ platform_dns_service_path_poll_interval | default(platform_dns_service_path_poll_interval_from_env, true) | default(5, true) | int }}"
     platform_dns_service_path_rollout_retries_effective: "{{ (((platform_dns_service_path_rollout_timeout_effective | int) / (platform_dns_service_path_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_dns_kube_proxy_delete_timeout_effective: "{{ platform_dns_kube_proxy_delete_timeout | default(platform_dns_kube_proxy_delete_timeout_from_env, true) | default(30, true) | int }}"
+    platform_dns_pod_cidrs_raw: "{{ platform_dns_pod_cidrs | default(platform_dns_pod_cidrs_from_env, true) | default('', true) }}"
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
@@ -36,6 +38,10 @@
       - 8472/udp
       - 6081/udp
       - 10250/tcp
+    platform_dns_service_path_firewalld_trusted_interfaces:
+      - cilium_host
+      - cilium_net
+      - cilium_vxlan
     platform_coredns_configmap: rke2-coredns-rke2-coredns
     platform_coredns_deployment: rke2-coredns-rke2-coredns
   tasks:
@@ -678,6 +684,41 @@
             platform_dns_direct_upstream_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=true') }}"
           run_once: true
 
+        - name: Detect Kubernetes pod CIDRs for DNS service path repair
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" get nodes \
+              -o jsonpath='{range .items[*]}{.spec.podCIDR}{" "}{range .spec.podCIDRs[*]}{.}{" "}{end}{end}' 2>/dev/null |
+              xargs -n1 2>/dev/null |
+              awk 'NF' |
+              sort -u |
+              xargs || true
+          args:
+            executable: /bin/bash
+          register: platform_dns_pod_cidrs_detected
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+
+        - name: Select Kubernetes pod CIDRs for DNS service path repair
+          ansible.builtin.set_fact:
+            platform_dns_pod_cidrs_effective: >-
+              {{
+                ((platform_dns_pod_cidrs_raw | trim | length) > 0)
+                | ternary(platform_dns_pod_cidrs_raw, platform_dns_pod_cidrs_detected.stdout | default(''))
+                | trim
+                | regex_replace('\s+', ' ')
+              }}
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+
         - name: Write CNI DNS service path sysctl repair on all nodes
           ansible.builtin.copy:
             dest: "{{ platform_dns_service_path_sysctl_file }}"
@@ -730,14 +771,62 @@
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - item.rc != 0
 
+        - name: Query CNI DNS service path trusted pod CIDRs
+          ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --query-source={{ item }}"
+          register: platform_dns_service_path_firewalld_source_queries
+          changed_when: false
+          failed_when: false
+          loop: "{{ (hostvars[rke2_first_server].platform_dns_pod_cidrs_effective | default('')).split() }}"
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+            - (hostvars[rke2_first_server].platform_dns_pod_cidrs_effective | default('') | trim | length) > 0
+
+        - name: Trust CNI DNS service path pod CIDRs in firewalld
+          ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --add-source={{ item.item }}"
+          register: platform_dns_service_path_firewalld_trust_sources
+          changed_when: platform_dns_service_path_firewalld_trust_sources.rc == 0
+          failed_when: false
+          loop: "{{ platform_dns_service_path_firewalld_source_queries.results | default([]) }}"
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+            - item.rc != 0
+
+        - name: Query CNI DNS service path trusted interfaces
+          ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --query-interface={{ item }}"
+          register: platform_dns_service_path_firewalld_interface_queries
+          changed_when: false
+          failed_when: false
+          loop: "{{ platform_dns_service_path_firewalld_trusted_interfaces }}"
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+
+        - name: Trust CNI DNS service path interfaces in firewalld
+          ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --change-interface={{ item.item }}"
+          register: platform_dns_service_path_firewalld_trust_interfaces
+          changed_when: platform_dns_service_path_firewalld_trust_interfaces.rc == 0
+          failed_when: false
+          loop: "{{ platform_dns_service_path_firewalld_interface_queries.results | default([]) }}"
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+            - item.rc != 0
+
         - name: Reload firewalld after CNI DNS service path repair
           ansible.builtin.command: firewall-cmd --reload
           changed_when: true
           when:
             - platform_dns_service_path_repair_effective | bool
             - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
-            - platform_dns_service_path_firewalld_open is defined
             - (platform_dns_service_path_firewalld_open.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
+              or (platform_dns_service_path_firewalld_trust_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
+              or (platform_dns_service_path_firewalld_trust_interfaces.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
 
         - name: Collect Kubernetes DNS service path state before component repair
           ansible.builtin.shell: |
@@ -746,6 +835,13 @@
             "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice -l k8s-app=kube-dns -o wide || true
             "$K" --kubeconfig "$C" -n kube-system get ds,pods -o wide |
               grep -E 'NAME|coredns|kube-proxy|cilium' || true
+            echo "===== detected pod CIDRs for firewalld trust ====="
+            printf '%s\n' "{{ hostvars[rke2_first_server].platform_dns_pod_cidrs_effective | default('') }}"
+            echo "===== firewalld zones ====="
+            if command -v firewall-cmd >/dev/null 2>&1; then
+              firewall-cmd --get-active-zones || true
+              firewall-cmd --zone=trusted --list-all || true
+            fi
             echo "===== Cilium config ====="
             "$K" --kubeconfig "$C" -n kube-system get configmap cilium-config -o yaml 2>/dev/null || true
           args:
@@ -1139,6 +1235,13 @@
             done
             echo "===== Cilium config ====="
             "$K" --kubeconfig "$C" -n kube-system get configmap cilium-config -o yaml 2>/dev/null || true
+            echo "===== firewalld trusted zone ====="
+            if command -v firewall-cmd >/dev/null 2>&1; then
+              firewall-cmd --get-active-zones || true
+              firewall-cmd --zone=trusted --list-all || true
+            else
+              echo "firewall-cmd not found"
+            fi
             echo "===== node-1 kube service routing rules ====="
             if command -v iptables-save >/dev/null 2>&1; then
               iptables-save | grep -E 'KUBE-SVC|KUBE-SEP|10[.]43[.]0[.]10|10[.]42[.]' | head -240 || true

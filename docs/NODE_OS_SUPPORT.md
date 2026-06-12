@@ -84,7 +84,7 @@ For the premium 3-node profile, prefer one of:
 
 Use the same distribution, major version, minor version, kernel track, and patch level across all three nodes.
 
-Run `make rke2-install` from the controller to apply the project preparation automatically before installation. The preparation disables swap, persists and loads required kernel modules, applies Kubernetes/CNI sysctls, opens RKE2 and Cilium overlay firewalld ports, and configures NetworkManager to ignore Kubernetes CNI interfaces.
+Run `make rke2-install` from the controller to apply the project preparation automatically before installation. The preparation disables swap, persists and loads required kernel modules, applies Kubernetes/CNI sysctls, opens RKE2 and Cilium overlay firewalld ports, trusts the RKE2 pod CIDR and Cilium interfaces in firewalld, and configures NetworkManager to ignore Kubernetes CNI interfaces.
 
 ## Validation sources
 

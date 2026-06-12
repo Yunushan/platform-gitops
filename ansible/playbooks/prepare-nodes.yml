@@ -76,6 +76,13 @@
       - 6081/udp
       - 30000-32767/tcp
       - 30000-32767/udp
+    rke2_default_cluster_cidr: "{{ ['10', '42', '0', '0'] | join('.') }}/16"
+    rke2_firewalld_trusted_sources:
+      - "{{ rke2_cluster_cidr | default(rke2_default_cluster_cidr, true) }}"
+    rke2_firewalld_trusted_interfaces:
+      - cilium_host
+      - cilium_net
+      - cilium_vxlan
     rke2_core_kernel_modules:
       - br_netfilter
       - overlay
@@ -238,9 +245,47 @@
         - item.rc != 0
       notify: Reload firewalld
 
+    - name: Query trusted RKE2 pod CIDR firewalld sources
+      ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --query-source={{ item }}"
+      register: rke2_firewalld_source_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ rke2_firewalld_trusted_sources }}"
+      when: rke2_firewalld_state.rc == 0
+
+    - name: Trust RKE2 pod CIDR firewalld sources
+      ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --add-source={{ item.item }}"
+      register: rke2_firewalld_trust_sources
+      changed_when: rke2_firewalld_trust_sources.rc == 0
+      failed_when: false
+      loop: "{{ rke2_firewalld_source_queries.results | default([]) }}"
+      when:
+        - rke2_firewalld_state.rc == 0
+        - item.rc != 0
+      notify: Reload firewalld
+
+    - name: Query trusted Cilium firewalld interfaces
+      ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --query-interface={{ item }}"
+      register: rke2_firewalld_interface_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ rke2_firewalld_trusted_interfaces }}"
+      when: rke2_firewalld_state.rc == 0
+
+    - name: Trust Cilium firewalld interfaces
+      ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --change-interface={{ item.item }}"
+      register: rke2_firewalld_trust_interfaces
+      changed_when: rke2_firewalld_trust_interfaces.rc == 0
+      failed_when: false
+      loop: "{{ rke2_firewalld_interface_queries.results | default([]) }}"
+      when:
+        - rke2_firewalld_state.rc == 0
+        - item.rc != 0
+      notify: Reload firewalld
+
     - name: Show skipped firewalld configuration
       ansible.builtin.debug:
-        msg: "firewalld is not active on this node; skipping firewalld port configuration."
+        msg: "firewalld is not active on this node; skipping firewalld port, pod CIDR, and Cilium interface configuration."
       when: rke2_firewalld_state.rc != 0
 
     - name: Remind about distro support tier
