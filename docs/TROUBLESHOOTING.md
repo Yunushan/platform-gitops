@@ -113,6 +113,14 @@ To run only the Traefik chart-repository DNS repair:
 make platform-dns-repair-traefik
 ```
 
+Before creating the Traefik HelmChart, `platform-ingress` also runs a per-node chart repository check. It creates one short-lived pod per Kubernetes node so a node-specific failure such as `<POD_IP> -> <CLUSTER_DNS_SERVICE_IP>:53 i/o timeout` cannot slip through. If that check fails, the playbook refreshes kube-proxy/Cilium and retries once before starting the Helm install job.
+
+To change the per-node check timeout:
+
+```bash
+PLATFORM_TRAEFIK_DNS_CHECK_TIMEOUT=300 make platform-ingress
+```
+
 If applying the app VIP fails with `failed calling webhook` or `context deadline exceeded` for `metallb-webhook-service`, the Kubernetes API server could not reach MetalLB's validating webhook yet. The ingress playbook now waits for the webhook service endpoints and runs a server-side dry-run of the MetalLB pool before creating the real resources. To wait longer for that webhook phase:
 
 ```bash

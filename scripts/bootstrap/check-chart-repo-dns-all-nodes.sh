@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_url="${1:?usage: check-chart-repo-dns-all-nodes.sh <repo-url> [check-image] [timeout-seconds] [poll-interval-seconds]}"
+check_image="${2:-rancher/klipper-helm:v0.10.0-build20260513}"
+timeout_seconds="${3:-180}"
+poll_interval="${4:-5}"
+
+kubectl_bin="${KUBECTL:-/var/lib/rancher/rke2/bin/kubectl}"
+kubeconfig="${KUBECONFIG:-/etc/rancher/rke2/rke2.yaml}"
+namespace="${CHECK_NAMESPACE:-kube-system}"
+check_name="platform-chart-repo-dns-check"
+check_id="$(printf '%s' "${repo_url}" | sha256sum | awk '{print substr($1, 1, 10)}')"
+selector="app.kubernetes.io/name=${check_name},platform.gitops/check-id=${check_id}"
+
+safe_name() {
+  printf '%s' "$1" |
+    tr '[:upper:]' '[:lower:]' |
+    sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//' |
+    cut -c 1-34
+}
+
+cleanup_previous() {
+  "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" \
+    delete job -l "${selector}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+}
+
+print_diagnostics() {
+  echo "===== per-node chart repository DNS check diagnostics ====="
+  "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs,pods -l "${selector}" -o wide || true
+  for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
+    job_name="${job_ref#job.batch/}"
+    echo "----- ${job_ref} -----"
+    "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o wide || true
+    "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" describe "${job_ref}" || true
+    for pod_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get pods -l "job-name=${job_name}" -o name 2>/dev/null || true); do
+      echo "----- ${pod_ref} -----"
+      "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${pod_ref}" -o wide || true
+      "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" logs "${pod_ref}" --all-containers --tail=160 || true
+      "${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" describe "${pod_ref}" || true
+    done
+  done
+}
+
+cleanup_previous
+
+nodes="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
+expected=0
+for node in ${nodes}; do
+  expected=$((expected + 1))
+  node_safe="$(safe_name "${node}")"
+  job_name="platform-dns-${check_id}-${node_safe}"
+  cat <<YAML | "${kubectl_bin}" --kubeconfig "${kubeconfig}" apply -f -
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${job_name}
+  namespace: ${namespace}
+  labels:
+    app.kubernetes.io/name: ${check_name}
+    platform.gitops/check-id: ${check_id}
+    platform.gitops/node: ${node_safe}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: ${timeout_seconds}
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ${check_name}
+        platform.gitops/check-id: ${check_id}
+        platform.gitops/node: ${node_safe}
+    spec:
+      restartPolicy: Never
+      nodeName: "${node}"
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: check
+          image: "${check_image}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REPO_URL
+              value: "${repo_url}"
+          command:
+            - sh
+            - -c
+          args:
+            - |
+              set -ex
+              REPO_HOST="\${REPO_URL#http://}"
+              REPO_HOST="\${REPO_HOST#https://}"
+              REPO_HOST="\${REPO_HOST%%/*}"
+              echo "===== pod resolver ====="
+              cat /etc/resolv.conf
+              echo "===== repository host ====="
+              printf '%s\n' "\${REPO_HOST}"
+              echo "===== IPv4 resolution ====="
+              getent ahostsv4 "\${REPO_HOST}" || nslookup "\${REPO_HOST}" || true
+              echo "===== helm repo add ====="
+              helm repo add platform-chart-repo-dns-check "\${REPO_URL}"
+              echo "===== helm repo update ====="
+              helm repo update
+YAML
+done
+
+if [ "${expected}" -eq 0 ]; then
+  echo "No Kubernetes nodes found." >&2
+  exit 1
+fi
+
+deadline=$((SECONDS + timeout_seconds))
+while [ "${SECONDS}" -lt "${deadline}" ]; do
+  total=0
+  succeeded=0
+  failed=0
+  active=0
+  for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
+    total=$((total + 1))
+    job_name="${job_ref#job.batch/}"
+    job_succeeded="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+    job_failed="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+    job_active="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.active}' 2>/dev/null || true)"
+    if [ "${job_succeeded}" = "1" ]; then
+      succeeded=$((succeeded + 1))
+    fi
+    if [ -n "${job_failed}" ] && [ "${job_failed}" != "0" ]; then
+      failed=$((failed + 1))
+      echo "Job ${job_name} failed."
+    fi
+    if [ -n "${job_active}" ] && [ "${job_active}" != "0" ]; then
+      active=$((active + 1))
+    fi
+  done
+
+  echo "chart repo DNS per-node status: total=${total}/${expected} succeeded=${succeeded} failed=${failed} active=${active}"
+  if [ "${total}" -eq "${expected}" ] && [ "${succeeded}" -eq "${expected}" ]; then
+    cleanup_previous
+    exit 0
+  fi
+  if [ "${failed}" -gt 0 ]; then
+    break
+  fi
+  sleep "${poll_interval}"
+done
+
+print_diagnostics
+exit 1

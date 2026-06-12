@@ -13,6 +13,8 @@
     platform_traefik_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_REPO') }}"
     platform_traefik_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_VERSION') }}"
     platform_traefik_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT') }}"
+    platform_traefik_dns_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_CHECK_IMAGE') }}"
+    platform_traefik_dns_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_CHECK_TIMEOUT') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
@@ -30,6 +32,8 @@
     platform_metallb_webhook_probe_timeout_effective: "{{ platform_metallb_webhook_probe_timeout | default(platform_metallb_webhook_probe_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_metallb_webhook_repair_effective: "{{ platform_metallb_webhook_repair | default(platform_metallb_webhook_repair_from_env, true) | default(true, true) | bool }}"
     platform_traefik_rollout_timeout_effective: "{{ platform_traefik_rollout_timeout | default(platform_traefik_rollout_timeout_from_env, true) | default(platform_ingress_rollout_timeout_effective, true) | string | regex_replace('s$', '') | int }}"
+    platform_traefik_dns_check_image_effective: "{{ platform_traefik_dns_check_image | default(platform_traefik_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
+    platform_traefik_dns_check_timeout_effective: "{{ platform_traefik_dns_check_timeout | default(platform_traefik_dns_check_timeout_from_env, true) | default(180, true) | int }}"
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_traefik_wait_retries: "{{ (((platform_traefik_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
@@ -52,6 +56,8 @@
           - platform_metallb_webhook_timeout_effective | int > 0
           - platform_metallb_webhook_probe_timeout_effective | int > 0
           - platform_traefik_rollout_timeout_effective | int > 0
+          - platform_traefik_dns_check_image_effective | length > 0
+          - platform_traefik_dns_check_timeout_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -68,6 +74,8 @@
           MetalLB webhook auto-repair is
           {{ 'enabled' if platform_metallb_webhook_repair_effective else 'disabled' }}.
           Traefik rollout timeout is {{ platform_traefik_rollout_timeout_effective }}s.
+          Traefik per-node DNS check timeout is
+          {{ platform_traefik_dns_check_timeout_effective }}s.
       run_once: true
 
     - name: Check firewalld state
@@ -786,6 +794,160 @@
               Review the diagnostics above. To wait longer on a slow cluster:
               PLATFORM_METALLB_WEBHOOK_TIMEOUT=1200 make platform-ingress
           run_once: true
+
+    - name: Verify Traefik chart repository DNS from every node
+      block:
+        - name: Check Traefik chart repository DNS from pods pinned to every node
+          ansible.builtin.script:
+            cmd: >-
+              scripts/bootstrap/check-chart-repo-dns-all-nodes.sh
+              {{ platform_traefik_chart_repo_effective | quote }}
+              {{ platform_traefik_dns_check_image_effective | quote }}
+              {{ platform_traefik_dns_check_timeout_effective | quote }}
+            executable: /bin/bash
+          register: platform_traefik_dns_all_nodes_check
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Refresh kube-proxy after Traefik per-node DNS failure
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            for daemonset in kube-proxy rke2-kube-proxy; do
+              if "$K" --kubeconfig "$C" -n kube-system get "daemonset/${daemonset}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n kube-system rollout restart "daemonset/${daemonset}"
+                echo "restarted daemonset/${daemonset}"
+                exit 0
+              fi
+            done
+            request_timeout={{ platform_metallb_webhook_probe_timeout_effective }}s
+            "$K" --kubeconfig "$C" --request-timeout="${request_timeout}" -n kube-system \
+              delete pod -l k8s-app=kube-proxy --ignore-not-found=true --wait=false || true
+            "$K" --kubeconfig "$C" --request-timeout="${request_timeout}" -n kube-system get pods -o name |
+              awk -F/ '/\/kube-proxy-/ {print $2}' |
+              xargs -r "$K" --kubeconfig "$C" --request-timeout="${request_timeout}" -n kube-system \
+                delete pod --ignore-not-found=true --wait=false || true
+            echo "refreshed static kube-proxy pods"
+          args:
+            executable: /bin/bash
+          register: platform_traefik_dns_kube_proxy_refresh
+          changed_when: >-
+            'restarted' in platform_traefik_dns_kube_proxy_refresh.stdout
+            or 'deleted' in platform_traefik_dns_kube_proxy_refresh.stdout
+            or 'refreshed static kube-proxy pods' in platform_traefik_dns_kube_proxy_refresh.stdout
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Poll kube-proxy after Traefik per-node DNS repair
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            for daemonset in kube-proxy rke2-kube-proxy; do
+              if "$K" --kubeconfig "$C" -n kube-system get "daemonset/${daemonset}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n kube-system rollout status "daemonset/${daemonset}" --timeout={{ platform_ingress_poll_interval_effective }}s
+                exit 0
+              fi
+            done
+            expected={{ groups['rke2_servers'] | length }}
+            "$K" --kubeconfig "$C" -n kube-system get pods -o wide | awk -v expected="${expected}" '
+              NR == 1 { print; next }
+              $1 ~ /^kube-proxy-/ {
+                print
+                total++
+                split($2, ready, "/")
+                if ($3 == "Running" && ready[1] == ready[2]) running++
+              }
+              END { exit(total == expected && running == expected ? 0 : 1) }
+            '
+          args:
+            executable: /bin/bash
+          register: platform_traefik_dns_kube_proxy_rollout
+          retries: "{{ platform_metallb_webhook_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_dns_kube_proxy_rollout.rc == 0
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Restart Cilium after Traefik per-node DNS failure
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout restart daemonset/cilium
+          register: platform_traefik_dns_cilium_restart
+          changed_when: "'restarted' in platform_traefik_dns_cilium_restart.stdout"
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Poll Cilium after Traefik per-node DNS repair
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout status daemonset/cilium
+            --timeout={{ platform_ingress_poll_interval_effective }}s
+          register: platform_traefik_dns_cilium_rollout
+          retries: "{{ platform_metallb_webhook_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_dns_cilium_rollout.rc == 0
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_traefik_dns_cilium_restart.rc | default(1) == 0
+
+        - name: Retry Traefik chart repository DNS from every node
+          ansible.builtin.script:
+            cmd: >-
+              scripts/bootstrap/check-chart-repo-dns-all-nodes.sh
+              {{ platform_traefik_chart_repo_effective | quote }}
+              {{ platform_traefik_dns_check_image_effective | quote }}
+              {{ platform_traefik_dns_check_timeout_effective | quote }}
+            executable: /bin/bash
+          register: platform_traefik_dns_all_nodes_retry
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Show Traefik per-node DNS automatic repair result
+          ansible.builtin.debug:
+            msg:
+              - "Initial per-node DNS check:"
+              - "{{ platform_traefik_dns_all_nodes_check.stdout_lines | default(['not collected']) }}"
+              - "kube-proxy repair:"
+              - "{{ platform_traefik_dns_kube_proxy_rollout.stdout_lines | default(platform_traefik_dns_kube_proxy_refresh.stdout_lines | default(['not run'])) }}"
+              - "Cilium repair:"
+              - "{{ platform_traefik_dns_cilium_rollout.stdout_lines | default(platform_traefik_dns_cilium_restart.stdout_lines | default(['not run'])) }}"
+              - "Retry per-node DNS check:"
+              - "{{ platform_traefik_dns_all_nodes_retry.stdout_lines | default(['not run']) }}"
+          run_once: true
+
+        - name: Stop when Traefik chart repository DNS fails from one or more nodes
+          ansible.builtin.fail:
+            msg: |
+              One or more RKE2 nodes still cannot resolve or reach the Traefik chart repository
+              from an in-cluster pod after automatic kube-proxy/Cilium refresh.
+
+              Repository:
+              {{ platform_traefik_chart_repo_effective }}
+
+              Initial check:
+              {{ platform_traefik_dns_all_nodes_check.stdout | default('not collected') }}
+              {{ platform_traefik_dns_all_nodes_check.stderr | default('') }}
+
+              Retry check:
+              {{ platform_traefik_dns_all_nodes_retry.stdout | default('not run') }}
+              {{ platform_traefik_dns_all_nodes_retry.stderr | default('') }}
+
+              This is a node-specific Kubernetes service DNS path problem. Check
+              kube-proxy/Cilium/firewalld on the failing node shown above, or use
+              an internal chart mirror reachable from every node.
+          run_once: true
+          when: platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
 
     - name: Clean stale Traefik Helm install job before retry
       ansible.builtin.command: >-
