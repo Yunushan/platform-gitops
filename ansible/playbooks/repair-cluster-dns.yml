@@ -544,6 +544,24 @@
                   above before retrying.
               run_once: true
 
+        - name: Detect CoreDNS endpoint IPs after CoreDNS repair
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" -n kube-system get endpoints -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[*].subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null || true
+          args:
+            executable: /bin/bash
+          register: platform_coredns_endpoint_ips
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Select CoreDNS endpoint IPs for DNS service path check
+          ansible.builtin.set_fact:
+            platform_coredns_endpoint_ips_effective: "{{ platform_coredns_endpoint_ips.stdout | default('', true) | trim }}"
+          run_once: true
+
         - name: Check Kubernetes DNS service path after CoreDNS repair
           ansible.builtin.shell: |
             set -e -o pipefail
@@ -595,6 +613,7 @@
                             PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
                             DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
                             KUBE_DNS_SERVICE_IPS='{{ platform_cluster_dns_service_ips_list | join(' ') }}'
+                            COREDNS_ENDPOINT_IPS='{{ platform_coredns_endpoint_ips_effective }}'
                             run_bounded() {
                               seconds="$1"
                               shift
@@ -620,6 +639,14 @@
                                 service_ip_ok=true
                               fi
                             done
+                            echo "===== direct CoreDNS endpoint IP checks ====="
+                            endpoint_ok=false
+                            for dns in ${COREDNS_ENDPOINT_IPS}; do
+                              echo "--- ${dns} ---"
+                              if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                                endpoint_ok=true
+                              fi
+                            done
                             echo "===== direct upstream DNS checks ====="
                             direct_ok=false
                             for dns in ${DNS_UPSTREAMS}; do
@@ -630,6 +657,7 @@
                             done
                             echo "PLATFORM_DNS_DEFAULT_RESOLUTION=${default_ok}"
                             echo "PLATFORM_DNS_SERVICE_IP_RESOLUTION=${service_ip_ok}"
+                            echo "PLATFORM_DNS_COREDNS_ENDPOINT_RESOLUTION=${endpoint_ok}"
                             echo "PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=${direct_ok}"
           register: platform_dns_service_path_check
           changed_when: false
@@ -641,6 +669,7 @@
           ansible.builtin.set_fact:
             platform_dns_default_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DEFAULT_RESOLUTION=true') }}"
             platform_dns_service_ip_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_SERVICE_IP_RESOLUTION=true') }}"
+            platform_dns_coredns_endpoint_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_COREDNS_ENDPOINT_RESOLUTION=true') }}"
             platform_dns_direct_upstream_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=true') }}"
           run_once: true
 
@@ -799,6 +828,37 @@
             executable: /bin/bash
           register: platform_dns_service_path_kube_proxy_delete
           changed_when: "'deleted' in platform_dns_service_path_kube_proxy_delete.stdout"
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_kube_proxy_workload.stdout | default('none') == 'none'
+
+        - name: Poll static kube-proxy pods after delete
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            expected={{ groups['rke2_servers'] | length }}
+            "$K" --kubeconfig "$C" -n kube-system get pods -o wide | awk -v expected="${expected}" '
+              NR == 1 { print; next }
+              $1 ~ /^kube-proxy-/ {
+                print
+                total++
+                split($2, ready, "/")
+                if ($3 == "Running" && ready[1] == ready[2]) running++
+              }
+              END { exit(total == expected && running == expected ? 0 : 1) }
+            '
+          args:
+            executable: /bin/bash
+          register: platform_dns_service_path_static_kube_proxy_ready
+          retries: "{{ platform_dns_service_path_rollout_retries_effective }}"
+          delay: "{{ platform_dns_service_path_poll_interval_effective }}"
+          until: platform_dns_service_path_static_kube_proxy_ready.rc == 0
+          changed_when: false
           failed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
@@ -1063,8 +1123,22 @@
             PLATFORM_DNS_SERVICE_PATH_REPAIR_OUTPUT
             echo "===== kube-proxy and Cilium workloads ====="
             "$K" --kubeconfig "$C" -n kube-system get ds,pods -o wide | grep -E 'NAME|kube-proxy|cilium|coredns' || true
+            echo "===== kube-proxy logs ====="
+            for pod in $("$K" --kubeconfig "$C" -n kube-system get pods -o name | grep '/kube-proxy-' || true); do
+              echo "--- ${pod} ---"
+              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --tail=180 || true
+            done
             echo "===== Cilium config ====="
             "$K" --kubeconfig "$C" -n kube-system get configmap cilium-config -o yaml 2>/dev/null || true
+            echo "===== node-1 kube service routing rules ====="
+            if command -v iptables-save >/dev/null 2>&1; then
+              iptables-save | grep -E 'KUBE-SVC|KUBE-SEP|10[.]43[.]0[.]10|10[.]42[.]' | head -240 || true
+            else
+              echo "iptables-save not found"
+            fi
+            if command -v nft >/dev/null 2>&1; then
+              nft list ruleset 2>/dev/null | grep -E 'KUBE-SVC|KUBE-SEP|10[.]43[.]0[.]10|10[.]42[.]' | head -240 || true
+            fi
             echo "===== CoreDNS pods ====="
             "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns -o wide || true
             echo "===== CoreDNS logs ====="
@@ -1098,6 +1172,22 @@
 
               Post-repair CoreDNS diagnostics were:
               {{ platform_dns_diagnostics_after_failed_repair.stdout | default('not collected') }}
+
+              DNS service path summary:
+              - Default pod DNS resolution: {{ platform_dns_default_resolution_ok | default(false) }}
+              - Kubernetes DNS service IP resolution: {{ platform_dns_service_ip_resolution_ok | default(false) }}
+              - Direct CoreDNS endpoint resolution: {{ platform_dns_coredns_endpoint_resolution_ok | default(false) }}
+              - Direct upstream DNS resolution: {{ platform_dns_direct_upstream_resolution_ok | default(false) }}
+
+              {% if platform_dns_direct_upstream_resolution_ok | default(false) and platform_dns_coredns_endpoint_resolution_ok | default(false) and not (platform_dns_service_ip_resolution_ok | default(false)) %}
+              Classification: direct upstream and CoreDNS endpoint DNS work, but
+              the Kubernetes DNS service IP does not. Focus on kube-proxy service
+              rules, iptables/nftables compatibility, and service VIP translation.
+              {% elif platform_dns_direct_upstream_resolution_ok | default(false) and not (platform_dns_coredns_endpoint_resolution_ok | default(false)) %}
+              Classification: direct upstream DNS works, but CoreDNS endpoint DNS
+              does not. Focus on pod-to-pod/Cilium overlay routing between the
+              check pod and CoreDNS pods.
+              {% endif %}
 
               If direct upstream DNS checks succeed but Kubernetes DNS service IP
               checks fail, the remaining problem is cluster service or pod-to-pod
