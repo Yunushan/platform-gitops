@@ -103,6 +103,8 @@ PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=1200 make platform-ingress
 
 If Traefik still times out, the final failure message includes a compact status summary with HelmChart/job state, pods, waiting reasons, images, and recent events. Use that summary first; the longer diagnostics printed above it contain full pod descriptions and logs.
 
+If that summary shows `helm-install-platform-traefik` in `BackOff` or repeatedly `Running` with no Traefik deployment created, the Helm install job is failing before Traefik starts. Rerun `make platform-ingress` with the current playbook so stale Helm jobs are cleaned and schema-compatible chart values are applied. If it still fails, read the `Helm install pod log tail` in the final failure summary; it normally shows the exact rejected value or chart download problem.
+
 If applying the app VIP fails with `failed calling webhook` or `context deadline exceeded` for `metallb-webhook-service`, the Kubernetes API server could not reach MetalLB's validating webhook yet. The ingress playbook now waits for the webhook service endpoints and runs a server-side dry-run of the MetalLB pool before creating the real resources. To wait longer for that webhook phase:
 
 ```bash

@@ -836,8 +836,8 @@
                     enabled: true
               service:
                 enabled: true
-                type: LoadBalancer
                 spec:
+                  type: LoadBalancer
                   loadBalancerIP: {{ rke2_ingress_vip_effective }}
               ports:
                 web:
@@ -853,9 +853,6 @@
                 general:
                   level: INFO
                 access:
-                  enabled: true
-              metrics:
-                prometheus:
                   enabled: true
               resources:
                 requests:
@@ -959,6 +956,13 @@
             "$K" --kubeconfig "$C" -n kube-system get helmchart platform-traefik -o wide 2>/dev/null || true
             echo "===== Helm install job ====="
             "$K" --kubeconfig "$C" -n kube-system get job helm-install-platform-traefik -o wide 2>/dev/null || true
+            echo "===== Helm install pod log tail ====="
+            for pod in $("$K" --kubeconfig "$C" -n kube-system get pods -l job-name=helm-install-platform-traefik -o name 2>/dev/null); do
+              echo "--- ${pod} current logs ---"
+              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --tail=80 || true
+              echo "--- ${pod} previous logs ---"
+              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --previous --tail=80 || true
+            done
             echo "===== Traefik deployment ====="
             "$K" --kubeconfig "$C" -n traefik get deploy platform-traefik traefik -o wide 2>/dev/null || \
               "$K" --kubeconfig "$C" -n traefik get deploy -o wide 2>/dev/null || true
