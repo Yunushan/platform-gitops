@@ -1856,7 +1856,7 @@
               - "Initial per-node DNS check:"
               - "{{ platform_traefik_dns_all_nodes_check.stdout_lines | default(['not collected']) }}"
               - "Host service-path repair:"
-              - "{{ platform_traefik_dns_host_repair.results | default([]) | map(attribute='stdout_lines') | list | default(['not run'], true) }}"
+              - "{{ platform_traefik_dns_host_repair.results | default([]) | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | list | default(['not run'], true) }}"
               - "kube-proxy repair:"
               - "{{ platform_traefik_dns_kube_proxy_rollout.stdout_lines | default(platform_traefik_dns_kube_proxy_refresh.stdout_lines | default(['not run'])) }}"
               - "Cilium repair:"
@@ -1866,7 +1866,7 @@
               - "Retry per-node DNS check:"
               - "{{ platform_traefik_dns_all_nodes_retry.stdout_lines | default(['not run']) }}"
               - "Failed-node RKE2 restart:"
-              - "{{ platform_traefik_dns_failed_node_rke2_restart.results | default([]) | map(attribute='stdout_lines') | list | default(['not run'], true) }}"
+              - "{{ platform_traefik_dns_failed_node_rke2_restart.results | default([]) | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | list | default(['not run'], true) }}"
               - "Failed-node kube-proxy readiness:"
               - "{{ platform_traefik_dns_failed_nodes_kube_proxy_ready.stdout_lines | default(['not run']) }}"
               - "Post failed-node restart DNS check:"
@@ -1874,7 +1874,7 @@
               - "Failed-node Kubernetes diagnostics:"
               - "{{ platform_traefik_dns_failed_node_k8s_diagnostics.stdout_lines | default(['not collected']) }}"
               - "Failed-node host diagnostics:"
-              - "{{ platform_traefik_dns_failed_node_host_diagnostics.results | default([]) | map(attribute='stdout_lines') | list | default(['not collected'], true) }}"
+              - "{{ platform_traefik_dns_failed_node_host_diagnostics.results | default([]) | selectattr('stdout_lines', 'defined') | map(attribute='stdout_lines') | list | default(['not collected'], true) }}"
           run_once: true
 
         - name: Stop when Traefik chart repository DNS fails from one or more nodes
@@ -1913,10 +1913,10 @@
               {{ platform_traefik_dns_all_nodes_after_failed_node_restart.stderr | default('') }}
 
               Failed-node RKE2 restart:
-              {{ platform_traefik_dns_failed_node_rke2_restart.results | default([]) | map(attribute='stdout') | list | join('\n---\n') | default('not run', true) }}
+              {{ platform_traefik_dns_failed_node_rke2_restart.results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | list | join('\n---\n') | default('not run', true) }}
 
               Host service-path repair:
-              {{ platform_traefik_dns_host_repair.results | default([]) | map(attribute='stdout') | list | join('\n---\n') | default('not run', true) }}
+              {{ platform_traefik_dns_host_repair.results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | list | join('\n---\n') | default('not run', true) }}
 
               CoreDNS HA placement:
               {{ platform_traefik_dns_coredns_ha_patch.stdout | default('not run') }}
@@ -1928,7 +1928,7 @@
               {{ platform_traefik_dns_failed_node_k8s_diagnostics.stdout | default('not collected') }}
 
               Failed-node host diagnostics:
-              {{ platform_traefik_dns_failed_node_host_diagnostics.results | default([]) | map(attribute='stdout') | list | join('\n---\n') | default('not collected', true) }}
+              {{ platform_traefik_dns_failed_node_host_diagnostics.results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | list | join('\n---\n') | default('not collected', true) }}
 
               This is a node-specific Kubernetes DNS/network path problem. If
               PLATFORM_NODE_DNS_SERVICE_OK=false but
