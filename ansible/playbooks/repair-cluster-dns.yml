@@ -19,6 +19,7 @@
     platform_dns_service_path_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL') }}"
     platform_dns_kube_proxy_delete_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT') }}"
     platform_dns_pod_cidrs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_POD_CIDRS') }}"
+    platform_dns_coredns_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_REPLICAS') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
@@ -35,6 +36,7 @@
     platform_dns_service_path_rollout_retries_effective: "{{ (((platform_dns_service_path_rollout_timeout_effective | int) / (platform_dns_service_path_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_dns_kube_proxy_delete_timeout_effective: "{{ platform_dns_kube_proxy_delete_timeout | default(platform_dns_kube_proxy_delete_timeout_from_env, true) | default(30, true) | int }}"
     platform_dns_pod_cidrs_raw: "{{ platform_dns_pod_cidrs | default(platform_dns_pod_cidrs_from_env, true) | default('', true) }}"
+    platform_dns_coredns_replicas_effective: "{{ platform_dns_coredns_replicas | default(platform_dns_coredns_replicas_from_env, true) | default(groups['rke2_servers'] | length, true) | int }}"
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
@@ -145,6 +147,7 @@
           - (platform_dns_service_path_rollout_timeout_effective | int) > 0
           - (platform_dns_service_path_poll_interval_effective | int) > 0
           - (platform_dns_kube_proxy_delete_timeout_effective | int) > 0
+          - (platform_dns_coredns_replicas_effective | int) > 0
           - (platform_dns_probe_timeout_effective | int) < (platform_dns_check_timeout_effective | int)
           - platform_dns_check_image_effective | length > 0
           - platform_dns_check_repo_effective | length > 0
@@ -328,6 +331,9 @@
           {{ platform_dns_service_path_poll_interval_effective }}s.
           Static kube-proxy delete request timeout:
           {{ platform_dns_kube_proxy_delete_timeout_effective }}s.
+          CoreDNS HA local routing target:
+          {{ platform_dns_coredns_replicas_effective }} replicas with
+          internalTrafficPolicy=Local on the kube-dns service.
       run_once: true
 
     - name: Run cluster DNS check before repair
@@ -634,6 +640,130 @@
                   above before retrying.
               run_once: true
 
+        - name: Ensure CoreDNS HA local service routing after CoreDNS repair
+          ansible.builtin.shell: |
+            set -euo pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            replicas={{ platform_dns_coredns_replicas_effective | int }}
+            expected_nodes={{ [platform_dns_coredns_replicas_effective | int, groups['rke2_servers'] | length] | min }}
+            deployment="$("$K" --kubeconfig "$C" -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            if [ -z "${deployment}" ] && "$K" --kubeconfig "$C" -n kube-system get deployment/{{ platform_coredns_deployment }} >/dev/null 2>&1; then
+              deployment={{ platform_coredns_deployment }}
+            fi
+            if [ -z "${deployment}" ]; then
+              echo "No CoreDNS deployment with label k8s-app=kube-dns was found." >&2
+              "$K" --kubeconfig "$C" -n kube-system get deployment,pods -o wide | grep -E 'NAME|coredns|kube-dns' || true
+              exit 1
+            fi
+
+            autoscaler="$("$K" --kubeconfig "$C" -n kube-system get deployment -o name 2>/dev/null |
+              grep -E '/.*coredns.*autoscaler' |
+              head -n 1 || true)"
+            if [ -n "${autoscaler}" ]; then
+              "$K" --kubeconfig "$C" -n kube-system scale "${autoscaler}" --replicas=0
+              echo "Scaled ${autoscaler} to 0 so fixed HA CoreDNS placement is not reconciled back to fewer replicas."
+            else
+              echo "No CoreDNS autoscaler deployment found."
+            fi
+
+            cat >/tmp/platform-coredns-ha-local-routing-patch.json <<EOF
+            {
+              "spec": {
+                "replicas": ${replicas},
+                "template": {
+                  "spec": {
+                    "topologySpreadConstraints": [
+                      {
+                        "maxSkew": 1,
+                        "topologyKey": "kubernetes.io/hostname",
+                        "whenUnsatisfiable": "ScheduleAnyway",
+                        "labelSelector": {
+                          "matchLabels": {
+                            "k8s-app": "kube-dns"
+                          }
+                        }
+                      }
+                    ],
+                    "affinity": {
+                      "podAntiAffinity": {
+                        "preferredDuringSchedulingIgnoredDuringExecution": [
+                          {
+                            "weight": 100,
+                            "podAffinityTerm": {
+                              "labelSelector": {
+                                "matchLabels": {
+                                  "k8s-app": "kube-dns"
+                                }
+                              },
+                              "topologyKey": "kubernetes.io/hostname"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            EOF
+            "$K" --kubeconfig "$C" -n kube-system patch "deployment/${deployment}" \
+              --type merge --patch-file /tmp/platform-coredns-ha-local-routing-patch.json
+            "$K" --kubeconfig "$C" -n kube-system scale "deployment/${deployment}" --replicas="${replicas}"
+
+            service_names="$("$K" --kubeconfig "$C" -n kube-system get svc -l k8s-app=kube-dns -o name 2>/dev/null || true)"
+            if [ -z "${service_names}" ]; then
+              echo "No CoreDNS service with label k8s-app=kube-dns was found." >&2
+              "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice -o wide |
+                grep -E 'NAME|coredns|kube-dns' || true
+              exit 1
+            fi
+            for service in ${service_names}; do
+              "$K" --kubeconfig "$C" -n kube-system patch "${service}" --type merge \
+                -p '{"spec":{"internalTrafficPolicy":"Local"}}'
+              echo "patched ${service} with internalTrafficPolicy=Local."
+            done
+
+            "$K" --kubeconfig "$C" -n kube-system rollout status "deployment/${deployment}" --timeout={{ platform_dns_service_path_poll_interval_effective }}s
+            echo "===== CoreDNS deployment ====="
+            "$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" -o wide
+            echo "===== CoreDNS autoscaler ====="
+            if [ -n "${autoscaler}" ]; then
+              "$K" --kubeconfig "$C" -n kube-system get "${autoscaler}" -o wide || true
+            else
+              echo "not found"
+            fi
+            echo "===== CoreDNS service local routing ====="
+            "$K" --kubeconfig "$C" -n kube-system get svc -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" internalTrafficPolicy="}{.spec.internalTrafficPolicy}{" clusterIP="}{.spec.clusterIP}{"\n"}{end}'
+            echo "===== CoreDNS pods ====="
+            "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns -o wide
+            endpoint_count="$("$K" --kubeconfig "$C" -n kube-system get endpoints -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[*].subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null |
+              wc -w | xargs)"
+            endpoint_nodes="$("$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.spec.nodeName}{" "}{end}' 2>/dev/null |
+              xargs -n1 2>/dev/null |
+              sort -u |
+              xargs || true)"
+            endpoint_node_count="$(printf '%s\n' ${endpoint_nodes:-} 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
+            echo "CoreDNS endpoint count=${endpoint_count}; expected replicas=${replicas}"
+            echo "CoreDNS endpoint nodes=${endpoint_nodes:-none}; expected node coverage=${expected_nodes}"
+            test "${endpoint_count}" -ge "${replicas}"
+            test "${endpoint_node_count}" -ge "${expected_nodes}"
+          args:
+            executable: /bin/bash
+          register: platform_dns_coredns_ha_local_routing
+          changed_when: >-
+            'patched' in (platform_dns_coredns_ha_local_routing.stdout | lower)
+            or 'scaled' in (platform_dns_coredns_ha_local_routing.stdout | lower)
+          failed_when: false
+          retries: "{{ platform_dns_service_path_rollout_retries_effective }}"
+          delay: "{{ platform_dns_service_path_poll_interval_effective }}"
+          until: platform_dns_coredns_ha_local_routing.rc == 0
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Detect CoreDNS endpoint IPs after CoreDNS repair
           ansible.builtin.shell: |
             K=/var/lib/rancher/rke2/bin/kubectl
@@ -740,13 +870,18 @@
                               fi
                             done
                             echo "===== direct CoreDNS endpoint IP checks ====="
-                            endpoint_ok=false
+                            endpoint_ok=true
+                            endpoint_count=0
                             for dns in ${COREDNS_ENDPOINT_IPS}; do
+                              endpoint_count=$((endpoint_count + 1))
                               echo "--- ${dns} ---"
-                              if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
-                                endpoint_ok=true
+                              if ! run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                                endpoint_ok=false
                               fi
                             done
+                            if [ "${endpoint_count}" -eq 0 ]; then
+                              endpoint_ok=false
+                            fi
                             echo "===== direct upstream DNS checks ====="
                             direct_ok=false
                             for dns in ${DNS_UPSTREAMS}; do
@@ -1277,6 +1412,8 @@
               - "{{ platform_dns_service_path_cilium_rollout.stdout_lines | default(platform_dns_service_path_cilium_state.stdout_lines | default(['not run'])) }}"
               - "CoreDNS repair:"
               - "{{ platform_dns_service_path_coredns_rollout.stdout_lines | default(['not run']) }}"
+              - "CoreDNS HA local routing:"
+              - "{{ platform_dns_coredns_ha_local_routing.stdout_lines | default(['not run']) }}"
               - "Post-repair state:"
               - "{{ platform_dns_service_path_state_after_repair.stdout_lines | default(['not collected']) }}"
           when:
@@ -1399,13 +1536,18 @@
                               fi
                             done
                             echo "===== direct CoreDNS endpoint IP checks ====="
-                            endpoint_ok=false
+                            endpoint_ok=true
+                            endpoint_count=0
                             for dns in ${COREDNS_ENDPOINT_IPS}; do
+                              endpoint_count=$((endpoint_count + 1))
                               echo "--- ${dns} ---"
-                              if run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
-                                endpoint_ok=true
+                              if ! run_bounded "${PROBE_TIMEOUT}" nslookup "${REPO_HOST}" "${dns}"; then
+                                endpoint_ok=false
                               fi
                             done
+                            if [ "${endpoint_count}" -eq 0 ]; then
+                              endpoint_ok=false
+                            fi
                             echo "===== direct upstream DNS checks ====="
                             direct_ok=false
                             for dns in ${DNS_UPSTREAMS}; do
@@ -1621,6 +1763,9 @@
             echo "===== CoreDNS service/endpoints ====="
             "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice -l k8s-app=kube-dns -o wide || true
             "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice | grep -E 'coredns|kube-dns|NAME' || true
+            echo "===== CoreDNS service local routing ====="
+            "$K" --kubeconfig "$C" -n kube-system get svc -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" internalTrafficPolicy="}{.spec.internalTrafficPolicy}{" clusterIP="}{.spec.clusterIP}{"\n"}{end}' || true
             echo "===== DNS service path check job logs ====="
             "$K" --kubeconfig "$C" -n kube-system logs -l job-name={{ platform_dns_service_path_job_name }} --tail=240 || true
             echo "===== DNS service path repair output ====="
@@ -1700,7 +1845,12 @@
               - Direct CoreDNS endpoint resolution: {{ platform_dns_coredns_endpoint_resolution_ok | default(false) }}
               - Direct upstream DNS resolution: {{ platform_dns_direct_upstream_resolution_ok | default(false) }}
 
-              {% if platform_dns_default_resolution_ok | default(false) %}
+              {% if platform_dns_direct_upstream_resolution_ok | default(false) and (not (platform_dns_service_ip_resolution_ok | default(false)) or not (platform_dns_coredns_endpoint_resolution_ok | default(false))) %}
+              Classification: direct upstream DNS works, but the Kubernetes DNS
+              service/CoreDNS endpoint path is still inconsistent. A default
+              pod lookup may occasionally succeed while Helm fails when service
+              VIP load balancing chooses an unreachable CoreDNS path.
+              {% elif platform_dns_default_resolution_ok | default(false) %}
               Classification: Kubernetes pod DNS is working through the normal
               resolver path. The remaining failure is chart repository access
               through the Helm check image, not CoreDNS service-path repair.
@@ -1721,7 +1871,8 @@
               networking, not upstream DNS. This playbook already attempted the
               automatic service-path repair: CNI sysctls, per-interface
               reverse-path filtering, firewalld overlay ports, node-peer trust,
-              kube-proxy, Cilium, and CoreDNS restart.
+              kube-proxy, Cilium, CoreDNS restart, CoreDNS HA placement, and
+              CoreDNS service internalTrafficPolicy=Local.
 
               To re-run the full host preparation and retry:
               make rke2-prepare

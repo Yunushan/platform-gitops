@@ -1436,6 +1436,18 @@
             "$K" --kubeconfig "$C" -n kube-system patch "deployment/${deployment}" \
               --type merge --patch-file /tmp/platform-coredns-ha-placement-patch.json
             "$K" --kubeconfig "$C" -n kube-system scale "deployment/${deployment}" --replicas="${replicas}"
+            service_names="$("$K" --kubeconfig "$C" -n kube-system get svc -l k8s-app=kube-dns -o name 2>/dev/null || true)"
+            if [ -z "${service_names}" ]; then
+              echo "No CoreDNS service with label k8s-app=kube-dns was found." >&2
+              "$K" --kubeconfig "$C" -n kube-system get svc,endpoints,endpointslice -o wide |
+                grep -E 'NAME|coredns|kube-dns' || true
+              exit 1
+            fi
+            for service in ${service_names}; do
+              "$K" --kubeconfig "$C" -n kube-system patch "${service}" --type merge \
+                -p '{"spec":{"internalTrafficPolicy":"Local"}}'
+              echo "Patched ${service} with internalTrafficPolicy=Local."
+            done
             "$K" --kubeconfig "$C" -n kube-system rollout status "deployment/${deployment}" \
               --timeout={{ platform_ingress_poll_interval_effective }}s
 
@@ -1446,6 +1458,9 @@
               grep -E 'NAME|coredns.*autoscaler' || true
             echo "===== CoreDNS pods ====="
             "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns -o wide
+            echo "===== CoreDNS service ====="
+            "$K" --kubeconfig "$C" -n kube-system get svc -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" internalTrafficPolicy="}{.spec.internalTrafficPolicy}{" clusterIP="}{.spec.clusterIP}{"\n"}{end}'
             endpoint_count="$("$K" --kubeconfig "$C" -n kube-system get endpoints -l k8s-app=kube-dns \
               -o jsonpath='{range .items[*].subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null |
               wc -w | xargs)"
@@ -1463,7 +1478,7 @@
             executable: /bin/bash
           register: platform_traefik_dns_coredns_ha_patch
           changed_when: >-
-            'patched' in platform_traefik_dns_coredns_ha_patch.stdout
+            'patched' in (platform_traefik_dns_coredns_ha_patch.stdout | lower)
             or 'scaled' in (platform_traefik_dns_coredns_ha_patch.stdout | lower)
           failed_when: false
           retries: "{{ platform_ingress_wait_retries }}"

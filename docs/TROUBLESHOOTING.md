@@ -113,7 +113,7 @@ To run only the Traefik chart-repository DNS repair:
 make platform-dns-repair-traefik
 ```
 
-Before creating the Traefik HelmChart, `platform-ingress` also runs a per-node chart repository check. It creates one short-lived pod per Kubernetes node so a node-specific failure such as `<POD_IP> -> <CLUSTER_DNS_SERVICE_IP>:53 i/o timeout` cannot slip through. Each pinned pod prints the Kubernetes DNS service IP probe, the live CoreDNS endpoint IP probes, CoreDNS endpoint placement by node, explicit `PLATFORM_NODE_DNS_SERVICE_OK` / `PLATFORM_NODE_COREDNS_ENDPOINT_OK` markers, and then retries Helm repository add/update before failing. The controller waits for all node checks to finish before printing diagnostics. If the check still fails, the playbook repairs the host CNI service path on every RKE2 node, including per-interface reverse-path filtering, RKE2 node-peer firewalld trust, and direct pod/CNI firewalld ACCEPT rules, refreshes kube-proxy/Cilium, ensures CoreDNS has HA placement, and retries once before starting the Helm install job.
+Before creating the Traefik HelmChart, `platform-ingress` also runs a per-node chart repository check. It creates one short-lived pod per Kubernetes node so a node-specific failure such as `<POD_IP> -> <CLUSTER_DNS_SERVICE_IP>:53 i/o timeout` cannot slip through. Each pinned pod prints the Kubernetes DNS service IP probe, the live CoreDNS endpoint IP probes, CoreDNS endpoint placement by node, explicit `PLATFORM_NODE_DNS_SERVICE_OK` / `PLATFORM_NODE_COREDNS_ENDPOINT_OK` markers, and then retries Helm repository add/update before failing. The controller waits for all node checks to finish before printing diagnostics. If the check still fails, the playbook repairs the host CNI service path on every RKE2 node, including per-interface reverse-path filtering, RKE2 node-peer firewalld trust, and direct pod/CNI firewalld ACCEPT rules, refreshes kube-proxy/Cilium, ensures CoreDNS has HA placement with local service routing, and retries once before starting the Helm install job.
 
 The checker treats Helm output such as `Unable to get an update` as unhealthy even when Helm exits with status `0`, because that usually means the repo path is still flaky and a later Helm install job may fail on the same node. If the DNS service IP probe fails but CoreDNS endpoint probes work, focus on kube-proxy or service NAT rules. If both service and endpoint probes fail from the same node, focus on Cilium pod routing, host firewall zones, VXLAN/Geneve, or node egress. If Cilium health shows host connectivity OK but remote endpoint HTTP timeouts, the node-to-node underlay is reachable but pod-to-pod L4 forwarding is still blocked or filtered. If the post-repair retry still fails, the final message includes failed-node Kubernetes diagnostics plus host network/firewalld/Cilium/kube-proxy, iptables, nft, and conntrack diagnostics for the affected node.
 
@@ -129,7 +129,7 @@ To adjust how long the playbook waits for the restarted node:
 PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART_TIMEOUT=300 make platform-ingress
 ```
 
-For a three-node HA control plane, the repair path targets three CoreDNS replicas with topology spread and preferred anti-affinity so every node can get a local DNS endpoint when the scheduler can place one. RKE2's CoreDNS autoscaler can reconcile the Deployment back to two replicas, so the repair path temporarily scales that autoscaler to zero before enforcing the fixed HA CoreDNS placement. To override the target replica count:
+For a three-node HA control plane, the repair path targets three CoreDNS replicas with topology spread and preferred anti-affinity so every node can get a local DNS endpoint when the scheduler can place one. It also patches the CoreDNS service with `internalTrafficPolicy: Local`, so a pod uses the CoreDNS endpoint on its own node instead of randomly hitting a remote CoreDNS endpoint when cross-node pod DNS is flaky. RKE2's CoreDNS autoscaler can reconcile the Deployment back to two replicas, so the repair path temporarily scales that autoscaler to zero before enforcing the fixed HA CoreDNS placement. To override the Traefik per-node repair target replica count:
 
 ```bash
 PLATFORM_TRAEFIK_DNS_COREDNS_REPLICAS=3 make platform-ingress
@@ -211,7 +211,11 @@ PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL=5 \
 make platform-ingress
 ```
 
-After those component restarts, the playbook re-detects the current CoreDNS endpoint IPs and reruns the service-path DNS probe before printing the final classification. This avoids diagnosing stale CoreDNS pod IPs after a rollout.
+After those component restarts, the playbook enforces CoreDNS HA placement, patches the CoreDNS service with `internalTrafficPolicy: Local`, re-detects the current CoreDNS endpoint IPs, and reruns the service-path DNS probe before printing the final classification. This avoids diagnosing stale CoreDNS pod IPs after a rollout and avoids kube-proxy load-balancing DNS requests to remote CoreDNS endpoints when every node has a local CoreDNS pod. To override the generic DNS repair target replica count:
+
+```bash
+PLATFORM_DNS_COREDNS_REPLICAS=3 make platform-ingress
+```
 
 The static kube-proxy delete request is non-blocking and uses a 30-second Kubernetes API request timeout by default. To make that fail faster:
 
