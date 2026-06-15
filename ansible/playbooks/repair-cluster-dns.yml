@@ -687,6 +687,7 @@
                     ],
                     "affinity": {
                       "podAntiAffinity": {
+                        "requiredDuringSchedulingIgnoredDuringExecution": [],
                         "preferredDuringSchedulingIgnoredDuringExecution": [
                           {
                             "weight": 100,

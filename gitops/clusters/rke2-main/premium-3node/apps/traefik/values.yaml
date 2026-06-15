@@ -17,20 +17,15 @@ providers:
     publishedService:
       enabled: true
 
+additionalArguments:
+  - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+  - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+  - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+  - "--entrypoints.websecure.http.tls=true"
+
 service:
   enabled: true
   type: LoadBalancer
-
-ports:
-  web:
-    redirections:
-      entryPoint:
-        to: websecure
-        scheme: https
-        permanent: true
-  websecure:
-    tls:
-      enabled: true
 
 logs:
   general:

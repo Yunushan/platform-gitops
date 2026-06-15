@@ -1412,6 +1412,7 @@
                     ],
                     "affinity": {
                       "podAntiAffinity": {
+                        "requiredDuringSchedulingIgnoredDuringExecution": [],
                         "preferredDuringSchedulingIgnoredDuringExecution": [
                           {
                             "weight": 100,
@@ -2020,21 +2021,16 @@
                   enabled: true
                   publishedService:
                     enabled: true
+              additionalArguments:
+                - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+                - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+                - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+                - "--entrypoints.websecure.http.tls=true"
               service:
                 enabled: true
                 spec:
                   type: LoadBalancer
                   loadBalancerIP: {{ rke2_ingress_vip_effective }}
-              ports:
-                web:
-                  redirections:
-                    entryPoint:
-                      to: websecure
-                      scheme: https
-                      permanent: true
-                websecure:
-                  tls:
-                    enabled: true
               logs:
                 general:
                   level: INFO
