@@ -72,7 +72,7 @@ Recommended Ansible flow:
 make rke2-install
 ```
 
-`make rke2-install` runs preflight, node preparation, and registry egress checks before installing RKE2. On Rocky Linux 10 and other RHEL 10-compatible nodes, preparation installs `kernel-modules-extra`, loads `nf_conntrack`, disables swap, applies Kubernetes sysctls, disables reverse-path filtering for CNI traffic, opens required firewalld ports including Cilium VXLAN/Geneve overlay ports, trusts the RKE2 pod CIDR and Cilium interfaces in firewalld, and configures NetworkManager to ignore CNI interfaces.
+`make rke2-install` runs preflight, node preparation, and registry egress checks before installing RKE2. On Rocky Linux 10 and other RHEL 10-compatible nodes, preparation installs `kernel-modules-extra`, loads Kubernetes/CNI kernel modules, disables swap, applies Kubernetes sysctls, disables reverse-path filtering for CNI traffic on all active interfaces, opens required firewalld ports including Cilium VXLAN/Geneve overlay ports, trusts the RKE2 pod CIDR, RKE2 node IPs, and Cilium interfaces in firewalld, and configures NetworkManager to ignore CNI interfaces.
 
 To check image registry egress without reinstalling:
 
@@ -286,7 +286,7 @@ PLATFORM_TRAEFIK_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/traefik" \
 make platform-ingress
 ```
 
-`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. It checks the MetalLB chart repository, then the Traefik chart repository, then verifies the Traefik chart repository from a pod pinned to every Kubernetes node before installing either controller. The per-node Traefik check prints Kubernetes DNS service IP and CoreDNS endpoint probes, retries Helm repository add/update inside each pinned pod, and waits for all node checks before printing diagnostics. If a single node still cannot use the Kubernetes DNS service path, the playbook repairs CNI sysctls/firewalld service-path settings on every RKE2 node, refreshes kube-proxy/Cilium, and retries. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
+`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. It checks the MetalLB chart repository, then the Traefik chart repository, then verifies the Traefik chart repository from a pod pinned to every Kubernetes node before installing either controller. The per-node Traefik check prints Kubernetes DNS service IP and CoreDNS endpoint probes, retries Helm repository add/update inside each pinned pod, and waits for all node checks before printing diagnostics. If a single node still cannot use the Kubernetes DNS service path, the playbook repairs CNI sysctls, active-interface reverse-path filtering, firewalld service-path and node-peer trust on every RKE2 node, refreshes kube-proxy/Cilium, and retries. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
 
 ```bash
 PLATFORM_DNS_IPV4_ONLY=false make platform-ingress

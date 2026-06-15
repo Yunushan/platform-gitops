@@ -1144,6 +1144,7 @@
             firewalld_ports="{{ platform_traefik_dns_service_path_firewalld_ports | join(' ') }}"
             trusted_interfaces="{{ platform_traefik_dns_service_path_firewalld_trusted_interfaces | join(' ') }}"
             pod_cidrs="{{ hostvars[rke2_first_server].platform_traefik_dns_pod_cidrs_effective | default('') }}"
+            node_sources="{% for node in groups['rke2_servers'] | default([]) %}{{ hostvars[node].ansible_host | default(node) }}/32 {% endfor %}"
 
             echo "===== host ====="
             hostname -f 2>/dev/null || hostname
@@ -1151,6 +1152,17 @@
             printf '%s\n' "{{ hostvars[rke2_first_server].platform_traefik_dns_failed_nodes_effective | default('unknown') }}"
             echo "===== selected pod CIDRs ====="
             printf '%s\n' "${pod_cidrs}"
+            echo "===== selected RKE2 node sources ====="
+            printf '%s\n' "${node_sources}"
+
+            echo "===== kernel modules ====="
+            for module in br_netfilter overlay nf_conntrack; do
+              if modprobe "${module}" >/dev/null 2>&1; then
+                echo "loaded ${module}"
+              else
+                echo "could not load ${module}"
+              fi
+            done
 
             cat > "{{ platform_traefik_dns_service_path_sysctl_file }}" <<'EOF'
             net.ipv4.ip_forward=1
@@ -1158,9 +1170,15 @@
             net.ipv4.conf.default.rp_filter=0
             EOF
             sysctl --system >/tmp/platform-traefik-dns-sysctl.log 2>&1 || cat /tmp/platform-traefik-dns-sysctl.log
+            for path in /proc/sys/net/ipv4/conf/*/rp_filter; do
+              if [ -w "${path}" ]; then
+                printf '0\n' > "${path}" || true
+              fi
+            done
 
             echo "===== sysctl ====="
             sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter || true
+            grep -H . /proc/sys/net/ipv4/conf/*/rp_filter 2>/dev/null || true
             echo "===== firewalld ====="
             if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
               for port in ${firewalld_ports}; do
@@ -1176,6 +1194,17 @@
                   if firewall-cmd --permanent --zone=trusted --add-source="${source}"; then
                     changed=true
                     echo "trusted pod CIDR ${source}"
+                  fi
+                fi
+              done
+              for source in ${node_sources}; do
+                case "${source}" in
+                  ''|*[!0-9./]*) continue ;;
+                esac
+                if ! firewall-cmd --permanent --zone=trusted --query-source="${source}" >/dev/null 2>&1; then
+                  if firewall-cmd --permanent --zone=trusted --add-source="${source}"; then
+                    changed=true
+                    echo "trusted RKE2 node source ${source}"
                   fi
                 fi
               done
@@ -1514,6 +1543,26 @@
               echo "--- Cilium logs on ${node} ---"
               for pod in $("$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=cilium --field-selector spec.nodeName="${node}" -o name 2>/dev/null || true); do
                 echo "### ${pod}"
+                echo "### ${pod} status"
+                "$K" --kubeconfig "$C" -n kube-system exec "${pod}" -c cilium-agent -- sh -c '
+                  if command -v cilium-dbg >/dev/null 2>&1; then
+                    echo "===== cilium-dbg status ====="
+                    cilium-dbg status --verbose || true
+                    echo "===== cilium-dbg tunnel list ====="
+                    cilium-dbg bpf tunnel list || true
+                    echo "===== cilium-dbg endpoint list ====="
+                    cilium-dbg endpoint list || true
+                  fi
+                  if command -v cilium >/dev/null 2>&1; then
+                    echo "===== cilium status ====="
+                    cilium status --verbose || true
+                  fi
+                  if command -v cilium-health >/dev/null 2>&1; then
+                    echo "===== cilium-health status ====="
+                    cilium-health status || true
+                  fi
+                ' || true
+                echo "### ${pod} logs"
                 "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --tail=120 || true
               done
               echo "--- kube-proxy logs on ${node} ---"
@@ -1551,6 +1600,9 @@
             ss -lntup 2>/dev/null | grep -E ':(53|6443|9345|10249|10256|10250|4240|4244)[[:space:]]' || true
             echo "===== sysctl ====="
             sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter || true
+            grep -H . /proc/sys/net/ipv4/conf/*/rp_filter 2>/dev/null || true
+            echo "===== kernel modules ====="
+            lsmod | grep -E 'br_netfilter|overlay|nf_conntrack|vxlan' || true
             echo "===== Kubernetes DNS service NAT rules ====="
             if command -v iptables-save >/dev/null 2>&1; then
               iptables-save -t nat |
@@ -1586,6 +1638,13 @@
             fi
             echo "===== Cilium interfaces ====="
             ip -d link show cilium_host cilium_net cilium_vxlan 2>/dev/null || true
+            echo "===== Cilium VXLAN forwarding and neighbors ====="
+            if command -v bridge >/dev/null 2>&1; then
+              bridge fdb show dev cilium_vxlan 2>/dev/null || true
+            else
+              echo "bridge=missing"
+            fi
+            ip neigh show || true
             echo "===== RKE2 network logs ====="
             journalctl -u rke2-server -n 160 --no-pager |
               grep -E 'cilium|kube-proxy|CoreDNS|coredns|dns|iptables|nft|firewall|network|service' || true
@@ -1678,11 +1737,17 @@
               Failed-node host diagnostics:
               {{ platform_traefik_dns_failed_node_host_diagnostics.results | default([]) | map(attribute='stdout') | list | join('\n---\n') | default('not collected', true) }}
 
-              This is a node-specific Kubernetes service DNS path problem. The
-              playbook already repaired CNI sysctls, firewalld service-path
-              rules, kube-proxy, and Cilium before retrying. If it still fails,
-              inspect the failed node names above and use an internal chart
-              mirror reachable from every node.
+              This is a node-specific Kubernetes DNS/network path problem. If
+              PLATFORM_NODE_DNS_SERVICE_OK=false but
+              PLATFORM_NODE_COREDNS_ENDPOINT_OK=true, focus on kube-proxy or
+              service NAT. If both are false, focus on Cilium pod-to-pod overlay
+              between that node and the CoreDNS endpoint nodes.
+
+              The playbook already repaired CNI sysctls, per-interface
+              reverse-path filtering, firewalld service-path and node-peer
+              trust, kube-proxy, and Cilium before retrying. If it still fails,
+              inspect the failed node diagnostics above or use an internal
+              chart mirror reachable from every node.
 
               To tolerate short DNS/egress flaps while debugging:
               PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress

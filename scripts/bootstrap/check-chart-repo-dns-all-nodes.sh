@@ -132,7 +132,7 @@ spec:
                   return 0
                 fi
                 echo "--- \${dns_server} ---"
-                run_bounded 10 nslookup "\${REPO_HOST}" "\${dns_server}" || true
+                run_bounded 10 nslookup "\${REPO_HOST}" "\${dns_server}"
               }
               REPO_HOST="\${REPO_URL#http://}"
               REPO_HOST="\${REPO_HOST#https://}"
@@ -148,21 +148,33 @@ spec:
               getent ahostsv4 "\${REPO_HOST}" || nslookup "\${REPO_HOST}" || true
               echo "===== Kubernetes DNS service IP checks ====="
               dns_service_targets="\${KUBE_DNS_SERVICE_IPS:-\${default_dns_servers}}"
+              dns_service_ok=false
               if [ -n "\${dns_service_targets}" ]; then
                 for dns_server in \${dns_service_targets}; do
-                  probe_dns_server "\${dns_server}"
+                  if probe_dns_server "\${dns_server}"; then
+                    dns_service_ok=true
+                  else
+                    true
+                  fi
                 done
               else
                 echo "No Kubernetes DNS service IPs or pod nameservers were discovered."
               fi
+              echo "PLATFORM_NODE_DNS_SERVICE_OK=\${dns_service_ok}"
               echo "===== CoreDNS endpoint IP checks ====="
+              coredns_endpoint_ok=false
               if [ -n "\${COREDNS_ENDPOINT_IPS:-}" ]; then
                 for dns_server in \${COREDNS_ENDPOINT_IPS}; do
-                  probe_dns_server "\${dns_server}"
+                  if probe_dns_server "\${dns_server}"; then
+                    coredns_endpoint_ok=true
+                  else
+                    true
+                  fi
                 done
               else
                 echo "No CoreDNS endpoint IPs were discovered before this check."
               fi
+              echo "PLATFORM_NODE_COREDNS_ENDPOINT_OK=\${coredns_endpoint_ok}"
               attempt=1
               while [ "\${attempt}" -le "\${HELM_ATTEMPTS}" ]; do
                 echo "===== helm repository attempt \${attempt}/\${HELM_ATTEMPTS} ====="

@@ -197,6 +197,19 @@
       ansible.builtin.command: sysctl --system
       changed_when: false
 
+    - name: Disable reverse path filtering on active interfaces
+      ansible.builtin.shell: |
+        set -u
+        for path in /proc/sys/net/ipv4/conf/*/rp_filter; do
+          if [ -w "${path}" ]; then
+            printf '0\n' > "${path}" || true
+          fi
+        done
+        grep -H . /proc/sys/net/ipv4/conf/*/rp_filter 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     - name: Verify RKE2 host kernel prerequisites
       ansible.builtin.shell: |
         set -eu
@@ -246,7 +259,7 @@
       loop: "{{ rke2_firewalld_port_queries.results | default([]) }}"
       when:
         - rke2_firewalld_state.rc == 0
-        - item.rc != 0
+        - (item.rc | default(0)) != 0
       notify: Reload firewalld
 
     - name: Query trusted RKE2 pod CIDR firewalld sources
@@ -266,6 +279,27 @@
       when:
         - rke2_firewalld_state.rc == 0
         - item.rc != 0
+      notify: Reload firewalld
+
+    - name: Query trusted RKE2 node IP firewalld sources
+      ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --query-source={{ (hostvars[item].ansible_host | default(item)) ~ '/32' }}"
+      register: rke2_firewalld_node_source_queries
+      changed_when: false
+      failed_when: false
+      loop: "{{ groups['rke2_servers'] | default([]) }}"
+      when:
+        - rke2_firewalld_state.rc == 0
+        - (hostvars[item].ansible_host | default(item)) is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+
+    - name: Trust RKE2 node IP firewalld sources
+      ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --add-source={{ (hostvars[item.item].ansible_host | default(item.item)) ~ '/32' }}"
+      register: rke2_firewalld_trust_node_sources
+      changed_when: rke2_firewalld_trust_node_sources.rc == 0
+      failed_when: false
+      loop: "{{ rke2_firewalld_node_source_queries.results | default([]) }}"
+      when:
+        - rke2_firewalld_state.rc == 0
+        - (item.rc | default(0)) != 0
       notify: Reload firewalld
 
     - name: Query trusted Cilium firewalld interfaces

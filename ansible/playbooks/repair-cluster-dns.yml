@@ -782,6 +782,28 @@
             - platform_dns_service_path_repair_effective | bool
             - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
 
+        - name: Repair CNI DNS service path kernel modules and interface rp_filter
+          ansible.builtin.shell: |
+            set -u
+            for module in br_netfilter overlay nf_conntrack; do
+              modprobe "${module}" >/dev/null 2>&1 || true
+            done
+            for path in /proc/sys/net/ipv4/conf/*/rp_filter; do
+              if [ -w "${path}" ]; then
+                printf '0\n' > "${path}" || true
+              fi
+            done
+            echo "===== kernel modules ====="
+            lsmod | grep -E 'br_netfilter|overlay|nf_conntrack|vxlan' || true
+            echo "===== rp_filter ====="
+            grep -H . /proc/sys/net/ipv4/conf/*/rp_filter 2>/dev/null || true
+          args:
+            executable: /bin/bash
+          changed_when: false
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+
         - name: Check firewalld state for DNS service path repair
           ansible.builtin.command: firewall-cmd --state
           register: platform_dns_service_path_firewalld_state
@@ -837,6 +859,30 @@
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - item.rc != 0
 
+        - name: Query CNI DNS service path trusted node IPs
+          ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --query-source={{ (hostvars[item].ansible_host | default(item)) ~ '/32' }}"
+          register: platform_dns_service_path_firewalld_node_source_queries
+          changed_when: false
+          failed_when: false
+          loop: "{{ groups['rke2_servers'] | default([]) }}"
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+            - (hostvars[item].ansible_host | default(item)) is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
+
+        - name: Trust CNI DNS service path node IPs in firewalld
+          ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --add-source={{ (hostvars[item.item].ansible_host | default(item.item)) ~ '/32' }}"
+          register: platform_dns_service_path_firewalld_trust_node_sources
+          changed_when: platform_dns_service_path_firewalld_trust_node_sources.rc == 0
+          failed_when: false
+          loop: "{{ platform_dns_service_path_firewalld_node_source_queries.results | default([]) }}"
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+            - (item.rc | default(0)) != 0
+
         - name: Query CNI DNS service path trusted interfaces
           ansible.builtin.command: "firewall-cmd --permanent --zone=trusted --query-interface={{ item }}"
           register: platform_dns_service_path_firewalld_interface_queries
@@ -868,6 +914,7 @@
             - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
             - (platform_dns_service_path_firewalld_open.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
               or (platform_dns_service_path_firewalld_trust_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
+              or (platform_dns_service_path_firewalld_trust_node_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
               or (platform_dns_service_path_firewalld_trust_interfaces.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
 
         - name: Collect Kubernetes DNS service path state before component repair
@@ -879,6 +926,12 @@
               grep -E 'NAME|coredns|kube-proxy|cilium' || true
             echo "===== detected pod CIDRs for firewalld trust ====="
             printf '%s\n' "{{ hostvars[rke2_first_server].platform_dns_pod_cidrs_effective | default('') }}"
+            echo "===== RKE2 node sources for firewalld trust ====="
+            {% for node in groups['rke2_servers'] | default([]) %}
+            printf '%s\n' "{{ hostvars[node].ansible_host | default(node) }}/32"
+            {% endfor %}
+            echo "===== rp_filter ====="
+            grep -H . /proc/sys/net/ipv4/conf/*/rp_filter 2>/dev/null || true
             echo "===== firewalld zones ====="
             if command -v firewall-cmd >/dev/null 2>&1; then
               firewall-cmd --get-active-zones || true
@@ -1528,7 +1581,8 @@
               If normal pod DNS resolution fails while direct upstream DNS checks
               succeed, the remaining problem is cluster service or pod-to-pod
               networking, not upstream DNS. This playbook already attempted the
-              automatic service-path repair: CNI sysctls, firewalld overlay ports,
+              automatic service-path repair: CNI sysctls, per-interface
+              reverse-path filtering, firewalld overlay ports, node-peer trust,
               kube-proxy, Cilium, and CoreDNS restart.
 
               To re-run the full host preparation and retry:
