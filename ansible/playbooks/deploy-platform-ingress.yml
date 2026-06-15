@@ -1049,9 +1049,9 @@
                 (
                   platform_traefik_dns_all_nodes_check.stdout
                   | default('')
-                  | regex_search('PLATFORM_CHART_REPO_DNS_FAILED_NODES=([^\\n]+)', '\\1')
-                  | default(['unknown'], true)
+                  | regex_findall('(?m)^PLATFORM_CHART_REPO_DNS_FAILED_NODES=(.*)$')
                   | first
+                  | default('unknown', true)
                 )
               }}
           run_once: true
@@ -1149,7 +1149,7 @@
           args:
             executable: /bin/bash
           register: platform_traefik_dns_host_repair
-          changed_when: "'changed=true' in platform_traefik_dns_host_repair.stdout"
+          changed_when: "'changed=true' in (platform_traefik_dns_host_repair.stdout | default(''))"
           failed_when: false
           loop: "{{ groups['rke2_servers'] }}"
           loop_control:
