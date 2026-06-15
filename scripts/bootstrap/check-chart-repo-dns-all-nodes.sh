@@ -14,11 +14,15 @@ namespace="${CHECK_NAMESPACE:-kube-system}"
 check_name="platform-chart-repo-dns-check"
 check_id="$(printf '%s' "${repo_url}" | sha256sum | awk '{print substr($1, 1, 10)}')"
 selector="app.kubernetes.io/name=${check_name},platform.gitops/check-id=${check_id}"
+kube_dns_service_names="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get svc -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null | xargs || true)"
 kube_dns_service_ips="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get svc -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.spec.clusterIP}{" "}{end}' 2>/dev/null | xargs || true)"
-coredns_endpoint_ips="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get endpointslice -l k8s-app=kube-dns -o jsonpath='{range .items[*].endpoints[*].addresses[*]}{.}{" "}{end}' 2>/dev/null | xargs || true)"
-if [ -z "${coredns_endpoint_ips}" ]; then
-  coredns_endpoint_ips="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get endpoints kube-dns -o jsonpath='{range .subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null | xargs || true)"
-fi
+coredns_endpoint_ips=""
+for kube_dns_service_name in ${kube_dns_service_names}; do
+  endpointslice_ips="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get endpointslice -l "kubernetes.io/service-name=${kube_dns_service_name}" -o jsonpath='{range .items[*].endpoints[*].addresses[*]}{.}{" "}{end}' 2>/dev/null | xargs || true)"
+  endpoints_ips="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get "endpoints/${kube_dns_service_name}" -o jsonpath='{range .subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null | xargs || true)"
+  coredns_endpoint_ips="${coredns_endpoint_ips}${coredns_endpoint_ips:+ }${endpointslice_ips}${endpointslice_ips:+ }${endpoints_ips}"
+done
+coredns_endpoint_ips="$(printf '%s\n' ${coredns_endpoint_ips} 2>/dev/null | awk 'NF && !seen[$0]++' | xargs || true)"
 
 safe_name() {
   printf '%s' "$1" |
@@ -53,6 +57,7 @@ cleanup_previous
 
 nodes="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
 echo "KUBE_DNS_SERVICE_IPS=${kube_dns_service_ips:-none}"
+echo "KUBE_DNS_SERVICE_NAMES=${kube_dns_service_names:-none}"
 echo "COREDNS_ENDPOINT_IPS=${coredns_endpoint_ips:-none}"
 expected=0
 for node in ${nodes}; do
