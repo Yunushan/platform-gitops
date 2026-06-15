@@ -23,6 +23,7 @@ for kube_dns_service_name in ${kube_dns_service_names}; do
   coredns_endpoint_ips="${coredns_endpoint_ips}${coredns_endpoint_ips:+ }${endpointslice_ips}${endpointslice_ips:+ }${endpoints_ips}"
 done
 coredns_endpoint_ips="$(printf '%s\n' ${coredns_endpoint_ips} 2>/dev/null | awk 'NF && !seen[$0]++' | xargs || true)"
+coredns_endpoints_by_node="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get pods -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.podIP}{"@"}{.spec.nodeName}{" "}{end}' 2>/dev/null | xargs || true)"
 
 safe_name() {
   printf '%s' "$1" |
@@ -59,6 +60,7 @@ nodes="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" get nodes -o jsonpath='{r
 echo "KUBE_DNS_SERVICE_IPS=${kube_dns_service_ips:-none}"
 echo "KUBE_DNS_SERVICE_NAMES=${kube_dns_service_names:-none}"
 echo "COREDNS_ENDPOINT_IPS=${coredns_endpoint_ips:-none}"
+echo "COREDNS_ENDPOINTS_BY_NODE=${coredns_endpoints_by_node:-none}"
 expected=0
 for node in ${nodes}; do
   expected=$((expected + 1))
@@ -108,6 +110,8 @@ spec:
               value: "${kube_dns_service_ips}"
             - name: COREDNS_ENDPOINT_IPS
               value: "${coredns_endpoint_ips}"
+            - name: COREDNS_ENDPOINTS_BY_NODE
+              value: "${coredns_endpoints_by_node}"
           command:
             - sh
             - -c
@@ -162,6 +166,7 @@ spec:
               fi
               echo "PLATFORM_NODE_DNS_SERVICE_OK=\${dns_service_ok}"
               echo "===== CoreDNS endpoint IP checks ====="
+              echo "CoreDNS endpoints by node: \${COREDNS_ENDPOINTS_BY_NODE:-none}"
               coredns_endpoint_ok=false
               if [ -n "\${COREDNS_ENDPOINT_IPS:-}" ]; then
                 for dns_server in \${COREDNS_ENDPOINT_IPS}; do

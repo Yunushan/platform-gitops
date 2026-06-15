@@ -21,6 +21,7 @@
     platform_traefik_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_SERVICE_PATH_REPAIR') }}"
     platform_traefik_dns_failed_node_restart_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART') }}"
     platform_traefik_dns_failed_node_restart_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART_TIMEOUT') }}"
+    platform_traefik_dns_coredns_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_COREDNS_REPLICAS') }}"
     platform_traefik_dns_pod_cidrs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_POD_CIDRS') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
@@ -47,6 +48,7 @@
     platform_traefik_dns_service_path_repair_effective: "{{ platform_traefik_dns_service_path_repair | default(platform_traefik_dns_service_path_repair_from_env, true) | default(true, true) | bool }}"
     platform_traefik_dns_failed_node_restart_effective: "{{ platform_traefik_dns_failed_node_restart | default(platform_traefik_dns_failed_node_restart_from_env, true) | default(true, true) | bool }}"
     platform_traefik_dns_failed_node_restart_timeout_effective: "{{ platform_traefik_dns_failed_node_restart_timeout | default(platform_traefik_dns_failed_node_restart_timeout_from_env, true) | default(300, true) | string | regex_replace('s$', '') | int }}"
+    platform_traefik_dns_coredns_replicas_effective: "{{ platform_traefik_dns_coredns_replicas | default(platform_traefik_dns_coredns_replicas_from_env, true) | default(groups['rke2_servers'] | length, true) | int }}"
     platform_traefik_dns_pod_cidrs_raw: "{{ platform_traefik_dns_pod_cidrs | default(platform_traefik_dns_pod_cidrs_from_env, true) | default('', true) }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_traefik_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-traefik-dns-service-path.conf
@@ -89,6 +91,7 @@
           - platform_traefik_dns_helm_attempts_effective | int > 0
           - platform_traefik_dns_helm_timeout_effective | int > 0
           - platform_traefik_dns_failed_node_restart_timeout_effective | int > 0
+          - platform_traefik_dns_coredns_replicas_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -115,6 +118,8 @@
           Failed-node RKE2 restart after persistent Traefik DNS failure is
           {{ 'enabled' if platform_traefik_dns_failed_node_restart_effective else 'disabled' }}
           with {{ platform_traefik_dns_failed_node_restart_timeout_effective }}s timeout.
+          CoreDNS HA placement target for Traefik per-node DNS repair is
+          {{ platform_traefik_dns_coredns_replicas_effective }} replicas.
       run_once: true
 
     - name: Ensure OS hostname matches inventory node identity
@@ -1360,6 +1365,90 @@
           run_once: true
           when: platform_traefik_dns_cilium_restart.rc | default(1) == 0
 
+        - name: Ensure CoreDNS HA placement before Traefik per-node DNS retry
+          ansible.builtin.shell: |
+            set -euo pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            replicas={{ platform_traefik_dns_coredns_replicas_effective | int }}
+            deployment="$("$K" --kubeconfig "$C" -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            if [ -z "${deployment}" ] && "$K" --kubeconfig "$C" -n kube-system get deployment/rke2-coredns-rke2-coredns >/dev/null 2>&1; then
+              deployment=rke2-coredns-rke2-coredns
+            fi
+            if [ -z "${deployment}" ]; then
+              echo "No CoreDNS deployment with label k8s-app=kube-dns was found." >&2
+              "$K" --kubeconfig "$C" -n kube-system get deployment,pods -o wide | grep -E 'NAME|coredns|kube-dns' || true
+              exit 1
+            fi
+
+            cat >/tmp/platform-coredns-ha-placement-patch.json <<EOF
+            {
+              "spec": {
+                "replicas": ${replicas},
+                "template": {
+                  "spec": {
+                    "topologySpreadConstraints": [
+                      {
+                        "maxSkew": 1,
+                        "topologyKey": "kubernetes.io/hostname",
+                        "whenUnsatisfiable": "ScheduleAnyway",
+                        "labelSelector": {
+                          "matchLabels": {
+                            "k8s-app": "kube-dns"
+                          }
+                        }
+                      }
+                    ],
+                    "affinity": {
+                      "podAntiAffinity": {
+                        "preferredDuringSchedulingIgnoredDuringExecution": [
+                          {
+                            "weight": 100,
+                            "podAffinityTerm": {
+                              "labelSelector": {
+                                "matchLabels": {
+                                  "k8s-app": "kube-dns"
+                                }
+                              },
+                              "topologyKey": "kubernetes.io/hostname"
+                            }
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            EOF
+
+            "$K" --kubeconfig "$C" -n kube-system patch "deployment/${deployment}" \
+              --type merge --patch-file /tmp/platform-coredns-ha-placement-patch.json
+            "$K" --kubeconfig "$C" -n kube-system rollout status "deployment/${deployment}" \
+              --timeout={{ platform_ingress_poll_interval_effective }}s
+
+            echo "===== CoreDNS deployment ====="
+            "$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" -o wide
+            echo "===== CoreDNS pods ====="
+            "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns -o wide
+            endpoint_count="$("$K" --kubeconfig "$C" -n kube-system get endpoints -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[*].subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null |
+              wc -w | xargs)"
+            echo "CoreDNS endpoint count=${endpoint_count}, target replicas=${replicas}"
+            test "${endpoint_count}" -ge "${replicas}"
+          args:
+            executable: /bin/bash
+          register: platform_traefik_dns_coredns_ha_patch
+          changed_when: >-
+            'patched' in platform_traefik_dns_coredns_ha_patch.stdout
+            and 'no change' not in platform_traefik_dns_coredns_ha_patch.stdout
+          failed_when: false
+          retries: "{{ platform_ingress_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_dns_coredns_ha_patch.rc == 0
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Show Traefik per-node DNS retry timeout
           ansible.builtin.debug:
             msg: >-
@@ -1484,6 +1573,41 @@
           retries: "{{ platform_traefik_dns_failed_node_restart_retries }}"
           delay: "{{ platform_ingress_poll_interval_effective }}"
           until: platform_traefik_dns_failed_nodes_cilium_ready.rc == 0
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_traefik_dns_failed_node_restart_effective | bool
+            - platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+            - (hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) | length) > 0
+
+        - name: Wait for kube-proxy on restarted failed nodes
+          ansible.builtin.shell: |
+            set -euo pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            failed_nodes="{{ hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) | join(' ') }}"
+            for node in ${failed_nodes}; do
+              echo "===== kube-proxy on ${node} ====="
+              "$K" --kubeconfig "$C" -n kube-system get pods --field-selector spec.nodeName="${node}" -o wide |
+                awk '
+                  NR == 1 { print; next }
+                  $1 ~ /^kube-proxy-/ {
+                    print
+                    total++
+                    split($2, ready, "/")
+                    if ($3 == "Running" && ready[1] == ready[2]) running++
+                  }
+                  END { exit(total > 0 && running == total ? 0 : 1) }
+                '
+            done
+          args:
+            executable: /bin/bash
+          register: platform_traefik_dns_failed_nodes_kube_proxy_ready
+          changed_when: false
+          failed_when: false
+          retries: "{{ platform_traefik_dns_failed_node_restart_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_dns_failed_nodes_kube_proxy_ready.rc == 0
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
           when:
@@ -1714,10 +1838,14 @@
               - "{{ platform_traefik_dns_kube_proxy_rollout.stdout_lines | default(platform_traefik_dns_kube_proxy_refresh.stdout_lines | default(['not run'])) }}"
               - "Cilium repair:"
               - "{{ platform_traefik_dns_cilium_rollout.stdout_lines | default(platform_traefik_dns_cilium_restart.stdout_lines | default(['not run'])) }}"
+              - "CoreDNS HA placement:"
+              - "{{ platform_traefik_dns_coredns_ha_patch.stdout_lines | default(['not run']) }}"
               - "Retry per-node DNS check:"
               - "{{ platform_traefik_dns_all_nodes_retry.stdout_lines | default(['not run']) }}"
               - "Failed-node RKE2 restart:"
               - "{{ platform_traefik_dns_failed_node_rke2_restart.results | default([]) | map(attribute='stdout_lines') | list | default(['not run'], true) }}"
+              - "Failed-node kube-proxy readiness:"
+              - "{{ platform_traefik_dns_failed_nodes_kube_proxy_ready.stdout_lines | default(['not run']) }}"
               - "Post failed-node restart DNS check:"
               - "{{ platform_traefik_dns_all_nodes_after_failed_node_restart.stdout_lines | default(['not run']) }}"
               - "Failed-node Kubernetes diagnostics:"
@@ -1731,7 +1859,8 @@
             msg: |
               One or more RKE2 nodes still cannot resolve or reach the Traefik chart repository
               from an in-cluster pod after automatic host service-path,
-              kube-proxy, and Cilium repair.
+              CoreDNS HA placement, kube-proxy, Cilium, and failed-node
+              RKE2 restart repair.
 
               Repository:
               {{ platform_traefik_chart_repo_effective }}
@@ -1766,6 +1895,12 @@
               Host service-path repair:
               {{ platform_traefik_dns_host_repair.results | default([]) | map(attribute='stdout') | list | join('\n---\n') | default('not run', true) }}
 
+              CoreDNS HA placement:
+              {{ platform_traefik_dns_coredns_ha_patch.stdout | default('not run') }}
+
+              Failed-node kube-proxy readiness:
+              {{ platform_traefik_dns_failed_nodes_kube_proxy_ready.stdout | default('not run') }}
+
               Failed-node Kubernetes diagnostics:
               {{ platform_traefik_dns_failed_node_k8s_diagnostics.stdout | default('not collected') }}
 
@@ -1783,7 +1918,8 @@
 
               The playbook already repaired CNI sysctls, per-interface
               reverse-path filtering, firewalld service-path and node-peer
-              trust, direct CNI firewalld ACCEPT rules, kube-proxy, and Cilium
+              trust, direct CNI firewalld ACCEPT rules, kube-proxy, Cilium,
+              CoreDNS HA placement, and failed-node RKE2 restart readiness
               before retrying. If it still fails, inspect the failed node
               diagnostics above or use an internal chart mirror reachable from
               every node.
