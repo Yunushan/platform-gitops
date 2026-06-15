@@ -17,6 +17,8 @@
     platform_traefik_dns_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_CHECK_TIMEOUT') }}"
     platform_traefik_dns_helm_attempts_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS') }}"
     platform_traefik_dns_helm_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT') }}"
+    platform_traefik_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_SERVICE_PATH_REPAIR') }}"
+    platform_traefik_dns_pod_cidrs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_POD_CIDRS') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
@@ -38,7 +40,20 @@
     platform_traefik_dns_check_timeout_effective: "{{ platform_traefik_dns_check_timeout | default(platform_traefik_dns_check_timeout_from_env, true) | default(300, true) | string | regex_replace('s$', '') | int }}"
     platform_traefik_dns_helm_attempts_effective: "{{ platform_traefik_dns_helm_attempts | default(platform_traefik_dns_helm_attempts_from_env, true) | default(3, true) | int }}"
     platform_traefik_dns_helm_timeout_effective: "{{ platform_traefik_dns_helm_timeout | default(platform_traefik_dns_helm_timeout_from_env, true) | default(60, true) | string | regex_replace('s$', '') | int }}"
+    platform_traefik_dns_service_path_repair_effective: "{{ platform_traefik_dns_service_path_repair | default(platform_traefik_dns_service_path_repair_from_env, true) | default(true, true) | bool }}"
+    platform_traefik_dns_pod_cidrs_raw: "{{ platform_traefik_dns_pod_cidrs | default(platform_traefik_dns_pod_cidrs_from_env, true) | default('', true) }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
+    platform_traefik_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-traefik-dns-service-path.conf
+    platform_traefik_dns_service_path_firewalld_ports:
+      - 4240/tcp
+      - 4244/tcp
+      - 8472/udp
+      - 6081/udp
+      - 10250/tcp
+    platform_traefik_dns_service_path_firewalld_trusted_interfaces:
+      - cilium_host
+      - cilium_net
+      - cilium_vxlan
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_traefik_wait_retries: "{{ (((platform_traefik_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
@@ -85,6 +100,8 @@
           {{ platform_traefik_dns_check_timeout_effective }}s, with
           {{ platform_traefik_dns_helm_attempts_effective }} Helm attempts and
           {{ platform_traefik_dns_helm_timeout_effective }}s per Helm command.
+          Traefik per-node DNS service-path auto-repair is
+          {{ 'enabled' if platform_traefik_dns_service_path_repair_effective else 'disabled' }}.
       run_once: true
 
     - name: Check firewalld state
@@ -961,20 +978,25 @@
               while [ "${SECONDS}" -lt "${deadline}" ]; do
                 total=0
                 succeeded=0
+                succeeded_nodes=""
                 failed=0
+                failed_nodes=""
                 active=0
                 terminal=0
                 for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
                   total=$((total + 1))
                   job_name="${job_ref#job.batch/}"
+                  node_name="${job_name#platform-dns-${check_id}-}"
                   job_succeeded="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
                   job_failed="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
                   job_active="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.active}' 2>/dev/null || true)"
                   if [ "${job_succeeded}" = "1" ]; then
                     succeeded=$((succeeded + 1))
+                    succeeded_nodes="${succeeded_nodes}${succeeded_nodes:+ }${node_name}"
                   fi
                   if [ -n "${job_failed}" ] && [ "${job_failed}" != "0" ]; then
                     failed=$((failed + 1))
+                    failed_nodes="${failed_nodes}${failed_nodes:+ }${node_name}"
                     echo "Job ${job_name} failed."
                   fi
                   if [ -n "${job_active}" ] && [ "${job_active}" != "0" ]; then
@@ -987,7 +1009,7 @@
                 if [ "${pending}" -lt 0 ]; then
                   pending=0
                 fi
-                echo "chart repo DNS per-node status: total=${total}/${expected} pending=${pending} succeeded=${succeeded} failed=${failed} active=${active} terminal=${terminal}/${expected}"
+                echo "chart repo DNS per-node status: total=${total}/${expected} pending=${pending} succeeded=${succeeded} failed=${failed} active=${active} terminal=${terminal}/${expected} succeeded_nodes=${succeeded_nodes:-none} failed_nodes=${failed_nodes:-none}"
                 if [ "${total}" -eq "${expected}" ] && [ "${succeeded}" -eq "${expected}" ]; then
                   cleanup_previous
                   exit 0
@@ -998,6 +1020,8 @@
                 sleep "${poll_interval}"
               done
 
+              echo "PLATFORM_CHART_REPO_DNS_SUCCEEDED_NODES=${succeeded_nodes:-none}"
+              echo "PLATFORM_CHART_REPO_DNS_FAILED_NODES=${failed_nodes:-none}"
               print_diagnostics
               exit 1
           delegate_to: "{{ rke2_first_server }}"
@@ -1018,6 +1042,122 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
       rescue:
+        - name: Detect failed nodes from Traefik per-node DNS check
+          ansible.builtin.set_fact:
+            platform_traefik_dns_failed_nodes_effective: >-
+              {{
+                (
+                  platform_traefik_dns_all_nodes_check.stdout
+                  | default('')
+                  | regex_search('PLATFORM_CHART_REPO_DNS_FAILED_NODES=([^\\n]+)', '\\1')
+                  | default(['unknown'], true)
+                  | first
+                )
+              }}
+          run_once: true
+
+        - name: Detect Kubernetes pod CIDRs for Traefik per-node DNS service-path repair
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" get nodes \
+              -o jsonpath='{range .items[*]}{.spec.podCIDR}{" "}{range .spec.podCIDRs[*]}{.}{" "}{end}{end}' 2>/dev/null |
+              xargs -n1 2>/dev/null |
+              awk 'NF' |
+              sort -u |
+              xargs || true
+          args:
+            executable: /bin/bash
+          register: platform_traefik_dns_pod_cidrs_detected
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_traefik_dns_service_path_repair_effective | bool
+
+        - name: Select pod CIDRs for Traefik per-node DNS service-path repair
+          ansible.builtin.set_fact:
+            platform_traefik_dns_pod_cidrs_effective: >-
+              {{
+                ((platform_traefik_dns_pod_cidrs_raw | trim | length) > 0)
+                | ternary(platform_traefik_dns_pod_cidrs_raw, platform_traefik_dns_pod_cidrs_detected.stdout | default(''))
+                | trim
+                | regex_replace('\s+', ' ')
+              }}
+          run_once: true
+          when: platform_traefik_dns_service_path_repair_effective | bool
+
+        - name: Repair Traefik per-node DNS service path on every RKE2 node
+          ansible.builtin.shell: |
+            set -u
+            changed=false
+            firewalld_ports="{{ platform_traefik_dns_service_path_firewalld_ports | join(' ') }}"
+            trusted_interfaces="{{ platform_traefik_dns_service_path_firewalld_trusted_interfaces | join(' ') }}"
+            pod_cidrs="{{ hostvars[rke2_first_server].platform_traefik_dns_pod_cidrs_effective | default('') }}"
+
+            echo "===== host ====="
+            hostname -f 2>/dev/null || hostname
+            echo "===== failed nodes from per-node DNS check ====="
+            printf '%s\n' "{{ hostvars[rke2_first_server].platform_traefik_dns_failed_nodes_effective | default('unknown') }}"
+            echo "===== selected pod CIDRs ====="
+            printf '%s\n' "${pod_cidrs}"
+
+            cat > "{{ platform_traefik_dns_service_path_sysctl_file }}" <<'EOF'
+            net.ipv4.ip_forward=1
+            net.ipv4.conf.all.rp_filter=0
+            net.ipv4.conf.default.rp_filter=0
+            EOF
+            sysctl --system >/tmp/platform-traefik-dns-sysctl.log 2>&1 || cat /tmp/platform-traefik-dns-sysctl.log
+
+            echo "===== sysctl ====="
+            sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter || true
+            echo "===== firewalld ====="
+            if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+              for port in ${firewalld_ports}; do
+                if ! firewall-cmd --permanent --query-port="${port}" >/dev/null 2>&1; then
+                  if firewall-cmd --permanent --add-port="${port}"; then
+                    changed=true
+                    echo "added firewalld port ${port}"
+                  fi
+                fi
+              done
+              for source in ${pod_cidrs}; do
+                if ! firewall-cmd --permanent --zone=trusted --query-source="${source}" >/dev/null 2>&1; then
+                  if firewall-cmd --permanent --zone=trusted --add-source="${source}"; then
+                    changed=true
+                    echo "trusted pod CIDR ${source}"
+                  fi
+                fi
+              done
+              for interface in ${trusted_interfaces}; do
+                if ! firewall-cmd --permanent --zone=trusted --query-interface="${interface}" >/dev/null 2>&1; then
+                  if firewall-cmd --permanent --zone=trusted --change-interface="${interface}"; then
+                    changed=true
+                    echo "trusted Cilium interface ${interface}"
+                  fi
+                fi
+              done
+              if [ "${changed}" = true ]; then
+                firewall-cmd --reload || true
+              fi
+              firewall-cmd --get-active-zones || true
+              firewall-cmd --zone=trusted --list-all || true
+            else
+              echo "firewalld inactive or unavailable"
+            fi
+            echo "changed=${changed}"
+          args:
+            executable: /bin/bash
+          register: platform_traefik_dns_host_repair
+          changed_when: "'changed=true' in platform_traefik_dns_host_repair.stdout"
+          failed_when: false
+          loop: "{{ groups['rke2_servers'] }}"
+          loop_control:
+            label: "{{ item }}"
+          delegate_to: "{{ item }}"
+          run_once: true
+          when: platform_traefik_dns_service_path_repair_effective | bool
+
         - name: Refresh kube-proxy after Traefik per-node DNS failure
           ansible.builtin.shell: |
             set -o pipefail
@@ -1128,6 +1268,8 @@
             msg:
               - "Initial per-node DNS check:"
               - "{{ platform_traefik_dns_all_nodes_check.stdout_lines | default(['not collected']) }}"
+              - "Host service-path repair:"
+              - "{{ platform_traefik_dns_host_repair.results | default([]) | map(attribute='stdout_lines') | list | default(['not run'], true) }}"
               - "kube-proxy repair:"
               - "{{ platform_traefik_dns_kube_proxy_rollout.stdout_lines | default(platform_traefik_dns_kube_proxy_refresh.stdout_lines | default(['not run'])) }}"
               - "Cilium repair:"
@@ -1140,7 +1282,8 @@
           ansible.builtin.fail:
             msg: |
               One or more RKE2 nodes still cannot resolve or reach the Traefik chart repository
-              from an in-cluster pod after automatic kube-proxy/Cilium refresh.
+              from an in-cluster pod after automatic host service-path,
+              kube-proxy, and Cilium repair.
 
               Repository:
               {{ platform_traefik_chart_repo_effective }}
@@ -1161,12 +1304,19 @@
               stderr:
               {{ platform_traefik_dns_all_nodes_retry.stderr | default('') }}
 
-              This is a node-specific Kubernetes service DNS path problem. Check
-              kube-proxy/Cilium/firewalld on the failing node shown above, or use
-              an internal chart mirror reachable from every node.
+              Host service-path repair:
+              {{ platform_traefik_dns_host_repair.results | default([]) | map(attribute='stdout') | list | join('\n---\n') | default('not run', true) }}
+
+              This is a node-specific Kubernetes service DNS path problem. The
+              playbook already repaired CNI sysctls, firewalld service-path
+              rules, kube-proxy, and Cilium before retrying. If it still fails,
+              inspect the failed node names above and use an internal chart
+              mirror reachable from every node.
 
               To tolerate short DNS/egress flaps while debugging:
               PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
+              To disable the host service-path repair pass:
+              PLATFORM_TRAEFIK_DNS_SERVICE_PATH_REPAIR=false make platform-ingress
           run_once: true
           when: platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
 

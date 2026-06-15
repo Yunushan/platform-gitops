@@ -148,20 +148,25 @@ deadline=$((SECONDS + timeout_seconds))
 while [ "${SECONDS}" -lt "${deadline}" ]; do
   total=0
   succeeded=0
+  succeeded_nodes=""
   failed=0
+  failed_nodes=""
   active=0
   terminal=0
   for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
     total=$((total + 1))
     job_name="${job_ref#job.batch/}"
+    node_name="${job_name#platform-dns-${check_id}-}"
     job_succeeded="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
     job_failed="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
     job_active="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.active}' 2>/dev/null || true)"
     if [ "${job_succeeded}" = "1" ]; then
       succeeded=$((succeeded + 1))
+      succeeded_nodes="${succeeded_nodes}${succeeded_nodes:+ }${node_name}"
     fi
     if [ -n "${job_failed}" ] && [ "${job_failed}" != "0" ]; then
       failed=$((failed + 1))
+      failed_nodes="${failed_nodes}${failed_nodes:+ }${node_name}"
       echo "Job ${job_name} failed."
     fi
     if [ -n "${job_active}" ] && [ "${job_active}" != "0" ]; then
@@ -174,7 +179,7 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
   if [ "${pending}" -lt 0 ]; then
     pending=0
   fi
-  echo "chart repo DNS per-node status: total=${total}/${expected} pending=${pending} succeeded=${succeeded} failed=${failed} active=${active} terminal=${terminal}/${expected}"
+  echo "chart repo DNS per-node status: total=${total}/${expected} pending=${pending} succeeded=${succeeded} failed=${failed} active=${active} terminal=${terminal}/${expected} succeeded_nodes=${succeeded_nodes:-none} failed_nodes=${failed_nodes:-none}"
   if [ "${total}" -eq "${expected}" ] && [ "${succeeded}" -eq "${expected}" ]; then
     cleanup_previous
     exit 0
@@ -185,5 +190,7 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
   sleep "${poll_interval}"
 done
 
+echo "PLATFORM_CHART_REPO_DNS_SUCCEEDED_NODES=${succeeded_nodes:-none}"
+echo "PLATFORM_CHART_REPO_DNS_FAILED_NODES=${failed_nodes:-none}"
 print_diagnostics
 exit 1
