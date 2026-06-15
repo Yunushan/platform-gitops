@@ -103,6 +103,9 @@ spec:
                   "\$@"
                 fi
               }
+              helm_output_has_failure() {
+                grep -E 'Unable to get an update|Error:|i/o timeout|no such host|bad address|TLS handshake timeout|connection timed out|context deadline exceeded|network is unreachable'
+              }
               REPO_HOST="\${REPO_URL#http://}"
               REPO_HOST="\${REPO_HOST#https://}"
               REPO_HOST="\${REPO_HOST%%/*}"
@@ -117,19 +120,27 @@ spec:
                 echo "===== helm repository attempt \${attempt}/\${HELM_ATTEMPTS} ====="
                 helm repo remove platform-chart-repo-dns-check >/dev/null 2>&1 || true
                 set +e
-                run_bounded "\${HELM_TIMEOUT_SECONDS}" helm repo add platform-chart-repo-dns-check "\${REPO_URL}"
+                add_output="\$(run_bounded "\${HELM_TIMEOUT_SECONDS}" helm repo add platform-chart-repo-dns-check "\${REPO_URL}" 2>&1)"
                 add_rc="\$?"
+                printf '%s\n' "\${add_output}"
                 update_rc="not-run"
+                update_unhealthy=false
                 if [ "\${add_rc}" -eq 0 ]; then
-                  run_bounded "\${HELM_TIMEOUT_SECONDS}" helm repo update platform-chart-repo-dns-check
+                  update_output="\$(run_bounded "\${HELM_TIMEOUT_SECONDS}" helm repo update platform-chart-repo-dns-check 2>&1)"
                   update_rc="\$?"
+                  printf '%s\n' "\${update_output}"
+                  if printf '%s\n' "\${update_output}" | helm_output_has_failure >/dev/null 2>&1; then
+                    update_unhealthy=true
+                    update_rc=1
+                    echo "helm repo update returned an unhealthy repository access result." >&2
+                  fi
                 fi
                 set -e
-                if [ "\${add_rc}" -eq 0 ] && [ "\${update_rc}" = "0" ]; then
+                if [ "\${add_rc}" -eq 0 ] && [ "\${update_rc}" = "0" ] && [ "\${update_unhealthy}" = "false" ]; then
                   echo "Helm repository check succeeded on attempt \${attempt}."
                   exit 0
                 fi
-                echo "Helm repository check attempt \${attempt}/\${HELM_ATTEMPTS} failed: repo_add_rc=\${add_rc} repo_update_rc=\${update_rc}" >&2
+                echo "Helm repository check attempt \${attempt}/\${HELM_ATTEMPTS} failed: repo_add_rc=\${add_rc} repo_update_rc=\${update_rc} repo_update_unhealthy=\${update_unhealthy}" >&2
                 if [ "\${attempt}" -lt "\${HELM_ATTEMPTS}" ]; then
                   sleep 5
                 fi

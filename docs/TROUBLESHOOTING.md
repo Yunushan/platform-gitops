@@ -115,10 +115,18 @@ make platform-dns-repair-traefik
 
 Before creating the Traefik HelmChart, `platform-ingress` also runs a per-node chart repository check. It creates one short-lived pod per Kubernetes node so a node-specific failure such as `<POD_IP> -> <CLUSTER_DNS_SERVICE_IP>:53 i/o timeout` cannot slip through. Each pinned pod retries Helm repository add/update before failing, and the controller waits for all node checks to finish before printing diagnostics. If the check still fails, the playbook repairs the host CNI service path on every RKE2 node, refreshes kube-proxy/Cilium, and retries once before starting the Helm install job.
 
+The checker treats Helm output such as `Unable to get an update` as unhealthy even when Helm exits with status `0`, because that usually means the repo path is still flaky and a later Helm install job may fail on the same node. If the post-repair retry still fails, the final message includes failed-node Kubernetes diagnostics plus host network/firewalld/Cilium/kube-proxy diagnostics for the affected node.
+
 The default per-node check timeout is 300 seconds. To change it:
 
 ```bash
 PLATFORM_TRAEFIK_DNS_CHECK_TIMEOUT=300 make platform-ingress
+```
+
+The post-repair per-node retry uses the same timeout by default. To make only the retry fail faster:
+
+```bash
+PLATFORM_TRAEFIK_DNS_RETRY_TIMEOUT=120 make platform-ingress
 ```
 
 To tolerate short intermittent CoreDNS or chart-repository lookup failures during the per-node check:
