@@ -11,6 +11,7 @@
     platform_dns_check_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CHECK_REPO') }}"
     platform_dns_ipv4_only_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_IPV4_ONLY') }}"
     platform_dns_probe_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_PROBE_TIMEOUT') }}"
+    platform_dns_helm_attempts_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_HELM_ATTEMPTS') }}"
     platform_dns_helm_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_HELM_TIMEOUT') }}"
     platform_dns_job_cleanup_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_JOB_CLEANUP_TIMEOUT') }}"
     platform_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_REPAIR') }}"
@@ -21,9 +22,10 @@
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
+    platform_dns_helm_attempts_effective: "{{ platform_dns_helm_attempts | default(platform_dns_helm_attempts_from_env, true) | default(3, true) | int }}"
     platform_dns_helm_timeout_effective: "{{ platform_dns_helm_timeout | default(platform_dns_helm_timeout_from_env, true) | default(90, true) | int }}"
     platform_dns_job_cleanup_timeout_effective: "{{ platform_dns_job_cleanup_timeout | default(platform_dns_job_cleanup_timeout_from_env, true) | default(30, true) | int }}"
-    platform_dns_chart_check_timeout_effective: "{{ [platform_dns_check_timeout_effective | int, ((platform_dns_helm_timeout_effective | int) * 2 + (platform_dns_probe_timeout_effective | int) * 4 + 30)] | max }}"
+    platform_dns_chart_check_timeout_effective: "{{ [platform_dns_check_timeout_effective | int, ((((platform_dns_helm_timeout_effective | int) * 2) + (platform_dns_probe_timeout_effective | int) + 10) * (platform_dns_helm_attempts_effective | int) + ((platform_dns_probe_timeout_effective | int) * 3) + 30)] | max }}"
     platform_dns_check_image_effective: "{{ platform_dns_check_image | default(platform_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
     platform_dns_ipv4_only_effective: "{{ platform_dns_ipv4_only | default(platform_dns_ipv4_only_from_env, true) | default(true, true) | bool }}"
@@ -137,6 +139,7 @@
         that:
           - (platform_dns_check_timeout_effective | int) > 0
           - (platform_dns_probe_timeout_effective | int) > 0
+          - (platform_dns_helm_attempts_effective | int) > 0
           - (platform_dns_helm_timeout_effective | int) > 0
           - (platform_dns_job_cleanup_timeout_effective | int) > 0
           - (platform_dns_service_path_rollout_timeout_effective | int) > 0
@@ -311,7 +314,8 @@
           {{ platform_dns_probe_timeout_effective }}s. Ignored Kubernetes DNS
           service IPs: {{ platform_cluster_dns_service_ips_list | join(' ') }}.
           Helm repository timeout:
-          {{ platform_dns_helm_timeout_effective }}s per Helm command.
+          {{ platform_dns_helm_timeout_effective }}s per Helm command,
+          {{ platform_dns_helm_attempts_effective }} attempts.
           Stale DNS check job cleanup timeout:
           {{ platform_dns_job_cleanup_timeout_effective }}s.
           Chart check timeout:
@@ -392,8 +396,10 @@
                         REPO_INDEX="${REPO_URL%/}/index.yaml"
                         REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
                         PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                        HELM_ATTEMPTS={{ platform_dns_helm_attempts_effective }}
                         HELM_TIMEOUT={{ platform_dns_helm_timeout_effective }}
                         DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
+                        export RES_OPTIONS='ndots:1 timeout:2 attempts:2 single-request-reopen'
                         run_bounded() {
                           seconds="$1"
                           shift
@@ -402,6 +408,47 @@
                           else
                             "$@"
                           fi
+                        }
+                        helm_output_has_failure() {
+                          grep -E 'Unable to get an update|Error:|i/o timeout|no such host|bad address|TLS handshake timeout|connection timed out|context deadline exceeded|network is unreachable'
+                        }
+                        run_helm_repo_check() {
+                          attempt=1
+                          while [ "${attempt}" -le "${HELM_ATTEMPTS}" ]; do
+                            echo "===== helm repository attempt ${attempt}/${HELM_ATTEMPTS} ====="
+                            nslookup "${REPO_HOST}" || true
+                            helm repo remove platform-dns-check >/dev/null 2>&1 || true
+
+                            set +e
+                            add_output="$(run_bounded "${HELM_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" 2>&1)"
+                            add_rc="$?"
+                            printf '%s\n' "${add_output}"
+                            update_rc="not-run"
+                            update_unhealthy=false
+                            if [ "${add_rc}" -eq 0 ]; then
+                              update_output="$(run_bounded "${HELM_TIMEOUT}" helm repo update platform-dns-check 2>&1)"
+                              update_rc="$?"
+                              printf '%s\n' "${update_output}"
+                              if printf '%s\n' "${update_output}" | helm_output_has_failure >/dev/null 2>&1; then
+                                update_unhealthy=true
+                                update_rc=1
+                                echo "helm repo update returned an unhealthy repository access result." >&2
+                              fi
+                            fi
+                            set -e
+
+                            if [ "${add_rc}" -eq 0 ] && [ "${update_rc}" = "0" ] && [ "${update_unhealthy}" = "false" ]; then
+                              echo "Helm repository check succeeded on attempt ${attempt}."
+                              return 0
+                            fi
+
+                            echo "Helm repository check attempt ${attempt}/${HELM_ATTEMPTS} failed: repo_add_rc=${add_rc} repo_update_rc=${update_rc} repo_update_unhealthy=${update_unhealthy}" >&2
+                            if [ "${attempt}" -lt "${HELM_ATTEMPTS}" ]; then
+                              sleep 5
+                            fi
+                            attempt=$((attempt + 1))
+                          done
+                          return 1
                         }
                         echo "===== pod resolver ====="
                         cat /etc/resolv.conf
@@ -435,17 +482,7 @@
                         else
                           echo "No curl or wget found in check image; skipping direct HTTPS index probe."
                         fi
-                        echo "===== helm repo add ====="
-                        run_bounded "${HELM_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" || {
-                          rc="$?"
-                          echo "helm repo add failed or timed out after ${HELM_TIMEOUT}s with rc=${rc}" >&2
-                          exit "${rc}"
-                        }
-                        run_bounded "${HELM_TIMEOUT}" helm repo update || {
-                          rc="$?"
-                          echo "helm repo update failed or timed out after ${HELM_TIMEOUT}s with rc=${rc}" >&2
-                          exit "${rc}"
-                        }
+                        run_helm_repo_check
       register: platform_dns_check_before
       changed_when: false
       failed_when: false
@@ -1480,8 +1517,10 @@
                             REPO_INDEX="${REPO_URL%/}/index.yaml"
                             REPO_HOST="$(printf '%s' "${REPO_URL}" | sed -E 's#^https?://([^/]+).*#\1#')"
                             PROBE_TIMEOUT={{ platform_dns_probe_timeout_effective }}
+                            HELM_ATTEMPTS={{ platform_dns_helm_attempts_effective }}
                             HELM_TIMEOUT={{ platform_dns_helm_timeout_effective }}
                             DNS_UPSTREAMS='{{ platform_dns_upstreams_effective }}'
+                            export RES_OPTIONS='ndots:1 timeout:2 attempts:2 single-request-reopen'
                             run_bounded() {
                               seconds="$1"
                               shift
@@ -1490,6 +1529,47 @@
                               else
                                 "$@"
                               fi
+                            }
+                            helm_output_has_failure() {
+                              grep -E 'Unable to get an update|Error:|i/o timeout|no such host|bad address|TLS handshake timeout|connection timed out|context deadline exceeded|network is unreachable'
+                            }
+                            run_helm_repo_check() {
+                              attempt=1
+                              while [ "${attempt}" -le "${HELM_ATTEMPTS}" ]; do
+                                echo "===== helm repository attempt ${attempt}/${HELM_ATTEMPTS} ====="
+                                nslookup "${REPO_HOST}" || true
+                                helm repo remove platform-dns-check >/dev/null 2>&1 || true
+
+                                set +e
+                                add_output="$(run_bounded "${HELM_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" 2>&1)"
+                                add_rc="$?"
+                                printf '%s\n' "${add_output}"
+                                update_rc="not-run"
+                                update_unhealthy=false
+                                if [ "${add_rc}" -eq 0 ]; then
+                                  update_output="$(run_bounded "${HELM_TIMEOUT}" helm repo update platform-dns-check 2>&1)"
+                                  update_rc="$?"
+                                  printf '%s\n' "${update_output}"
+                                  if printf '%s\n' "${update_output}" | helm_output_has_failure >/dev/null 2>&1; then
+                                    update_unhealthy=true
+                                    update_rc=1
+                                    echo "helm repo update returned an unhealthy repository access result." >&2
+                                  fi
+                                fi
+                                set -e
+
+                                if [ "${add_rc}" -eq 0 ] && [ "${update_rc}" = "0" ] && [ "${update_unhealthy}" = "false" ]; then
+                                  echo "Helm repository check succeeded on attempt ${attempt}."
+                                  return 0
+                                fi
+
+                                echo "Helm repository check attempt ${attempt}/${HELM_ATTEMPTS} failed: repo_add_rc=${add_rc} repo_update_rc=${update_rc} repo_update_unhealthy=${update_unhealthy}" >&2
+                                if [ "${attempt}" -lt "${HELM_ATTEMPTS}" ]; then
+                                  sleep 5
+                                fi
+                                attempt=$((attempt + 1))
+                              done
+                              return 1
                             }
                             echo "===== pod resolver ====="
                             cat /etc/resolv.conf
@@ -1523,17 +1603,7 @@
                             else
                               echo "No curl or wget found in check image; skipping direct HTTPS index probe."
                             fi
-                            echo "===== helm repo add ====="
-                            run_bounded "${HELM_TIMEOUT}" helm repo add platform-dns-check "${REPO_URL}" || {
-                              rc="$?"
-                              echo "helm repo add failed or timed out after ${HELM_TIMEOUT}s with rc=${rc}" >&2
-                              exit "${rc}"
-                            }
-                            run_bounded "${HELM_TIMEOUT}" helm repo update || {
-                              rc="$?"
-                              echo "helm repo update failed or timed out after ${HELM_TIMEOUT}s with rc=${rc}" >&2
-                              exit "${rc}"
-                            }
+                            run_helm_repo_check
           register: platform_dns_check_after
           changed_when: false
           failed_when: false
@@ -1662,7 +1732,9 @@
 
               If the output shows successful resolution but Helm command times
               out, fix pod egress/NAT/firewall/proxy access to the chart
-              repository, or configure an internal chart mirror.
+              repository, or configure an internal chart mirror. To tolerate
+              short Helm DNS/egress flaps while debugging:
+              PLATFORM_DNS_HELM_ATTEMPTS=5 PLATFORM_DNS_HELM_TIMEOUT=60 make platform-ingress
 
               This playbook defaults to IPv4-only external DNS mode so Helm jobs
               do not choose unreachable public IPv6 addresses on IPv4-only networks.

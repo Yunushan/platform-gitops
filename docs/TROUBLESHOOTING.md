@@ -250,7 +250,13 @@ If a previous interrupted run left a stale DNS check Job and Kubernetes is slow 
 PLATFORM_DNS_JOB_CLEANUP_TIMEOUT=10 make platform-ingress
 ```
 
-Helm repository add/update uses a separate timeout because chart repository access can be slower than DNS probes. The default is 90 seconds per Helm command:
+Helm repository add/update uses a separate retry and timeout because chart repository access can be slower or briefly flakier than DNS probes. The default is 3 attempts and 90 seconds per Helm command:
+
+```bash
+PLATFORM_DNS_HELM_ATTEMPTS=5 PLATFORM_DNS_HELM_TIMEOUT=60 make platform-ingress
+```
+
+If you only want to increase the per-command wait without adding attempts:
 
 ```bash
 PLATFORM_DNS_HELM_TIMEOUT=180 make platform-ingress
