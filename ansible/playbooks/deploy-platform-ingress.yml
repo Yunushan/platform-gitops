@@ -1371,6 +1371,7 @@
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
             replicas={{ platform_traefik_dns_coredns_replicas_effective | int }}
+            expected_nodes={{ [platform_traefik_dns_coredns_replicas_effective | int, groups['rke2_servers'] | length] | min }}
             deployment="$("$K" --kubeconfig "$C" -n kube-system get deployment -l k8s-app=kube-dns -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
             if [ -z "${deployment}" ] && "$K" --kubeconfig "$C" -n kube-system get deployment/rke2-coredns-rke2-coredns >/dev/null 2>&1; then
               deployment=rke2-coredns-rke2-coredns
@@ -1379,6 +1380,16 @@
               echo "No CoreDNS deployment with label k8s-app=kube-dns was found." >&2
               "$K" --kubeconfig "$C" -n kube-system get deployment,pods -o wide | grep -E 'NAME|coredns|kube-dns' || true
               exit 1
+            fi
+
+            autoscaler="$("$K" --kubeconfig "$C" -n kube-system get deployment -o name 2>/dev/null |
+              grep -E '/.*coredns.*autoscaler' |
+              head -n 1 || true)"
+            if [ -n "${autoscaler}" ]; then
+              "$K" --kubeconfig "$C" -n kube-system scale "${autoscaler}" --replicas=0
+              echo "Scaled ${autoscaler} to 0 so fixed HA CoreDNS placement is not reconciled back to 2 replicas."
+            else
+              echo "No CoreDNS autoscaler deployment found."
             fi
 
             cat >/tmp/platform-coredns-ha-placement-patch.json <<EOF
@@ -1424,24 +1435,36 @@
 
             "$K" --kubeconfig "$C" -n kube-system patch "deployment/${deployment}" \
               --type merge --patch-file /tmp/platform-coredns-ha-placement-patch.json
+            "$K" --kubeconfig "$C" -n kube-system scale "deployment/${deployment}" --replicas="${replicas}"
             "$K" --kubeconfig "$C" -n kube-system rollout status "deployment/${deployment}" \
               --timeout={{ platform_ingress_poll_interval_effective }}s
 
             echo "===== CoreDNS deployment ====="
             "$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" -o wide
+            echo "===== CoreDNS autoscaler ====="
+            "$K" --kubeconfig "$C" -n kube-system get deployment -o wide |
+              grep -E 'NAME|coredns.*autoscaler' || true
             echo "===== CoreDNS pods ====="
             "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns -o wide
             endpoint_count="$("$K" --kubeconfig "$C" -n kube-system get endpoints -l k8s-app=kube-dns \
               -o jsonpath='{range .items[*].subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null |
               wc -w | xargs)"
+            endpoint_nodes="$("$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=kube-dns \
+              -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.spec.nodeName}{" "}{end}' 2>/dev/null |
+              xargs -n1 2>/dev/null |
+              sort -u |
+              xargs || true)"
+            endpoint_node_count="$(printf '%s\n' ${endpoint_nodes:-} 2>/dev/null | awk 'NF { count++ } END { print count + 0 }')"
             echo "CoreDNS endpoint count=${endpoint_count}, target replicas=${replicas}"
+            echo "CoreDNS endpoint nodes=${endpoint_nodes:-none}, target node coverage=${expected_nodes}"
             test "${endpoint_count}" -ge "${replicas}"
+            test "${endpoint_node_count}" -ge "${expected_nodes}"
           args:
             executable: /bin/bash
           register: platform_traefik_dns_coredns_ha_patch
           changed_when: >-
             'patched' in platform_traefik_dns_coredns_ha_patch.stdout
-            and 'no change' not in platform_traefik_dns_coredns_ha_patch.stdout
+            or 'scaled' in (platform_traefik_dns_coredns_ha_patch.stdout | lower)
           failed_when: false
           retries: "{{ platform_ingress_wait_retries }}"
           delay: "{{ platform_ingress_poll_interval_effective }}"

@@ -129,7 +129,7 @@ To adjust how long the playbook waits for the restarted node:
 PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART_TIMEOUT=300 make platform-ingress
 ```
 
-For a three-node HA control plane, the repair path targets three CoreDNS replicas with topology spread and preferred anti-affinity so every node can get a local DNS endpoint when the scheduler can place one. To override that target:
+For a three-node HA control plane, the repair path targets three CoreDNS replicas with topology spread and preferred anti-affinity so every node can get a local DNS endpoint when the scheduler can place one. RKE2's CoreDNS autoscaler can reconcile the Deployment back to two replicas, so the repair path temporarily scales that autoscaler to zero before enforcing the fixed HA CoreDNS placement. To override the target replica count:
 
 ```bash
 PLATFORM_TRAEFIK_DNS_COREDNS_REPLICAS=3 make platform-ingress
