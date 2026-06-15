@@ -189,6 +189,12 @@ The ingress playbook cleans stale platform Helm install jobs before retrying by 
 PLATFORM_INGRESS_CLEANUP_HELM_JOBS=false make platform-ingress
 ```
 
+After Traefik receives the app VIP, `platform-ingress` verifies Argo CD through `https://argocd.<PLATFORM_DOMAIN>` from every RKE2 node using the app VIP. If this step times out with `curl: (28)` and HTTP code `000`, the problem is normally the app VIP, MetalLB announcement, Traefik service path, or node firewall/routing rather than Argo CD itself. The playbook prints Traefik service/endpoints, MetalLB state, Argo CD ingress/service state, node route/neighbor output, TCP probes, and firewall/NAT excerpts. To shorten just this final verification while debugging:
+
+```bash
+PLATFORM_ARGOCD_INGRESS_VERIFY_TIMEOUT=120 make platform-ingress
+```
+
 If Helm logs show `lookup ... on ...:53: i/o timeout`, pod DNS cannot resolve external chart repositories through CoreDNS. The `platform-ingress` target runs DNS repair first. To run that step directly:
 
 ```bash

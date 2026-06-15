@@ -23,6 +23,9 @@
     platform_traefik_dns_failed_node_restart_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART_TIMEOUT') }}"
     platform_traefik_dns_coredns_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_COREDNS_REPLICAS') }}"
     platform_traefik_dns_pod_cidrs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_POD_CIDRS') }}"
+    platform_argocd_ingress_verify_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_VERIFY_TIMEOUT') }}"
+    platform_argocd_ingress_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_CONNECT_TIMEOUT') }}"
+    platform_argocd_ingress_max_time_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_MAX_TIME') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
@@ -50,6 +53,9 @@
     platform_traefik_dns_failed_node_restart_timeout_effective: "{{ platform_traefik_dns_failed_node_restart_timeout | default(platform_traefik_dns_failed_node_restart_timeout_from_env, true) | default(300, true) | string | regex_replace('s$', '') | int }}"
     platform_traefik_dns_coredns_replicas_effective: "{{ platform_traefik_dns_coredns_replicas | default(platform_traefik_dns_coredns_replicas_from_env, true) | default(groups['rke2_servers'] | length, true) | int }}"
     platform_traefik_dns_pod_cidrs_raw: "{{ platform_traefik_dns_pod_cidrs | default(platform_traefik_dns_pod_cidrs_from_env, true) | default('', true) }}"
+    platform_argocd_ingress_verify_timeout_effective: "{{ platform_argocd_ingress_verify_timeout | default(platform_argocd_ingress_verify_timeout_from_env, true) | default(platform_traefik_rollout_timeout_effective, true) | string | regex_replace('s$', '') | int }}"
+    platform_argocd_ingress_connect_timeout_effective: "{{ platform_argocd_ingress_connect_timeout | default(platform_argocd_ingress_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
+    platform_argocd_ingress_max_time_effective: "{{ platform_argocd_ingress_max_time | default(platform_argocd_ingress_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_traefik_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-traefik-dns-service-path.conf
     platform_traefik_dns_service_path_firewalld_ports:
@@ -66,6 +72,7 @@
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_traefik_wait_retries: "{{ (((platform_traefik_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_traefik_dns_failed_node_restart_retries: "{{ (((platform_traefik_dns_failed_node_restart_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+    platform_argocd_ingress_verify_retries: "{{ (((platform_argocd_ingress_verify_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
     platform_ingress_firewalld_ports:
       - 80/tcp
@@ -92,6 +99,9 @@
           - platform_traefik_dns_helm_timeout_effective | int > 0
           - platform_traefik_dns_failed_node_restart_timeout_effective | int > 0
           - platform_traefik_dns_coredns_replicas_effective | int > 0
+          - platform_argocd_ingress_verify_timeout_effective | int > 0
+          - platform_argocd_ingress_connect_timeout_effective | int > 0
+          - platform_argocd_ingress_max_time_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -120,6 +130,10 @@
           with {{ platform_traefik_dns_failed_node_restart_timeout_effective }}s timeout.
           CoreDNS HA placement target for Traefik per-node DNS repair is
           {{ platform_traefik_dns_coredns_replicas_effective }} replicas.
+          Argo CD ingress verification timeout is
+          {{ platform_argocd_ingress_verify_timeout_effective }}s with
+          {{ platform_argocd_ingress_connect_timeout_effective }}s connect timeout
+          and {{ platform_argocd_ingress_max_time_effective }}s max curl time.
       run_once: true
 
     - name: Ensure OS hostname matches inventory node identity
@@ -2383,26 +2397,127 @@
       run_once: true
 
     - name: Verify Argo CD ingress over app VIP from every node
-      ansible.builtin.shell: |
-        set -o pipefail
-        code="$(curl --silent --show-error --insecure --output /dev/null \
-          --write-out '%{http_code}' \
-          --connect-timeout 5 \
-          --max-time 20 \
-          --resolve {{ platform_argocd_host }}:443:{{ rke2_ingress_vip_effective }} \
-          https://{{ platform_argocd_host }}/)"
-        printf '%s\n' "${code}"
-        case "${code}" in
-          200|301|302|303|307|308|401|403) exit 0 ;;
-          *) exit 1 ;;
-        esac
-      args:
-        executable: /bin/bash
-      register: platform_argocd_ingress_check
-      retries: "{{ platform_ingress_wait_retries }}"
-      delay: "{{ platform_ingress_poll_interval_effective }}"
-      until: platform_argocd_ingress_check.rc == 0
-      changed_when: false
+      block:
+        - name: Poll Argo CD ingress over app VIP from every node
+          ansible.builtin.shell: |
+            set -o pipefail
+            echo "Checking https://{{ platform_argocd_host }}/ through {{ rke2_ingress_vip_effective }}:443 from $(hostname -f 2>/dev/null || hostname)"
+            code="$(curl --silent --show-error --insecure --output /dev/null \
+              --write-out '%{http_code}' \
+              --connect-timeout {{ platform_argocd_ingress_connect_timeout_effective }} \
+              --max-time {{ platform_argocd_ingress_max_time_effective }} \
+              --resolve {{ platform_argocd_host }}:443:{{ rke2_ingress_vip_effective }} \
+              https://{{ platform_argocd_host }}/)"
+            printf '%s\n' "${code}"
+            case "${code}" in
+              200|301|302|303|307|308|401|403) exit 0 ;;
+              *) exit 1 ;;
+            esac
+          args:
+            executable: /bin/bash
+          register: platform_argocd_ingress_check
+          retries: "{{ platform_argocd_ingress_verify_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_argocd_ingress_check.rc == 0
+          changed_when: false
+      rescue:
+        - name: Collect Argo CD ingress cluster diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== Traefik services/endpoints/pods ====="
+            "$K" --kubeconfig "$C" -n traefik get svc,endpoints,endpointslice,deploy,pods -o wide || true
+            echo "===== Traefik service details ====="
+            for service in platform-traefik traefik; do
+              "$K" --kubeconfig "$C" -n traefik describe "service/${service}" || true
+            done
+            echo "===== Argo CD ingress/service/endpoints/pods ====="
+            "$K" --kubeconfig "$C" -n argocd get ingress,svc,endpoints,endpointslice,pods -o wide || true
+            "$K" --kubeconfig "$C" -n argocd describe ingress argocd-server || true
+            "$K" --kubeconfig "$C" -n argocd describe service argocd-server || true
+            echo "===== MetalLB state ====="
+            "$K" --kubeconfig "$C" -n metallb-system get ipaddresspool,l2advertisement,deploy,ds,pods -o wide || true
+            "$K" --kubeconfig "$C" -n metallb-system describe ipaddresspool platform-ingress || true
+            "$K" --kubeconfig "$C" -n metallb-system describe l2advertisement platform-ingress || true
+            echo "===== Traefik pod logs ====="
+            "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/name=traefik --all-containers --tail=180 || true
+            "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/instance=platform-traefik --all-containers --tail=180 || true
+            echo "===== Most relevant recent events ====="
+            "$K" --kubeconfig "$C" get events -A --sort-by=.lastTimestamp 2>/dev/null |
+              grep -E 'argocd|traefik|platform-traefik|metallb|LoadBalancer|{{ rke2_ingress_vip_effective }}|Failed|BackOff|Unhealthy|warning|error' |
+              tail -120 || true
+          args:
+            executable: /bin/bash
+          register: platform_argocd_ingress_cluster_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Collect Argo CD ingress VIP diagnostics from failed nodes
+          ansible.builtin.shell: |
+            set -o pipefail
+            VIP={{ rke2_ingress_vip_effective }}
+            HOST={{ platform_argocd_host }}
+            echo "===== host ====="
+            hostname -f 2>/dev/null || hostname
+            echo "===== failed curl output ====="
+            printf '%s\n' "{{ platform_argocd_ingress_check.stdout | default('') }}"
+            printf '%s\n' "{{ platform_argocd_ingress_check.stderr | default('') }}"
+            echo "===== route and neighbor to app VIP ====="
+            ip route get "${VIP}" || true
+            ip neigh show "${VIP}" || true
+            echo "===== TCP probes ====="
+            timeout {{ platform_argocd_ingress_connect_timeout_effective }} bash -c "cat < /dev/null > /dev/tcp/${VIP}/80" && echo "tcp/80 open" || echo "tcp/80 failed"
+            timeout {{ platform_argocd_ingress_connect_timeout_effective }} bash -c "cat < /dev/null > /dev/tcp/${VIP}/443" && echo "tcp/443 open" || echo "tcp/443 failed"
+            echo "===== direct curl probes ====="
+            curl --verbose --insecure --connect-timeout {{ platform_argocd_ingress_connect_timeout_effective }} \
+              --max-time {{ platform_argocd_ingress_max_time_effective }} \
+              "https://${VIP}/" || true
+            curl --verbose --insecure --connect-timeout {{ platform_argocd_ingress_connect_timeout_effective }} \
+              --max-time {{ platform_argocd_ingress_max_time_effective }} \
+              --resolve "${HOST}:443:${VIP}" "https://${HOST}/" || true
+            echo "===== firewalld active zones ====="
+            if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+              firewall-cmd --get-active-zones || true
+              firewall-cmd --list-all || true
+            else
+              echo "firewalld not running"
+            fi
+            echo "===== service NAT excerpts ====="
+            if command -v iptables-save >/dev/null 2>&1; then
+              iptables-save | grep -E 'KUBE-SVC|KUBE-SEP|{{ rke2_ingress_vip_effective }}|:80|:443' | head -220 || true
+            fi
+            if command -v nft >/dev/null 2>&1; then
+              nft list ruleset 2>/dev/null | grep -E 'KUBE-SVC|KUBE-SEP|{{ rke2_ingress_vip_effective }}|dport (80|443)' | head -220 || true
+            fi
+          args:
+            executable: /bin/bash
+          register: platform_argocd_ingress_node_diagnostics
+          changed_when: false
+          failed_when: false
+
+        - name: Stop after Argo CD ingress verification failure
+          ansible.builtin.fail:
+            msg: |
+              Argo CD ingress was created, but {{ rke2_ingress_vip_effective }}:443
+              did not answer from one or more RKE2 nodes within
+              {{ platform_argocd_ingress_verify_timeout_effective }}s.
+
+              This is usually the app VIP / MetalLB / Traefik service path,
+              not Argo CD application readiness. Review the diagnostics above.
+
+              Cluster diagnostics:
+              {{ hostvars[rke2_first_server].platform_argocd_ingress_cluster_diagnostics.stdout | default('not collected') }}
+
+              Failed node diagnostics:
+              {{ platform_argocd_ingress_node_diagnostics.stdout | default('not collected') }}
+
+              To fail faster while debugging:
+              PLATFORM_ARGOCD_INGRESS_VERIFY_TIMEOUT=120 make platform-ingress
+
+              To wait longer on slow VIP convergence:
+              PLATFORM_ARGOCD_INGRESS_VERIFY_TIMEOUT=1200 make platform-ingress
 
     - name: Remove temporary Argo CD bootstrap NodePort after ingress is ready
       ansible.builtin.command: >-
