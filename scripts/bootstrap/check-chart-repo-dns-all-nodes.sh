@@ -14,6 +14,11 @@ namespace="${CHECK_NAMESPACE:-kube-system}"
 check_name="platform-chart-repo-dns-check"
 check_id="$(printf '%s' "${repo_url}" | sha256sum | awk '{print substr($1, 1, 10)}')"
 selector="app.kubernetes.io/name=${check_name},platform.gitops/check-id=${check_id}"
+kube_dns_service_ips="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get svc -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.spec.clusterIP}{" "}{end}' 2>/dev/null | xargs || true)"
+coredns_endpoint_ips="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get endpointslice -l k8s-app=kube-dns -o jsonpath='{range .items[*].endpoints[*].addresses[*]}{.}{" "}{end}' 2>/dev/null | xargs || true)"
+if [ -z "${coredns_endpoint_ips}" ]; then
+  coredns_endpoint_ips="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n kube-system get endpoints kube-dns -o jsonpath='{range .subsets[*].addresses[*]}{.ip}{" "}{end}' 2>/dev/null | xargs || true)"
+fi
 
 safe_name() {
   printf '%s' "$1" |
@@ -47,6 +52,8 @@ print_diagnostics() {
 cleanup_previous
 
 nodes="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
+echo "KUBE_DNS_SERVICE_IPS=${kube_dns_service_ips:-none}"
+echo "COREDNS_ENDPOINT_IPS=${coredns_endpoint_ips:-none}"
 expected=0
 for node in ${nodes}; do
   expected=$((expected + 1))
@@ -61,7 +68,8 @@ metadata:
   labels:
     app.kubernetes.io/name: ${check_name}
     platform.gitops/check-id: ${check_id}
-    platform.gitops/node: ${node_safe}
+    platform.gitops/node: "${node}"
+    platform.gitops/node-safe: ${node_safe}
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: ${timeout_seconds}
@@ -71,7 +79,8 @@ spec:
       labels:
         app.kubernetes.io/name: ${check_name}
         platform.gitops/check-id: ${check_id}
-        platform.gitops/node: ${node_safe}
+        platform.gitops/node: "${node}"
+        platform.gitops/node-safe: ${node_safe}
     spec:
       restartPolicy: Never
       nodeName: "${node}"
@@ -88,6 +97,12 @@ spec:
               value: "${helm_attempts}"
             - name: HELM_TIMEOUT_SECONDS
               value: "${helm_timeout_seconds}"
+            - name: CHECK_NODE_NAME
+              value: "${node}"
+            - name: KUBE_DNS_SERVICE_IPS
+              value: "${kube_dns_service_ips}"
+            - name: COREDNS_ENDPOINT_IPS
+              value: "${coredns_endpoint_ips}"
           command:
             - sh
             - -c
@@ -106,15 +121,43 @@ spec:
               helm_output_has_failure() {
                 grep -E 'Unable to get an update|Error:|i/o timeout|no such host|bad address|TLS handshake timeout|connection timed out|context deadline exceeded|network is unreachable'
               }
+              probe_dns_server() {
+                dns_server="\$1"
+                if [ -z "\${dns_server}" ] || [ "\${dns_server}" = "None" ]; then
+                  return 0
+                fi
+                echo "--- \${dns_server} ---"
+                run_bounded 10 nslookup "\${REPO_HOST}" "\${dns_server}" || true
+              }
               REPO_HOST="\${REPO_URL#http://}"
               REPO_HOST="\${REPO_HOST#https://}"
               REPO_HOST="\${REPO_HOST%%/*}"
+              echo "===== node ====="
+              printf '%s\n' "\${CHECK_NODE_NAME:-unknown}"
               echo "===== pod resolver ====="
               cat /etc/resolv.conf
+              default_dns_servers="\$(awk '/^nameserver / {print \$2}' /etc/resolv.conf | xargs || true)"
               echo "===== repository host ====="
               printf '%s\n' "\${REPO_HOST}"
-              echo "===== IPv4 resolution ====="
+              echo "===== default Kubernetes DNS resolution ====="
               getent ahostsv4 "\${REPO_HOST}" || nslookup "\${REPO_HOST}" || true
+              echo "===== Kubernetes DNS service IP checks ====="
+              dns_service_targets="\${KUBE_DNS_SERVICE_IPS:-\${default_dns_servers}}"
+              if [ -n "\${dns_service_targets}" ]; then
+                for dns_server in \${dns_service_targets}; do
+                  probe_dns_server "\${dns_server}"
+                done
+              else
+                echo "No Kubernetes DNS service IPs or pod nameservers were discovered."
+              fi
+              echo "===== CoreDNS endpoint IP checks ====="
+              if [ -n "\${COREDNS_ENDPOINT_IPS:-}" ]; then
+                for dns_server in \${COREDNS_ENDPOINT_IPS}; do
+                  probe_dns_server "\${dns_server}"
+                done
+              else
+                echo "No CoreDNS endpoint IPs were discovered before this check."
+              fi
               attempt=1
               while [ "\${attempt}" -le "\${HELM_ATTEMPTS}" ]; do
                 echo "===== helm repository attempt \${attempt}/\${HELM_ATTEMPTS} ====="
@@ -167,7 +210,10 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
   for job_ref in $("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get jobs -l "${selector}" -o name 2>/dev/null || true); do
     total=$((total + 1))
     job_name="${job_ref#job.batch/}"
-    node_name="${job_name#platform-dns-${check_id}-}"
+    node_name="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.metadata.labels.platform\.gitops/node}' 2>/dev/null || true)"
+    if [ -z "${node_name}" ]; then
+      node_name="${job_name#platform-dns-${check_id}-}"
+    fi
     job_succeeded="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
     job_failed="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
     job_active="$("${kubectl_bin}" --kubeconfig "${kubeconfig}" -n "${namespace}" get "${job_ref}" -o jsonpath='{.status.active}' 2>/dev/null || true)"

@@ -51,6 +51,10 @@
       changed_when: false
       failed_when: preflight_uid.stdout != "0"
 
+    - name: Ensure node hostname matches inventory identity
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
     - name: Require platform VIP and DNS variables
       ansible.builtin.assert:
         that:

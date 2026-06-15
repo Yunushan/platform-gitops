@@ -117,6 +117,10 @@
           with {{ platform_traefik_dns_failed_node_restart_timeout_effective }}s timeout.
       run_once: true
 
+    - name: Ensure OS hostname matches inventory node identity
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+
     - name: Check firewalld state
       ansible.builtin.command: firewall-cmd --state
       register: platform_ingress_firewalld_state
@@ -1051,6 +1055,16 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Sync current per-node chart repository DNS checker from repository
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../scripts/bootstrap/check-chart-repo-dns-all-nodes.sh"
+            dest: "{{ platform_traefik_dns_check_script_path }}"
+            owner: root
+            group: root
+            mode: "0755"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Check Traefik chart repository DNS from pods pinned to every node
           ansible.builtin.command:
             argv:
@@ -1532,8 +1546,35 @@
             ip -br addr || true
             echo "===== routes ====="
             ip route || true
+            echo "===== kube-proxy process and sockets ====="
+            ps -ef | grep -E '[k]ube-proxy|[r]ke2' | head -120 || true
+            ss -lntup 2>/dev/null | grep -E ':(53|6443|9345|10249|10256|10250|4240|4244)[[:space:]]' || true
             echo "===== sysctl ====="
             sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter net.ipv4.conf.default.rp_filter || true
+            echo "===== Kubernetes DNS service NAT rules ====="
+            if command -v iptables-save >/dev/null 2>&1; then
+              iptables-save -t nat |
+                grep -E '10[.]43[.]0[.]10|kube-dns|KUBE-SVC|KUBE-SEP|dpt:53|--dport 53' |
+                head -240 || true
+            else
+              echo "iptables-save=missing"
+            fi
+            echo "===== nft Kubernetes DNS/service rules ====="
+            if command -v nft >/dev/null 2>&1; then
+              nft list ruleset 2>/dev/null |
+                grep -E '10[.]43[.]0[.]10|kube-dns|KUBE-SVC|KUBE-SEP|10[.]42[.]|10[.]43[.]' |
+                head -240 || true
+            else
+              echo "nft=missing"
+            fi
+            echo "===== conntrack DNS service entries ====="
+            if command -v conntrack >/dev/null 2>&1; then
+              conntrack -L -p udp 2>/dev/null |
+                grep -E '10[.]43[.]0[.]10|dport=53|sport=53' |
+                head -120 || true
+            else
+              echo "conntrack=missing"
+            fi
             echo "===== firewalld zones ====="
             if command -v firewall-cmd >/dev/null 2>&1; then
               firewall-cmd --state || true
