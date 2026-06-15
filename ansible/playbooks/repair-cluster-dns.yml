@@ -260,7 +260,7 @@
 
     - name: Select CoreDNS upstreams that passed pod reachability checks
       ansible.builtin.set_fact:
-        platform_dns_upstreams_effective: >-
+        platform_dns_upstreams_selected_from_pods: >-
           {{
             (
               platform_dns_upstream_selection.stdout_lines
@@ -274,12 +274,19 @@
           }}
       run_once: true
 
-    - name: Require reachable DNS upstreams selected from inside the cluster
-      ansible.builtin.assert:
-        that:
-          - platform_dns_upstreams_effective | length > 0
-        fail_msg: |
-          No discovered DNS upstream resolved {{ platform_dns_check_repo_effective }} from inside the cluster.
+    - name: Select CoreDNS upstreams from pod checks or node resolver fallback
+      ansible.builtin.set_fact:
+        platform_dns_upstreams_effective: >-
+          {{
+            ((platform_dns_upstreams_selected_from_pods | default('') | trim | length) > 0)
+            | ternary(platform_dns_upstreams_selected_from_pods, platform_dns_upstream_candidates_effective)
+          }}
+      run_once: true
+
+    - name: Continue DNS repair with node resolver fallback when pod upstream checks fail
+      ansible.builtin.debug:
+        msg: |
+          No discovered DNS upstream resolved {{ platform_dns_check_repo_effective }} from inside the cluster before repair.
 
           Candidate upstreams were:
           {{ platform_dns_upstream_candidates_effective }}
@@ -288,7 +295,10 @@
           {{ platform_dns_upstream_selection.stdout | default('') }}
           {{ platform_dns_upstream_selection.stderr | default('') }}
 
-          Fix pod egress to your DNS servers, or set PLATFORM_DNS_UPSTREAMS to DNS servers reachable from pods.
+          Continuing automatically with the node-discovered upstreams so the CoreDNS, CNI,
+          kube-proxy, and firewalld repair path can run. If these upstreams are still
+          unreachable after repair, the final DNS verification will stop with diagnostics.
+      when: (platform_dns_upstreams_selected_from_pods | default('') | trim | length) == 0
       run_once: true
 
     - name: Show cluster DNS check settings
