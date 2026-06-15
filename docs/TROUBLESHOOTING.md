@@ -117,6 +117,18 @@ Before creating the Traefik HelmChart, `platform-ingress` also runs a per-node c
 
 The checker treats Helm output such as `Unable to get an update` as unhealthy even when Helm exits with status `0`, because that usually means the repo path is still flaky and a later Helm install job may fail on the same node. If the post-repair retry still fails, the final message includes failed-node Kubernetes diagnostics plus host network/firewalld/Cilium/kube-proxy diagnostics for the affected node.
 
+If the normal host service-path repair and retry still fail on a specific node, `platform-ingress` restarts `rke2-server` only on the failed node, waits for it to report Ready, waits for Cilium, and performs one final per-node DNS retry. This is enabled by default for HA clusters because one server restart is tolerated by the other two control-plane nodes. To disable that heavier recovery step:
+
+```bash
+PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART=false make platform-ingress
+```
+
+To adjust how long the playbook waits for the restarted node:
+
+```bash
+PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART_TIMEOUT=300 make platform-ingress
+```
+
 The default per-node check timeout is 300 seconds. To change it:
 
 ```bash

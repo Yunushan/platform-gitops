@@ -93,7 +93,7 @@ spec:
             - -c
           args:
             - |
-              set -ex
+              set -e
               run_bounded() {
                 seconds="\$1"
                 shift

@@ -19,6 +19,8 @@
     platform_traefik_dns_helm_attempts_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS') }}"
     platform_traefik_dns_helm_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT') }}"
     platform_traefik_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_SERVICE_PATH_REPAIR') }}"
+    platform_traefik_dns_failed_node_restart_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART') }}"
+    platform_traefik_dns_failed_node_restart_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART_TIMEOUT') }}"
     platform_traefik_dns_pod_cidrs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_POD_CIDRS') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
@@ -43,6 +45,8 @@
     platform_traefik_dns_helm_attempts_effective: "{{ platform_traefik_dns_helm_attempts | default(platform_traefik_dns_helm_attempts_from_env, true) | default(3, true) | int }}"
     platform_traefik_dns_helm_timeout_effective: "{{ platform_traefik_dns_helm_timeout | default(platform_traefik_dns_helm_timeout_from_env, true) | default(60, true) | string | regex_replace('s$', '') | int }}"
     platform_traefik_dns_service_path_repair_effective: "{{ platform_traefik_dns_service_path_repair | default(platform_traefik_dns_service_path_repair_from_env, true) | default(true, true) | bool }}"
+    platform_traefik_dns_failed_node_restart_effective: "{{ platform_traefik_dns_failed_node_restart | default(platform_traefik_dns_failed_node_restart_from_env, true) | default(true, true) | bool }}"
+    platform_traefik_dns_failed_node_restart_timeout_effective: "{{ platform_traefik_dns_failed_node_restart_timeout | default(platform_traefik_dns_failed_node_restart_timeout_from_env, true) | default(300, true) | string | regex_replace('s$', '') | int }}"
     platform_traefik_dns_pod_cidrs_raw: "{{ platform_traefik_dns_pod_cidrs | default(platform_traefik_dns_pod_cidrs_from_env, true) | default('', true) }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_traefik_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-traefik-dns-service-path.conf
@@ -59,6 +63,7 @@
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_traefik_wait_retries: "{{ (((platform_traefik_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+    platform_traefik_dns_failed_node_restart_retries: "{{ (((platform_traefik_dns_failed_node_restart_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
     platform_ingress_firewalld_ports:
       - 80/tcp
@@ -83,6 +88,7 @@
           - platform_traefik_dns_retry_timeout_effective | int > 0
           - platform_traefik_dns_helm_attempts_effective | int > 0
           - platform_traefik_dns_helm_timeout_effective | int > 0
+          - platform_traefik_dns_failed_node_restart_timeout_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -106,6 +112,9 @@
           {{ platform_traefik_dns_helm_timeout_effective }}s per Helm command.
           Traefik per-node DNS service-path auto-repair is
           {{ 'enabled' if platform_traefik_dns_service_path_repair_effective else 'disabled' }}.
+          Failed-node RKE2 restart after persistent Traefik DNS failure is
+          {{ 'enabled' if platform_traefik_dns_failed_node_restart_effective else 'disabled' }}
+          with {{ platform_traefik_dns_failed_node_restart_timeout_effective }}s timeout.
       run_once: true
 
     - name: Check firewalld state
@@ -927,7 +936,7 @@
                           - -c
                         args:
                           - |
-                            set -ex
+                            set -e
                             run_bounded() {
                               seconds="\$1"
                               shift
@@ -1298,11 +1307,179 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Detect failed nodes from Traefik per-node DNS retry
+          ansible.builtin.set_fact:
+            platform_traefik_dns_retry_failed_nodes_effective: >-
+              {{
+                (
+                  platform_traefik_dns_all_nodes_retry.stdout
+                  | default('')
+                  | regex_findall('(?m)^PLATFORM_CHART_REPO_DNS_FAILED_NODES=(.*)$')
+                  | first
+                  | default(platform_traefik_dns_failed_nodes_effective | default('unknown'), true)
+                )
+              }}
+          run_once: true
+          when: platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+
+        - name: Normalize failed nodes from Traefik per-node DNS retry
+          ansible.builtin.set_fact:
+            platform_traefik_dns_retry_failed_nodes_list_effective: >-
+              {{
+                (
+                  (platform_traefik_dns_retry_failed_nodes_effective | default('') | trim)
+                  in ['', 'none', 'unknown']
+                )
+                | ternary([], platform_traefik_dns_retry_failed_nodes_effective.split())
+              }}
+          run_once: true
+          when: platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+
+        - name: Restart RKE2 on nodes with persistent Traefik DNS service-path failure
+          ansible.builtin.command: systemctl restart rke2-server
+          register: platform_traefik_dns_failed_node_rke2_restart
+          changed_when: true
+          loop: "{{ hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) }}"
+          loop_control:
+            label: "{{ item }}"
+          delegate_to: "{{ item }}"
+          run_once: true
+          when:
+            - platform_traefik_dns_failed_node_restart_effective | bool
+            - platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+            - item in groups['rke2_servers']
+
+        - name: Wait for restarted failed-node RKE2 services
+          ansible.builtin.command: systemctl is-active rke2-server
+          register: platform_traefik_dns_failed_node_rke2_active
+          changed_when: false
+          retries: "{{ platform_traefik_dns_failed_node_restart_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_dns_failed_node_rke2_active.rc == 0
+          loop: "{{ hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) }}"
+          loop_control:
+            label: "{{ item }}"
+          delegate_to: "{{ item }}"
+          run_once: true
+          when:
+            - platform_traefik_dns_failed_node_restart_effective | bool
+            - platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+            - item in groups['rke2_servers']
+
+        - name: Wait for restarted failed nodes to report Ready
+          ansible.builtin.shell: |
+            set -euo pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            failed_nodes="{{ hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) | join(' ') }}"
+            for node in ${failed_nodes}; do
+              "$K" --kubeconfig "$C" get node "${node}" --no-headers |
+                awk '$2 == "Ready" { found=1 } END { exit(found ? 0 : 1) }'
+            done
+          args:
+            executable: /bin/bash
+          register: platform_traefik_dns_failed_nodes_ready
+          changed_when: false
+          retries: "{{ platform_traefik_dns_failed_node_restart_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_dns_failed_nodes_ready.rc == 0
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_traefik_dns_failed_node_restart_effective | bool
+            - platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+            - (hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) | length) > 0
+
+        - name: Wait for Cilium on restarted failed nodes
+          ansible.builtin.shell: |
+            set -euo pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            failed_nodes="{{ hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) | join(' ') }}"
+            for node in ${failed_nodes}; do
+              "$K" --kubeconfig "$C" -n kube-system get pods -l k8s-app=cilium --field-selector spec.nodeName="${node}" --no-headers |
+                awk 'BEGIN { ok=0 } $3 == "Running" && $2 ~ /^1\/1$/ { ok=1 } END { exit(ok ? 0 : 1) }'
+            done
+          args:
+            executable: /bin/bash
+          register: platform_traefik_dns_failed_nodes_cilium_ready
+          changed_when: false
+          retries: "{{ platform_traefik_dns_failed_node_restart_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_traefik_dns_failed_nodes_cilium_ready.rc == 0
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_traefik_dns_failed_node_restart_effective | bool
+            - platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+            - (hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) | length) > 0
+
+        - name: Wait briefly for failed-node service rules to settle
+          ansible.builtin.pause:
+            seconds: "{{ platform_ingress_poll_interval_effective }}"
+          run_once: true
+          when:
+            - platform_traefik_dns_failed_node_restart_effective | bool
+            - platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+            - (hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) | length) > 0
+
+        - name: Retry Traefik chart repository DNS after failed-node RKE2 restart
+          ansible.builtin.command:
+            argv:
+              - "{{ platform_traefik_dns_check_script_path }}"
+              - "{{ platform_traefik_chart_repo_effective }}"
+              - "{{ platform_traefik_dns_check_image_effective }}"
+              - "{{ platform_traefik_dns_retry_timeout_effective }}"
+              - "{{ platform_ingress_poll_interval_effective }}"
+              - "{{ platform_traefik_dns_helm_attempts_effective }}"
+              - "{{ platform_traefik_dns_helm_timeout_effective }}"
+          register: platform_traefik_dns_all_nodes_after_failed_node_restart
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_traefik_dns_failed_node_restart_effective | bool
+            - platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+            - (hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective | default([]) | length) > 0
+
+        - name: Detect failed nodes after failed-node RKE2 restart
+          ansible.builtin.set_fact:
+            platform_traefik_dns_final_failed_nodes_effective: >-
+              {{
+                (
+                  platform_traefik_dns_all_nodes_after_failed_node_restart.stdout
+                  | default('')
+                  | regex_findall('(?m)^PLATFORM_CHART_REPO_DNS_FAILED_NODES=(.*)$')
+                  | first
+                  | default(platform_traefik_dns_retry_failed_nodes_effective | default(platform_traefik_dns_failed_nodes_effective | default('unknown'), true), true)
+                )
+              }}
+          run_once: true
+          when:
+            - platform_traefik_dns_all_nodes_after_failed_node_restart is defined
+            - platform_traefik_dns_all_nodes_after_failed_node_restart.rc | default(1) != 0
+
+        - name: Normalize final failed nodes after failed-node RKE2 restart
+          ansible.builtin.set_fact:
+            platform_traefik_dns_final_failed_nodes_list_effective: >-
+              {{
+                (
+                  (platform_traefik_dns_final_failed_nodes_effective | default('') | trim)
+                  in ['', 'none', 'unknown']
+                )
+                | ternary([], platform_traefik_dns_final_failed_nodes_effective.split())
+              }}
+          run_once: true
+          when:
+            - platform_traefik_dns_all_nodes_after_failed_node_restart is defined
+            - platform_traefik_dns_all_nodes_after_failed_node_restart.rc | default(1) != 0
+
         - name: Collect failed-node Kubernetes DNS diagnostics
           ansible.builtin.shell: |
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            failed_nodes="{{ hostvars[rke2_first_server].platform_traefik_dns_failed_nodes_effective | default('unknown') }}"
+            failed_nodes="{{ hostvars[rke2_first_server].platform_traefik_dns_final_failed_nodes_effective | default(hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_effective | default(hostvars[rke2_first_server].platform_traefik_dns_failed_nodes_effective | default('unknown'), true), true) }}"
             echo "===== failed Kubernetes nodes ====="
             printf '%s\n' "${failed_nodes}"
             echo "===== Kubernetes nodes ====="
@@ -1340,7 +1517,9 @@
           failed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
-          when: platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+          when: >-
+            (platform_traefik_dns_all_nodes_after_failed_node_restart.rc
+            | default(platform_traefik_dns_all_nodes_retry.rc | default(1))) != 0
 
         - name: Collect failed-node host network diagnostics
           ansible.builtin.shell: |
@@ -1374,13 +1553,19 @@
           register: platform_traefik_dns_failed_node_host_diagnostics
           changed_when: false
           failed_when: false
-          loop: "{{ hostvars[rke2_first_server].platform_traefik_dns_failed_nodes_list_effective | default([]) }}"
+          loop: >-
+            {{
+              hostvars[rke2_first_server].platform_traefik_dns_final_failed_nodes_list_effective
+              | default(hostvars[rke2_first_server].platform_traefik_dns_retry_failed_nodes_list_effective
+              | default(hostvars[rke2_first_server].platform_traefik_dns_failed_nodes_list_effective
+              | default([]), true), true)
+            }}
           loop_control:
             label: "{{ item }}"
           delegate_to: "{{ item }}"
           run_once: true
           when:
-            - platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+            - (platform_traefik_dns_all_nodes_after_failed_node_restart.rc | default(platform_traefik_dns_all_nodes_retry.rc | default(1))) != 0
             - item in groups['rke2_servers']
 
         - name: Show Traefik per-node DNS automatic repair result
@@ -1396,6 +1581,10 @@
               - "{{ platform_traefik_dns_cilium_rollout.stdout_lines | default(platform_traefik_dns_cilium_restart.stdout_lines | default(['not run'])) }}"
               - "Retry per-node DNS check:"
               - "{{ platform_traefik_dns_all_nodes_retry.stdout_lines | default(['not run']) }}"
+              - "Failed-node RKE2 restart:"
+              - "{{ platform_traefik_dns_failed_node_rke2_restart.results | default([]) | map(attribute='stdout_lines') | list | default(['not run'], true) }}"
+              - "Post failed-node restart DNS check:"
+              - "{{ platform_traefik_dns_all_nodes_after_failed_node_restart.stdout_lines | default(['not run']) }}"
               - "Failed-node Kubernetes diagnostics:"
               - "{{ platform_traefik_dns_failed_node_k8s_diagnostics.stdout_lines | default(['not collected']) }}"
               - "Failed-node host diagnostics:"
@@ -1428,6 +1617,17 @@
               stderr:
               {{ platform_traefik_dns_all_nodes_retry.stderr | default('') }}
 
+              Post failed-node restart check result:
+              rc={{ platform_traefik_dns_all_nodes_after_failed_node_restart.rc | default('not run') }}
+              msg={{ platform_traefik_dns_all_nodes_after_failed_node_restart.msg | default('') }}
+              stdout:
+              {{ platform_traefik_dns_all_nodes_after_failed_node_restart.stdout | default('not run') }}
+              stderr:
+              {{ platform_traefik_dns_all_nodes_after_failed_node_restart.stderr | default('') }}
+
+              Failed-node RKE2 restart:
+              {{ platform_traefik_dns_failed_node_rke2_restart.results | default([]) | map(attribute='stdout') | list | join('\n---\n') | default('not run', true) }}
+
               Host service-path repair:
               {{ platform_traefik_dns_host_repair.results | default([]) | map(attribute='stdout') | list | join('\n---\n') | default('not run', true) }}
 
@@ -1445,10 +1645,14 @@
 
               To tolerate short DNS/egress flaps while debugging:
               PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
+              To disable failed-node RKE2 restart recovery:
+              PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART=false make platform-ingress
               To disable the host service-path repair pass:
               PLATFORM_TRAEFIK_DNS_SERVICE_PATH_REPAIR=false make platform-ingress
           run_once: true
-          when: platform_traefik_dns_all_nodes_retry.rc | default(1) != 0
+          when: >-
+            (platform_traefik_dns_all_nodes_after_failed_node_restart.rc
+            | default(platform_traefik_dns_all_nodes_retry.rc | default(1))) != 0
 
     - name: Clean stale Traefik Helm install job before retry
       ansible.builtin.command: >-
