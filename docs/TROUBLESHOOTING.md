@@ -224,6 +224,12 @@ To make each in-pod DNS/HTTPS probe fail faster while keeping the outer check wi
 PLATFORM_DNS_PROBE_TIMEOUT=10 PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
 ```
 
+If a previous interrupted run left a stale DNS check Job and Kubernetes is slow to delete it, the playbook waits up to 30 seconds before recreating the Job. To fail faster while debugging:
+
+```bash
+PLATFORM_DNS_JOB_CLEANUP_TIMEOUT=10 make platform-ingress
+```
+
 Helm repository add/update uses a separate timeout because chart repository access can be slower than DNS probes. The default is 90 seconds per Helm command:
 
 ```bash

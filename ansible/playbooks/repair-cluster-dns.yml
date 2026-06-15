@@ -12,6 +12,7 @@
     platform_dns_ipv4_only_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_IPV4_ONLY') }}"
     platform_dns_probe_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_PROBE_TIMEOUT') }}"
     platform_dns_helm_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_HELM_TIMEOUT') }}"
+    platform_dns_job_cleanup_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_JOB_CLEANUP_TIMEOUT') }}"
     platform_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_REPAIR') }}"
     platform_dns_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
     platform_dns_service_path_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL') }}"
@@ -21,6 +22,7 @@
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
     platform_dns_helm_timeout_effective: "{{ platform_dns_helm_timeout | default(platform_dns_helm_timeout_from_env, true) | default(90, true) | int }}"
+    platform_dns_job_cleanup_timeout_effective: "{{ platform_dns_job_cleanup_timeout | default(platform_dns_job_cleanup_timeout_from_env, true) | default(30, true) | int }}"
     platform_dns_chart_check_timeout_effective: "{{ [platform_dns_check_timeout_effective | int, ((platform_dns_helm_timeout_effective | int) * 2 + (platform_dns_probe_timeout_effective | int) * 4 + 30)] | max }}"
     platform_dns_check_image_effective: "{{ platform_dns_check_image | default(platform_dns_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
@@ -136,6 +138,7 @@
           - (platform_dns_check_timeout_effective | int) > 0
           - (platform_dns_probe_timeout_effective | int) > 0
           - (platform_dns_helm_timeout_effective | int) > 0
+          - (platform_dns_job_cleanup_timeout_effective | int) > 0
           - (platform_dns_service_path_rollout_timeout_effective | int) > 0
           - (platform_dns_service_path_poll_interval_effective | int) > 0
           - (platform_dns_kube_proxy_delete_timeout_effective | int) > 0
@@ -158,7 +161,17 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         JOB={{ platform_dns_upstream_selection_job_name }}
-        "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+        cleanup_deadline=$((SECONDS + {{ platform_dns_job_cleanup_timeout_effective }}))
+        "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+        while "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" >/dev/null 2>&1; do
+          if [ "${SECONDS}" -ge "${cleanup_deadline}" ]; then
+            echo "Timed out waiting for stale DNS job ${JOB} to be deleted." >&2
+            "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o wide >&2 || true
+            "$K" --kubeconfig "$C" -n kube-system describe job "${JOB}" >&2 || true
+            exit 1
+          fi
+          sleep 1
+        done
         "$K" --kubeconfig "$C" -n kube-system apply -f -
         deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
         while [ "${SECONDS}" -lt "${deadline}" ]; do
@@ -289,6 +302,8 @@
           service IPs: {{ platform_cluster_dns_service_ips_list | join(' ') }}.
           Helm repository timeout:
           {{ platform_dns_helm_timeout_effective }}s per Helm command.
+          Stale DNS check job cleanup timeout:
+          {{ platform_dns_job_cleanup_timeout_effective }}s.
           Chart check timeout:
           {{ platform_dns_chart_check_timeout_effective }}s.
           DNS service path repair:
@@ -307,7 +322,17 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         JOB={{ platform_dns_check_job_name }}
-        "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+        cleanup_deadline=$((SECONDS + {{ platform_dns_job_cleanup_timeout_effective }}))
+        "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+        while "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" >/dev/null 2>&1; do
+          if [ "${SECONDS}" -ge "${cleanup_deadline}" ]; then
+            echo "Timed out waiting for stale DNS job ${JOB} to be deleted." >&2
+            "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o wide >&2 || true
+            "$K" --kubeconfig "$C" -n kube-system describe job "${JOB}" >&2 || true
+            exit 1
+          fi
+          sleep 1
+        done
         "$K" --kubeconfig "$C" -n kube-system apply -f -
         deadline=$((SECONDS + {{ platform_dns_chart_check_timeout_effective }}))
         while [ "${SECONDS}" -lt "${deadline}" ]; do
@@ -586,7 +611,17 @@
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
             JOB={{ platform_dns_service_path_job_name }}
-            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+            cleanup_deadline=$((SECONDS + {{ platform_dns_job_cleanup_timeout_effective }}))
+            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+            while "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" >/dev/null 2>&1; do
+              if [ "${SECONDS}" -ge "${cleanup_deadline}" ]; then
+                echo "Timed out waiting for stale DNS job ${JOB} to be deleted." >&2
+                "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o wide >&2 || true
+                "$K" --kubeconfig "$C" -n kube-system describe job "${JOB}" >&2 || true
+                exit 1
+              fi
+              sleep 1
+            done
             "$K" --kubeconfig "$C" -n kube-system apply -f -
             deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
             while [ "${SECONDS}" -lt "${deadline}" ]; do
@@ -1123,7 +1158,17 @@
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
             JOB={{ platform_dns_service_path_job_name }}
-            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+            cleanup_deadline=$((SECONDS + {{ platform_dns_job_cleanup_timeout_effective }}))
+            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+            while "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" >/dev/null 2>&1; do
+              if [ "${SECONDS}" -ge "${cleanup_deadline}" ]; then
+                echo "Timed out waiting for stale DNS job ${JOB} to be deleted." >&2
+                "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o wide >&2 || true
+                "$K" --kubeconfig "$C" -n kube-system describe job "${JOB}" >&2 || true
+                exit 1
+              fi
+              sleep 1
+            done
             "$K" --kubeconfig "$C" -n kube-system apply -f -
             deadline=$((SECONDS + {{ platform_dns_check_timeout_effective }}))
             while [ "${SECONDS}" -lt "${deadline}" ]; do
@@ -1255,7 +1300,17 @@
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
             JOB={{ platform_dns_check_job_name }}
-            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true >/dev/null 2>&1 || true
+            cleanup_deadline=$((SECONDS + {{ platform_dns_job_cleanup_timeout_effective }}))
+            "$K" --kubeconfig "$C" -n kube-system delete job "${JOB}" --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+            while "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" >/dev/null 2>&1; do
+              if [ "${SECONDS}" -ge "${cleanup_deadline}" ]; then
+                echo "Timed out waiting for stale DNS job ${JOB} to be deleted." >&2
+                "$K" --kubeconfig "$C" -n kube-system get job "${JOB}" -o wide >&2 || true
+                "$K" --kubeconfig "$C" -n kube-system describe job "${JOB}" >&2 || true
+                exit 1
+              fi
+              sleep 1
+            done
             "$K" --kubeconfig "$C" -n kube-system apply -f -
             deadline=$((SECONDS + {{ platform_dns_chart_check_timeout_effective }}))
             while [ "${SECONDS}" -lt "${deadline}" ]; do
