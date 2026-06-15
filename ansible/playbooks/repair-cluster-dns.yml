@@ -906,6 +906,61 @@
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - item.rc != 0
 
+        - name: Install CNI DNS service path direct firewalld accept rules
+          ansible.builtin.shell: |
+            set -u
+            changed=false
+            pod_cidrs="{{ hostvars[rke2_first_server].platform_dns_pod_cidrs_effective | default('') }}"
+
+            add_direct_rule() {
+              family="$1"
+              table="$2"
+              chain="$3"
+              priority="$4"
+              shift 4
+              if ! firewall-cmd --permanent --direct --query-rule "${family}" "${table}" "${chain}" "${priority}" "$@" >/dev/null 2>&1; then
+                if firewall-cmd --permanent --direct --add-rule "${family}" "${table}" "${chain}" "${priority}" "$@"; then
+                  changed=true
+                  echo "added direct rule: ${family} ${table} ${chain} ${priority} $*"
+                fi
+              fi
+            }
+
+            for source in ${pod_cidrs}; do
+              case "${source}" in
+                ''|*[!0-9./]*) continue ;;
+              esac
+              add_direct_rule ipv4 filter FORWARD 0 -s "${source}" -d "${source}" -j ACCEPT
+              add_direct_rule ipv4 filter INPUT 0 -s "${source}" -j ACCEPT
+              add_direct_rule ipv4 filter OUTPUT 0 -d "${source}" -j ACCEPT
+            done
+
+            for prefix in cilium+ lxc+ cni+ veth+; do
+              add_direct_rule ipv4 filter FORWARD 0 -i "${prefix}" -j ACCEPT
+              add_direct_rule ipv4 filter FORWARD 0 -o "${prefix}" -j ACCEPT
+            done
+
+            for interface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(cilium|lxc|cni|veth)' | sort -u || true); do
+              if ! firewall-cmd --permanent --zone=trusted --query-interface="${interface}" >/dev/null 2>&1; then
+                if firewall-cmd --permanent --zone=trusted --change-interface="${interface}"; then
+                  changed=true
+                  echo "trusted active CNI interface ${interface}"
+                fi
+              fi
+            done
+
+            firewall-cmd --direct --get-all-rules || true
+            echo "changed=${changed}"
+          args:
+            executable: /bin/bash
+          register: platform_dns_service_path_firewalld_direct_cni_rules
+          changed_when: "'changed=true' in (platform_dns_service_path_firewalld_direct_cni_rules.stdout | default(''))"
+          failed_when: false
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+
         - name: Reload firewalld after CNI DNS service path repair
           ansible.builtin.command: firewall-cmd --reload
           changed_when: true
@@ -916,6 +971,7 @@
               or (platform_dns_service_path_firewalld_trust_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
               or (platform_dns_service_path_firewalld_trust_node_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
               or (platform_dns_service_path_firewalld_trust_interfaces.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
+              or (platform_dns_service_path_firewalld_direct_cni_rules.changed | default(false) | bool)
 
         - name: Collect Kubernetes DNS service path state before component repair
           ansible.builtin.shell: |
@@ -936,6 +992,7 @@
             if command -v firewall-cmd >/dev/null 2>&1; then
               firewall-cmd --get-active-zones || true
               firewall-cmd --zone=trusted --list-all || true
+              firewall-cmd --direct --get-all-rules || true
             fi
             echo "===== Cilium config ====="
             "$K" --kubeconfig "$C" -n kube-system get configmap cilium-config -o yaml 2>/dev/null || true
@@ -1510,6 +1567,7 @@
             if command -v firewall-cmd >/dev/null 2>&1; then
               firewall-cmd --get-active-zones || true
               firewall-cmd --zone=trusted --list-all || true
+              firewall-cmd --direct --get-all-rules || true
             else
               echo "firewall-cmd not found"
             fi

@@ -1216,11 +1216,45 @@
                   fi
                 fi
               done
+              for interface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(cilium|lxc|cni|veth)' | sort -u || true); do
+                if ! firewall-cmd --permanent --zone=trusted --query-interface="${interface}" >/dev/null 2>&1; then
+                  if firewall-cmd --permanent --zone=trusted --change-interface="${interface}"; then
+                    changed=true
+                    echo "trusted active CNI interface ${interface}"
+                  fi
+                fi
+              done
+              add_direct_rule() {
+                family="$1"
+                table="$2"
+                chain="$3"
+                priority="$4"
+                shift 4
+                if ! firewall-cmd --permanent --direct --query-rule "${family}" "${table}" "${chain}" "${priority}" "$@" >/dev/null 2>&1; then
+                  if firewall-cmd --permanent --direct --add-rule "${family}" "${table}" "${chain}" "${priority}" "$@"; then
+                    changed=true
+                    echo "added direct rule: ${family} ${table} ${chain} ${priority} $*"
+                  fi
+                fi
+              }
+              for source in ${pod_cidrs}; do
+                case "${source}" in
+                  ''|*[!0-9./]*) continue ;;
+                esac
+                add_direct_rule ipv4 filter FORWARD 0 -s "${source}" -d "${source}" -j ACCEPT
+                add_direct_rule ipv4 filter INPUT 0 -s "${source}" -j ACCEPT
+                add_direct_rule ipv4 filter OUTPUT 0 -d "${source}" -j ACCEPT
+              done
+              for prefix in cilium+ lxc+ cni+ veth+; do
+                add_direct_rule ipv4 filter FORWARD 0 -i "${prefix}" -j ACCEPT
+                add_direct_rule ipv4 filter FORWARD 0 -o "${prefix}" -j ACCEPT
+              done
               if [ "${changed}" = true ]; then
                 firewall-cmd --reload || true
               fi
               firewall-cmd --get-active-zones || true
               firewall-cmd --zone=trusted --list-all || true
+              firewall-cmd --direct --get-all-rules || true
             else
               echo "firewalld inactive or unavailable"
             fi
@@ -1633,6 +1667,7 @@
               firewall-cmd --get-active-zones || true
               firewall-cmd --zone=trusted --list-all || true
               firewall-cmd --zone=public --list-all || true
+              firewall-cmd --direct --get-all-rules || true
             else
               echo "firewalld=missing"
             fi
@@ -1741,13 +1776,17 @@
               PLATFORM_NODE_DNS_SERVICE_OK=false but
               PLATFORM_NODE_COREDNS_ENDPOINT_OK=true, focus on kube-proxy or
               service NAT. If both are false, focus on Cilium pod-to-pod overlay
-              between that node and the CoreDNS endpoint nodes.
+              between that node and the CoreDNS endpoint nodes. If Cilium health
+              shows host connectivity OK but endpoint HTTP timeouts, focus on
+              pod-to-pod L4 forwarding and host firewall filtering on CNI/lxc
+              interfaces.
 
               The playbook already repaired CNI sysctls, per-interface
               reverse-path filtering, firewalld service-path and node-peer
-              trust, kube-proxy, and Cilium before retrying. If it still fails,
-              inspect the failed node diagnostics above or use an internal
-              chart mirror reachable from every node.
+              trust, direct CNI firewalld ACCEPT rules, kube-proxy, and Cilium
+              before retrying. If it still fails, inspect the failed node
+              diagnostics above or use an internal chart mirror reachable from
+              every node.
 
               To tolerate short DNS/egress flaps while debugging:
               PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress

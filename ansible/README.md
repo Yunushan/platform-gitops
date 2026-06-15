@@ -17,7 +17,7 @@ make rke2-verify
 
 The playbooks pre-create `/root/.ansible/tmp` with root-only permissions before normal module execution. This avoids Ansible's `remote_tmp ... did not exist` warning during privileged RKE2 tasks.
 
-`playbooks/prepare-nodes.yml` opens the required RKE2 and Cilium overlay ports in firewalld, trusts the RKE2 pod CIDR, RKE2 node IPs, and Cilium interfaces when firewalld is active, disables reverse-path filtering for active CNI paths, and keeps NetworkManager away from Kubernetes CNI interfaces. `make rke2-network-check` verifies that joining nodes can reach the first server on the RKE2 supervisor/API ports after the first server is listening.
+`playbooks/prepare-nodes.yml` opens the required RKE2 and Cilium overlay ports in firewalld, trusts the RKE2 pod CIDR, RKE2 node IPs, and Cilium interfaces when firewalld is active, installs direct pod/CNI ACCEPT rules, disables reverse-path filtering for active CNI paths, and keeps NetworkManager away from Kubernetes CNI interfaces. `make rke2-network-check` verifies that joining nodes can reach the first server on the RKE2 supervisor/API ports after the first server is listening.
 
 `playbooks/rke2-registry-check.yml` verifies node egress to the default RKE2 online image pull path before bootstrap. Run it directly when logs show Docker Hub or TLS handshake timeouts:
 
