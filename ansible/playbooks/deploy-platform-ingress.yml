@@ -2672,6 +2672,11 @@
             "$K" --kubeconfig "$C" -n metallb-system get ipaddresspool,l2advertisement,deploy,ds,pods -o wide || true
             "$K" --kubeconfig "$C" -n metallb-system describe ipaddresspool platform-ingress || true
             "$K" --kubeconfig "$C" -n metallb-system describe l2advertisement platform-ingress || true
+            echo "===== MetalLB speaker logs for app VIP ====="
+            "$K" --kubeconfig "$C" -n metallb-system logs -l app.kubernetes.io/component=speaker --all-containers --tail=300 2>/dev/null |
+              grep -F "{{ rke2_ingress_vip_effective }}" || true
+            "$K" --kubeconfig "$C" -n metallb-system logs -l component=speaker --all-containers --tail=300 2>/dev/null |
+              grep -F "{{ rke2_ingress_vip_effective }}" || true
             echo "===== Traefik pod logs ====="
             "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/name=traefik --all-containers --tail=80 || true
             "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/instance=platform-traefik --all-containers --tail=80 || true
@@ -2874,6 +2879,15 @@
             else
               echo "No ip or arp command available on controller; skipping neighbor flush."
             fi
+
+            if command -v powershell.exe >/dev/null 2>&1; then
+              echo "===== Windows host ARP flush through powershell.exe ====="
+              powershell.exe -NoProfile -NonInteractive -Command 'arp -d {{ rke2_ingress_vip_effective }} 2>$null; arp -a | Select-String "{{ rke2_ingress_vip_effective }}" | ForEach-Object { $_.ToString() }' || true
+            fi
+            if command -v cmd.exe >/dev/null 2>&1; then
+              echo "===== Windows host ARP flush through cmd.exe ====="
+              cmd.exe /C "arp -d {{ rke2_ingress_vip_effective }} 2>NUL & arp -a | findstr {{ rke2_ingress_vip_effective }}" || true
+            fi
           args:
             executable: /bin/bash
           register: platform_argocd_ingress_controller_neigh_flush
@@ -2984,6 +2998,10 @@
               that can be a MetalLB L2 self-probe limitation; keep strict mode
               disabled unless you explicitly require Kubernetes nodes to access
               the service through the same L2 VIP.
+
+              If the controller is WSL and the retry still times out, run this
+              once in an elevated Windows PowerShell and retry:
+              arp -d {{ rke2_ingress_vip_effective }}
 
               To fail faster while debugging:
               PLATFORM_ARGOCD_INGRESS_VERIFY_TIMEOUT=120 make platform-ingress
