@@ -47,7 +47,7 @@
         echo "Kubernetes API DNS: https://${API_DNS}:6443"
         echo "Ingress/App VIP: ${INGRESS_VIP}"
         echo
-        echo "Expected GUI URLs:"
+        echo "Configured GUI URLs:"
         for host in ${GUI_HOSTS}; do
           echo "  https://${host}.${DOMAIN}"
         done
@@ -120,6 +120,46 @@
         fi
         echo
 
+        echo "===== GUI app publication status ====="
+        ingress_hosts="$("$K" --kubeconfig "$C" get ingress -A \
+          -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{" "}{range .spec.rules[*]}{.host}{" "}{end}{"\n"}{end}' 2>/dev/null || true)"
+        app_count=0
+        if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
+          app_count="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io --no-headers 2>/dev/null | wc -l | tr -d ' ')"
+        fi
+        published_count=0
+        missing_count=0
+        for host in ${GUI_HOSTS}; do
+          fqdn="${host}.${DOMAIN}"
+          case "${host}" in
+            argocd) namespace=argocd ;;
+            grafana|prometheus) namespace=monitoring ;;
+            *) namespace="${host}" ;;
+          esac
+
+          if "$K" --kubeconfig "$C" get ns "${namespace}" >/dev/null 2>&1; then
+            namespace_state=present
+          else
+            namespace_state=missing
+          fi
+
+          if printf '%s\n' "${ingress_hosts}" | grep -Fw "${fqdn}" >/dev/null; then
+            ingress_state=published
+            published_count=$((published_count + 1))
+          else
+            ingress_state=not-published
+            missing_count=$((missing_count + 1))
+          fi
+
+          printf '%-32s namespace=%-10s ingress=%-14s url=https://%s\n' \
+            "${fqdn}" "${namespace_state}" "${ingress_state}" "${fqdn}"
+        done
+        echo "Argo CD Application count: ${app_count}"
+        if [ "${app_count}" = "0" ]; then
+          echo "No Argo CD Applications are registered yet. Non-Argo GUI hosts will return Traefik 404 until platform apps are registered and synced."
+        fi
+        echo
+
         echo "===== GUI exposure verdict ====="
         ingress_count="$("$K" --kubeconfig "$C" get ingress -A --no-headers 2>/dev/null | wc -l | tr -d ' ')"
         traefik_ip="$("$K" --kubeconfig "$C" -n traefik get svc platform-traefik -o jsonpath='{.status.loadBalancer.ingress[*].ip}' 2>/dev/null || true)"
@@ -139,9 +179,17 @@
         elif ! printf '%s\n' "${traefik_ip}" | grep -Fw "${INGRESS_VIP}" >/dev/null; then
           echo "GUI ingresses exist, but Traefik does not yet show the expected ingress VIP."
           echo "Run: make platform-ingress"
-        else
-          echo "GUI ingress path appears ready on ${INGRESS_VIP}."
+        elif [ "${missing_count}" -gt 0 ]; then
+          echo "Ingress foundation is ready on ${INGRESS_VIP}, and published hosts can be reached through Traefik."
+          echo "${missing_count} configured GUI host(s) are not published yet. A 404 is expected for those hostnames."
           echo "Argo CD URL: https://argocd.${DOMAIN}"
+          echo "Next automation path for Forgejo/Harbor/Woodpecker/Grafana/Prometheus:"
+          echo "  PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd"
+        else
+          echo "All configured GUI hosts have ingress rules on ${INGRESS_VIP}."
+          for host in ${GUI_HOSTS}; do
+            echo "  https://${host}.${DOMAIN}"
+          done
         fi
       args:
         executable: /bin/bash
