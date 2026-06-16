@@ -28,6 +28,7 @@
     platform_argocd_ingress_max_time_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_MAX_TIME') }}"
     platform_argocd_ingress_controller_verify_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_CONTROLLER_VERIFY') }}"
     platform_argocd_ingress_node_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_NODE_STRICT') }}"
+    platform_argocd_ingress_vip_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_VIP_REPAIR') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
@@ -60,6 +61,7 @@
     platform_argocd_ingress_max_time_effective: "{{ platform_argocd_ingress_max_time | default(platform_argocd_ingress_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
     platform_argocd_ingress_controller_verify_effective: "{{ platform_argocd_ingress_controller_verify | default(platform_argocd_ingress_controller_verify_from_env, true) | default(true, true) | bool }}"
     platform_argocd_ingress_node_strict_effective: "{{ platform_argocd_ingress_node_strict | default(platform_argocd_ingress_node_strict_from_env, true) | default(false, true) | bool }}"
+    platform_argocd_ingress_vip_repair_effective: "{{ platform_argocd_ingress_vip_repair | default(platform_argocd_ingress_vip_repair_from_env, true) | default(true, true) | bool }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_traefik_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-traefik-dns-service-path.conf
     platform_traefik_dns_service_path_firewalld_ports:
@@ -142,6 +144,8 @@
           {{ 'enabled' if platform_argocd_ingress_controller_verify_effective else 'disabled' }}.
           Node-originated VIP verification strict gate is
           {{ 'enabled' if platform_argocd_ingress_node_strict_effective else 'disabled' }}.
+          Argo CD ingress VIP announcement auto-repair is
+          {{ 'enabled' if platform_argocd_ingress_vip_repair_effective else 'disabled' }}.
       run_once: true
 
     - name: Ensure OS hostname matches inventory node identity
@@ -2776,6 +2780,161 @@
           run_once: true
           when: platform_argocd_ingress_controller_verify_effective | bool
 
+        - name: Refresh MetalLB app VIP announcement after controller timeout
+          ansible.builtin.shell: |
+            set -eu
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+
+            echo "===== Traefik service before VIP refresh ====="
+            "$K" --kubeconfig "$C" -n traefik get svc platform-traefik traefik -o wide 2>/dev/null || \
+              "$K" --kubeconfig "$C" -n traefik get svc -o wide || true
+
+            restarted=0
+            for ds in metallb-speaker speaker platform-metallb-speaker; do
+              if "$K" --kubeconfig "$C" -n metallb-system get "daemonset/${ds}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n metallb-system rollout restart "daemonset/${ds}"
+                restarted=1
+              fi
+            done
+            for ds in frr-k8s platform-frr-k8s; do
+              if "$K" --kubeconfig "$C" -n metallb-system get "daemonset/${ds}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n metallb-system rollout restart "daemonset/${ds}"
+              fi
+            done
+            test "${restarted}" -eq 1
+          args:
+            executable: /bin/bash
+          register: platform_argocd_ingress_vip_speaker_restart
+          changed_when: "'restarted' in platform_argocd_ingress_vip_speaker_restart.stdout"
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_argocd_ingress_vip_repair_effective | bool
+            - platform_argocd_ingress_controller_verify_effective | bool
+            - (hostvars[rke2_first_server].platform_argocd_ingress_controller_check.rc | default(1)) != 0
+            - "'http_code=404' not in (hostvars[rke2_first_server].platform_argocd_ingress_controller_check.stdout | default(''))"
+
+        - name: Wait for MetalLB app VIP speakers after refresh
+          ansible.builtin.shell: |
+            set -eu
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            waited=0
+            for ds in metallb-speaker speaker platform-metallb-speaker frr-k8s platform-frr-k8s; do
+              if "$K" --kubeconfig "$C" -n metallb-system get "daemonset/${ds}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n metallb-system rollout status "daemonset/${ds}" \
+                  --timeout={{ platform_ingress_poll_interval_effective }}s
+                waited=1
+              fi
+            done
+            test "${waited}" -eq 1
+          args:
+            executable: /bin/bash
+          register: platform_argocd_ingress_vip_speaker_rollout
+          retries: "{{ platform_argocd_ingress_verify_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_argocd_ingress_vip_speaker_rollout.rc == 0
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_argocd_ingress_vip_speaker_restart is defined
+            - platform_argocd_ingress_vip_speaker_restart.rc | default(1) == 0
+
+        - name: Flush app VIP neighbor cache on RKE2 nodes
+          ansible.builtin.shell: |
+            set -eu
+            ip neigh flush to {{ rke2_ingress_vip_effective }} 2>/dev/null || true
+            ip route flush cache 2>/dev/null || true
+            ip route get {{ rke2_ingress_vip_effective }} || true
+            ip neigh show {{ rke2_ingress_vip_effective }} || true
+          args:
+            executable: /bin/bash
+          register: platform_argocd_ingress_node_neigh_flush
+          changed_when: false
+          failed_when: false
+          when:
+            - platform_argocd_ingress_vip_speaker_restart is defined
+            - platform_argocd_ingress_vip_speaker_restart.rc | default(1) == 0
+
+        - name: Flush app VIP neighbor cache on Ansible controller
+          ansible.builtin.shell: |
+            set -eu
+            if command -v ip >/dev/null 2>&1; then
+              ip neigh flush to {{ rke2_ingress_vip_effective }} 2>/dev/null || true
+              ip route flush cache 2>/dev/null || true
+              ip route get {{ rke2_ingress_vip_effective }} || true
+              ip neigh show {{ rke2_ingress_vip_effective }} || true
+            elif command -v arp >/dev/null 2>&1; then
+              arp -d {{ rke2_ingress_vip_effective }} 2>/dev/null || true
+              arp -a | grep -F "{{ rke2_ingress_vip_effective }}" || true
+            else
+              echo "No ip or arp command available on controller; skipping neighbor flush."
+            fi
+          args:
+            executable: /bin/bash
+          register: platform_argocd_ingress_controller_neigh_flush
+          changed_when: false
+          failed_when: false
+          become: false
+          delegate_to: localhost
+          run_once: true
+          when:
+            - platform_argocd_ingress_vip_speaker_restart is defined
+            - platform_argocd_ingress_vip_speaker_restart.rc | default(1) == 0
+
+        - name: Retry Argo CD ingress over app VIP from Ansible controller after VIP refresh
+          ansible.builtin.shell: |
+            set -o pipefail
+            echo "Retrying https://{{ platform_argocd_host }}/ through {{ rke2_ingress_vip_effective }}:443 from Ansible controller after VIP refresh"
+            code="$(curl --silent --show-error --insecure --output /dev/null \
+              --write-out '%{http_code}' \
+              --connect-timeout {{ platform_argocd_ingress_connect_timeout_effective }} \
+              --max-time {{ platform_argocd_ingress_max_time_effective }} \
+              --resolve {{ platform_argocd_host }}:443:{{ rke2_ingress_vip_effective }} \
+              https://{{ platform_argocd_host }}/)"
+            printf 'http_code=%s\n' "${code}"
+            case "${code}" in
+              200|301|302|303|307|308|401|403) exit 0 ;;
+              *) exit 1 ;;
+            esac
+          args:
+            executable: /bin/bash
+          register: platform_argocd_ingress_controller_check_after_repair
+          retries: "{{ platform_argocd_ingress_verify_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_argocd_ingress_controller_check_after_repair.rc == 0
+          changed_when: false
+          failed_when: false
+          become: false
+          delegate_to: localhost
+          run_once: true
+          when:
+            - platform_argocd_ingress_vip_speaker_restart is defined
+            - platform_argocd_ingress_vip_speaker_restart.rc | default(1) == 0
+
+        - name: Print Argo CD ingress VIP repair result
+          ansible.builtin.debug:
+            msg:
+              - "MetalLB speaker restart:"
+              - "{{ hostvars[rke2_first_server].platform_argocd_ingress_vip_speaker_restart.stdout_lines | default(['not run']) }}"
+              - "{{ hostvars[rke2_first_server].platform_argocd_ingress_vip_speaker_restart.stderr_lines | default([]) }}"
+              - "Speaker rollout:"
+              - "{{ hostvars[rke2_first_server].platform_argocd_ingress_vip_speaker_rollout.stdout_lines | default(['not run']) }}"
+              - "{{ hostvars[rke2_first_server].platform_argocd_ingress_vip_speaker_rollout.stderr_lines | default([]) }}"
+              - "Controller neighbor flush:"
+              - "{{ hostvars[rke2_first_server].platform_argocd_ingress_controller_neigh_flush.stdout_lines | default(['not run']) }}"
+              - "Retry check:"
+              - "{{ hostvars[rke2_first_server].platform_argocd_ingress_controller_check_after_repair.stdout_lines | default(['not run']) }}"
+              - "{{ hostvars[rke2_first_server].platform_argocd_ingress_controller_check_after_repair.stderr_lines | default([]) }}"
+          run_once: true
+          when:
+            - platform_argocd_ingress_vip_speaker_restart is defined
+            - platform_argocd_ingress_vip_speaker_restart.rc | default(1) == 0
+
         - name: Continue when client VIP path works but node self-probes fail
           ansible.builtin.debug:
             msg: |
@@ -2789,7 +2948,9 @@
           when:
             - not (platform_argocd_ingress_node_strict_effective | bool)
             - platform_argocd_ingress_controller_verify_effective | bool
-            - (hostvars[rke2_first_server].platform_argocd_ingress_controller_check.rc | default(1)) == 0
+            - >-
+              (hostvars[rke2_first_server].platform_argocd_ingress_controller_check.rc | default(1)) == 0 or
+              (hostvars[rke2_first_server].platform_argocd_ingress_controller_check_after_repair.rc | default(1)) == 0
 
         - name: Stop after Argo CD ingress verification failure
           ansible.builtin.fail:
@@ -2804,6 +2965,13 @@
               {{ hostvars[rke2_first_server].platform_argocd_ingress_controller_check.stdout | default('not run') }}
               stderr:
               {{ hostvars[rke2_first_server].platform_argocd_ingress_controller_check.stderr | default('') }}
+
+              Controller/client VIP check after automatic VIP repair:
+              rc={{ hostvars[rke2_first_server].platform_argocd_ingress_controller_check_after_repair.rc | default('not run') }}
+              stdout:
+              {{ hostvars[rke2_first_server].platform_argocd_ingress_controller_check_after_repair.stdout | default('not run') }}
+              stderr:
+              {{ hostvars[rke2_first_server].platform_argocd_ingress_controller_check_after_repair.stderr | default('') }}
 
               Node strict mode:
               {{ platform_argocd_ingress_node_strict_effective }}
@@ -2827,7 +2995,8 @@
             (platform_argocd_ingress_node_strict_effective | bool) or
             (
               (platform_argocd_ingress_controller_verify_effective | bool) and
-              ((hostvars[rke2_first_server].platform_argocd_ingress_controller_check.rc | default(1)) != 0)
+              ((hostvars[rke2_first_server].platform_argocd_ingress_controller_check.rc | default(1)) != 0) and
+              ((hostvars[rke2_first_server].platform_argocd_ingress_controller_check_after_repair.rc | default(1)) != 0)
             )
 
     - name: Remove temporary Argo CD bootstrap NodePort after ingress is ready
