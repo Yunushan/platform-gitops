@@ -82,6 +82,20 @@ make platform-status
 
 This installs MetalLB and Traefik through the RKE2 Helm controller, applies the configured app VIP, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies it on 443, and removes the temporary Argo CD NodePort exposure.
 
+Traefik is configured to redirect HTTP traffic on the app VIP to HTTPS. The ingress playbook also publishes a Traefik Middleware/IngressRoute that redirects direct app VIP browser requests such as `https://<APP_VIP>/` to the canonical Argo CD hostname. By default the target is `https://argocd.<PLATFORM_DOMAIN>/`. To override only the direct-IP redirect target:
+
+```bash
+PLATFORM_IP_REDIRECT_TARGET_HOST=argocd-gitops-arge.isbak.com.tr make platform-ingress
+```
+
+The target hostname must also have a real Argo CD route. If you change service FQDNs later, update the Argo CD ingress host and the redirect target together. Browsers may still show a certificate warning before redirecting from `https://<APP_VIP>/`, because production certificates normally cover DNS names, not private IP addresses.
+
+To disable the direct app VIP to hostname redirect:
+
+```bash
+PLATFORM_IP_REDIRECT_ENABLED=false make platform-ingress
+```
+
 To shorten a MetalLB or Traefik wait while testing:
 
 ```bash

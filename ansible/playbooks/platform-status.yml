@@ -9,6 +9,9 @@
     rke2_api_dns_effective: "{{ rke2_api_dns | default('', true) }}"
     rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
     platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    platform_argocd_host: "argocd.{{ platform_domain_effective }}"
+    platform_ip_redirect_target_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IP_REDIRECT_TARGET_HOST') }}"
+    platform_ip_redirect_target_host_effective: "{{ platform_ip_redirect_target_host | default(platform_ip_redirect_target_host_from_env, true) | default(platform_argocd_host, true) }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
     platform_ingress_hosts:
       - argocd
@@ -40,6 +43,8 @@
         API_DNS="{{ rke2_api_dns_effective }}"
         INGRESS_VIP="{{ rke2_ingress_vip_effective }}"
         DOMAIN="{{ platform_domain_effective }}"
+        ARGOCD_HOST="{{ platform_argocd_host }}"
+        IP_REDIRECT_TARGET_HOST="{{ platform_ip_redirect_target_host_effective }}"
         GUI_HOSTS="{{ platform_ingress_hosts | join(' ') }}"
 
         echo "===== Platform access summary ====="
@@ -117,6 +122,28 @@
           "$K" --kubeconfig "$C" -n traefik get svc,pods -o wide || true
         else
           echo "Traefik is not installed yet."
+        fi
+        echo
+
+        echo "===== Redirect checks ====="
+        echo "Expected HTTP redirect: http://${ARGOCD_HOST}/ -> https://${ARGOCD_HOST}/"
+        echo "Expected app VIP redirect: https://${INGRESS_VIP}/ -> https://${IP_REDIRECT_TARGET_HOST}/"
+        if command -v curl >/dev/null 2>&1; then
+          echo "HTTP hostname redirect:"
+          curl --silent --show-error --output /dev/null \
+            --write-out '  http_code=%{http_code} redirect_url=%{redirect_url}\n' \
+            --connect-timeout 3 \
+            --max-time 10 \
+            --resolve "${ARGOCD_HOST}:80:${INGRESS_VIP}" \
+            "http://${ARGOCD_HOST}/" || true
+          echo "HTTPS app VIP redirect:"
+          curl --silent --show-error --insecure --output /dev/null \
+            --write-out '  http_code=%{http_code} redirect_url=%{redirect_url}\n' \
+            --connect-timeout 3 \
+            --max-time 10 \
+            "https://${INGRESS_VIP}/" || true
+        else
+          echo "curl is not installed on the node used for this report."
         fi
         echo
 

@@ -8,6 +8,8 @@
     rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
     platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
     platform_argocd_host: "argocd.{{ platform_domain_effective }}"
+    platform_ip_redirect_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IP_REDIRECT_ENABLED') }}"
+    platform_ip_redirect_target_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IP_REDIRECT_TARGET_HOST') }}"
     platform_metallb_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_CHART_REPO') }}"
     platform_metallb_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_CHART_VERSION') }}"
     platform_traefik_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_TRAEFIK_CHART_REPO') }}"
@@ -64,6 +66,8 @@
     platform_argocd_ingress_node_strict_effective: "{{ platform_argocd_ingress_node_strict | default(platform_argocd_ingress_node_strict_from_env, true) | default(false, true) | bool }}"
     platform_argocd_ingress_vip_repair_effective: "{{ platform_argocd_ingress_vip_repair | default(platform_argocd_ingress_vip_repair_from_env, true) | default(true, true) | bool }}"
     platform_argocd_server_replicas_effective: "{{ platform_argocd_server_replicas | default(platform_argocd_server_replicas_from_env, true) | default(groups['rke2_servers'] | length, true) | int }}"
+    platform_ip_redirect_enabled_effective: "{{ platform_ip_redirect_enabled | default(platform_ip_redirect_enabled_from_env, true) | default(true, true) | bool }}"
+    platform_ip_redirect_target_host_effective: "{{ platform_ip_redirect_target_host | default(platform_ip_redirect_target_host_from_env, true) | default(platform_argocd_host, true) }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_traefik_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-traefik-dns-service-path.conf
     platform_traefik_dns_service_path_firewalld_ports:
@@ -111,6 +115,7 @@
           - platform_argocd_ingress_connect_timeout_effective | int > 0
           - platform_argocd_ingress_max_time_effective | int > 0
           - platform_argocd_server_replicas_effective | int > 0
+          - (not (platform_ip_redirect_enabled_effective | bool)) or (platform_ip_redirect_target_host_effective | length > 0)
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -151,6 +156,9 @@
           {{ 'enabled' if platform_argocd_ingress_vip_repair_effective else 'disabled' }}.
           Argo CD server ingress backend replicas target is
           {{ platform_argocd_server_replicas_effective }}.
+          App VIP to hostname redirect is
+          {{ 'enabled' if platform_ip_redirect_enabled_effective else 'disabled' }};
+          target host is {{ platform_ip_redirect_target_host_effective }}.
       run_once: true
 
     - name: Ensure OS hostname matches inventory node identity
@@ -2730,6 +2738,116 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Publish app VIP to hostname redirect through Traefik when CRDs are available
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        api_version=""
+        if "$K" --kubeconfig "$C" get crd ingressroutes.traefik.io middlewares.traefik.io >/dev/null 2>&1; then
+          api_version="traefik.io/v1alpha1"
+        elif "$K" --kubeconfig "$C" get crd ingressroutes.traefik.containo.us middlewares.traefik.containo.us >/dev/null 2>&1; then
+          api_version="traefik.containo.us/v1alpha1"
+        else
+          echo "No Traefik IngressRoute/Middleware CRDs found; direct app VIP requests will keep Traefik's default 404."
+          exit 0
+        fi
+
+        cat >/tmp/platform-app-vip-redirect.yaml <<'IPREDIRECT'
+        ---
+        apiVersion: PLATFORM_TRAEFIK_API_VERSION
+        kind: Middleware
+        metadata:
+          name: platform-app-vip-to-host
+          namespace: argocd
+        spec:
+          redirectRegex:
+            regex: "^https?://{{ rke2_ingress_vip_effective | regex_escape() }}(?::[0-9]+)?/?(.*)"
+            replacement: "https://{{ platform_ip_redirect_target_host_effective }}/${1}"
+            permanent: true
+        ---
+        apiVersion: PLATFORM_TRAEFIK_API_VERSION
+        kind: IngressRoute
+        metadata:
+          name: platform-app-vip-to-host
+          namespace: argocd
+        spec:
+          entryPoints:
+            - websecure
+          routes:
+            - match: Host(`{{ rke2_ingress_vip_effective }}`)
+              kind: Rule
+              priority: 1000
+              middlewares:
+                - name: platform-app-vip-to-host
+              services:
+                - name: argocd-server
+                  namespace: argocd
+                  port: 80
+                  scheme: http
+                  nativeLB: true
+          tls: {}
+        IPREDIRECT
+        sed -i "s#PLATFORM_TRAEFIK_API_VERSION#${api_version}#" /tmp/platform-app-vip-redirect.yaml
+        "$K" --kubeconfig "$C" apply -f /tmp/platform-app-vip-redirect.yaml
+      args:
+        executable: /bin/bash
+      register: platform_ip_redirect_apply
+      changed_when: "'created' in platform_ip_redirect_apply.stdout or 'configured' in platform_ip_redirect_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_ip_redirect_enabled_effective | bool
+
+    - name: Verify app VIP redirects to canonical hostname from Ansible controller
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "curl is not installed on the Ansible controller." >&2
+          exit 127
+        fi
+
+        echo "Checking https://{{ rke2_ingress_vip_effective }}/ redirects to https://{{ platform_ip_redirect_target_host_effective }}/"
+        result="$(curl --silent --show-error --insecure --output /dev/null \
+          --write-out 'http_code=%{http_code} redirect_url=%{redirect_url}' \
+          --connect-timeout {{ platform_argocd_ingress_connect_timeout_effective }} \
+          --max-time {{ platform_argocd_ingress_max_time_effective }} \
+          https://{{ rke2_ingress_vip_effective }}/)"
+        printf '%s\n' "${result}"
+        code="$(printf '%s\n' "${result}" | sed -n 's/^http_code=\([0-9][0-9][0-9]\).*/\1/p')"
+        redirect_url="$(printf '%s\n' "${result}" | sed -n 's/^.*redirect_url=//p')"
+        case "${code}" in
+          301|302|303|307|308) ;;
+          *) exit 1 ;;
+        esac
+        case "${redirect_url}" in
+          https://{{ platform_ip_redirect_target_host_effective }}|https://{{ platform_ip_redirect_target_host_effective }}/*) exit 0 ;;
+          *) exit 1 ;;
+        esac
+      args:
+        executable: /bin/bash
+      register: platform_ip_redirect_controller_check
+      retries: "{{ platform_argocd_ingress_verify_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
+      until: platform_ip_redirect_controller_check.rc == 0
+      changed_when: false
+      failed_when: false
+      become: false
+      delegate_to: localhost
+      run_once: true
+      when:
+        - platform_ip_redirect_enabled_effective | bool
+        - platform_argocd_ingress_controller_verify_effective | bool
+
+    - name: Show app VIP redirect verification result
+      ansible.builtin.debug:
+        msg:
+          - "App VIP redirect target: https://{{ platform_ip_redirect_target_host_effective }}/"
+          - "Controller check rc: {{ platform_ip_redirect_controller_check.rc | default('not-run') }}"
+          - "{{ platform_ip_redirect_controller_check.stdout | default('not-run') }}"
+      run_once: true
+      when: platform_ip_redirect_enabled_effective | bool
+
     - name: Verify Argo CD ingress over app VIP from every node
       block:
         - name: Poll Argo CD ingress over app VIP from every node
@@ -3156,6 +3274,10 @@
 
           Argo CD URL:
           - https://{{ platform_argocd_host }}
+
+          Redirects:
+          - HTTP host requests are redirected to HTTPS by Traefik.
+          - Direct app VIP requests redirect to https://{{ platform_ip_redirect_target_host_effective }} when the browser accepts the certificate warning.
 
           Windows/internal DNS entry:
           {{ rke2_ingress_vip_effective }} {{ platform_argocd_host }}
