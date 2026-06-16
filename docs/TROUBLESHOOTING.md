@@ -189,7 +189,7 @@ The ingress playbook cleans stale platform Helm install jobs before retrying by 
 PLATFORM_INGRESS_CLEANUP_HELM_JOBS=false make platform-ingress
 ```
 
-After Traefik receives the app VIP, `platform-ingress` verifies Argo CD through `https://argocd.<PLATFORM_DOMAIN>` from every RKE2 node using the app VIP. If this step times out with `curl: (28)` and HTTP code `000`, the problem is normally the app VIP, MetalLB announcement, Traefik service path, or node firewall/routing rather than Argo CD itself. The playbook prints Traefik service/endpoints, MetalLB state, Argo CD ingress/service state, node route/neighbor output, TCP probes, and firewall/NAT excerpts. To shorten just this final verification while debugging:
+After Traefik receives the app VIP, `platform-ingress` verifies Argo CD through `https://argocd.<PLATFORM_DOMAIN>` from every RKE2 node using the app VIP. If this step times out with `curl: (28)` and HTTP code `000`, the problem is normally the app VIP, MetalLB announcement, Traefik service path, or node firewall/routing rather than Argo CD itself. Before that check, the playbook enforces Traefik `externalTrafficPolicy: Local` and `internalTrafficPolicy: Local`, then verifies every RKE2 node has a ready local Traefik endpoint. That avoids kube-proxy sending ingress VIP traffic across a flaky cross-node pod path when the VIP can be served locally on the announcing node. The playbook prints Traefik service/endpoints, MetalLB state, Argo CD ingress/service state, node route/neighbor output, TCP probes, and firewall/NAT excerpts. To shorten just this final verification while debugging:
 
 ```bash
 PLATFORM_ARGOCD_INGRESS_VERIFY_TIMEOUT=120 make platform-ingress

@@ -5,6 +5,24 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 2
 
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+          topologyKey: kubernetes.io/hostname
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: traefik
+
 ingressClass:
   enabled: true
   isDefaultClass: true
@@ -25,7 +43,10 @@ additionalArguments:
 
 service:
   enabled: true
-  type: LoadBalancer
+  spec:
+    type: LoadBalancer
+    externalTrafficPolicy: Local
+    internalTrafficPolicy: Local
 
 logs:
   general:

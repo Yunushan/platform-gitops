@@ -2025,6 +2025,22 @@
               podDisruptionBudget:
                 enabled: true
                 minAvailable: 2
+              affinity:
+                podAntiAffinity:
+                  preferredDuringSchedulingIgnoredDuringExecution:
+                    - weight: 100
+                      podAffinityTerm:
+                        labelSelector:
+                          matchLabels:
+                            app.kubernetes.io/name: traefik
+                        topologyKey: kubernetes.io/hostname
+              topologySpreadConstraints:
+                - maxSkew: 1
+                  topologyKey: kubernetes.io/hostname
+                  whenUnsatisfiable: ScheduleAnyway
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: traefik
               ingressClass:
                 enabled: true
                 isDefaultClass: true
@@ -2045,6 +2061,8 @@
                 spec:
                   type: LoadBalancer
                   loadBalancerIP: {{ rke2_ingress_vip_effective }}
+                  externalTrafficPolicy: Local
+                  internalTrafficPolicy: Local
               logs:
                 general:
                   level: INFO
@@ -2214,6 +2232,164 @@
               To fail faster while debugging:
               PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=180 make platform-ingress
           run_once: true
+
+    - name: Enforce Traefik node-local ingress routing
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        expected_replicas={{ groups['rke2_servers'] | length }}
+
+        deployment=""
+        for candidate in platform-traefik traefik; do
+          if "$K" --kubeconfig "$C" -n traefik get "deployment/${candidate}" >/dev/null 2>&1; then
+            deployment="${candidate}"
+            break
+          fi
+        done
+        if [ -z "${deployment}" ]; then
+          "$K" --kubeconfig "$C" -n traefik get deployment -o wide || true
+          echo "No Traefik deployment found." >&2
+          exit 1
+        fi
+
+        cat >/tmp/platform-traefik-node-local-routing-patch.json <<PATCH
+        {
+          "spec": {
+            "replicas": ${expected_replicas},
+            "template": {
+              "spec": {
+                "topologySpreadConstraints": [
+                  {
+                    "maxSkew": 1,
+                    "topologyKey": "kubernetes.io/hostname",
+                    "whenUnsatisfiable": "ScheduleAnyway",
+                    "labelSelector": {
+                      "matchLabels": {
+                        "app.kubernetes.io/name": "traefik"
+                      }
+                    }
+                  }
+                ],
+                "affinity": {
+                  "podAntiAffinity": {
+                    "preferredDuringSchedulingIgnoredDuringExecution": [
+                      {
+                        "weight": 100,
+                        "podAffinityTerm": {
+                          "labelSelector": {
+                            "matchLabels": {
+                              "app.kubernetes.io/name": "traefik"
+                            }
+                          },
+                          "topologyKey": "kubernetes.io/hostname"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+        PATCH
+        "$K" --kubeconfig "$C" -n traefik patch "deployment/${deployment}" \
+          --type merge --patch-file /tmp/platform-traefik-node-local-routing-patch.json
+
+        service=""
+        for candidate in platform-traefik traefik; do
+          if "$K" --kubeconfig "$C" -n traefik get "service/${candidate}" >/dev/null 2>&1; then
+            service="${candidate}"
+            break
+          fi
+        done
+        if [ -z "${service}" ]; then
+          "$K" --kubeconfig "$C" -n traefik get service -o wide || true
+          echo "No Traefik service found." >&2
+          exit 1
+        fi
+
+        "$K" --kubeconfig "$C" -n traefik patch "service/${service}" \
+          --type merge \
+          -p '{"spec":{"externalTrafficPolicy":"Local","internalTrafficPolicy":"Local"}}'
+
+        "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" \
+          -o jsonpath='{.metadata.name}{" replicas="}{.spec.replicas}{" topologySpread="}{.spec.template.spec.topologySpreadConstraints[*].topologyKey}{"\n"}'
+        "$K" --kubeconfig "$C" -n traefik get "service/${service}" \
+          -o jsonpath='{.metadata.name}{" externalTrafficPolicy="}{.spec.externalTrafficPolicy}{" internalTrafficPolicy="}{.spec.internalTrafficPolicy}{" lb="}{.status.loadBalancer.ingress[*].ip}{"\n"}'
+      args:
+        executable: /bin/bash
+      register: platform_traefik_local_routing
+      changed_when: >-
+        'patched' in platform_traefik_local_routing.stdout
+        and 'no change' not in platform_traefik_local_routing.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for Traefik node-local routing rollout
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        for deployment in platform-traefik traefik; do
+          if "$K" --kubeconfig "$C" -n traefik get "deployment/${deployment}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n traefik rollout status "deployment/${deployment}" \
+              --timeout={{ platform_ingress_poll_interval_effective }}s
+            exit $?
+          fi
+        done
+        "$K" --kubeconfig "$C" -n traefik get deployment -o wide || true
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_traefik_local_routing_rollout
+      retries: "{{ platform_traefik_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
+      until: platform_traefik_local_routing_rollout.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Verify Traefik has a ready local endpoint on every RKE2 node
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        expected_nodes="{{ groups['rke2_servers'] | join(' ') }}"
+
+        echo "Expected RKE2 nodes: ${expected_nodes}"
+        echo "===== Traefik pods ====="
+        "$K" --kubeconfig "$C" -n traefik get pods -l app.kubernetes.io/name=traefik -o wide
+        echo "===== Traefik service ====="
+        for service in platform-traefik traefik; do
+          "$K" --kubeconfig "$C" -n traefik get "service/${service}" \
+            -o jsonpath='{.metadata.name}{" externalTrafficPolicy="}{.spec.externalTrafficPolicy}{" internalTrafficPolicy="}{.spec.internalTrafficPolicy}{" lb="}{.status.loadBalancer.ingress[*].ip}{"\n"}' 2>/dev/null || true
+        done
+
+        ready_nodes="$("$K" --kubeconfig "$C" -n traefik get pods \
+          -l app.kubernetes.io/name=traefik \
+          -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.spec.nodeName}{" "}{range .status.containerStatuses[*]}{.ready}{" "}{end}{"\n"}{end}' |
+          awk '$0 ~ / true/ {print $1}' |
+          sort -u)"
+
+        printf 'Ready Traefik endpoint nodes:\n%s\n' "${ready_nodes}"
+        missing=0
+        for node in ${expected_nodes}; do
+          if ! printf '%s\n' "${ready_nodes}" | grep -Fx "${node}" >/dev/null; then
+            echo "Missing ready Traefik endpoint on ${node}" >&2
+            missing=1
+          fi
+        done
+        exit "${missing}"
+      args:
+        executable: /bin/bash
+      register: platform_traefik_local_endpoints
+      retries: "{{ platform_traefik_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
+      until: platform_traefik_local_endpoints.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
 
     - name: Wait for Traefik service to receive ingress VIP
       block:
@@ -2440,12 +2616,12 @@
             "$K" --kubeconfig "$C" -n metallb-system describe ipaddresspool platform-ingress || true
             "$K" --kubeconfig "$C" -n metallb-system describe l2advertisement platform-ingress || true
             echo "===== Traefik pod logs ====="
-            "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/name=traefik --all-containers --tail=180 || true
-            "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/instance=platform-traefik --all-containers --tail=180 || true
+            "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/name=traefik --all-containers --tail=80 || true
+            "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/instance=platform-traefik --all-containers --tail=80 || true
             echo "===== Most relevant recent events ====="
             "$K" --kubeconfig "$C" get events -A --sort-by=.lastTimestamp 2>/dev/null |
               grep -E 'argocd|traefik|platform-traefik|metallb|LoadBalancer|{{ rke2_ingress_vip_effective }}|Failed|BackOff|Unhealthy|warning|error' |
-              tail -120 || true
+              tail -80 || true
           args:
             executable: /bin/bash
           register: platform_argocd_ingress_cluster_diagnostics
@@ -2486,16 +2662,25 @@
             fi
             echo "===== service NAT excerpts ====="
             if command -v iptables-save >/dev/null 2>&1; then
-              iptables-save | grep -E 'KUBE-SVC|KUBE-SEP|{{ rke2_ingress_vip_effective }}|:80|:443' | head -220 || true
+              iptables-save | grep -E 'KUBE-SVC|KUBE-SEP|{{ rke2_ingress_vip_effective }}|:80|:443' | head -120 || true
             fi
             if command -v nft >/dev/null 2>&1; then
-              nft list ruleset 2>/dev/null | grep -E 'KUBE-SVC|KUBE-SEP|{{ rke2_ingress_vip_effective }}|dport (80|443)' | head -220 || true
+              nft list ruleset 2>/dev/null | grep -E 'KUBE-SVC|KUBE-SEP|{{ rke2_ingress_vip_effective }}|dport (80|443)' | head -120 || true
             fi
           args:
             executable: /bin/bash
           register: platform_argocd_ingress_node_diagnostics
           changed_when: false
           failed_when: false
+
+        - name: Print Argo CD ingress cluster diagnostics
+          ansible.builtin.debug:
+            var: platform_argocd_ingress_cluster_diagnostics.stdout_lines
+          run_once: true
+
+        - name: Print Argo CD ingress failed node diagnostics
+          ansible.builtin.debug:
+            var: platform_argocd_ingress_node_diagnostics.stdout_lines
 
         - name: Stop after Argo CD ingress verification failure
           ansible.builtin.fail:
@@ -2506,12 +2691,10 @@
 
               This is usually the app VIP / MetalLB / Traefik service path,
               not Argo CD application readiness. Review the diagnostics above.
-
-              Cluster diagnostics:
-              {{ hostvars[rke2_first_server].platform_argocd_ingress_cluster_diagnostics.stdout | default('not collected') }}
-
-              Failed node diagnostics:
-              {{ platform_argocd_ingress_node_diagnostics.stdout | default('not collected') }}
+              The playbook enforces Traefik node-local service routing before
+              this check, so a remaining timeout usually means MetalLB L2/ARP,
+              host firewall forwarding, or node-to-local-pod networking still
+              needs attention.
 
               To fail faster while debugging:
               PLATFORM_ARGOCD_INGRESS_VERIFY_TIMEOUT=120 make platform-ingress
