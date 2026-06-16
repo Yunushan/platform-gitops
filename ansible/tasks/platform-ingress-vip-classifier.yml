@@ -1,0 +1,274 @@
+---
+- name: Detect Traefik websecure NodePort for app VIP classification
+  ansible.builtin.shell: |
+    set +e
+    K=/var/lib/rancher/rke2/bin/kubectl
+    C=/etc/rancher/rke2/rke2.yaml
+    for service in platform-traefik traefik; do
+      if "$K" --kubeconfig "$C" --request-timeout=10s -n traefik get "service/${service}" >/dev/null 2>&1; then
+        "$K" --kubeconfig "$C" --request-timeout=10s -n traefik get "service/${service}" \
+          -o jsonpath='{range .spec.ports[?(@.name=="websecure")]}{.nodePort}{end}'
+        exit 0
+      fi
+    done
+    exit 0
+  args:
+    executable: /bin/bash
+  register: platform_traefik_websecure_nodeport_detect
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ rke2_first_server }}"
+  run_once: true
+
+- name: Classify app VIP path from inside the cluster
+  ansible.builtin.shell: |
+    set +e
+    K=/var/lib/rancher/rke2/bin/kubectl
+    C=/etc/rancher/rke2/rke2.yaml
+    VIP="{{ rke2_ingress_vip_effective }}"
+    HOST="{{ platform_argocd_host }}"
+    CONNECT_TIMEOUT="{{ platform_argocd_ingress_connect_timeout_effective | default(5, true) }}"
+    MAX_TIME="{{ platform_argocd_ingress_max_time_effective | default(20, true) }}"
+    k() {
+      "$K" --kubeconfig "$C" --request-timeout=10s "$@"
+    }
+
+    echo "===== automatic ingress VIP classifier: cluster view ====="
+    echo "app_vip=${VIP}"
+    echo "argocd_host=${HOST}"
+    echo "expected_nodes={{ groups['rke2_servers'] | join(' ') }}"
+    echo
+
+    echo "===== Traefik LoadBalancer service ====="
+    k -n traefik get svc platform-traefik traefik -o wide 2>/dev/null || k -n traefik get svc -o wide || true
+    traefik_service=""
+    for service in platform-traefik traefik; do
+      if k -n traefik get "service/${service}" >/dev/null 2>&1; then
+        traefik_service="${service}"
+        break
+      fi
+    done
+    echo "PLATFORM_TRAEFIK_SERVICE=${traefik_service:-not-found}"
+
+    lb_ips=""
+    websecure_nodeport=""
+    if [ -n "${traefik_service}" ]; then
+      echo "===== Traefik service routing fields ====="
+      k -n traefik get "service/${traefik_service}" \
+        -o jsonpath='type={.spec.type} externalTrafficPolicy={.spec.externalTrafficPolicy} internalTrafficPolicy={.spec.internalTrafficPolicy} lb={.status.loadBalancer.ingress[*].ip} ports={range .spec.ports[*]}{.name}:{.port}->nodePort:{.nodePort}->target:{.targetPort}{" "}{end}{"\n"}' || true
+      lb_ips="$(k -n traefik get "service/${traefik_service}" -o jsonpath='{.status.loadBalancer.ingress[*].ip}' 2>/dev/null || true)"
+      websecure_nodeport="$(k -n traefik get "service/${traefik_service}" -o jsonpath='{range .spec.ports[?(@.name=="websecure")]}{.nodePort}{end}' 2>/dev/null || true)"
+      web_nodeport="$(k -n traefik get "service/${traefik_service}" -o jsonpath='{range .spec.ports[?(@.name=="web")]}{.nodePort}{end}' 2>/dev/null || true)"
+      echo "PLATFORM_TRAEFIK_LB_IPS=${lb_ips:-none}"
+      echo "PLATFORM_TRAEFIK_WEB_NODEPORT=${web_nodeport:-none}"
+      echo "PLATFORM_TRAEFIK_WEBSECURE_NODEPORT=${websecure_nodeport:-none}"
+    fi
+    echo
+
+    echo "===== Traefik pods and endpoints ====="
+    k -n traefik get pods -o wide || true
+    k -n traefik get endpoints,endpointslice -o wide || true
+    echo
+
+    echo "===== Argo CD ingress and backend ====="
+    k -n argocd get ingress,svc,endpoints,endpointslice,pods -o wide || true
+    k -n argocd get ingressroute -o wide || true
+    echo
+
+    echo "===== MetalLB app VIP state ====="
+    k -n metallb-system get ipaddresspool,l2advertisement,svc,endpoints,pods -o wide || true
+    k -n metallb-system describe ipaddresspool platform-ingress 2>/dev/null || true
+    k -n metallb-system describe l2advertisement platform-ingress 2>/dev/null || true
+    echo
+
+    echo "===== MetalLB speaker evidence for app VIP ====="
+    k -n metallb-system logs -l app.kubernetes.io/component=speaker --all-containers --tail=240 2>/dev/null | grep -F "${VIP}" || true
+    k -n metallb-system logs -l component=speaker --all-containers --tail=240 2>/dev/null | grep -F "${VIP}" || true
+    echo
+
+    echo "===== First-server TCP probes to app VIP ====="
+    for port in 80 443; do
+      if timeout "${CONNECT_TIMEOUT}" bash -c "cat < /dev/null > /dev/tcp/${VIP}/${port}" 2>/dev/null; then
+        echo "cluster_tcp_vip_${port}=open"
+      else
+        echo "cluster_tcp_vip_${port}=failed"
+      fi
+    done
+    echo
+
+    echo "===== First-server direct NodePort probes ====="
+    if [ -n "${websecure_nodeport}" ]; then
+      while read -r target; do
+        [ -n "${target}" ] || continue
+        node="${target%%=*}"
+        ip="${target#*=}"
+        if timeout "${CONNECT_TIMEOUT}" bash -c "cat < /dev/null > /dev/tcp/${ip}/${websecure_nodeport}" 2>/dev/null; then
+          echo "cluster_tcp_nodeport_${node}_${websecure_nodeport}=open"
+        else
+          echo "cluster_tcp_nodeport_${node}_${websecure_nodeport}=failed"
+        fi
+      done <<'EOF'
+    {% for node in groups['rke2_servers'] %}
+    {{ node }}={{ hostvars[node].ansible_host | default(node, true) }}
+    {% endfor %}
+    EOF
+    else
+      echo "cluster_nodeport_probe=skipped-no-websecure-nodeport"
+    fi
+    echo
+
+    echo "===== Cluster-side classification ====="
+    if ! printf '%s\n' "${lb_ips}" | grep -Fw "${VIP}" >/dev/null; then
+      echo "CLASSIFICATION=TRAEFIK_SERVICE_HAS_NO_EXPECTED_APP_VIP"
+      echo "The Traefik LoadBalancer service does not show ${VIP}; focus on MetalLB pool, L2Advertisement, or service annotations."
+    elif timeout "${CONNECT_TIMEOUT}" bash -c "cat < /dev/null > /dev/tcp/${VIP}/443" 2>/dev/null; then
+      echo "CLASSIFICATION=APP_VIP_TCP_REACHABLE_FROM_FIRST_SERVER"
+      echo "The VIP answers from node-1; if the controller still times out, focus on client-to-VIP routing, ARP cache, or Windows/WSL network path."
+    else
+      echo "CLASSIFICATION=APP_VIP_NOT_TCP_REACHABLE_FROM_FIRST_SERVER"
+      echo "The VIP is assigned but not reachable from node-1; focus on MetalLB L2 announcement, host firewall forwarding, or node local Traefik endpoint routing."
+    fi
+  args:
+    executable: /bin/bash
+  register: platform_argocd_ingress_path_classifier_cluster
+  changed_when: false
+  failed_when: false
+  delegate_to: "{{ rke2_first_server }}"
+  run_once: true
+
+- name: Classify app VIP path from Ansible controller
+  ansible.builtin.shell: |
+    set +e
+    VIP="{{ rke2_ingress_vip_effective }}"
+    HOST="{{ platform_argocd_host }}"
+    NODEPORT="{{ platform_traefik_websecure_nodeport_detect.stdout | default('') | trim }}"
+    CONNECT_TIMEOUT="{{ platform_argocd_ingress_connect_timeout_effective | default(5, true) }}"
+    MAX_TIME="{{ platform_argocd_ingress_max_time_effective | default(20, true) }}"
+
+    echo "===== automatic ingress VIP classifier: controller/client view ====="
+    echo "app_vip=${VIP}"
+    echo "argocd_host=${HOST}"
+    echo "websecure_nodeport=${NODEPORT:-none}"
+    echo
+
+    echo "===== controller route and neighbor state ====="
+    if command -v ip >/dev/null 2>&1; then
+      ip route get "${VIP}" || true
+      ip neigh show "${VIP}" || true
+    fi
+    if command -v arp >/dev/null 2>&1; then
+      arp -a | grep -F "${VIP}" || true
+    fi
+    if command -v powershell.exe >/dev/null 2>&1; then
+      echo "===== Windows host ARP view through powershell.exe ====="
+      powershell.exe -NoProfile -NonInteractive -Command 'arp -a | Select-String "{{ rke2_ingress_vip_effective }}" | ForEach-Object { $_.ToString() }' || true
+    fi
+    if command -v cmd.exe >/dev/null 2>&1; then
+      echo "===== Windows host ARP view through cmd.exe ====="
+      cmd.exe /C "arp -a | findstr {{ rke2_ingress_vip_effective }}" || true
+    fi
+    echo
+
+    echo "===== controller TCP and HTTPS probe to app VIP ====="
+    if timeout "${CONNECT_TIMEOUT}" bash -c "cat < /dev/null > /dev/tcp/${VIP}/443" 2>/dev/null; then
+      echo "controller_tcp_vip_443=open"
+    else
+      echo "controller_tcp_vip_443=failed"
+    fi
+    controller_vip_code="not-run"
+    if command -v curl >/dev/null 2>&1; then
+      controller_vip_code="$(curl --silent --show-error --insecure --output /dev/null \
+        --write-out '%{http_code}' \
+        --connect-timeout "${CONNECT_TIMEOUT}" \
+        --max-time "${MAX_TIME}" \
+        --resolve "${HOST}:443:${VIP}" \
+        "https://${HOST}/" 2>/tmp/platform-argocd-vip-curl.err || true)"
+      printf 'controller_vip_http_code=%s\n' "${controller_vip_code:-empty}"
+      if [ -s /tmp/platform-argocd-vip-curl.err ]; then
+        sed 's/^/controller_vip_curl_stderr=/' /tmp/platform-argocd-vip-curl.err
+      fi
+    fi
+    if command -v curl.exe >/dev/null 2>&1; then
+      echo "===== Windows curl.exe probe to app VIP ====="
+      curl.exe -k --silent --show-error --output NUL \
+        --write-out 'windows_vip_http_code=%{http_code}\n' \
+        --connect-timeout "${CONNECT_TIMEOUT}" \
+        --max-time "${MAX_TIME}" \
+        --resolve "${HOST}:443:${VIP}" \
+        "https://${HOST}/" || true
+    fi
+    echo
+
+    echo "===== controller direct NodePort probes to RKE2 nodes ====="
+    nodeport_reachable=0
+    if printf '%s' "${NODEPORT}" | grep -Eq '^[0-9]+$'; then
+      while read -r target; do
+        [ -n "${target}" ] || continue
+        node="${target%%=*}"
+        ip="${target#*=}"
+        if timeout "${CONNECT_TIMEOUT}" bash -c "cat < /dev/null > /dev/tcp/${ip}/${NODEPORT}" 2>/dev/null; then
+          echo "controller_tcp_nodeport_${node}_${NODEPORT}=open"
+          nodeport_reachable=1
+        else
+          echo "controller_tcp_nodeport_${node}_${NODEPORT}=failed"
+        fi
+        if command -v curl >/dev/null 2>&1; then
+          node_code="$(curl --silent --show-error --insecure --output /dev/null \
+            --write-out '%{http_code}' \
+            --connect-timeout "${CONNECT_TIMEOUT}" \
+            --max-time "${MAX_TIME}" \
+            --resolve "${HOST}:${NODEPORT}:${ip}" \
+            "https://${HOST}:${NODEPORT}/" 2>/tmp/platform-argocd-nodeport-curl.err || true)"
+          printf 'controller_nodeport_http_code_%s=%s\n' "${node}" "${node_code:-empty}"
+          if [ "${node_code}" != "000" ] && [ -n "${node_code}" ]; then
+            nodeport_reachable=1
+          fi
+        fi
+      done <<'EOF'
+    {% for node in groups['rke2_servers'] %}
+    {{ node }}={{ hostvars[node].ansible_host | default(node, true) }}
+    {% endfor %}
+    EOF
+    else
+      echo "controller_nodeport_probe=skipped-no-websecure-nodeport"
+    fi
+    echo
+
+    echo "===== Controller-side classification ====="
+    case "${controller_vip_code}" in
+      200|301|302|303|307|308|401|403)
+        echo "CLASSIFICATION=APP_VIP_WORKS_FROM_CONTROLLER"
+        echo "The app VIP is reachable from the client path."
+        ;;
+      404)
+        echo "CLASSIFICATION=TRAEFIK_REACHABLE_BUT_ARGO_ROUTE_NOT_MATCHED"
+        echo "The VIP reached Traefik, but no Argo CD router matched the request."
+        ;;
+      *)
+        if [ "${nodeport_reachable}" -eq 1 ]; then
+          echo "CLASSIFICATION=APP_VIP_L2_ARP_OR_LOADBALANCER_PATH_FAILURE"
+          echo "At least one node's Traefik NodePort is reachable from the controller, but ${VIP}:443 is not. Focus on MetalLB L2 announcement, ARP cache, same-VLAN reachability, VM/vSwitch MAC security, or duplicate VIP ownership."
+        else
+          echo "CLASSIFICATION=CLIENT_TO_CLUSTER_INGRESS_PATH_FAILURE"
+          echo "Neither the app VIP nor direct Traefik NodePort answered from the controller. Focus on controller-to-node routing, firewalls between Windows/WSL and the nodes, or blocked high NodePort traffic before debugging MetalLB."
+        fi
+        ;;
+    esac
+  args:
+    executable: /bin/bash
+  register: platform_argocd_ingress_path_classifier_controller
+  changed_when: false
+  failed_when: false
+  become: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Print automatic ingress VIP classifier result
+  ansible.builtin.debug:
+    msg:
+      - "Cluster-side classifier:"
+      - "{{ platform_argocd_ingress_path_classifier_cluster.stdout_lines | default(['not collected']) }}"
+      - "Controller/client-side classifier:"
+      - "{{ platform_argocd_ingress_path_classifier_controller.stdout_lines | default(['not collected']) }}"
+      - "{{ platform_argocd_ingress_path_classifier_controller.stderr_lines | default([]) }}"
+  run_once: true

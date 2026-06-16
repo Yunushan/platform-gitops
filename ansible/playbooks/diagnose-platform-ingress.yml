@@ -1,0 +1,39 @@
+---
+- name: Diagnose platform ingress VIP path
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
+    platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    platform_argocd_host: "argocd.{{ platform_domain_effective }}"
+    platform_argocd_ingress_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_CONNECT_TIMEOUT') }}"
+    platform_argocd_ingress_max_time_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_MAX_TIME') }}"
+    platform_argocd_ingress_connect_timeout_effective: "{{ platform_argocd_ingress_connect_timeout | default(platform_argocd_ingress_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
+    platform_argocd_ingress_max_time_effective: "{{ platform_argocd_ingress_max_time | default(platform_argocd_ingress_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
+
+  tasks:
+    - name: Require platform ingress diagnose settings
+      ansible.builtin.assert:
+        that:
+          - rke2_ingress_vip_effective | length > 0
+          - not (rke2_ingress_vip_effective is match("^<.*>$"))
+          - platform_domain_effective | length > 0
+          - not (platform_domain_effective is match("^<.*>$"))
+          - platform_argocd_ingress_connect_timeout_effective | int > 0
+          - platform_argocd_ingress_max_time_effective | int > 0
+        fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
+      run_once: true
+
+    - name: Show ingress diagnose settings
+      ansible.builtin.debug:
+        msg: >-
+          Diagnosing app VIP {{ rke2_ingress_vip_effective }} for
+          https://{{ platform_argocd_host }} with
+          {{ platform_argocd_ingress_connect_timeout_effective }}s connect timeout
+          and {{ platform_argocd_ingress_max_time_effective }}s max curl time.
+      run_once: true
+
+    - name: Run automatic ingress VIP classifier
+      ansible.builtin.include_tasks: ../tasks/platform-ingress-vip-classifier.yml

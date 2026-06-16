@@ -195,6 +195,14 @@ After Traefik receives the app VIP, `platform-ingress` verifies Argo CD through 
 PLATFORM_ARGOCD_INGRESS_VERIFY_TIMEOUT=120 make platform-ingress
 ```
 
+To classify the live path without redeploying anything:
+
+```bash
+make platform-ingress-diagnose
+```
+
+The diagnose target checks the Traefik LoadBalancer service, MetalLB pool and L2Advertisement, Traefik and Argo CD endpoints, app VIP TCP reachability, direct Traefik NodePort reachability from the Ansible controller, and Windows/WSL ARP state when those tools are available. If direct NodePort works but `<APP_VIP>:443` times out, focus on MetalLB L2/ARP, same-VLAN reachability, duplicate VIP ownership, host firewall forwarding, or virtualization switch security such as MAC address changes and forged transmits.
+
 To disable the automatic MetalLB speaker and neighbor-cache repair pass:
 
 ```bash

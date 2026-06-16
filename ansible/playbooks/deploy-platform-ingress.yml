@@ -2949,6 +2949,16 @@
             - platform_argocd_ingress_vip_speaker_restart is defined
             - platform_argocd_ingress_vip_speaker_restart.rc | default(1) == 0
 
+        - name: Run automatic ingress VIP path classifier
+          ansible.builtin.include_tasks: ../tasks/platform-ingress-vip-classifier.yml
+          when: >-
+            (platform_argocd_ingress_node_strict_effective | bool) or
+            (
+              (platform_argocd_ingress_controller_verify_effective | bool) and
+              ((hostvars[rke2_first_server].platform_argocd_ingress_controller_check.rc | default(1)) != 0) and
+              ((hostvars[rke2_first_server].platform_argocd_ingress_controller_check_after_repair.rc | default(1)) != 0)
+            )
+
         - name: Continue when client VIP path works but node self-probes fail
           ansible.builtin.debug:
             msg: |
@@ -2989,6 +2999,14 @@
 
               Node strict mode:
               {{ platform_argocd_ingress_node_strict_effective }}
+
+              Automatic VIP path classifier:
+              Cluster:
+              {{ platform_argocd_ingress_path_classifier_cluster.stdout | default(hostvars[rke2_first_server].platform_argocd_ingress_path_classifier_cluster.stdout | default('not collected'), true) }}
+
+              Controller/client:
+              {{ platform_argocd_ingress_path_classifier_controller.stdout | default(hostvars[rke2_first_server].platform_argocd_ingress_path_classifier_controller.stdout | default('not collected'), true) }}
+              {{ platform_argocd_ingress_path_classifier_controller.stderr | default(hostvars[rke2_first_server].platform_argocd_ingress_path_classifier_controller.stderr | default(''), true) }}
 
               If the controller/client check returns http_code=404, Traefik is
               reachable but did not match an Argo CD router. Review the printed
