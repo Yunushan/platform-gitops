@@ -6,6 +6,9 @@ server:
   ingress:
     enabled: true
     ingressClassName: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
     hosts:
       - argocd.<PLATFORM_DOMAIN>
     tls:
@@ -50,7 +53,7 @@ controller:
 
 configs:
   params:
-    server.insecure: false
+    server.insecure: true
   cm:
     admin.enabled: "false"
     timeout.reconciliation: 180s

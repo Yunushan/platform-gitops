@@ -2580,6 +2580,50 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Publish Argo CD through Traefik IngressRoute when CRDs are available
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        api_version=""
+        if "$K" --kubeconfig "$C" get crd ingressroutes.traefik.io >/dev/null 2>&1; then
+          api_version="traefik.io/v1alpha1"
+        elif "$K" --kubeconfig "$C" get crd ingressroutes.traefik.containo.us >/dev/null 2>&1; then
+          api_version="traefik.containo.us/v1alpha1"
+        else
+          echo "No Traefik IngressRoute CRD found; standard Kubernetes Ingress remains active."
+          exit 0
+        fi
+
+        cat >/tmp/platform-argocd-ingressroute.yaml <<'INGRESSROUTE'
+        apiVersion: PLATFORM_TRAEFIK_INGRESSROUTE_API_VERSION
+        kind: IngressRoute
+        metadata:
+          name: argocd-server
+          namespace: argocd
+        spec:
+          entryPoints:
+            - websecure
+          routes:
+            - match: Host(`{{ platform_argocd_host }}`)
+              kind: Rule
+              services:
+                - name: argocd-server
+                  namespace: argocd
+                  port: 80
+                  scheme: http
+          tls: {}
+        INGRESSROUTE
+        sed -i "s#PLATFORM_TRAEFIK_INGRESSROUTE_API_VERSION#${api_version}#" /tmp/platform-argocd-ingressroute.yaml
+        "$K" --kubeconfig "$C" apply -f /tmp/platform-argocd-ingressroute.yaml
+      args:
+        executable: /bin/bash
+      register: platform_argocd_ingressroute_apply
+      changed_when: "'created' in platform_argocd_ingressroute_apply.stdout or 'configured' in platform_argocd_ingressroute_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Verify Argo CD ingress over app VIP from every node
       block:
         - name: Poll Argo CD ingress over app VIP from every node
@@ -2615,9 +2659,10 @@
             for service in platform-traefik traefik; do
               "$K" --kubeconfig "$C" -n traefik describe "service/${service}" || true
             done
-            echo "===== Argo CD ingress/service/endpoints/pods ====="
-            "$K" --kubeconfig "$C" -n argocd get ingress,svc,endpoints,endpointslice,pods -o wide || true
+            echo "===== Argo CD ingress routes/service/endpoints/pods ====="
+            "$K" --kubeconfig "$C" -n argocd get ingress,ingressroute,svc,endpoints,endpointslice,pods -o wide || true
             "$K" --kubeconfig "$C" -n argocd describe ingress argocd-server || true
+            "$K" --kubeconfig "$C" -n argocd describe ingressroute argocd-server || true
             "$K" --kubeconfig "$C" -n argocd describe service argocd-server || true
             echo "===== MetalLB state ====="
             "$K" --kubeconfig "$C" -n metallb-system get ipaddresspool,l2advertisement,deploy,ds,pods -o wide || true
@@ -2763,9 +2808,10 @@
               Node strict mode:
               {{ platform_argocd_ingress_node_strict_effective }}
 
-              This is usually the app VIP / MetalLB / Traefik service path,
-              not Argo CD application readiness. If the controller/client check
-              also failed, focus on MetalLB L2/ARP, host firewall forwarding, or
+              If the controller/client check returns http_code=404, Traefik is
+              reachable but did not match an Argo CD router. Review the printed
+              Ingress and IngressRoute diagnostics. If it returns http_code=000
+              or times out, focus on MetalLB L2/ARP, host firewall forwarding, or
               client-to-VIP routing. If only the node-originated checks failed,
               that can be a MetalLB L2 self-probe limitation; keep strict mode
               disabled unless you explicitly require Kubernetes nodes to access

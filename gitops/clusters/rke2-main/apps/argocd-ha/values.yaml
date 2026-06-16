@@ -5,6 +5,9 @@ server:
   ingress:
     enabled: true
     ingressClassName: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
     hosts:
       - argocd.<PLATFORM_DOMAIN>
 
@@ -19,4 +22,4 @@ redis-ha:
 
 configs:
   params:
-    server.insecure: false
+    server.insecure: true
