@@ -201,7 +201,7 @@ To classify the live path without redeploying anything:
 make platform-ingress-diagnose
 ```
 
-The diagnose target checks the Traefik LoadBalancer service, MetalLB pool and L2Advertisement, Traefik and Argo CD endpoints, app VIP TCP reachability, direct Traefik NodePort reachability from the Ansible controller, and Windows/WSL ARP state when those tools are available. If direct NodePort works but `<APP_VIP>:443` times out, focus on MetalLB L2/ARP, same-VLAN reachability, duplicate VIP ownership, host firewall forwarding, or virtualization switch security such as MAC address changes and forged transmits.
+The diagnose target checks the Traefik LoadBalancer service, MetalLB pool and L2Advertisement, Traefik and Argo CD endpoints, app VIP TCP reachability, direct Traefik NodePort reachability from the Ansible controller, and Windows/WSL ARP state when those tools are available. If direct NodePort works but `<APP_VIP>:443` times out, focus on MetalLB L2/ARP, same-VLAN reachability, duplicate VIP ownership, host firewall forwarding, or virtualization switch security such as MAC address changes and forged transmits. If one node's direct Traefik NodePort returns HTTP but other nodes accept TCP and then time out, the playbook treats that as a node-local backend path problem and repairs Argo CD server placement plus Traefik native Kubernetes service load balancing before retrying.
 
 To disable the automatic MetalLB speaker and neighbor-cache repair pass:
 

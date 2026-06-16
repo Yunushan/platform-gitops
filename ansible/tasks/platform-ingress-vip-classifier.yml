@@ -201,6 +201,8 @@
 
     echo "===== controller direct NodePort probes to RKE2 nodes ====="
     nodeport_reachable=0
+    nodeport_http_success=0
+    nodeport_http_failure=0
     if printf '%s' "${NODEPORT}" | grep -Eq '^[0-9]+$'; then
       while read -r target; do
         [ -n "${target}" ] || continue
@@ -220,9 +222,18 @@
             --resolve "${HOST}:${NODEPORT}:${ip}" \
             "https://${HOST}:${NODEPORT}/" 2>/tmp/platform-argocd-nodeport-curl.err || true)"
           printf 'controller_nodeport_http_code_%s=%s\n' "${node}" "${node_code:-empty}"
-          if [ "${node_code}" != "000" ] && [ -n "${node_code}" ]; then
-            nodeport_reachable=1
-          fi
+          case "${node_code}" in
+            200|301|302|303|307|308|401|403)
+              nodeport_reachable=1
+              nodeport_http_success=$((nodeport_http_success + 1))
+              ;;
+            000|"")
+              nodeport_http_failure=$((nodeport_http_failure + 1))
+              ;;
+            *)
+              nodeport_reachable=1
+              ;;
+          esac
         fi
       done <<'EOF'
     {% for node in groups['rke2_servers'] %}
@@ -245,7 +256,10 @@
         echo "The VIP reached Traefik, but no Argo CD router matched the request."
         ;;
       *)
-        if [ "${nodeport_reachable}" -eq 1 ]; then
+        if [ "${nodeport_http_success}" -gt 0 ] && [ "${nodeport_http_failure}" -gt 0 ]; then
+          echo "CLASSIFICATION=TRAEFIK_NODE_LOCAL_BACKEND_PATH_PARTIAL"
+          echo "Some Traefik node-local NodePorts return a valid HTTP response, while others accept TCP but time out. This usually means the backend service endpoint is only healthy from some nodes. The ingress playbook should enforce Argo CD server replicas across nodes, Kubernetes nativeLB, and local service routing before verification."
+        elif [ "${nodeport_reachable}" -eq 1 ]; then
           echo "CLASSIFICATION=APP_VIP_L2_ARP_OR_LOADBALANCER_PATH_FAILURE"
           echo "At least one node's Traefik NodePort is reachable from the controller, but ${VIP}:443 is not. Focus on MetalLB L2 announcement, ARP cache, same-VLAN reachability, VM/vSwitch MAC security, or duplicate VIP ownership."
         else

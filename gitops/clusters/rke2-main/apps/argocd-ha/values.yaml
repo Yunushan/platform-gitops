@@ -1,7 +1,7 @@
 # Argo CD HA profile.
 
 server:
-  replicas: 2
+  replicas: 3
   ingress:
     enabled: true
     ingressClassName: traefik
@@ -10,6 +10,25 @@ server:
       traefik.ingress.kubernetes.io/router.tls: "true"
     hosts:
       - argocd.<PLATFORM_DOMAIN>
+  service:
+    annotations:
+      traefik.ingress.kubernetes.io/service.nativelb: "true"
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: argocd-server
+            topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: argocd-server
 
 repoServer:
   replicas: 2

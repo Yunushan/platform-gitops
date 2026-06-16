@@ -15,6 +15,25 @@ server:
       - secretName: argocd-server-tls
         hosts:
           - argocd.<PLATFORM_DOMAIN>
+  service:
+    annotations:
+      traefik.ingress.kubernetes.io/service.nativelb: "true"
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: argocd-server
+            topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: argocd-server
   pdb:
     enabled: true
     minAvailable: 2

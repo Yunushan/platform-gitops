@@ -29,6 +29,7 @@
     platform_argocd_ingress_controller_verify_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_CONTROLLER_VERIFY') }}"
     platform_argocd_ingress_node_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_NODE_STRICT') }}"
     platform_argocd_ingress_vip_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_INGRESS_VIP_REPAIR') }}"
+    platform_argocd_server_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVER_REPLICAS') }}"
     platform_ingress_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_ROLLOUT_TIMEOUT') }}"
     platform_ingress_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_POLL_INTERVAL') }}"
     platform_ingress_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_INGRESS_CLEANUP_HELM_JOBS') }}"
@@ -62,6 +63,7 @@
     platform_argocd_ingress_controller_verify_effective: "{{ platform_argocd_ingress_controller_verify | default(platform_argocd_ingress_controller_verify_from_env, true) | default(true, true) | bool }}"
     platform_argocd_ingress_node_strict_effective: "{{ platform_argocd_ingress_node_strict | default(platform_argocd_ingress_node_strict_from_env, true) | default(false, true) | bool }}"
     platform_argocd_ingress_vip_repair_effective: "{{ platform_argocd_ingress_vip_repair | default(platform_argocd_ingress_vip_repair_from_env, true) | default(true, true) | bool }}"
+    platform_argocd_server_replicas_effective: "{{ platform_argocd_server_replicas | default(platform_argocd_server_replicas_from_env, true) | default(groups['rke2_servers'] | length, true) | int }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_traefik_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-traefik-dns-service-path.conf
     platform_traefik_dns_service_path_firewalld_ports:
@@ -108,6 +110,7 @@
           - platform_argocd_ingress_verify_timeout_effective | int > 0
           - platform_argocd_ingress_connect_timeout_effective | int > 0
           - platform_argocd_ingress_max_time_effective | int > 0
+          - platform_argocd_server_replicas_effective | int > 0
         fail_msg: "Set rke2_ingress_vip and platform_domain/rke2_platform_domain in inventory/hosts.local.ini."
       run_once: true
 
@@ -146,6 +149,8 @@
           {{ 'enabled' if platform_argocd_ingress_node_strict_effective else 'disabled' }}.
           Argo CD ingress VIP announcement auto-repair is
           {{ 'enabled' if platform_argocd_ingress_vip_repair_effective else 'disabled' }}.
+          Argo CD server ingress backend replicas target is
+          {{ platform_argocd_server_replicas_effective }}.
       run_once: true
 
     - name: Ensure OS hostname matches inventory node identity
@@ -2526,6 +2531,69 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Configure Argo CD server as node-local ingress backend
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        replicas={{ platform_argocd_server_replicas_effective | int }}
+
+        "$K" --kubeconfig "$C" -n argocd patch deployment/argocd-server --type merge -p "$(cat <<EOF
+        {
+          "spec": {
+            "replicas": ${replicas},
+            "template": {
+              "metadata": {
+                "labels": {
+                  "platform.gitops/ingress-backend": "argocd-server"
+                }
+              },
+              "spec": {
+                "topologySpreadConstraints": [
+                  {
+                    "maxSkew": 1,
+                    "topologyKey": "kubernetes.io/hostname",
+                    "whenUnsatisfiable": "ScheduleAnyway",
+                    "labelSelector": {
+                      "matchLabels": {
+                        "app.kubernetes.io/name": "argocd-server"
+                      }
+                    }
+                  }
+                ],
+                "affinity": {
+                  "podAntiAffinity": {
+                    "preferredDuringSchedulingIgnoredDuringExecution": [
+                      {
+                        "weight": 100,
+                        "podAffinityTerm": {
+                          "labelSelector": {
+                            "matchLabels": {
+                              "app.kubernetes.io/name": "argocd-server"
+                            }
+                          },
+                          "topologyKey": "kubernetes.io/hostname"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+        EOF
+        )"
+
+        "$K" --kubeconfig "$C" -n argocd patch service/argocd-server --type merge \
+          -p '{"metadata":{"annotations":{"traefik.ingress.kubernetes.io/service.nativelb":"true"}},"spec":{"internalTrafficPolicy":"Local"}}'
+      args:
+        executable: /bin/bash
+      register: platform_argocd_server_node_local_backend
+      changed_when: "'patched' in platform_argocd_server_node_local_backend.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Restart Argo CD server after TLS termination change
       ansible.builtin.command: >-
         /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
@@ -2543,6 +2611,39 @@
       retries: "{{ platform_ingress_wait_retries }}"
       delay: "{{ platform_ingress_poll_interval_effective }}"
       until: platform_argocd_server_rollout.rc == 0
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Verify Argo CD server has node-local ingress backend coverage
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        echo "===== Argo CD server pods ====="
+        "$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server -o wide
+        echo "===== Argo CD server endpoints ====="
+        "$K" --kubeconfig "$C" -n argocd get endpoints,endpointslice -l kubernetes.io/service-name=argocd-server -o wide || true
+        ready_nodes="$("$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server \
+          -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.nodeName}{"\n"}{end}' |
+          sort -u)"
+        printf 'ready_argocd_server_nodes:\n%s\n' "${ready_nodes}"
+
+        missing=0
+        for node in {{ groups['rke2_servers'] | join(' ') }}; do
+          if ! printf '%s\n' "${ready_nodes}" | grep -Fx "${node}" >/dev/null; then
+            echo "Missing ready argocd-server endpoint on ${node}" >&2
+            missing=1
+          fi
+        done
+        exit "${missing}"
+      args:
+        executable: /bin/bash
+      register: platform_argocd_server_local_endpoints
+      retries: "{{ platform_ingress_wait_retries }}"
+      delay: "{{ platform_ingress_poll_interval_effective }}"
+      until: platform_argocd_server_local_endpoints.rc == 0
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
@@ -2617,6 +2718,7 @@
                   namespace: argocd
                   port: 80
                   scheme: http
+                  nativeLB: true
           tls: {}
         INGRESSROUTE
         sed -i "s#PLATFORM_TRAEFIK_INGRESSROUTE_API_VERSION#${api_version}#" /tmp/platform-argocd-ingressroute.yaml
