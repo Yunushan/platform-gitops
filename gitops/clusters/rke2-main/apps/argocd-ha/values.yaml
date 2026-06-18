@@ -2,6 +2,11 @@
 
 server:
   replicas: 3
+  deploymentStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   ingress:
     enabled: true
     ingressClassName: traefik

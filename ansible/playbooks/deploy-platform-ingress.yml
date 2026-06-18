@@ -2551,6 +2551,13 @@
         {
           "spec": {
             "replicas": ${replicas},
+            "strategy": {
+              "type": "RollingUpdate",
+              "rollingUpdate": {
+                "maxSurge": 0,
+                "maxUnavailable": 1
+              }
+            },
             "template": {
               "metadata": {
                 "labels": {
@@ -2610,6 +2617,22 @@
         executable: /bin/bash
       register: platform_argocd_server_node_local_backend
       changed_when: "'patched' in platform_argocd_server_node_local_backend.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Remove stale pending Argo CD server pods before fixed rollout
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" -n argocd delete pod \
+          -l app.kubernetes.io/name=argocd-server \
+          --field-selector=status.phase=Pending \
+          --ignore-not-found=true
+      args:
+        executable: /bin/bash
+      register: platform_argocd_server_pending_cleanup
+      changed_when: "'deleted' in platform_argocd_server_pending_cleanup.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
