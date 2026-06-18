@@ -23,6 +23,7 @@
   <a href="docs/ARCHITECTURE.md">Architecture</a> •
   <a href="docs/INSTALLATION.md">Launch</a> •
   <a href="docs/PREMIUM_3NODE.md">Premium 3-Node</a> •
+  <a href="docs/PRIVATE_DEPLOYMENT.md">Private Deployment</a> •
   <a href="docs/COMPONENT_SWITCHING.md">Change Components</a> •
   <a href="docs/SECRETS_AND_PRIVACY.md">Secrets & Privacy</a> •
   <a href="docs/USER_GUIDE.md">User Guide</a> •
@@ -80,6 +81,10 @@ No SSH keys
 ```
 
 All local values are placeholders. Real values belong only in ignored local files, external secret managers, SOPS-encrypted files, or sealed-secret workflows.
+
+For a company deployment, keep this repository as the public MIT template and
+use a separate private deployment repository as the Argo CD source. See
+[`docs/PRIVATE_DEPLOYMENT.md`](docs/PRIVATE_DEPLOYMENT.md).
 
 Run this before pushing:
 

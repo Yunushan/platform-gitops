@@ -6,6 +6,14 @@ inventory/*.local.yaml
 inventory/*.local.yml
 profiles/*.local.yaml
 profiles/*.local.yml
+private/*
+!private/README.md
+!private/.gitkeep
+*.private.yaml
+*.private.yml
+*.rendered.yaml
+*.rendered.yml
+rendered/
 
 # Secrets and credentials
 .env

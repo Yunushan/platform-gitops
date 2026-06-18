@@ -85,7 +85,7 @@ This installs MetalLB and Traefik through the RKE2 Helm controller, applies the 
 Traefik is configured to redirect HTTP traffic on the app VIP to HTTPS. The ingress playbook also publishes a Traefik Middleware/IngressRoute that redirects direct app VIP browser requests such as `https://<APP_VIP>/` to the canonical Argo CD hostname. By default the target is the effective Argo CD hostname: `platform_argocd_host` when set, otherwise `argocd.<PLATFORM_DOMAIN>`. To override only the direct-IP redirect target:
 
 ```bash
-PLATFORM_IP_REDIRECT_TARGET_HOST=argocd-gitops-arge.isbak.com.tr make platform-ingress
+PLATFORM_IP_REDIRECT_TARGET_HOST=<ARGOCD_FQDN> make platform-ingress
 ```
 
 The target hostname must also have a real Argo CD route. If you change service FQDNs later, update the Argo CD ingress host and the redirect target together. Browsers may still show a certificate warning before redirecting from `https://<APP_VIP>/`, because production certificates normally cover DNS names, not private IP addresses.
