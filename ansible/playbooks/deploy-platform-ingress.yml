@@ -2623,49 +2623,159 @@
       run_once: true
 
     - name: Wait for Argo CD server after restart
-      ansible.builtin.command: >-
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-        -n argocd rollout status deployment/argocd-server --timeout={{ platform_ingress_poll_interval_effective }}s
-      register: platform_argocd_server_rollout
-      retries: "{{ platform_ingress_wait_retries }}"
-      delay: "{{ platform_ingress_poll_interval_effective }}"
-      until: platform_argocd_server_rollout.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      block:
+        - name: Poll Argo CD server rollout after restart
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n argocd rollout status deployment/argocd-server --timeout={{ platform_ingress_poll_interval_effective }}s
+          register: platform_argocd_server_rollout
+          retries: "{{ platform_ingress_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_argocd_server_rollout.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect Argo CD server rollout diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== argocd-server deployment ====="
+            "$K" --kubeconfig "$C" -n argocd get deployment/argocd-server -o wide || true
+            "$K" --kubeconfig "$C" -n argocd get deployment/argocd-server \
+              -o jsonpath='{.metadata.name}{" generation="}{.metadata.generation}{" observed="}{.status.observedGeneration}{" desired="}{.spec.replicas}{" updated="}{.status.updatedReplicas}{" ready="}{.status.readyReplicas}{" available="}{.status.availableReplicas}{" unavailable="}{.status.unavailableReplicas}{"\n"}' || true
+            echo "===== argocd-server replicaset state ====="
+            "$K" --kubeconfig "$C" -n argocd get rs -l app.kubernetes.io/name=argocd-server -o wide || true
+            echo "===== argocd-server pods ====="
+            "$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server -o wide || true
+            echo "===== argocd-server pod waiting/termination reasons ====="
+            "$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" node="}{.spec.nodeName}{" phase="}{.status.phase}{" ready="}{range .status.containerStatuses[*]}{.ready}{" "}{end}{" waiting="}{range .status.containerStatuses[*]}{.state.waiting.reason}{":"}{.state.waiting.message}{" "}{end}{" terminated="}{range .status.containerStatuses[*]}{.state.terminated.reason}{":"}{.state.terminated.message}{" "}{end}{"\n"}{end}' || true
+            echo "===== pending argocd-server pod scheduling details ====="
+            for pod in $("$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server --field-selector=status.phase=Pending -o name 2>/dev/null); do
+              echo "--- ${pod} ---"
+              "$K" --kubeconfig "$C" -n argocd describe "${pod}" | sed -n '/Events:/,$p' || true
+            done
+            echo "===== node allocatable and taints ====="
+            "$K" --kubeconfig "$C" get nodes \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" ready="}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{" cpu="}{.status.allocatable.cpu}{" memory="}{.status.allocatable.memory}{" taints="}{range .spec.taints[*]}{.key}{":"}{.effect}{" "}{end}{"\n"}{end}' || true
+            echo "===== recent Argo CD scheduling/events ====="
+            "$K" --kubeconfig "$C" -n argocd get events --sort-by=.lastTimestamp |
+              grep -E 'argocd-server|FailedScheduling|FailedCreate|BackOff|ErrImagePull|ImagePullBackOff|Unhealthy|not available|insufficient|taint' |
+              tail -120 || true
+          args:
+            executable: /bin/bash
+          register: platform_argocd_server_rollout_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Stop after Argo CD server rollout failure
+          ansible.builtin.fail:
+            msg: |
+              Argo CD server did not finish rolling out within
+              {{ platform_ingress_rollout_timeout_effective }}s.
+
+              Last rollout output:
+              {{ platform_argocd_server_rollout.stdout | default('not collected') }}
+              {{ platform_argocd_server_rollout.stderr | default('') }}
+
+              Rollout diagnostics:
+              {{ platform_argocd_server_rollout_diagnostics.stdout | default('diagnostics were not collected') }}
+
+              Common causes are strict node spread with an unschedulable node,
+              a node taint, insufficient CPU/memory, image pull delay, or old
+              ReplicaSet pods not terminating yet.
+
+              To fail faster while debugging:
+              PLATFORM_INGRESS_ROLLOUT_TIMEOUT=60 make platform-ingress
+
+              To wait longer:
+              PLATFORM_INGRESS_ROLLOUT_TIMEOUT=600 make platform-ingress
+          run_once: true
 
     - name: Verify Argo CD server has node-local ingress backend coverage
-      ansible.builtin.shell: |
-        set -eu
-        K=/var/lib/rancher/rke2/bin/kubectl
-        C=/etc/rancher/rke2/rke2.yaml
+      block:
+        - name: Poll Argo CD server node-local ingress backend coverage
+          ansible.builtin.shell: |
+            set -eu
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
 
-        echo "===== Argo CD server pods ====="
-        "$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server -o wide
-        echo "===== Argo CD server endpoints ====="
-        "$K" --kubeconfig "$C" -n argocd get endpoints,endpointslice -l kubernetes.io/service-name=argocd-server -o wide || true
-        ready_nodes="$("$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server \
-          -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.nodeName}{"\n"}{end}' |
-          sort -u)"
-        printf 'ready_argocd_server_nodes:\n%s\n' "${ready_nodes}"
+            echo "===== Argo CD server pods ====="
+            "$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server -o wide
+            echo "===== Argo CD server endpoints ====="
+            "$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server -o wide || true
+            ready_nodes="$("$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server \
+              -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.nodeName}{"\n"}{end}' |
+              sort -u)"
+            printf 'ready_argocd_server_nodes:\n%s\n' "${ready_nodes}"
 
-        missing=0
-        for node in {{ groups['rke2_servers'] | join(' ') }}; do
-          if ! printf '%s\n' "${ready_nodes}" | grep -Fx "${node}" >/dev/null; then
-            echo "Missing ready argocd-server endpoint on ${node}" >&2
-            missing=1
-          fi
-        done
-        exit "${missing}"
-      args:
-        executable: /bin/bash
-      register: platform_argocd_server_local_endpoints
-      retries: "{{ platform_ingress_wait_retries }}"
-      delay: "{{ platform_ingress_poll_interval_effective }}"
-      until: platform_argocd_server_local_endpoints.rc == 0
-      changed_when: false
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+            missing=0
+            for node in {{ groups['rke2_servers'] | join(' ') }}; do
+              if ! printf '%s\n' "${ready_nodes}" | grep -Fx "${node}" >/dev/null; then
+                echo "Missing ready argocd-server endpoint on ${node}" >&2
+                missing=1
+              fi
+            done
+            exit "${missing}"
+          args:
+            executable: /bin/bash
+          register: platform_argocd_server_local_endpoints
+          retries: "{{ platform_ingress_wait_retries }}"
+          delay: "{{ platform_ingress_poll_interval_effective }}"
+          until: platform_argocd_server_local_endpoints.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+      rescue:
+        - name: Collect Argo CD server node-local backend diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== argocd-server pods ====="
+            "$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server -o wide || true
+            echo "===== argocd-server endpointslices ====="
+            "$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server -o wide || true
+            echo "===== argocd-server deployment scheduling rules ====="
+            "$K" --kubeconfig "$C" -n argocd get deployment/argocd-server \
+              -o jsonpath='{.spec.template.spec.affinity}{"\n"}{.spec.template.spec.topologySpreadConstraints}{"\n"}' || true
+            echo "===== node-local backend missing summary ====="
+            ready_nodes="$("$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server \
+              -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.nodeName}{"\n"}{end}' 2>/dev/null | sort -u || true)"
+            for node in {{ groups['rke2_servers'] | join(' ') }}; do
+              if printf '%s\n' "${ready_nodes}" | grep -Fx "${node}" >/dev/null; then
+                echo "${node}=has-ready-argocd-server-endpoint"
+              else
+                echo "${node}=missing-ready-argocd-server-endpoint"
+              fi
+            done
+            echo "===== recent Argo CD events ====="
+            "$K" --kubeconfig "$C" -n argocd get events --sort-by=.lastTimestamp |
+              grep -E 'argocd-server|FailedScheduling|FailedCreate|BackOff|ErrImagePull|ImagePullBackOff|Unhealthy|insufficient|taint' |
+              tail -120 || true
+          args:
+            executable: /bin/bash
+          register: platform_argocd_server_local_endpoint_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Stop after Argo CD node-local backend coverage failure
+          ansible.builtin.fail:
+            msg: |
+              Argo CD server did not provide a ready local ingress backend on
+              every RKE2 node within {{ platform_ingress_rollout_timeout_effective }}s.
+
+              Last check:
+              {{ platform_argocd_server_local_endpoints.stdout | default('not collected') }}
+              {{ platform_argocd_server_local_endpoints.stderr | default('') }}
+
+              Diagnostics:
+              {{ platform_argocd_server_local_endpoint_diagnostics.stdout | default('diagnostics were not collected') }}
+          run_once: true
 
     - name: Publish Argo CD through Traefik ingress
       ansible.builtin.shell: |
