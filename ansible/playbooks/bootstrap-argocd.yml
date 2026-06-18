@@ -7,6 +7,9 @@
   vars:
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_URL') }}"
+    platform_repo_username_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_USERNAME') }}"
+    platform_repo_token_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_TOKEN') }}"
+    platform_repo_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_SECRET_NAME') }}"
     platform_profile_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
     platform_apply_gitops_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APPLY_GITOPS') }}"
     platform_argocd_bootstrap_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_MODE') }}"
@@ -15,6 +18,9 @@
     platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
     platform_argocd_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_POLL_INTERVAL') }}"
     platform_repo_url_effective: "{{ platform_repo_url | default(platform_repo_url_from_env, true) }}"
+    platform_repo_username_effective: "{{ platform_repo_username | default(platform_repo_username_from_env, true) | default('x-access-token', true) }}"
+    platform_repo_token_effective: "{{ platform_repo_token | default(platform_repo_token_from_env, true) | default('', true) }}"
+    platform_repo_secret_name_effective: "{{ platform_repo_secret_name | default(platform_repo_secret_name_from_env, true) | default('platform-gitops-repo', true) }}"
     platform_profile_effective: "{{ platform_profile | default(platform_profile_from_env, true) | default('default', true) }}"
     platform_apply_gitops_effective: "{{ platform_apply_gitops | default(platform_apply_gitops_from_env, true) | default(false, true) | bool }}"
     platform_argocd_bootstrap_mode_effective: "{{ platform_argocd_bootstrap_mode | default(platform_argocd_bootstrap_mode_from_env, true) | default('ha', true) }}"
@@ -502,6 +508,45 @@
       when:
         - platform_apply_gitops_effective
         - platform_placeholder_scan.stdout | length > 0
+      run_once: true
+
+    - name: Register private Git repository credentials when provided
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+        stdin: |
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: {{ platform_repo_secret_name_effective | to_json }}
+            namespace: argocd
+            labels:
+              argocd.argoproj.io/secret-type: repository
+          stringData:
+            type: git
+            url: {{ platform_repo_url_effective | to_json }}
+            username: {{ platform_repo_username_effective | to_json }}
+            password: {{ platform_repo_token_effective | to_json }}
+      register: platform_repo_credentials_apply
+      changed_when: "'created' in platform_repo_credentials_apply.stdout or 'configured' in platform_repo_credentials_apply.stdout"
+      no_log: true
+      delegate_to: "{{ rke2_first_server }}"
+      when:
+        - platform_apply_gitops_effective
+        - platform_repo_token_effective | length > 0
+      run_once: true
+
+    - name: Show repository credential mode
+      ansible.builtin.debug:
+        msg: >-
+          PLATFORM_REPO_TOKEN was not set, so Argo CD will try anonymous Git access to
+          {{ platform_repo_url_effective }}. Set PLATFORM_REPO_USERNAME and
+          PLATFORM_REPO_TOKEN for private repositories.
+      when:
+        - platform_apply_gitops_effective
+        - platform_repo_token_effective | length == 0
       run_once: true
 
     - name: Apply platform Argo CD project

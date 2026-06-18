@@ -54,6 +54,33 @@ After that, the long-term source can be:
 https://<GIT_FQDN>/<ORG>/platform-gitops.git
 ```
 
+## Easier First Deployment
+
+Use `platform-first-deploy` when the cluster already has RKE2, the API VIP,
+and a reachable app VIP. This target bootstraps Argo CD, registers private Git
+credentials when supplied, registers the platform applications, configures the
+app ingress VIP, and prints the access summary.
+
+For a private GitHub, GitLab, or internal Git repository:
+
+```bash
+export PLATFORM_REPO_URL=https://<PRIVATE_GIT_HOST>/<ORG>/platform-gitops-deploy.git
+export PLATFORM_REPO_USERNAME=<GIT_USERNAME>
+read -rsp "Private Git token/password: " PLATFORM_REPO_TOKEN
+echo
+export PLATFORM_REPO_TOKEN
+
+make platform-first-deploy
+```
+
+For a public read-only repository, omit `PLATFORM_REPO_USERNAME` and
+`PLATFORM_REPO_TOKEN`.
+
+The target still refuses to register incomplete GitOps applications when the
+selected profile contains unresolved placeholders such as storage sizes,
+database endpoints, Redis endpoints, object storage, backup targets, or TLS
+secret references.
+
 ## Example Private FQDN Mapping
 
 Keep mappings like this in private DNS and private deployment config, not in

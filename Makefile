@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan platform-bootstrap platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-dns-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan platform-bootstrap platform-first-deploy platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-dns-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -11,6 +11,7 @@ help:
 	@echo "  no-secrets      Scan repository for obvious secrets/private data"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  platform-bootstrap  Verify RKE2/API VIP, bootstrap Argo CD, configure app VIP when ready, and print access report"
+	@echo "  platform-first-deploy  First private GitOps deploy: bootstrap Argo CD, register repo credentials, publish ingress, and print status"
 	@echo "  platform-argocd  Bootstrap Argo CD; set PLATFORM_APPLY_GITOPS=true and PLATFORM_REPO_URL to register apps"
 	@echo "  platform-argocd-core  Bootstrap standard Argo CD and clean stale HA Redis bootstrap resources"
 	@echo "  platform-argocd-ha  Bootstrap Argo CD HA explicitly"
@@ -54,6 +55,13 @@ bootstrap-plan:
 	@bash scripts/bootstrap-plan.sh
 
 platform-bootstrap: rke2-verify rke2-api-vip rke2-controller-hosts platform-argocd platform-ingress platform-status
+
+platform-first-deploy:
+	@test -n "$${PLATFORM_REPO_URL:-}" || (echo "Set PLATFORM_REPO_URL to the private Git repository URL first." >&2; exit 1)
+	@PLATFORM_APPLY_GITOPS=true PLATFORM_PROFILE=$${PLATFORM_PROFILE:-premium-3node} ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/bootstrap-argocd.yml
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/expose-argocd-bootstrap.yml
+	@$(MAKE) platform-ingress
+	@$(MAKE) platform-status
 
 platform-argocd:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/bootstrap-argocd.yml

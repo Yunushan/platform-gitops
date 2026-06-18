@@ -251,6 +251,20 @@ For the premium profile:
 export PLATFORM_PROFILE=premium-3node
 ```
 
+For first private deployments, `platform-first-deploy` performs the Argo CD
+bootstrap, optional private repository credential registration, application
+registration, ingress publishing, and status report in one flow:
+
+```bash
+export PLATFORM_REPO_URL=https://<PRIVATE_GIT_HOST>/<ORG>/platform-gitops-deploy.git
+export PLATFORM_REPO_USERNAME=<GIT_USERNAME>
+read -rsp "Private Git token/password: " PLATFORM_REPO_TOKEN
+echo
+export PLATFORM_REPO_TOKEN
+
+make platform-first-deploy
+```
+
 If unresolved placeholders remain, the playbook stops before registering applications so Argo CD does not sync incomplete production configuration.
 
 To deploy or repair the final ingress path separately:
