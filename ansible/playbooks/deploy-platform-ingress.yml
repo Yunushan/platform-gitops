@@ -2907,8 +2907,8 @@
           namespace: argocd
         spec:
           redirectRegex:
-            regex: "^https?://{{ rke2_ingress_vip_effective | regex_escape() }}(?::[0-9]+)?/?(.*)"
-            replacement: "https://{{ platform_ip_redirect_target_host_effective }}/${1}"
+            regex: '^https?://{{ rke2_ingress_vip_effective | regex_escape() }}(?::[0-9]+)?/?(.*)'
+            replacement: 'https://{{ platform_ip_redirect_target_host_effective }}/${1}'
             permanent: true
         ---
         apiVersion: PLATFORM_TRAEFIK_API_VERSION
