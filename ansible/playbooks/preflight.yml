@@ -28,19 +28,14 @@
     rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
     rke2_api_vip_effective: "{{ rke2_api_vip | default('', true) }}"
     rke2_api_dns_effective: "{{ rke2_api_dns | default('', true) }}"
-    platform_ingress_hosts:
-      - forgejo
-      - harbor
-      - argocd
-      - woodpecker
-      - grafana
-      - prometheus
     platform_hosts_block: |
       {% for node in groups['rke2_servers'] %}
       {{ hostvars[node].ansible_host }} {{ node }} {{ node }}.{{ platform_domain_effective }}
       {% endfor %}
       {{ rke2_api_vip_effective }} {{ rke2_api_dns_effective }} rke2-api
-      {{ rke2_ingress_vip_effective }} {% for name in platform_ingress_hosts %}{{ name }}.{{ platform_domain_effective }}{% if not loop.last %} {% endif %}{% endfor %}
+      {{ rke2_ingress_vip_effective }} {% for entry in platform_gui_host_entries %}{{ entry.host }}{% if not loop.last %} {% endif %}{% endfor %}
+  vars_files:
+    - ../vars/platform-hostnames.yml
   tasks:
     - name: Confirm SSH connection works
       ansible.builtin.ping:
@@ -105,19 +100,20 @@
     rke2_api_dns_effective: "{{ hostvars[rke2_reference_host].rke2_api_dns | default('', true) }}"
     platform_domain_effective: "{{ hostvars[rke2_reference_host].platform_domain | default(hostvars[rke2_reference_host].rke2_platform_domain | default((rke2_api_dns_effective | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
     rke2_ingress_vip_effective: "{{ hostvars[rke2_reference_host].rke2_ingress_vip | default(hostvars[rke2_reference_host].ingress_vip | default('', true), true) }}"
-    platform_ingress_hosts:
-      - forgejo
-      - harbor
-      - argocd
-      - woodpecker
-      - grafana
-      - prometheus
+    platform_argocd_host: "{{ hostvars[rke2_reference_host].platform_argocd_host | default('', true) }}"
+    platform_forgejo_host: "{{ hostvars[rke2_reference_host].platform_forgejo_host | default(hostvars[rke2_reference_host].platform_git_host | default('', true), true) }}"
+    platform_harbor_host: "{{ hostvars[rke2_reference_host].platform_harbor_host | default(hostvars[rke2_reference_host].platform_registry_host | default('', true), true) }}"
+    platform_woodpecker_host: "{{ hostvars[rke2_reference_host].platform_woodpecker_host | default(hostvars[rke2_reference_host].platform_ci_host | default('', true), true) }}"
+    platform_grafana_host: "{{ hostvars[rke2_reference_host].platform_grafana_host | default('', true) }}"
+    platform_prometheus_host: "{{ hostvars[rke2_reference_host].platform_prometheus_host | default('', true) }}"
     platform_hosts_block: |
       {% for node in groups['rke2_servers'] %}
       {{ hostvars[node].ansible_host }} {{ node }} {{ node }}.{{ platform_domain_effective }}
       {% endfor %}
       {{ rke2_api_vip_effective }} {{ rke2_api_dns_effective }} rke2-api
-      {{ rke2_ingress_vip_effective }} {% for name in platform_ingress_hosts %}{{ name }}.{{ platform_domain_effective }}{% if not loop.last %} {% endif %}{% endfor %}
+      {{ rke2_ingress_vip_effective }} {% for entry in platform_gui_host_entries %}{{ entry.host }}{% if not loop.last %} {% endif %}{% endfor %}
+  vars_files:
+    - ../vars/platform-hostnames.yml
   tasks:
     - name: Add platform hosts block to controller
       ansible.builtin.blockinfile:

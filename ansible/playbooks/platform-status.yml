@@ -9,17 +9,11 @@
     rke2_api_dns_effective: "{{ rke2_api_dns | default('', true) }}"
     rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
     platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
-    platform_argocd_host: "argocd.{{ platform_domain_effective }}"
     platform_ip_redirect_target_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IP_REDIRECT_TARGET_HOST') }}"
-    platform_ip_redirect_target_host_effective: "{{ platform_ip_redirect_target_host | default(platform_ip_redirect_target_host_from_env, true) | default(platform_argocd_host, true) }}"
+    platform_ip_redirect_target_host_effective: "{{ platform_ip_redirect_target_host | default(platform_ip_redirect_target_host_from_env, true) | default(platform_argocd_host_effective, true) }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
-    platform_ingress_hosts:
-      - argocd
-      - forgejo
-      - harbor
-      - woodpecker
-      - grafana
-      - prometheus
+  vars_files:
+    - ../vars/platform-hostnames.yml
   tasks:
     - name: Require platform access settings
       ansible.builtin.assert:
@@ -43,9 +37,14 @@
         API_DNS="{{ rke2_api_dns_effective }}"
         INGRESS_VIP="{{ rke2_ingress_vip_effective }}"
         DOMAIN="{{ platform_domain_effective }}"
-        ARGOCD_HOST="{{ platform_argocd_host }}"
+        ARGOCD_HOST="{{ platform_argocd_host_effective }}"
         IP_REDIRECT_TARGET_HOST="{{ platform_ip_redirect_target_host_effective }}"
-        GUI_HOSTS="{{ platform_ingress_hosts | join(' ') }}"
+        GUI_HOSTS_FILE="$(mktemp)"
+        cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
+        {% for entry in platform_gui_host_entries %}
+        {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
+        {% endfor %}
+        GUIHOSTS
 
         echo "===== Platform access summary ====="
         echo "Kubernetes API VIP: https://${API_VIP}:6443"
@@ -53,15 +52,17 @@
         echo "Ingress/App VIP: ${INGRESS_VIP}"
         echo
         echo "Configured GUI URLs:"
-        for host in ${GUI_HOSTS}; do
-          echo "  https://${host}.${DOMAIN}"
-        done
+        while IFS='|' read -r app namespace fqdn; do
+          [ -n "${fqdn}" ] || continue
+          echo "  ${app}: https://${fqdn}"
+        done <"${GUI_HOSTS_FILE}"
         echo
         echo "Windows/internal DNS entry for GUI hosts:"
         printf '  %s' "${INGRESS_VIP}"
-        for host in ${GUI_HOSTS}; do
-          printf ' %s.%s' "${host}" "${DOMAIN}"
-        done
+        while IFS='|' read -r app namespace fqdn; do
+          [ -n "${fqdn}" ] || continue
+          printf ' %s' "${fqdn}"
+        done <"${GUI_HOSTS_FILE}"
         printf '\n'
         echo
         echo "Controller/WSL API hosts entry:"
@@ -156,14 +157,8 @@
         fi
         published_count=0
         missing_count=0
-        for host in ${GUI_HOSTS}; do
-          fqdn="${host}.${DOMAIN}"
-          case "${host}" in
-            argocd) namespace=argocd ;;
-            grafana|prometheus) namespace=monitoring ;;
-            *) namespace="${host}" ;;
-          esac
-
+        while IFS='|' read -r app namespace fqdn; do
+          [ -n "${fqdn}" ] || continue
           if "$K" --kubeconfig "$C" get ns "${namespace}" >/dev/null 2>&1; then
             namespace_state=present
           else
@@ -180,7 +175,7 @@
 
           printf '%-32s namespace=%-10s ingress=%-14s url=https://%s\n' \
             "${fqdn}" "${namespace_state}" "${ingress_state}" "${fqdn}"
-        done
+        done <"${GUI_HOSTS_FILE}"
         echo "Argo CD Application count: ${app_count}"
         if [ "${app_count}" = "0" ]; then
           echo "No Argo CD Applications are registered yet. Non-Argo GUI hosts will return Traefik 404 until platform apps are registered and synced."
@@ -209,15 +204,17 @@
         elif [ "${missing_count}" -gt 0 ]; then
           echo "Ingress foundation is ready on ${INGRESS_VIP}, and published hosts can be reached through Traefik."
           echo "${missing_count} configured GUI host(s) are not published yet. A 404 is expected for those hostnames."
-          echo "Argo CD URL: https://argocd.${DOMAIN}"
+          echo "Argo CD URL: https://${ARGOCD_HOST}"
           echo "Next automation path for Forgejo/Harbor/Woodpecker/Grafana/Prometheus:"
           echo "  PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd"
         else
           echo "All configured GUI hosts have ingress rules on ${INGRESS_VIP}."
-          for host in ${GUI_HOSTS}; do
-            echo "  https://${host}.${DOMAIN}"
-          done
+          while IFS='|' read -r app namespace fqdn; do
+            [ -n "${fqdn}" ] || continue
+            echo "  ${app}: https://${fqdn}"
+          done <"${GUI_HOSTS_FILE}"
         fi
+        rm -f "${GUI_HOSTS_FILE}"
       args:
         executable: /bin/bash
       register: platform_status_report

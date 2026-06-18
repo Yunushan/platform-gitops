@@ -7,7 +7,6 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
     platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
-    platform_argocd_host: "argocd.{{ platform_domain_effective }}"
     platform_ip_redirect_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IP_REDIRECT_ENABLED') }}"
     platform_ip_redirect_target_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IP_REDIRECT_TARGET_HOST') }}"
     platform_metallb_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_METALLB_CHART_REPO') }}"
@@ -67,7 +66,7 @@
     platform_argocd_ingress_vip_repair_effective: "{{ platform_argocd_ingress_vip_repair | default(platform_argocd_ingress_vip_repair_from_env, true) | default(true, true) | bool }}"
     platform_argocd_server_replicas_effective: "{{ platform_argocd_server_replicas | default(platform_argocd_server_replicas_from_env, true) | default(groups['rke2_servers'] | length, true) | int }}"
     platform_ip_redirect_enabled_effective: "{{ platform_ip_redirect_enabled | default(platform_ip_redirect_enabled_from_env, true) | default(true, true) | bool }}"
-    platform_ip_redirect_target_host_effective: "{{ platform_ip_redirect_target_host | default(platform_ip_redirect_target_host_from_env, true) | default(platform_argocd_host, true) }}"
+    platform_ip_redirect_target_host_effective: "{{ platform_ip_redirect_target_host | default(platform_ip_redirect_target_host_from_env, true) | default(platform_argocd_host_effective, true) }}"
     platform_traefik_dns_check_script_path: /tmp/platform-check-chart-repo-dns-all-nodes.sh
     platform_traefik_dns_service_path_sysctl_file: /etc/sysctl.d/99-platform-traefik-dns-service-path.conf
     platform_traefik_dns_service_path_firewalld_ports:
@@ -89,6 +88,8 @@
     platform_ingress_firewalld_ports:
       - 80/tcp
       - 443/tcp
+  vars_files:
+    - ../vars/platform-hostnames.yml
   tasks:
     - name: Require platform ingress settings
       ansible.builtin.assert:
@@ -2675,7 +2676,7 @@
           spec:
             ingressClassName: traefik
             rules:
-              - host: {{ platform_argocd_host }}
+              - host: {{ platform_argocd_host_effective }}
                 http:
                   paths:
                     - path: /
@@ -2687,7 +2688,7 @@
                             number: 80
             tls:
               - hosts:
-                  - {{ platform_argocd_host }}
+                  - {{ platform_argocd_host_effective }}
       register: platform_argocd_ingress_apply
       changed_when: "'created' in platform_argocd_ingress_apply.stdout or 'configured' in platform_argocd_ingress_apply.stdout"
       delegate_to: "{{ rke2_first_server }}"
@@ -2719,7 +2720,7 @@
           entryPoints:
             - websecure
           routes:
-            - match: Host(`{{ platform_argocd_host }}`)
+            - match: Host(`{{ platform_argocd_host_effective }}`)
               kind: Rule
               services:
                 - name: argocd-server
@@ -2853,13 +2854,13 @@
         - name: Poll Argo CD ingress over app VIP from every node
           ansible.builtin.shell: |
             set -o pipefail
-            echo "Checking https://{{ platform_argocd_host }}/ through {{ rke2_ingress_vip_effective }}:443 from $(hostname -f 2>/dev/null || hostname)"
+            echo "Checking https://{{ platform_argocd_host_effective }}/ through {{ rke2_ingress_vip_effective }}:443 from $(hostname -f 2>/dev/null || hostname)"
             code="$(curl --silent --show-error --insecure --output /dev/null \
               --write-out '%{http_code}' \
               --connect-timeout {{ platform_argocd_ingress_connect_timeout_effective }} \
               --max-time {{ platform_argocd_ingress_max_time_effective }} \
-              --resolve {{ platform_argocd_host }}:443:{{ rke2_ingress_vip_effective }} \
-              https://{{ platform_argocd_host }}/)"
+              --resolve {{ platform_argocd_host_effective }}:443:{{ rke2_ingress_vip_effective }} \
+              https://{{ platform_argocd_host_effective }}/)"
             printf '%s\n' "${code}"
             case "${code}" in
               200|301|302|303|307|308|401|403) exit 0 ;;
@@ -2916,7 +2917,7 @@
           ansible.builtin.shell: |
             set -o pipefail
             VIP={{ rke2_ingress_vip_effective }}
-            HOST={{ platform_argocd_host }}
+            HOST={{ platform_argocd_host_effective }}
             echo "===== host ====="
             hostname -f 2>/dev/null || hostname
             echo "===== failed curl output ====="
@@ -2972,13 +2973,13 @@
               exit 127
             fi
 
-            echo "Checking https://{{ platform_argocd_host }}/ through {{ rke2_ingress_vip_effective }}:443 from Ansible controller"
+            echo "Checking https://{{ platform_argocd_host_effective }}/ through {{ rke2_ingress_vip_effective }}:443 from Ansible controller"
             code="$(curl --silent --show-error --insecure --output /dev/null \
               --write-out '%{http_code}' \
               --connect-timeout {{ platform_argocd_ingress_connect_timeout_effective }} \
               --max-time {{ platform_argocd_ingress_max_time_effective }} \
-              --resolve {{ platform_argocd_host }}:443:{{ rke2_ingress_vip_effective }} \
-              https://{{ platform_argocd_host }}/)"
+              --resolve {{ platform_argocd_host_effective }}:443:{{ rke2_ingress_vip_effective }} \
+              https://{{ platform_argocd_host_effective }}/)"
             printf 'http_code=%s\n' "${code}"
             case "${code}" in
               200|301|302|303|307|308|401|403) exit 0 ;;
@@ -3123,13 +3124,13 @@
         - name: Retry Argo CD ingress over app VIP from Ansible controller after VIP refresh
           ansible.builtin.shell: |
             set -o pipefail
-            echo "Retrying https://{{ platform_argocd_host }}/ through {{ rke2_ingress_vip_effective }}:443 from Ansible controller after VIP refresh"
+            echo "Retrying https://{{ platform_argocd_host_effective }}/ through {{ rke2_ingress_vip_effective }}:443 from Ansible controller after VIP refresh"
             code="$(curl --silent --show-error --insecure --output /dev/null \
               --write-out '%{http_code}' \
               --connect-timeout {{ platform_argocd_ingress_connect_timeout_effective }} \
               --max-time {{ platform_argocd_ingress_max_time_effective }} \
-              --resolve {{ platform_argocd_host }}:443:{{ rke2_ingress_vip_effective }} \
-              https://{{ platform_argocd_host }}/)"
+              --resolve {{ platform_argocd_host_effective }}:443:{{ rke2_ingress_vip_effective }} \
+              https://{{ platform_argocd_host_effective }}/)"
             printf 'http_code=%s\n' "${code}"
             case "${code}" in
               200|301|302|303|307|308|401|403) exit 0 ;;
@@ -3273,17 +3274,19 @@
           - {{ rke2_ingress_vip_effective }}
 
           Argo CD URL:
-          - https://{{ platform_argocd_host }}
+          - https://{{ platform_argocd_host_effective }}
 
           Redirects:
           - HTTP host requests are redirected to HTTPS by Traefik.
           - Direct app VIP requests redirect to https://{{ platform_ip_redirect_target_host_effective }} when the browser accepts the certificate warning.
 
           Windows/internal DNS entry:
-          {{ rke2_ingress_vip_effective }} {{ platform_argocd_host }}
+          {{ rke2_ingress_vip_effective }} {{ platform_argocd_host_effective }}
 
           For the full platform, also map the same VIP to:
-          forgejo.{{ platform_domain_effective }} harbor.{{ platform_domain_effective }} woodpecker.{{ platform_domain_effective }} grafana.{{ platform_domain_effective }} prometheus.{{ platform_domain_effective }}
+          {% for entry in platform_gui_host_entries if entry.app != 'argocd' -%}
+          {{ entry.host }}{% if not loop.last %} {% endif %}
+          {%- endfor %}
       run_once: true
 
   handlers:

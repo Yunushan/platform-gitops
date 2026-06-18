@@ -1,0 +1,41 @@
+---
+# Optional explicit FQDNs for environments that do not use the default
+# <service>.<platform_domain> naming pattern.
+platform_argocd_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HOST') }}"
+platform_forgejo_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_HOST') }}"
+platform_git_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_GIT_HOST') }}"
+platform_harbor_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_HARBOR_HOST') }}"
+platform_registry_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REGISTRY_HOST') }}"
+platform_woodpecker_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_HOST') }}"
+platform_ci_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CI_HOST') }}"
+platform_grafana_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_GRAFANA_HOST') }}"
+platform_prometheus_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROMETHEUS_HOST') }}"
+platform_loki_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LOKI_HOST') }}"
+
+platform_argocd_host_effective: "{{ platform_argocd_host | default(platform_argocd_host_from_env, true) | default('argocd.' ~ platform_domain_effective, true) }}"
+platform_forgejo_host_effective: "{{ platform_forgejo_host | default(platform_git_host | default(platform_forgejo_host_from_env, true), true) | default(platform_git_host_from_env, true) | default('forgejo.' ~ platform_domain_effective, true) }}"
+platform_harbor_host_effective: "{{ platform_harbor_host | default(platform_registry_host | default(platform_harbor_host_from_env, true), true) | default(platform_registry_host_from_env, true) | default('harbor.' ~ platform_domain_effective, true) }}"
+platform_woodpecker_host_effective: "{{ platform_woodpecker_host | default(platform_ci_host | default(platform_woodpecker_host_from_env, true), true) | default(platform_ci_host_from_env, true) | default('woodpecker.' ~ platform_domain_effective, true) }}"
+platform_grafana_host_effective: "{{ platform_grafana_host | default(platform_grafana_host_from_env, true) | default('grafana.' ~ platform_domain_effective, true) }}"
+platform_prometheus_host_effective: "{{ platform_prometheus_host | default(platform_prometheus_host_from_env, true) | default('prometheus.' ~ platform_domain_effective, true) }}"
+platform_loki_host_effective: "{{ platform_loki_host | default(platform_loki_host_from_env, true) | default('loki.' ~ platform_domain_effective, true) }}"
+
+platform_gui_host_entries:
+  - app: argocd
+    namespace: argocd
+    host: "{{ platform_argocd_host_effective }}"
+  - app: forgejo
+    namespace: forgejo
+    host: "{{ platform_forgejo_host_effective }}"
+  - app: harbor
+    namespace: harbor
+    host: "{{ platform_harbor_host_effective }}"
+  - app: woodpecker
+    namespace: woodpecker
+    host: "{{ platform_woodpecker_host_effective }}"
+  - app: grafana
+    namespace: monitoring
+    host: "{{ platform_grafana_host_effective }}"
+  - app: prometheus
+    namespace: monitoring
+    host: "{{ platform_prometheus_host_effective }}"

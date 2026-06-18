@@ -7,6 +7,8 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
     platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+  vars_files:
+    - ../vars/platform-hostnames.yml
   tasks:
     - name: Require ingress VIP settings
       ansible.builtin.assert:
@@ -86,6 +88,6 @@
       ansible.builtin.debug:
         msg:
           - "Ingress VIP: {{ rke2_ingress_vip_effective }}"
-          - "Expected GUI hostnames: argocd.{{ platform_domain_effective }}, forgejo.{{ platform_domain_effective }}, harbor.{{ platform_domain_effective }}, woodpecker.{{ platform_domain_effective }}, grafana.{{ platform_domain_effective }}, prometheus.{{ platform_domain_effective }}"
+          - "Expected GUI hostnames: {{ platform_gui_host_entries | map(attribute='host') | join(', ') }}"
           - "If browsing from Windows, add those names to the Windows hosts file or internal DNS, pointing at the ingress VIP."
       run_once: true

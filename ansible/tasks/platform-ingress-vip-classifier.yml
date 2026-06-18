@@ -26,7 +26,7 @@
     K=/var/lib/rancher/rke2/bin/kubectl
     C=/etc/rancher/rke2/rke2.yaml
     VIP="{{ rke2_ingress_vip_effective }}"
-    HOST="{{ platform_argocd_host }}"
+    HOST="{{ platform_argocd_host_effective | default('', true) }}"
     CONNECT_TIMEOUT="{{ platform_argocd_ingress_connect_timeout_effective | default(5, true) }}"
     MAX_TIME="{{ platform_argocd_ingress_max_time_effective | default(20, true) }}"
     k() {
@@ -140,7 +140,7 @@
   ansible.builtin.shell: |
     set +e
     VIP="{{ rke2_ingress_vip_effective }}"
-    HOST="{{ platform_argocd_host }}"
+    HOST="{{ platform_argocd_host_effective | default('', true) }}"
     NODEPORT="{{ platform_traefik_websecure_nodeport_detect.stdout | default('') | trim }}"
     CONNECT_TIMEOUT="{{ platform_argocd_ingress_connect_timeout_effective | default(5, true) }}"
     MAX_TIME="{{ platform_argocd_ingress_max_time_effective | default(20, true) }}"

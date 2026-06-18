@@ -49,6 +49,18 @@ rke2_ingress_vip=<INGRESS_VIP_ADDRESS>
 rke2_platform_domain=<PLATFORM_DOMAIN>
 ```
 
+If your public/internal DNS uses flat service names instead of
+`<service>.<PLATFORM_DOMAIN>`, set explicit GUI FQDNs too:
+
+```ini
+platform_argocd_host=<ARGOCD_FQDN>
+platform_git_host=<GIT_FQDN>
+platform_ci_host=<CI_FQDN>
+platform_registry_host=<REGISTRY_FQDN>
+platform_grafana_host=<GRAFANA_FQDN>
+platform_prometheus_host=<PROMETHEUS_FQDN>
+```
+
 Run:
 
 ```bash
@@ -298,9 +310,9 @@ If your network has short DNS or chart-repository flaps, increase only the per-n
 PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
 ```
 
-It then installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at `https://argocd.<PLATFORM_DOMAIN>`, verifies the route, and removes the temporary Argo CD NodePort exposure.
+It then installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at the effective Argo CD hostname, verifies the route, and removes the temporary Argo CD NodePort exposure.
 
-`make platform-status` prints the expected GUI URLs, including `argocd`, `forgejo`, `harbor`, `woodpecker`, `grafana`, and `prometheus` under your configured platform domain. For browser access from Windows, create equivalent Windows hosts-file or internal DNS records pointing those names at `rke2_ingress_vip`.
+`make platform-status` prints the effective GUI URLs, including explicit FQDN overrides such as `platform_git_host`, `platform_ci_host`, and `platform_registry_host` when configured. For browser access from Windows, create equivalent Windows hosts-file or internal DNS records pointing those names at `rke2_ingress_vip`.
 
 The legacy local-kubeconfig bootstrap script remains available:
 

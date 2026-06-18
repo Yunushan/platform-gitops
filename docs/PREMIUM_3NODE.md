@@ -65,7 +65,7 @@ Woodpecker is configured for the 3-node cluster with:
 - `server.replicas: 2` for the Woodpecker web/API service.
 - `agent.replicas: 3` for Kubernetes-backed build agents.
 - PostgreSQL-backed state through `WOODPECKER_DATABASE_DRIVER=postgres`.
-- Traefik ingress at `woodpecker.<PLATFORM_DOMAIN>`.
+- Traefik ingress at the effective CI hostname, defaulting to `woodpecker.<PLATFORM_DOMAIN>` unless `platform_ci_host` or `platform_woodpecker_host` is set.
 
 Argo CD HA is configured with:
 
