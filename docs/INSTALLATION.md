@@ -308,7 +308,8 @@ PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY=false make platform-first-deploy
 The Argo CD controller may log one Redis timeout while pods are still starting.
 The bootstrap waits at least `PLATFORM_ARGOCD_SERVICE_PATH_FAST_FAIL_AFTER=90`
 seconds and requires repeated matching timeouts before treating it as a real
-ClusterIP service-path failure.
+ClusterIP service-path failure. The same detector covers controller access to
+`argocd-redis:6379`, `argocd-repo-server:8081`, and the Kubernetes API service.
 
 For fully unattended bootstrap, copy the env template and run the automatic
 target:
