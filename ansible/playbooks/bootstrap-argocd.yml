@@ -275,16 +275,26 @@
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
+            service_path_timeout_regex='dial tcp 10\.43\.[0-9]+\.[0-9]+:6379: i/o timeout|dial tcp 10\.43\.0\.1:443: i/o timeout|context deadline exceeded.*10\.43\.0\.1:443'
             for statefulset in {{ platform_argocd_statefulsets_effective | join(' ') }}; do
               "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null
-              "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s
+              if ! "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s; then
+                if [ "${statefulset}" = "argocd-application-controller" ] &&
+                  "$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 >/dev/null 2>&1 &&
+                  "$K" --kubeconfig "$C" -n argocd logs pod/argocd-application-controller-0 --tail=80 2>/dev/null |
+                    grep -E "${service_path_timeout_regex}" >/dev/null; then
+                  echo "Detected Argo CD controller ClusterIP service-path timeout; stopping rollout wait early so repair can run." >&2
+                  exit 42
+                fi
+                exit 1
+              fi
             done
           args:
             executable: /bin/bash
           register: platform_argocd_statefulset_rollout
           retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
           delay: "{{ platform_argocd_poll_interval_effective }}"
-          until: platform_argocd_statefulset_rollout.rc == 0
+          until: platform_argocd_statefulset_rollout.rc == 0 or platform_argocd_statefulset_rollout.rc == 42
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
@@ -485,16 +495,26 @@
                     set -o pipefail
                     K=/var/lib/rancher/rke2/bin/kubectl
                     C=/etc/rancher/rke2/rke2.yaml
+                    service_path_timeout_regex='dial tcp 10\.43\.[0-9]+\.[0-9]+:6379: i/o timeout|dial tcp 10\.43\.0\.1:443: i/o timeout|context deadline exceeded.*10\.43\.0\.1:443'
                     for statefulset in {{ platform_argocd_core_statefulsets | join(' ') }}; do
                       "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null
-                      "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s
+                      if ! "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s; then
+                        if [ "${statefulset}" = "argocd-application-controller" ] &&
+                          "$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 >/dev/null 2>&1 &&
+                          "$K" --kubeconfig "$C" -n argocd logs pod/argocd-application-controller-0 --tail=80 2>/dev/null |
+                            grep -E "${service_path_timeout_regex}" >/dev/null; then
+                          echo "Detected Argo CD controller ClusterIP service-path timeout; stopping fallback rollout wait early." >&2
+                          exit 42
+                        fi
+                        exit 1
+                      fi
                     done
                   args:
                     executable: /bin/bash
                   register: platform_argocd_fallback_statefulsets
                   retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
                   delay: "{{ platform_argocd_poll_interval_effective }}"
-                  until: platform_argocd_fallback_statefulsets.rc == 0
+                  until: platform_argocd_fallback_statefulsets.rc == 0 or platform_argocd_fallback_statefulsets.rc == 42
                   changed_when: false
                   delegate_to: "{{ rke2_first_server }}"
                   run_once: true

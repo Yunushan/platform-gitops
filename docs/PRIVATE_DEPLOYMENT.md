@@ -124,6 +124,11 @@ push and is not written into the Git remote URL. Argo CD receives the same
 token as a Kubernetes repository Secret before application registration when a
 private repository token is supplied.
 
+During first deployment, Argo CD bootstrap is retried once after an automatic
+DNS/ClusterIP service-path repair when the controller cannot reach services
+such as `argocd-redis`. Set `PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY=false`
+to disable that retry.
+
 By default, `PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true` renders a bootstrap
 Forgejo profile and a Longhorn backup target value before validation and push.
 Forgejo hostname is inferred from `platform_forgejo_host` or

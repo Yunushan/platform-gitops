@@ -297,6 +297,14 @@ pre-repair on a known healthy cluster:
 PLATFORM_FIRST_DEPLOY_DNS_REPAIR=false make platform-first-deploy
 ```
 
+If Argo CD still reports a ClusterIP service-path timeout during bootstrap,
+`platform-first-deploy` runs the same repair flow again and retries Argo CD once
+by default. Disable that retry with:
+
+```bash
+PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY=false make platform-first-deploy
+```
+
 For fully unattended bootstrap, copy the env template and run the automatic
 target:
 
