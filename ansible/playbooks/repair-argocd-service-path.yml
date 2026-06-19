@@ -9,9 +9,11 @@
     platform_argocd_service_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_TIMEOUT') }}"
     platform_argocd_service_repair_refresh_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_REFRESH_APPS') }}"
     platform_argocd_service_repair_node_local_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_NODE_LOCAL') }}"
+    platform_argocd_service_repair_host_network_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_HOST_NETWORK') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_node_local_effective: "{{ platform_argocd_service_repair_node_local | default(platform_argocd_service_repair_node_local_from_env, true) | default(true, true) | bool }}"
+    platform_argocd_service_repair_host_network_effective: "{{ platform_argocd_service_repair_host_network | default(platform_argocd_service_repair_host_network_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Show current Argo CD service path state
       ansible.builtin.shell: |
@@ -125,7 +127,22 @@
           hostname_label="${target_node}"
         fi
 
-        patch="$(printf '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"%s"}}}}}' "${hostname_label}")"
+        fallback_node_ip="{{ hostvars[rke2_first_server].ansible_host | default(rke2_first_server) }}"
+        node_ip="$("$K" --kubeconfig "$C" get node "${target_node}" \
+          -o jsonpath='{range .status.addresses[?(@.type=="InternalIP")]}{.address}{" "}{end}' 2>/dev/null |
+          awk '{print $1}')"
+        if [ -z "${node_ip}" ]; then
+          node_ip="${fallback_node_ip}"
+        fi
+
+        if [ "{{ platform_argocd_service_repair_host_network_effective | bool | lower }}" = "true" ]; then
+          patch="$(printf '{"spec":{"template":{"spec":{"hostNetwork":true,"dnsPolicy":"ClusterFirstWithHostNet","nodeSelector":{"kubernetes.io/hostname":"%s"}}}}}' "${hostname_label}")"
+          "$K" --kubeconfig "$C" -n argocd patch configmap argocd-cmd-params-cm \
+            --type merge \
+            -p "$(printf '{"data":{"repo.server":"%s:8081","redis.server":"%s:6379"}}' "${node_ip}" "${node_ip}")"
+        else
+          patch="$(printf '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"%s"}}}}}' "${hostname_label}")"
+        fi
 
         for deployment in argocd-redis argocd-repo-server; do
           if "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null 2>&1; then
@@ -142,6 +159,9 @@
         fi
 
         echo "Argo CD internal bootstrap components pinned to kubernetes.io/hostname=${hostname_label}"
+        if [ "{{ platform_argocd_service_repair_host_network_effective | bool | lower }}" = "true" ]; then
+          echo "Argo CD internal bootstrap components use hostNetwork and direct ${node_ip}:8081/${node_ip}:6379 command parameters"
+        fi
       args:
         executable: /bin/bash
       register: platform_argocd_service_path_node_local
