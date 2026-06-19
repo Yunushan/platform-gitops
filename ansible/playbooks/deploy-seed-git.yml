@@ -40,7 +40,15 @@
         set -euo pipefail
 
         has_git_daemon() {
-          git daemon -h 2>&1 | grep -q 'usage: git daemon'
+          local help_file
+          help_file="$(mktemp)"
+          git daemon -h >"${help_file}" 2>&1 || true
+          if grep -Eq 'usage: git daemon|git daemon \[' "${help_file}"; then
+            rm -f "${help_file}"
+            return 0
+          fi
+          rm -f "${help_file}"
+          return 1
         }
 
         if has_git_daemon; then
