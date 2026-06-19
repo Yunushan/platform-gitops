@@ -6,7 +6,9 @@
   vars:
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_argocd_bootstrap_nodeport_https_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_HTTPS') }}"
+    platform_argocd_bootstrap_nodeport_verify_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_VERIFY_MODE') }}"
     platform_argocd_bootstrap_nodeport_https_effective: "{{ platform_argocd_bootstrap_nodeport_https | default(platform_argocd_bootstrap_nodeport_https_from_env, true) | default(30443, true) | int }}"
+    platform_argocd_bootstrap_nodeport_verify_mode_effective: "{{ platform_argocd_bootstrap_nodeport_verify_mode | default(platform_argocd_bootstrap_nodeport_verify_mode_from_env, true) | default('soft', true) }}"
     platform_argocd_bootstrap_exposure_state_effective: "{{ platform_argocd_bootstrap_exposure_state | default('present', true) }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
   tasks:
@@ -14,9 +16,10 @@
       ansible.builtin.assert:
         that:
           - platform_argocd_bootstrap_exposure_state_effective in ['present', 'absent']
+          - platform_argocd_bootstrap_nodeport_verify_mode_effective in ['strict', 'soft', 'disabled']
           - (platform_argocd_bootstrap_nodeport_https_effective | int) >= 30000
           - (platform_argocd_bootstrap_nodeport_https_effective | int) <= 32767
-        fail_msg: "PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_HTTPS must be within the Kubernetes NodePort range 30000-32767."
+        fail_msg: "PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_HTTPS must be within 30000-32767, and PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_VERIFY_MODE must be strict, soft, or disabled."
       run_once: true
 
     - name: Remove Argo CD bootstrap NodePort exposure
@@ -94,19 +97,27 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Verify Argo CD bootstrap NodePort from every node
+    - name: Probe Argo CD bootstrap NodePort from every node
       ansible.builtin.shell: |
         set -o pipefail
-        code="$(curl --silent --show-error --insecure --output /dev/null \
-          --write-out '%{http_code}' \
-          --connect-timeout 5 \
-          --max-time 20 \
-          https://{{ hostvars[inventory_hostname].ansible_host }}:{{ platform_argocd_bootstrap_nodeport_https_effective }}/)"
-        printf '%s\n' "${code}"
-        case "${code}" in
-          200|301|302|303|307|308|401|403) exit 0 ;;
-          *) exit 1 ;;
-        esac
+        host="{{ hostvars[inventory_hostname].ansible_host }}"
+        port="{{ platform_argocd_bootstrap_nodeport_https_effective }}"
+        for scheme in https http; do
+          code="$(curl --silent --show-error --insecure --output /dev/null \
+            --write-out '%{http_code}' \
+            --connect-timeout 5 \
+            --max-time 20 \
+            "${scheme}://${host}:${port}/" 2>/tmp/argocd-bootstrap-nodeport-curl.err || true)"
+          err="$(cat /tmp/argocd-bootstrap-nodeport-curl.err 2>/dev/null || true)"
+          printf '%s\n' "${scheme}://${host}:${port} http_code=${code}"
+          if [ -n "${err}" ]; then
+            printf '%s\n' "${err}"
+          fi
+          case "${code}" in
+            200|301|302|303|307|308|401|403) exit 0 ;;
+          esac
+        done
+        exit 1
       args:
         executable: /bin/bash
       register: platform_argocd_bootstrap_nodeport_check
@@ -114,6 +125,45 @@
       delay: 10
       until: platform_argocd_bootstrap_nodeport_check.rc == 0
       changed_when: false
+      failed_when: false
+      when: platform_argocd_bootstrap_nodeport_verify_mode_effective != 'disabled'
+
+    - name: Stop after Argo CD bootstrap NodePort strict verification failure
+      ansible.builtin.fail:
+        msg: |
+          Argo CD bootstrap NodePort did not answer from {{ inventory_hostname }}.
+
+          Probe output:
+          {{ platform_argocd_bootstrap_nodeport_check.stdout | default('not collected') }}
+
+          Probe errors:
+          {{ platform_argocd_bootstrap_nodeport_check.stderr | default('') }}
+
+          This usually means the temporary bootstrap NodePort is blocked by host
+          firewall rules, kube-proxy/CNI service routing, or Argo CD is serving
+          HTTP while the probe first tries HTTPS.
+
+          To keep first deployment moving and rely on the final Traefik/MetalLB
+          ingress path, rerun with:
+          PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_VERIFY_MODE=soft make platform-first-deploy-seed
+      when:
+        - platform_argocd_bootstrap_nodeport_verify_mode_effective == 'strict'
+        - platform_argocd_bootstrap_nodeport_check.rc | default(1) != 0
+
+    - name: Warn when Argo CD bootstrap NodePort soft probe fails
+      ansible.builtin.debug:
+        msg: |
+          Argo CD bootstrap NodePort service was created, but the soft probe from
+          {{ inventory_hostname }} did not pass.
+
+          Probe output:
+          {{ platform_argocd_bootstrap_nodeport_check.stdout | default('not collected') }}
+
+          First deployment will continue because the NodePort is temporary. The
+          final supported access path is the app VIP through Traefik/MetalLB.
+      when:
+        - platform_argocd_bootstrap_nodeport_verify_mode_effective == 'soft'
+        - platform_argocd_bootstrap_nodeport_check.rc | default(1) != 0
 
     - name: Show Argo CD bootstrap access URLs
       ansible.builtin.debug:

@@ -224,7 +224,12 @@ The default bootstrap Argo CD URL is:
 https://<NODE_1_IP>:30443
 ```
 
-The same NodePort works through all three node IPs. To change the bootstrap HTTPS port:
+The bootstrap NodePort probe is soft by default because host firewalls or
+node-local service routing can block direct NodePort access while the final
+Traefik/MetalLB ingress path is still healthy. To make NodePort verification
+fail-fast, set `PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_VERIFY_MODE=strict`.
+
+To change the bootstrap HTTPS port:
 
 ```bash
 PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_HTTPS=31443 make platform-argocd-expose

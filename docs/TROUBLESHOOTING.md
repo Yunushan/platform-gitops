@@ -18,7 +18,7 @@ To bootstrap Argo CD without manually copying commands:
 make platform-argocd
 ```
 
-`make platform-argocd` also exposes Argo CD through a temporary bootstrap NodePort. The default browser URL is `https://<NODE_1_IP>:30443`, and the same port works on every RKE2 node IP. To expose an already-installed Argo CD instance again:
+`make platform-argocd` also exposes Argo CD through a temporary bootstrap NodePort. The default browser URL is `https://<NODE_1_IP>:30443`. The NodePort probe is soft by default because some host firewalls or CNI/kube-proxy paths block direct NodePort access even though the final Traefik/MetalLB ingress will work. To expose an already-installed Argo CD instance again:
 
 ```bash
 make platform-argocd-expose
@@ -28,6 +28,12 @@ To use a different bootstrap port:
 
 ```bash
 PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_HTTPS=31443 make platform-argocd-expose
+```
+
+To require the temporary NodePort to pass from every node:
+
+```bash
+PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_VERIFY_MODE=strict make platform-argocd-expose
 ```
 
 After Traefik and MetalLB provide the real ingress URL, remove the temporary NodePort exposure:
