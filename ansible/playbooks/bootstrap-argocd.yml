@@ -372,43 +372,102 @@
               delegate_to: "{{ rke2_first_server }}"
               run_once: true
 
-            - name: Wait for core Argo CD deployments after fallback
-              ansible.builtin.shell: |
-                set -o pipefail
-                K=/var/lib/rancher/rke2/bin/kubectl
-                C=/etc/rancher/rke2/rke2.yaml
-                for deployment in {{ platform_argocd_core_deployments | join(' ') }}; do
-                  "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null
-                  "$K" --kubeconfig "$C" -n argocd wait --for=condition=Available "deployment/${deployment}" --timeout={{ platform_argocd_poll_interval_effective }}s
-                done
-              args:
-                executable: /bin/bash
-              register: platform_argocd_fallback_deployments
-              retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
-              delay: "{{ platform_argocd_poll_interval_effective }}"
-              until: platform_argocd_fallback_deployments.rc == 0
-              changed_when: false
-              delegate_to: "{{ rke2_first_server }}"
-              run_once: true
+            - name: Wait for core Argo CD workloads after fallback
+              block:
+                - name: Wait for core Argo CD deployments after fallback
+                  ansible.builtin.shell: |
+                    set -o pipefail
+                    K=/var/lib/rancher/rke2/bin/kubectl
+                    C=/etc/rancher/rke2/rke2.yaml
+                    for deployment in {{ platform_argocd_core_deployments | join(' ') }}; do
+                      "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null
+                      "$K" --kubeconfig "$C" -n argocd wait --for=condition=Available "deployment/${deployment}" --timeout={{ platform_argocd_poll_interval_effective }}s
+                    done
+                  args:
+                    executable: /bin/bash
+                  register: platform_argocd_fallback_deployments
+                  retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+                  delay: "{{ platform_argocd_poll_interval_effective }}"
+                  until: platform_argocd_fallback_deployments.rc == 0
+                  changed_when: false
+                  delegate_to: "{{ rke2_first_server }}"
+                  run_once: true
 
-            - name: Wait for core Argo CD statefulsets after fallback
-              ansible.builtin.shell: |
-                set -o pipefail
-                K=/var/lib/rancher/rke2/bin/kubectl
-                C=/etc/rancher/rke2/rke2.yaml
-                for statefulset in {{ platform_argocd_core_statefulsets | join(' ') }}; do
-                  "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null
-                  "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s
-                done
-              args:
-                executable: /bin/bash
-              register: platform_argocd_fallback_statefulsets
-              retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
-              delay: "{{ platform_argocd_poll_interval_effective }}"
-              until: platform_argocd_fallback_statefulsets.rc == 0
-              changed_when: false
-              delegate_to: "{{ rke2_first_server }}"
-              run_once: true
+                - name: Wait for core Argo CD statefulsets after fallback
+                  ansible.builtin.shell: |
+                    set -o pipefail
+                    K=/var/lib/rancher/rke2/bin/kubectl
+                    C=/etc/rancher/rke2/rke2.yaml
+                    for statefulset in {{ platform_argocd_core_statefulsets | join(' ') }}; do
+                      "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null
+                      "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s
+                    done
+                  args:
+                    executable: /bin/bash
+                  register: platform_argocd_fallback_statefulsets
+                  retries: "{{ (((platform_argocd_rollout_timeout_effective | int) / (platform_argocd_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+                  delay: "{{ platform_argocd_poll_interval_effective }}"
+                  until: platform_argocd_fallback_statefulsets.rc == 0
+                  changed_when: false
+                  delegate_to: "{{ rke2_first_server }}"
+                  run_once: true
+              rescue:
+                - name: Collect core Argo CD fallback diagnostics
+                  ansible.builtin.shell: |
+                    K=/var/lib/rancher/rke2/bin/kubectl
+                    C=/etc/rancher/rke2/rke2.yaml
+                    echo "===== argocd pods ====="
+                    "$K" --kubeconfig "$C" -n argocd get pods -o wide || true
+                    echo
+                    echo "===== argocd workloads ====="
+                    "$K" --kubeconfig "$C" -n argocd get deployment,statefulset,replicaset -o wide || true
+                    echo
+                    echo "===== argocd application-controller statefulset ====="
+                    "$K" --kubeconfig "$C" -n argocd describe statefulset/argocd-application-controller || true
+                    echo
+                    echo "===== failing argocd pod details ====="
+                    failing_pods="$("$K" --kubeconfig "$C" -n argocd get pods --no-headers 2>/dev/null |
+                      awk '$3 != "Running" { print $1; next } { split($2, ready, "/"); if (ready[1] != ready[2]) print $1 }')"
+                    if [ -z "${failing_pods}" ]; then
+                      echo "No failing pods detected by phase/ready columns."
+                    else
+                      for pod_name in ${failing_pods}; do
+                        echo "--- pod/${pod_name} describe ---"
+                        "$K" --kubeconfig "$C" -n argocd describe "pod/${pod_name}" | sed -n '/Init Containers:/,/Conditions:/p;/Containers:/,/Conditions:/p;/Events:/,$p' || true
+                        for container_name in $("$K" --kubeconfig "$C" -n argocd get "pod/${pod_name}" -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null); do
+                          echo "--- pod/${pod_name} logs container/${container_name} current ---"
+                          "$K" --kubeconfig "$C" -n argocd logs "pod/${pod_name}" -c "${container_name}" --tail=120 || true
+                          echo "--- pod/${pod_name} logs container/${container_name} previous ---"
+                          "$K" --kubeconfig "$C" -n argocd logs "pod/${pod_name}" -c "${container_name}" --previous --tail=120 || true
+                        done
+                      done
+                    fi
+                    echo
+                    echo "===== argocd events ====="
+                    "$K" --kubeconfig "$C" -n argocd get events --sort-by=.lastTimestamp | tail -160 || true
+                  args:
+                    executable: /bin/bash
+                  register: platform_argocd_core_fallback_diagnostics
+                  changed_when: false
+                  failed_when: false
+                  delegate_to: "{{ rke2_first_server }}"
+                  run_once: true
+
+                - name: Print core Argo CD fallback diagnostics
+                  ansible.builtin.debug:
+                    var: platform_argocd_core_fallback_diagnostics.stdout_lines
+                  run_once: true
+
+                - name: Stop after core Argo CD fallback failure
+                  ansible.builtin.fail:
+                    msg: |
+                      Core Argo CD fallback did not become available within
+                      {{ platform_argocd_rollout_timeout_effective }}s.
+
+                      The blocking workload is usually argocd-application-controller.
+                      Review the diagnostics above for pod status, scheduling,
+                      image pull, crash, permission, or API connectivity errors.
+                  run_once: true
 
             - name: Mark Argo CD core fallback successful
               ansible.builtin.set_fact:
