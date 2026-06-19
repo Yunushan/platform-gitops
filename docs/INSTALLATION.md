@@ -305,6 +305,11 @@ by default. Disable that retry with:
 PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY=false make platform-first-deploy
 ```
 
+The Argo CD controller may log one Redis timeout while pods are still starting.
+The bootstrap waits at least `PLATFORM_ARGOCD_SERVICE_PATH_FAST_FAIL_AFTER=90`
+seconds and requires repeated matching timeouts before treating it as a real
+ClusterIP service-path failure.
+
 For fully unattended bootstrap, copy the env template and run the automatic
 target:
 

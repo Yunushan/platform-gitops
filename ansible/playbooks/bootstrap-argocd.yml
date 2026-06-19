@@ -18,6 +18,7 @@
     platform_argocd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_URL') }}"
     platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
     platform_argocd_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_POLL_INTERVAL') }}"
+    platform_argocd_service_path_fast_fail_after_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_PATH_FAST_FAIL_AFTER') }}"
     platform_repo_url_effective: "{{ platform_repo_url | default(platform_repo_url_from_env, true) }}"
     platform_repo_username_effective: "{{ platform_repo_username | default(platform_repo_username_from_env, true) | default('x-access-token', true) }}"
     platform_repo_token_effective: "{{ platform_repo_token | default(platform_repo_token_from_env, true) | default('', true) }}"
@@ -38,6 +39,7 @@
     platform_argocd_manifest_url_effective: "{{ platform_argocd_manifest_url | default(platform_argocd_manifest_url_from_env, true) | default(platform_argocd_default_manifest_url, true) }}"
     platform_argocd_rollout_timeout_effective: "{{ platform_argocd_rollout_timeout | default(platform_argocd_rollout_timeout_from_env, true) | default('600', true) | string | regex_replace('s$', '') | int }}"
     platform_argocd_poll_interval_effective: "{{ platform_argocd_poll_interval | default(platform_argocd_poll_interval_from_env, true) | default(10, true) | int }}"
+    platform_argocd_service_path_fast_fail_after_effective: "{{ platform_argocd_service_path_fast_fail_after | default(platform_argocd_service_path_fast_fail_after_from_env, true) | default(90, true) | int }}"
     platform_argocd_deployments_effective: >-
       {{
         (platform_argocd_bootstrap_mode_effective == 'core')
@@ -276,15 +278,26 @@
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
             service_path_timeout_regex='dial tcp 10\.43\.[0-9]+\.[0-9]+:6379: i/o timeout|dial tcp 10\.43\.0\.1:443: i/o timeout|context deadline exceeded.*10\.43\.0\.1:443'
+            service_path_fast_fail_after={{ platform_argocd_service_path_fast_fail_after_effective }}
             for statefulset in {{ platform_argocd_statefulsets_effective | join(' ') }}; do
               "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null
               if ! "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s; then
                 if [ "${statefulset}" = "argocd-application-controller" ] &&
-                  "$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 >/dev/null 2>&1 &&
-                  "$K" --kubeconfig "$C" -n argocd logs pod/argocd-application-controller-0 --tail=80 2>/dev/null |
-                    grep -E "${service_path_timeout_regex}" >/dev/null; then
-                  echo "Detected Argo CD controller ClusterIP service-path timeout; stopping rollout wait early so repair can run." >&2
-                  exit 42
+                  "$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 >/dev/null 2>&1; then
+                  pod_started_at="$("$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 -o jsonpath='{.status.startTime}' 2>/dev/null || true)"
+                  pod_age=0
+                  if [ -n "${pod_started_at}" ]; then
+                    pod_started_epoch="$(date -d "${pod_started_at}" +%s 2>/dev/null || echo 0)"
+                    if [ "${pod_started_epoch}" -gt 0 ]; then
+                      pod_age="$(( $(date +%s) - pod_started_epoch ))"
+                    fi
+                  fi
+                  timeout_count="$("$K" --kubeconfig "$C" -n argocd logs pod/argocd-application-controller-0 --tail=120 2>/dev/null |
+                    grep -E -c "${service_path_timeout_regex}" || true)"
+                  if [ "${pod_age}" -ge "${service_path_fast_fail_after}" ] && [ "${timeout_count}" -ge 2 ]; then
+                    echo "Detected repeated Argo CD controller ClusterIP service-path timeout after ${pod_age}s; stopping rollout wait early so repair can run." >&2
+                    exit 42
+                  fi
                 fi
                 exit 1
               fi
@@ -496,15 +509,26 @@
                     K=/var/lib/rancher/rke2/bin/kubectl
                     C=/etc/rancher/rke2/rke2.yaml
                     service_path_timeout_regex='dial tcp 10\.43\.[0-9]+\.[0-9]+:6379: i/o timeout|dial tcp 10\.43\.0\.1:443: i/o timeout|context deadline exceeded.*10\.43\.0\.1:443'
+                    service_path_fast_fail_after={{ platform_argocd_service_path_fast_fail_after_effective }}
                     for statefulset in {{ platform_argocd_core_statefulsets | join(' ') }}; do
                       "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null
                       if ! "$K" --kubeconfig "$C" -n argocd rollout status "statefulset/${statefulset}" --timeout={{ platform_argocd_poll_interval_effective }}s; then
                         if [ "${statefulset}" = "argocd-application-controller" ] &&
-                          "$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 >/dev/null 2>&1 &&
-                          "$K" --kubeconfig "$C" -n argocd logs pod/argocd-application-controller-0 --tail=80 2>/dev/null |
-                            grep -E "${service_path_timeout_regex}" >/dev/null; then
-                          echo "Detected Argo CD controller ClusterIP service-path timeout; stopping fallback rollout wait early." >&2
-                          exit 42
+                          "$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 >/dev/null 2>&1; then
+                          pod_started_at="$("$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 -o jsonpath='{.status.startTime}' 2>/dev/null || true)"
+                          pod_age=0
+                          if [ -n "${pod_started_at}" ]; then
+                            pod_started_epoch="$(date -d "${pod_started_at}" +%s 2>/dev/null || echo 0)"
+                            if [ "${pod_started_epoch}" -gt 0 ]; then
+                              pod_age="$(( $(date +%s) - pod_started_epoch ))"
+                            fi
+                          fi
+                          timeout_count="$("$K" --kubeconfig "$C" -n argocd logs pod/argocd-application-controller-0 --tail=120 2>/dev/null |
+                            grep -E -c "${service_path_timeout_regex}" || true)"
+                          if [ "${pod_age}" -ge "${service_path_fast_fail_after}" ] && [ "${timeout_count}" -ge 2 ]; then
+                            echo "Detected repeated Argo CD controller ClusterIP service-path timeout after ${pod_age}s; stopping fallback rollout wait early." >&2
+                            exit 42
+                          fi
                         fi
                         exit 1
                       fi

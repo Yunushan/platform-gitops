@@ -127,7 +127,9 @@ private repository token is supplied.
 During first deployment, Argo CD bootstrap is retried once after an automatic
 DNS/ClusterIP service-path repair when the controller cannot reach services
 such as `argocd-redis`. Set `PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY=false`
-to disable that retry.
+to disable that retry. The failure detector waits
+`PLATFORM_ARGOCD_SERVICE_PATH_FAST_FAIL_AFTER=90` seconds before fast-failing on
+repeated Redis ClusterIP timeouts so fresh Argo CD pods can warm up normally.
 
 By default, `PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true` renders a bootstrap
 Forgejo profile and a Longhorn backup target value before validation and push.
