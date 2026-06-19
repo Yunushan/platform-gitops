@@ -24,6 +24,7 @@ PLATFORM_SEED_GIT_PORT="${PLATFORM_SEED_GIT_PORT:-9418}"
 PLATFORM_SEED_GIT_OWNER="${PLATFORM_SEED_GIT_OWNER:-}"
 PLATFORM_SEED_GIT_WAIT_TIMEOUT="${PLATFORM_SEED_GIT_WAIT_TIMEOUT:-45}"
 PLATFORM_SEED_GIT_REMOTE_NAME="${PLATFORM_SEED_GIT_REMOTE_NAME:-seed}"
+PLATFORM_SEED_GIT_FORCE_WITH_LEASE="${PLATFORM_SEED_GIT_FORCE_WITH_LEASE:-true}"
 
 export PLATFORM_PROFILE
 export PLATFORM_GITOPS_PLACEHOLDER_MODE
@@ -34,6 +35,7 @@ export PLATFORM_SEED_GIT_REPO_NAME
 export PLATFORM_SEED_GIT_PORT
 export PLATFORM_SEED_GIT_OWNER
 export PLATFORM_SEED_GIT_WAIT_TIMEOUT
+export PLATFORM_SEED_GIT_FORCE_WITH_LEASE
 
 if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
   python3 scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
@@ -112,7 +114,22 @@ else
   git remote add "${PLATFORM_SEED_GIT_REMOTE_NAME}" "${seed_push_url}"
 fi
 
-GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+if [[ "${PLATFORM_SEED_GIT_FORCE_WITH_LEASE}" == "true" ]]; then
+  seed_remote_head="$(
+    GIT_TERMINAL_PROMPT=0 git ls-remote --heads "${PLATFORM_SEED_GIT_REMOTE_NAME}" "${PLATFORM_DEPLOY_BRANCH}" |
+      awk '{ print $1; exit }'
+  )"
+  if [[ -n "${seed_remote_head}" ]]; then
+    echo "Updating temporary seed Git mirror with --force-with-lease."
+    GIT_TERMINAL_PROMPT=0 git push \
+      --force-with-lease="refs/heads/${PLATFORM_DEPLOY_BRANCH}:${seed_remote_head}" \
+      "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+  else
+    GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+  fi
+else
+  GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+fi
 
 export PLATFORM_REPO_URL="${seed_read_url}"
 export PLATFORM_APPLY_GITOPS=true

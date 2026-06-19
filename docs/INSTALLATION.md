@@ -322,6 +322,11 @@ ${EDITOR:-vi} private/seed-git.env
 make platform-first-deploy-seed
 ```
 
+Repeat seed bootstrap runs update the temporary seed Git mirror with
+`--force-with-lease` by default, controlled by
+`PLATFORM_SEED_GIT_FORCE_WITH_LEASE=true`. This avoids manual reconciliation
+when the seed branch is stale after local/private bootstrap commits.
+
 After Forgejo is deployed and becomes the long-term source, remove the
 temporary seed service:
 

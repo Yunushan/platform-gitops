@@ -166,6 +166,12 @@ deployed, create the long-term private repository in Forgejo, push or mirror
 the deployment repo there, update Argo CD to the Forgejo URL, then remove the
 temporary seed service:
 
+The seed push defaults to `PLATFORM_SEED_GIT_FORCE_WITH_LEASE=true` because the
+seed repository is a temporary mirror of the current private deployment state.
+This lets repeat bootstrap runs update a stale seed branch without manual
+pull/merge work, while still refusing the push if the remote branch changes
+between the pre-push check and the update.
+
 ```bash
 make platform-seed-git-remove
 ```
