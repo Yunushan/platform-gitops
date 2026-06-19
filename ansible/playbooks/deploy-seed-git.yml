@@ -35,6 +35,45 @@
         - inventory_hostname == rke2_first_server
         - platform_seed_git_state_effective == 'present'
 
+    - name: Ensure Git daemon component is available
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        has_git_daemon() {
+          git daemon -h 2>&1 | grep -q 'usage: git daemon'
+        }
+
+        if has_git_daemon; then
+          echo "git daemon is already available"
+          exit 0
+        fi
+
+        if command -v dnf >/dev/null 2>&1; then
+          dnf -y install git-daemon
+        elif command -v yum >/dev/null 2>&1; then
+          yum -y install git-daemon
+        elif command -v apt-get >/dev/null 2>&1; then
+          apt-get update
+          apt-get -y install git-daemon-run || apt-get -y install git-daemon-sysvinit
+        elif command -v zypper >/dev/null 2>&1; then
+          zypper --non-interactive install git-daemon
+        fi
+
+        if has_git_daemon; then
+          echo "git daemon is available after package install"
+          exit 0
+        fi
+
+        echo "git daemon component is not available. Install the OS package that provides 'git daemon' and rerun." >&2
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_seed_git_daemon_check
+      changed_when: "'available after package install' in platform_seed_git_daemon_check.stdout"
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
     - name: Create seed Git root
       ansible.builtin.file:
         path: "{{ platform_seed_git_root_effective }}"
@@ -160,6 +199,9 @@
             echo "===== git binary ====="
             command -v git || true
             git --version || true
+            echo
+            echo "===== git daemon availability ====="
+            git daemon -h 2>&1 || true
           args:
             executable: /bin/bash
           register: platform_seed_git_diagnostics
