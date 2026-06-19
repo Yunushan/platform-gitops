@@ -10,10 +10,14 @@
     platform_seed_git_root_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_ROOT') }}"
     platform_seed_git_repo_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_REPO_NAME') }}"
     platform_seed_git_port_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_PORT') }}"
+    platform_seed_git_owner_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_OWNER') }}"
+    platform_seed_git_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_WAIT_TIMEOUT') }}"
     platform_seed_git_state_effective: "{{ platform_seed_git_state | default(platform_seed_git_state_from_env, true) | default('present', true) }}"
     platform_seed_git_root_effective: "{{ platform_seed_git_root | default(platform_seed_git_root_from_env, true) | default('/opt/platform/seed-git', true) }}"
     platform_seed_git_repo_name_effective: "{{ platform_seed_git_repo_name | default(platform_seed_git_repo_name_from_env, true) | default('platform-gitops.git', true) }}"
     platform_seed_git_port_effective: "{{ platform_seed_git_port | default(platform_seed_git_port_from_env, true) | default(9418, true) | int }}"
+    platform_seed_git_owner_effective: "{{ platform_seed_git_owner | default(platform_seed_git_owner_from_env, true) | default(hostvars[rke2_first_server].ansible_user | default('root'), true) }}"
+    platform_seed_git_wait_timeout_effective: "{{ platform_seed_git_wait_timeout | default(platform_seed_git_wait_timeout_from_env, true) | default(45, true) | int }}"
     platform_seed_git_repo_path: "{{ platform_seed_git_root_effective }}/{{ platform_seed_git_repo_name_effective }}"
   tasks:
     - name: Require supported seed Git state
@@ -35,8 +39,8 @@
       ansible.builtin.file:
         path: "{{ platform_seed_git_root_effective }}"
         state: directory
-        owner: root
-        group: root
+        owner: "{{ platform_seed_git_owner_effective }}"
+        group: "{{ platform_seed_git_owner_effective }}"
         mode: "0755"
       when:
         - inventory_hostname == rke2_first_server
@@ -54,20 +58,20 @@
       ansible.builtin.file:
         path: "{{ platform_seed_git_repo_path }}/git-daemon-export-ok"
         state: touch
-        owner: root
-        group: root
+        owner: "{{ platform_seed_git_owner_effective }}"
+        group: "{{ platform_seed_git_owner_effective }}"
         mode: "0644"
       when:
         - inventory_hostname == rke2_first_server
         - platform_seed_git_state_effective == 'present'
 
-    - name: Make seed repository readable by git daemon
+    - name: Make seed repository readable and writable by seed owner
       ansible.builtin.file:
         path: "{{ platform_seed_git_repo_path }}"
         state: directory
-        owner: root
-        group: root
-        mode: "0755"
+        owner: "{{ platform_seed_git_owner_effective }}"
+        group: "{{ platform_seed_git_owner_effective }}"
+        mode: "0775"
         recurse: true
       when:
         - inventory_hostname == rke2_first_server
@@ -87,7 +91,7 @@
 
           [Service]
           Type=simple
-          User=nobody
+          User={{ platform_seed_git_owner_effective }}
           ExecStart=/usr/bin/git daemon --reuseaddr --base-path={{ platform_seed_git_root_effective }} --export-all --informative-errors --verbose --listen=0.0.0.0 --port={{ platform_seed_git_port_effective }} {{ platform_seed_git_root_effective }}
           Restart=on-failure
           RestartSec=5s
@@ -117,20 +121,74 @@
       ansible.builtin.systemd:
         name: platform-seed-git.service
         enabled: true
-        state: started
+        state: restarted
         daemon_reload: true
       when:
         - inventory_hostname == rke2_first_server
         - platform_seed_git_state_effective == 'present'
 
-    - name: Wait for seed Git port
-      ansible.builtin.wait_for:
-        host: "127.0.0.1"
-        port: "{{ platform_seed_git_port_effective }}"
-        timeout: 30
-      when:
-        - inventory_hostname == rke2_first_server
-        - platform_seed_git_state_effective == 'present'
+    - name: Wait for seed Git port and collect diagnostics on failure
+      block:
+        - name: Wait for seed Git port
+          ansible.builtin.wait_for:
+            host: "127.0.0.1"
+            port: "{{ platform_seed_git_port_effective }}"
+            timeout: "{{ platform_seed_git_wait_timeout_effective }}"
+          when:
+            - inventory_hostname == rke2_first_server
+            - platform_seed_git_state_effective == 'present'
+      rescue:
+        - name: Collect seed Git startup diagnostics
+          ansible.builtin.shell: |
+            set -o pipefail
+            echo "===== platform-seed-git service ====="
+            systemctl status platform-seed-git.service --no-pager -l || true
+            echo
+            echo "===== platform-seed-git journal ====="
+            journalctl -u platform-seed-git.service -n 120 --no-pager || true
+            echo
+            echo "===== seed git owner ====="
+            id {{ platform_seed_git_owner_effective | quote }} || true
+            echo
+            echo "===== seed git repo path ====="
+            ls -ld {{ platform_seed_git_root_effective | quote }} {{ platform_seed_git_repo_path | quote }} || true
+            find {{ platform_seed_git_repo_path | quote }} -maxdepth 2 -type d -printf '%M %u %g %p\n' 2>/dev/null | head -80 || true
+            echo
+            echo "===== listeners ====="
+            ss -lntp 2>/dev/null | grep -E ':{{ platform_seed_git_port_effective }}\b|State' || true
+            echo
+            echo "===== git binary ====="
+            command -v git || true
+            git --version || true
+          args:
+            executable: /bin/bash
+          register: platform_seed_git_diagnostics
+          changed_when: false
+          failed_when: false
+          when:
+            - inventory_hostname == rke2_first_server
+            - platform_seed_git_state_effective == 'present'
+
+        - name: Print seed Git startup diagnostics
+          ansible.builtin.debug:
+            var: platform_seed_git_diagnostics.stdout_lines
+          when:
+            - inventory_hostname == rke2_first_server
+            - platform_seed_git_state_effective == 'present'
+
+        - name: Stop after seed Git startup failure
+          ansible.builtin.fail:
+            msg: |
+              Temporary seed Git did not listen on 127.0.0.1:{{ platform_seed_git_port_effective }}
+              within {{ platform_seed_git_wait_timeout_effective }}s.
+
+              The seed service now runs as {{ platform_seed_git_owner_effective }}
+              and the bare repository is owned by that user so the SSH push can
+              work after startup. Review the diagnostics above for the exact
+              systemd or git-daemon error.
+          when:
+            - inventory_hostname == rke2_first_server
+            - platform_seed_git_state_effective == 'present'
 
     - name: Stop and disable seed Git service
       ansible.builtin.systemd:
@@ -169,6 +227,7 @@
       ansible.builtin.debug:
         msg:
           - "Seed Git state: {{ platform_seed_git_state_effective }}"
+          - "Seed Git owner: {{ platform_seed_git_owner_effective }}"
           - "Seed Git repository path: {{ platform_seed_git_repo_path }}"
           - "Seed Git read URL: git://{{ hostvars[rke2_first_server].ansible_host | default(rke2_first_server) }}:{{ platform_seed_git_port_effective }}/{{ platform_seed_git_repo_name_effective }}"
       run_once: true
