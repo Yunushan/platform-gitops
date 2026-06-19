@@ -236,11 +236,12 @@ After Traefik and MetalLB are ready, prefer the platform ingress URL and remove 
 make platform-argocd-unexpose
 ```
 
-To register platform applications in Argo CD, first replace or privately render all placeholders in the selected GitOps profile. Then run:
+To register platform applications in Argo CD with strict production validation, first replace or privately render all placeholders in the selected GitOps profile. Then run:
 
 ```bash
 export PLATFORM_REPO_URL=<THIS_REPO_URL>
 export PLATFORM_APPLY_GITOPS=true
+export PLATFORM_GITOPS_PLACEHOLDER_MODE=strict
 export PLATFORM_PROFILE=default
 make platform-argocd
 ```
@@ -264,6 +265,13 @@ export PLATFORM_REPO_TOKEN
 
 make platform-first-deploy
 ```
+
+`platform-first-deploy`, `platform-first-deploy-auto`, and
+`platform-first-deploy-seed` default to
+`PLATFORM_GITOPS_PLACEHOLDER_MODE=skip-incomplete`. The bootstrap registers
+deployable applications and prints skipped applications that still need private
+values such as storage sizes, database DSNs, Redis endpoints, object storage
+buckets, backup targets, or TLS secret names.
 
 For fully unattended bootstrap, copy the env template and run the automatic
 target:
@@ -289,7 +297,9 @@ temporary seed service:
 make platform-seed-git-remove
 ```
 
-If unresolved placeholders remain, the playbook stops before registering applications so Argo CD does not sync incomplete production configuration.
+If unresolved placeholders remain and `PLATFORM_GITOPS_PLACEHOLDER_MODE=strict`
+is set, the playbook stops before registering applications so Argo CD does not
+sync incomplete production configuration.
 
 To deploy or repair the final ingress path separately:
 

@@ -69,6 +69,25 @@ PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argoc
 
 The playbook checks the selected GitOps profile for unresolved placeholders before it registers applications. This prevents Argo CD from syncing incomplete domains, storage sizes, backup targets, or secret references.
 
+For first bootstrap, use skip mode to register only deployable apps and print
+the incomplete apps:
+
+```bash
+PLATFORM_GITOPS_PLACEHOLDER_MODE=skip-incomplete \
+PLATFORM_REPO_URL=<THIS_REPO_URL> \
+PLATFORM_APPLY_GITOPS=true \
+make platform-argocd
+```
+
+Use strict mode after all private values are resolved:
+
+```bash
+PLATFORM_GITOPS_PLACEHOLDER_MODE=strict \
+PLATFORM_REPO_URL=<THIS_REPO_URL> \
+PLATFORM_APPLY_GITOPS=true \
+make platform-argocd
+```
+
 ## MetalLB does not assign addresses
 
 Check that the address pool was customized from placeholders to your private network range in ignored or encrypted configuration.

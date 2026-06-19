@@ -76,10 +76,15 @@ make platform-first-deploy
 For a public read-only repository, omit `PLATFORM_REPO_USERNAME` and
 `PLATFORM_REPO_TOKEN`.
 
-The target still refuses to register incomplete GitOps applications when the
-selected profile contains unresolved placeholders such as storage sizes,
-database endpoints, Redis endpoints, object storage, backup targets, or TLS
-secret references.
+By default, first deployment uses
+`PLATFORM_GITOPS_PLACEHOLDER_MODE=skip-incomplete`. It registers deployable
+applications and prints skipped applications that still contain unresolved
+placeholders such as storage sizes, database endpoints, Redis endpoints, object
+storage, backup targets, or TLS secret references.
+
+Set `PLATFORM_GITOPS_PLACEHOLDER_MODE=strict` when all private values are
+resolved and you want the deployment to fail before registering anything if a
+placeholder remains.
 
 ## Fully Non-Interactive First Deployment
 
@@ -110,8 +115,8 @@ Runs platform-first-deploy
 
 The Git token is used as a one-command Git HTTP authorization header during
 push and is not written into the Git remote URL. Argo CD receives the same
-token as a Kubernetes repository Secret only after the selected GitOps profile
-passes the unresolved-placeholder guard.
+token as a Kubernetes repository Secret before application registration when a
+private repository token is supplied.
 
 ## No Previous Git Server
 

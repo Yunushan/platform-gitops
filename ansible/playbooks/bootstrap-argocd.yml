@@ -12,6 +12,7 @@
     platform_repo_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_SECRET_NAME') }}"
     platform_profile_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
     platform_apply_gitops_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APPLY_GITOPS') }}"
+    platform_gitops_placeholder_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_GITOPS_PLACEHOLDER_MODE') }}"
     platform_argocd_bootstrap_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_MODE') }}"
     platform_argocd_auto_core_fallback_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_AUTO_CORE_FALLBACK') }}"
     platform_argocd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_URL') }}"
@@ -23,6 +24,7 @@
     platform_repo_secret_name_effective: "{{ platform_repo_secret_name | default(platform_repo_secret_name_from_env, true) | default('platform-gitops-repo', true) }}"
     platform_profile_effective: "{{ platform_profile | default(platform_profile_from_env, true) | default('default', true) }}"
     platform_apply_gitops_effective: "{{ platform_apply_gitops | default(platform_apply_gitops_from_env, true) | default(false, true) | bool }}"
+    platform_gitops_placeholder_mode_effective: "{{ platform_gitops_placeholder_mode | default(platform_gitops_placeholder_mode_from_env, true) | default('strict', true) }}"
     platform_argocd_bootstrap_mode_effective: "{{ platform_argocd_bootstrap_mode | default(platform_argocd_bootstrap_mode_from_env, true) | default('ha', true) }}"
     platform_argocd_auto_core_fallback_effective: "{{ platform_argocd_auto_core_fallback | default(platform_argocd_auto_core_fallback_from_env, true) | default(true, true) | bool }}"
     platform_argocd_default_manifest_url: >-
@@ -71,6 +73,7 @@
             playbook_dir + '/../../gitops/clusters/rke2-main/platform-apps.yaml'
           )
       }}
+    platform_rendered_applications_file: "/tmp/platform-gitops-{{ platform_profile_effective }}-applications.rendered.yaml"
   tasks:
     - name: Require a supported platform profile
       ansible.builtin.assert:
@@ -84,6 +87,13 @@
         that:
           - platform_argocd_bootstrap_mode_effective in ['ha', 'core']
         fail_msg: "PLATFORM_ARGOCD_BOOTSTRAP_MODE must be ha or core."
+      run_once: true
+
+    - name: Require a supported GitOps placeholder mode
+      ansible.builtin.assert:
+        that:
+          - platform_gitops_placeholder_mode_effective in ['strict', 'skip-incomplete']
+        fail_msg: "PLATFORM_GITOPS_PLACEHOLDER_MODE must be strict or skip-incomplete."
       run_once: true
 
     - name: Show Argo CD bootstrap mode
@@ -637,7 +647,55 @@
           {{ platform_placeholder_scan.stdout }}
       when:
         - platform_apply_gitops_effective
+        - platform_gitops_placeholder_mode_effective == 'strict'
         - platform_placeholder_scan.stdout | length > 0
+      run_once: true
+
+    - name: Render deployable GitOps applications and skip incomplete apps
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 scripts/render_deployable_gitops_apps.py \
+          --repo-root "$PWD" \
+          --applications-file "{{ platform_applications_file }}" \
+          --repo-url "{{ platform_repo_url_effective }}" \
+          --output "{{ platform_rendered_applications_file }}"
+      args:
+        executable: /bin/bash
+        chdir: "{{ playbook_dir }}/../.."
+      register: platform_rendered_applications
+      changed_when: true
+      become: false
+      delegate_to: localhost
+      when:
+        - platform_apply_gitops_effective
+        - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
+        - platform_placeholder_scan.stdout | length > 0
+      run_once: true
+
+    - name: Show deployable and skipped GitOps applications
+      ansible.builtin.debug:
+        var: platform_rendered_applications.stdout_lines
+      when:
+        - platform_apply_gitops_effective
+        - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
+        - platform_placeholder_scan.stdout | length > 0
+      run_once: true
+
+    - name: Use rendered deployable GitOps application list
+      ansible.builtin.set_fact:
+        platform_applications_manifest_effective: "{{ lookup('ansible.builtin.file', platform_rendered_applications_file) }}"
+      when:
+        - platform_apply_gitops_effective
+        - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
+        - platform_placeholder_scan.stdout | length > 0
+      run_once: true
+
+    - name: Use complete GitOps application list
+      ansible.builtin.set_fact:
+        platform_applications_manifest_effective: "{{ lookup('ansible.builtin.file', platform_applications_file) | replace('<THIS_REPO_URL>', platform_repo_url_effective) }}"
+      when:
+        - platform_apply_gitops_effective
+        - platform_applications_manifest_effective is not defined
       run_once: true
 
     - name: Register private Git repository credentials when provided
@@ -698,7 +756,7 @@
         /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
       args:
         executable: /bin/bash
-        stdin: "{{ lookup('ansible.builtin.file', platform_applications_file) | replace('<THIS_REPO_URL>', platform_repo_url_effective) }}"
+        stdin: "{{ platform_applications_manifest_effective }}"
       register: platform_applications_apply
       changed_when: "'created' in platform_applications_apply.stdout or 'configured' in platform_applications_apply.stdout"
       no_log: true
