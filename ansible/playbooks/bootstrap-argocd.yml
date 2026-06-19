@@ -215,6 +215,28 @@
         var: platform_argocd_initial_snapshot.stdout_lines
       run_once: true
 
+    - name: Enable Argo CD Kustomize Helm rendering
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        "$K" --kubeconfig "$C" -n argocd patch configmap argocd-cm \
+          --type merge \
+          -p '{"data":{"kustomize.buildOptions":"--enable-helm"}}'
+
+        if "$K" --kubeconfig "$C" -n argocd get deployment/argocd-repo-server >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n argocd rollout restart deployment/argocd-repo-server
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_argocd_kustomize_helm_patch
+      changed_when: >-
+        'patched' in platform_argocd_kustomize_helm_patch.stdout or
+        'restarted' in platform_argocd_kustomize_helm_patch.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Force core Argo CD Redis parameters for core bootstrap mode
       ansible.builtin.shell: |
         set -o pipefail
