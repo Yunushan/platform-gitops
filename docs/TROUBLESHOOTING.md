@@ -71,6 +71,21 @@ points Argo CD at those services, restarts the Argo CD workloads, and refreshes
 Longhorn and Forgejo. It is useful when ordinary ClusterIP routing is unhealthy
 but pod-to-pod routing is still working.
 
+If the controller then times out to a pod IP such as `10.42.x.x:8081`, the
+cluster still has a pod-to-pod path problem. The repair target defaults to a
+bootstrap node-local fallback for Argo CD's controller, repo-server, and Redis
+so first deployment can continue while the wider CNI path is investigated:
+
+```bash
+make platform-argocd-service-repair
+```
+
+To disable that node-local fallback and only create the headless services:
+
+```bash
+PLATFORM_ARGOCD_SERVICE_REPAIR_NODE_LOCAL=false make platform-argocd-service-repair
+```
+
 If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
 
 ```bash
