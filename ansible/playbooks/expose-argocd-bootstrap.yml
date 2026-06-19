@@ -14,8 +14,8 @@
       ansible.builtin.assert:
         that:
           - platform_argocd_bootstrap_exposure_state_effective in ['present', 'absent']
-          - platform_argocd_bootstrap_nodeport_https_effective >= 30000
-          - platform_argocd_bootstrap_nodeport_https_effective <= 32767
+          - (platform_argocd_bootstrap_nodeport_https_effective | int) >= 30000
+          - (platform_argocd_bootstrap_nodeport_https_effective | int) <= 32767
         fail_msg: "PLATFORM_ARGOCD_BOOTSTRAP_NODEPORT_HTTPS must be within the Kubernetes NodePort range 30000-32767."
       run_once: true
 
@@ -72,7 +72,7 @@
                 protocol: TCP
                 port: 443
                 targetPort: 8080
-                nodePort: {{ platform_argocd_bootstrap_nodeport_https_effective }}
+                nodePort: {{ platform_argocd_bootstrap_nodeport_https_effective | int }}
       register: platform_argocd_bootstrap_service_apply
       changed_when: "'created' in platform_argocd_bootstrap_service_apply.stdout or 'configured' in platform_argocd_bootstrap_service_apply.stdout"
       delegate_to: "{{ rke2_first_server }}"
