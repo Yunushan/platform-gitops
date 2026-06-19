@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan platform-render-private-values platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-dns-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan platform-render-private-values platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-dns-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -23,6 +23,7 @@ help:
 	@echo "  platform-argocd-expose  Expose Argo CD through a bootstrap NodePort, default HTTPS port 30443"
 	@echo "  platform-argocd-unexpose  Remove the bootstrap Argo CD NodePort exposure"
 	@echo "  platform-argocd-diagnose  Show Argo CD rollout, image, event, log, and registry diagnostics"
+	@echo "  platform-argocd-service-repair  Repair Argo CD internal repo-server/Redis service reachability"
 	@echo "  platform-dns-repair  Verify pod DNS and repair CoreDNS upstreams for external chart repositories"
 	@echo "  platform-dns-repair-traefik  Verify pod DNS against the Traefik chart repository"
 	@echo "  platform-ingress  Install MetalLB/Traefik, bind the app VIP, and publish Argo CD on 443"
@@ -71,6 +72,7 @@ platform-first-deploy:
 		if [ "$${PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY:-true}" = "true" ]; then \
 			echo "Argo CD bootstrap failed; running automatic DNS/ClusterIP service-path repair and retrying once."; \
 			$(MAKE) platform-dns-repair; \
+			$(MAKE) platform-argocd-service-repair || true; \
 			PLATFORM_APPLY_GITOPS=true PLATFORM_PROFILE=$${PLATFORM_PROFILE:-premium-3node} PLATFORM_GITOPS_PLACEHOLDER_MODE=$${PLATFORM_GITOPS_PLACEHOLDER_MODE:-skip-incomplete} ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/bootstrap-argocd.yml; \
 		else \
 			exit 1; \
@@ -112,6 +114,9 @@ platform-argocd-unexpose:
 
 platform-argocd-diagnose:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/diagnose-argocd.yml
+
+platform-argocd-service-repair:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-argocd-service-path.yml
 
 platform-dns-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-cluster-dns.yml

@@ -58,6 +58,19 @@ make platform-argocd-diagnose
 
 The diagnostic target prints pods, workloads, services, CRDs, images, pod events/details, recent logs, recent events, and registry reachability checks for the image registries detected in Argo CD pods.
 
+If Argo CD applications stay `Unknown` and the controller logs show timeouts to
+`argocd-repo-server:8081` or `argocd-redis:6379`, repair Argo CD's internal
+service path:
+
+```bash
+make platform-argocd-service-repair
+```
+
+This creates headless internal services for the Argo CD repo-server and Redis,
+points Argo CD at those services, restarts the Argo CD workloads, and refreshes
+Longhorn and Forgejo. It is useful when ordinary ClusterIP routing is unhealthy
+but pod-to-pod routing is still working.
+
 If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
 
 ```bash

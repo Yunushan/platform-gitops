@@ -124,9 +124,10 @@ push and is not written into the Git remote URL. Argo CD receives the same
 token as a Kubernetes repository Secret before application registration when a
 private repository token is supplied.
 
-During first deployment, Argo CD bootstrap is retried once after an automatic
-DNS/ClusterIP service-path repair when the controller cannot reach services
-such as `argocd-redis`. Set `PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY=false`
+During first deployment, Argo CD bootstrap is retried once after automatic
+DNS/ClusterIP service-path repair and Argo CD internal repo-server/Redis service
+repair when the controller cannot reach services such as `argocd-redis` or
+`argocd-repo-server`. Set `PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY=false`
 to disable that retry. The failure detector waits
 `PLATFORM_ARGOCD_SERVICE_PATH_FAST_FAIL_AFTER=90` seconds before fast-failing on
 repeated Redis or repo-server ClusterIP timeouts so fresh Argo CD pods can warm

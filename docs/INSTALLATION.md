@@ -298,8 +298,9 @@ PLATFORM_FIRST_DEPLOY_DNS_REPAIR=false make platform-first-deploy
 ```
 
 If Argo CD still reports a ClusterIP service-path timeout during bootstrap,
-`platform-first-deploy` runs the same repair flow again and retries Argo CD once
-by default. Disable that retry with:
+`platform-first-deploy` runs the DNS/service-path repair again, applies the
+Argo CD internal repo-server/Redis service repair, and retries Argo CD once by
+default. Disable that retry with:
 
 ```bash
 PLATFORM_FIRST_DEPLOY_ARGOCD_REPAIR_RETRY=false make platform-first-deploy
