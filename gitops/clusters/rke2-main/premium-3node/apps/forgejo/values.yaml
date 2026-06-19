@@ -1,5 +1,6 @@
-# Forgejo remains single-replica until repository storage, SSH access, and restore
-# procedures are validated with shared storage or an external repository backend.
+# Forgejo bootstrap profile rendered by scripts/render_private_platform_values.py.
+# This mode uses SQLite and in-process cache/queue so the first dashboard can
+# come online before external PostgreSQL and Redis are configured.
 replicaCount: 1
 
 strategy:
@@ -12,14 +13,14 @@ ingress:
   enabled: true
   className: traefik
   hosts:
-    - host: forgejo.<PLATFORM_DOMAIN>
+    - host: gitops-arge.isbak.com.tr
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: forgejo-tls
       hosts:
-        - forgejo.<PLATFORM_DOMAIN>
+        - gitops-arge.isbak.com.tr
 
 postgresql:
   enabled: false
@@ -29,15 +30,15 @@ redis-cluster:
 
 persistence:
   enabled: true
-  size: <FORGEJO_DATA_SIZE>
+  size: 20Gi
   storageClass: longhorn-critical
 
 gitea:
   config:
     server:
-      DOMAIN: forgejo.<PLATFORM_DOMAIN>
-      ROOT_URL: https://forgejo.<PLATFORM_DOMAIN>/
-      SSH_DOMAIN: forgejo.<PLATFORM_DOMAIN>
+      DOMAIN: gitops-arge.isbak.com.tr
+      ROOT_URL: https://gitops-arge.isbak.com.tr/
+      SSH_DOMAIN: gitops-arge.isbak.com.tr
       START_SSH_SERVER: true
     service:
       DISABLE_REGISTRATION: true
@@ -45,18 +46,13 @@ gitea:
     repository:
       DEFAULT_BRANCH: main
     database:
-      DB_TYPE: postgres
-      HOST: <FORGEJO_DATABASE_HOST>
-      NAME: <FORGEJO_DATABASE_NAME>
-      USER: <FORGEJO_DATABASE_USER>
+      DB_TYPE: sqlite3
     session:
-      PROVIDER: db
+      PROVIDER: file
     cache:
-      ADAPTER: redis
-      HOST: <FORGEJO_REDIS_HOST>
+      ADAPTER: memory
     queue:
-      TYPE: redis
-      CONN_STR: <FORGEJO_REDIS_URL>
+      TYPE: level
 
 resources:
   requests:

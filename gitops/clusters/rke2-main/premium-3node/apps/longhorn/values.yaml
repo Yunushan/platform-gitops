@@ -3,7 +3,7 @@ persistence:
 
 defaultSettings:
   defaultDataPath: /var/lib/longhorn
-  backupTarget: <LONGHORN_BACKUP_TARGET>
+  backupTarget: ""
   backupTargetCredentialSecret: longhorn-backup-target
   createDefaultDiskLabeledNodes: false
   defaultReplicaCount: 2
