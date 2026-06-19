@@ -75,6 +75,15 @@ PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argoc
 
 The playbook checks the selected GitOps profile for unresolved placeholders before it registers applications. This prevents Argo CD from syncing incomplete domains, storage sizes, backup targets, or secret references.
 
+If Argo CD controller logs show timeouts to the Kubernetes API service IP or an
+Argo CD Redis ClusterIP, the pod-to-service path is unhealthy. First deployment
+runs `platform-dns-repair` automatically by default; for a standalone repair
+run:
+
+```bash
+make platform-dns-repair
+```
+
 For first bootstrap, use skip mode to register only deployable apps and print
 the incomplete apps:
 

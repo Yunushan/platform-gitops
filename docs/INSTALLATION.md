@@ -278,6 +278,16 @@ deployable applications and prints skipped applications that still need private
 values such as storage sizes, database DSNs, Redis endpoints, object storage
 buckets, backup targets, or TLS secret names.
 
+First deployment also runs the cluster DNS/ClusterIP service-path repair before
+waiting on Argo CD. This protects against kube-proxy, Cilium, or firewalld
+service-routing problems where pods cannot reach Kubernetes service IPs such as
+the Kubernetes API service IP or the Argo CD Redis service. To skip that
+pre-repair on a known healthy cluster:
+
+```bash
+PLATFORM_FIRST_DEPLOY_DNS_REPAIR=false make platform-first-deploy
+```
+
 For fully unattended bootstrap, copy the env template and run the automatic
 target:
 

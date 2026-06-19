@@ -86,6 +86,11 @@ Set `PLATFORM_GITOPS_PLACEHOLDER_MODE=strict` when all private values are
 resolved and you want the deployment to fail before registering anything if a
 placeholder remains.
 
+First deployment also runs the platform DNS/ClusterIP service-path repair before
+waiting on Argo CD. Leave `PLATFORM_FIRST_DEPLOY_DNS_REPAIR=true` for new
+clusters. Set it to `false` only when pod-to-service networking is already
+known healthy.
+
 ## Fully Non-Interactive First Deployment
 
 For unattended bootstrap, put all first-deploy settings in the ignored file

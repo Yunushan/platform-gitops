@@ -351,6 +351,8 @@
               {% set diagnostics = platform_argocd_diagnostics.stdout | default('') %}
               {% if diagnostics is search('argocd-redis-ha|redis-ha-haproxy|redis-ha-server') %}
               Argo CD HA Redis is not healthy. Review the failing Redis HA pod logs first. To continue bootstrap with the simpler non-HA control plane while troubleshooting HA Redis separately, run: make platform-argocd-core
+              {% elif diagnostics is search('10\\.43\\.0\\.1:443|failed to get server version.*10\\.43\\.0\\.1|dial tcp 10\\.43\\.[0-9]+\\.[0-9]+:6379: i/o timeout|ClusterIP|service path') %}
+              Kubernetes ClusterIP service path is unhealthy from the Argo CD controller pod. Repair kube-proxy/Cilium/firewalld service routing with: make platform-dns-repair
               {% elif diagnostics is search('ImagePullBackOff|ErrImagePull|Failed to pull image|failed to pull and unpack image|TLS handshake timeout|i/o timeout|connection timed out|pull access denied') %}
               Image pull or registry access problem. Check registry egress, proxy, DNS, MTU, TLS inspection, or internal mirror configuration.
               {% elif diagnostics is search('CrashLoopBackOff|Back-off restarting failed container|Error:|panic:|fatal') %}
