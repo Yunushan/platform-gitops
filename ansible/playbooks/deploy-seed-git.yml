@@ -1,0 +1,174 @@
+---
+- name: Deploy temporary internal seed Git service
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_seed_git_state_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_STATE') }}"
+    platform_seed_git_root_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_ROOT') }}"
+    platform_seed_git_repo_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_REPO_NAME') }}"
+    platform_seed_git_port_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SEED_GIT_PORT') }}"
+    platform_seed_git_state_effective: "{{ platform_seed_git_state | default(platform_seed_git_state_from_env, true) | default('present', true) }}"
+    platform_seed_git_root_effective: "{{ platform_seed_git_root | default(platform_seed_git_root_from_env, true) | default('/opt/platform/seed-git', true) }}"
+    platform_seed_git_repo_name_effective: "{{ platform_seed_git_repo_name | default(platform_seed_git_repo_name_from_env, true) | default('platform-gitops.git', true) }}"
+    platform_seed_git_port_effective: "{{ platform_seed_git_port | default(platform_seed_git_port_from_env, true) | default(9418, true) | int }}"
+    platform_seed_git_repo_path: "{{ platform_seed_git_root_effective }}/{{ platform_seed_git_repo_name_effective }}"
+  tasks:
+    - name: Require supported seed Git state
+      ansible.builtin.assert:
+        that:
+          - platform_seed_git_state_effective in ['present', 'absent']
+        fail_msg: "PLATFORM_SEED_GIT_STATE must be present or absent."
+      run_once: true
+
+    - name: Install Git for seed service
+      ansible.builtin.package:
+        name: git
+        state: present
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Create seed Git root
+      ansible.builtin.file:
+        path: "{{ platform_seed_git_root_effective }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Initialize seed bare repository when missing
+      ansible.builtin.command:
+        cmd: "git init --bare {{ platform_seed_git_repo_path }}"
+        creates: "{{ platform_seed_git_repo_path }}/HEAD"
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Enable read-only git-daemon export for seed repository
+      ansible.builtin.file:
+        path: "{{ platform_seed_git_repo_path }}/git-daemon-export-ok"
+        state: touch
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Make seed repository readable by git daemon
+      ansible.builtin.file:
+        path: "{{ platform_seed_git_repo_path }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+        recurse: true
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Install seed Git systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/platform-seed-git.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Temporary read-only platform seed Git service
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=nobody
+          ExecStart=/usr/bin/git daemon --reuseaddr --base-path={{ platform_seed_git_root_effective }} --export-all --informative-errors --verbose --listen=0.0.0.0 --port={{ platform_seed_git_port_effective }} {{ platform_seed_git_root_effective }}
+          Restart=on-failure
+          RestartSec=5s
+
+          [Install]
+          WantedBy=multi-user.target
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Open seed Git port in firewalld when active
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if systemctl is-active --quiet firewalld; then
+          firewall-cmd --add-port={{ platform_seed_git_port_effective }}/tcp --permanent
+          firewall-cmd --reload
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_seed_git_firewalld
+      changed_when: "'success' in platform_seed_git_firewalld.stdout"
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Enable and start seed Git service
+      ansible.builtin.systemd:
+        name: platform-seed-git.service
+        enabled: true
+        state: started
+        daemon_reload: true
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Wait for seed Git port
+      ansible.builtin.wait_for:
+        host: "127.0.0.1"
+        port: "{{ platform_seed_git_port_effective }}"
+        timeout: 30
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'present'
+
+    - name: Stop and disable seed Git service
+      ansible.builtin.systemd:
+        name: platform-seed-git.service
+        enabled: false
+        state: stopped
+        daemon_reload: true
+      failed_when: false
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'absent'
+
+    - name: Remove seed Git systemd service
+      ansible.builtin.file:
+        path: /etc/systemd/system/platform-seed-git.service
+        state: absent
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'absent'
+
+    - name: Close seed Git port in firewalld when active
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if systemctl is-active --quiet firewalld; then
+          firewall-cmd --remove-port={{ platform_seed_git_port_effective }}/tcp --permanent || true
+          firewall-cmd --reload
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when:
+        - inventory_hostname == rke2_first_server
+        - platform_seed_git_state_effective == 'absent'
+
+    - name: Show seed Git access summary
+      ansible.builtin.debug:
+        msg:
+          - "Seed Git state: {{ platform_seed_git_state_effective }}"
+          - "Seed Git repository path: {{ platform_seed_git_repo_path }}"
+          - "Seed Git read URL: git://{{ hostvars[rke2_first_server].ansible_host | default(rke2_first_server) }}:{{ platform_seed_git_port_effective }}/{{ platform_seed_git_repo_name_effective }}"
+      run_once: true

@@ -9,7 +9,10 @@ import re
 import sys
 
 root = Path(__file__).resolve().parents[1]
-exclude_dirs = {'.git', '.cache', 'dist', 'build', '.terraform'}
+exclude_dirs = {
+    '.git', '.cache', 'dist', 'build', '.terraform',
+    'private', 'rendered', 'secrets',
+}
 text_suffixes = {
     '.md', '.txt', '.yaml', '.yml', '.json', '.ini', '.sh', '.ps1', '.py',
     '.toml', '.conf', '.cfg', '.gitignore', '.example', '.env', '.dockerfile'
@@ -39,6 +42,17 @@ for path in root.rglob('*'):
         continue
     rel = path.relative_to(root)
     if rel.name.endswith('.zip'):
+        continue
+    if rel.name.startswith('.env') and rel.name != '.env.example':
+        continue
+    if any(
+        rel.name.endswith(suffix)
+        for suffix in (
+            '.local.yaml', '.local.yml', '.local.ini',
+            '.private.yaml', '.private.yml',
+            '.rendered.yaml', '.rendered.yml',
+        )
+    ):
         continue
     if rel.as_posix() == 'scripts/validate_no_secrets.py':
         continue

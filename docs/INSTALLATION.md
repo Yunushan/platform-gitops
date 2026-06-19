@@ -265,6 +265,30 @@ export PLATFORM_REPO_TOKEN
 make platform-first-deploy
 ```
 
+For fully unattended bootstrap, copy the env template and run the automatic
+target:
+
+```bash
+cp config/first-deploy.env.example private/first-deploy.env
+${EDITOR:-vi} private/first-deploy.env
+make platform-first-deploy-auto
+```
+
+If no previous Git server exists, use the temporary internal seed Git path:
+
+```bash
+cp config/seed-git.env.example private/seed-git.env
+${EDITOR:-vi} private/seed-git.env
+make platform-first-deploy-seed
+```
+
+After Forgejo is deployed and becomes the long-term source, remove the
+temporary seed service:
+
+```bash
+make platform-seed-git-remove
+```
+
 If unresolved placeholders remain, the playbook stops before registering applications so Argo CD does not sync incomplete production configuration.
 
 To deploy or repair the final ingress path separately:

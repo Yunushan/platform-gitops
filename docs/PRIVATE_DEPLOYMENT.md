@@ -81,6 +81,66 @@ selected profile contains unresolved placeholders such as storage sizes,
 database endpoints, Redis endpoints, object storage, backup targets, or TLS
 secret references.
 
+## Fully Non-Interactive First Deployment
+
+For unattended bootstrap, put all first-deploy settings in the ignored file
+`private/first-deploy.env`:
+
+```bash
+cp config/first-deploy.env.example private/first-deploy.env
+${EDITOR:-vi} private/first-deploy.env
+```
+
+Then run:
+
+```bash
+make platform-first-deploy-auto
+```
+
+The automated target:
+
+```text
+Loads private/first-deploy.env
+Validates the repository
+Optionally commits current changes when PLATFORM_AUTO_COMMIT=true
+Pushes HEAD to PLATFORM_REPO_URL
+Registers private Git credentials in Argo CD when PLATFORM_REPO_TOKEN is set
+Runs platform-first-deploy
+```
+
+The Git token is used as a one-command Git HTTP authorization header during
+push and is not written into the Git remote URL. Argo CD receives the same
+token as a Kubernetes repository Secret only after the selected GitOps profile
+passes the unresolved-placeholder guard.
+
+## No Previous Git Server
+
+If no private GitHub, GitLab, Forgejo, or internal Git server exists yet, use
+the temporary seed Git path:
+
+```bash
+cp config/seed-git.env.example private/seed-git.env
+${EDITOR:-vi} private/seed-git.env
+make platform-first-deploy-seed
+```
+
+This creates a temporary read-only Git service on the first RKE2 node, pushes
+the current repository into it over SSH, and points Argo CD at:
+
+```text
+git://<NODE_1_IP_OR_DNS>:9418/platform-gitops.git
+```
+
+Use this only as a bootstrap bridge. It is intentionally simple, internal, and
+read-only. Do not put plaintext secrets in the repository. After Forgejo is
+deployed, create the long-term private repository in Forgejo, push or mirror
+the deployment repo there, update Argo CD to the Forgejo URL, then remove the
+temporary seed service:
+
+```bash
+make platform-seed-git-remove
+```
+
 ## Example Private FQDN Mapping
 
 Keep mappings like this in private DNS and private deployment config, not in
