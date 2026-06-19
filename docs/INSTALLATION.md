@@ -278,6 +278,15 @@ deployable applications and prints skipped applications that still need private
 values such as storage sizes, database DSNs, Redis endpoints, object storage
 buckets, backup targets, or TLS secret names.
 
+The unattended targets also default to
+`PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true`, which renders the private Forgejo
+and Longhorn bootstrap values before validation, commit, and push. Forgejo uses
+`platform_forgejo_host` or `platform_git_host` from `inventory/hosts.local.ini`
+unless `PLATFORM_FORGEJO_HOST` is set. The default
+`FORGEJO_DATABASE_MODE=sqlite` is intended only to bring the first private
+Forgejo dashboard online; move to external PostgreSQL and Redis for the final
+premium production posture.
+
 First deployment also runs the cluster DNS/ClusterIP service-path repair before
 waiting on Argo CD. This protects against kube-proxy, Cilium, or firewalld
 service-routing problems where pods cannot reach Kubernetes service IPs such as

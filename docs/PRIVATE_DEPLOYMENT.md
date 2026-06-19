@@ -111,6 +111,7 @@ The automated target:
 
 ```text
 Loads private/first-deploy.env
+Renders first-deploy private values for Forgejo and Longhorn when enabled
 Validates the repository
 Optionally commits current changes when PLATFORM_AUTO_COMMIT=true
 Pushes HEAD to PLATFORM_REPO_URL
@@ -122,6 +123,19 @@ The Git token is used as a one-command Git HTTP authorization header during
 push and is not written into the Git remote URL. Argo CD receives the same
 token as a Kubernetes repository Secret before application registration when a
 private repository token is supplied.
+
+By default, `PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true` renders a bootstrap
+Forgejo profile and a Longhorn backup target value before validation and push.
+Forgejo hostname is inferred from `platform_forgejo_host` or
+`platform_git_host` in `inventory/hosts.local.ini`; set
+`PLATFORM_FORGEJO_HOST=<GIT_FQDN>` to override it.
+
+The default `FORGEJO_DATABASE_MODE=sqlite` is a first-dashboard bootstrap mode:
+it avoids requiring an already-running external PostgreSQL and Redis service.
+For long-term premium production, switch the private deployment to
+`FORGEJO_DATABASE_MODE=external` and provide `FORGEJO_DATABASE_HOST`,
+`FORGEJO_DATABASE_NAME`, `FORGEJO_DATABASE_USER`, `FORGEJO_REDIS_HOST`, and
+`FORGEJO_REDIS_URL` through the private env file or another private value flow.
 
 ## No Previous Git Server
 
