@@ -203,6 +203,37 @@
         var: platform_argocd_initial_snapshot.stdout_lines
       run_once: true
 
+    - name: Force core Argo CD Redis parameters for core bootstrap mode
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        "$K" --kubeconfig "$C" -n argocd patch configmap argocd-cmd-params-cm \
+          --type merge \
+          -p '{"data":{"redis.server":"argocd-redis:6379"}}'
+
+        for deployment in {{ platform_argocd_core_deployments | join(' ') }}; do
+          if "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd rollout restart "deployment/${deployment}"
+          fi
+        done
+
+        for statefulset in {{ platform_argocd_core_statefulsets | join(' ') }}; do
+          if "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd rollout restart "statefulset/${statefulset}"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: platform_argocd_core_redis_patch
+      changed_when: >-
+        'patched' in platform_argocd_core_redis_patch.stdout or
+        'restarted' in platform_argocd_core_redis_patch.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      when: platform_argocd_bootstrap_mode_effective == 'core'
+      run_once: true
+
     - name: Wait for Argo CD workloads to become available
       block:
         - name: Poll Argo CD deployment availability
@@ -369,6 +400,36 @@
                 'created' in platform_argocd_fallback_apply.stdout or
                 'configured' in platform_argocd_fallback_apply.stdout or
                 'serverside-applied' in platform_argocd_fallback_apply.stdout
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+
+            - name: Force core Argo CD Redis parameters after HA Redis fallback
+              ansible.builtin.shell: |
+                set -o pipefail
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+
+                "$K" --kubeconfig "$C" -n argocd patch configmap argocd-cmd-params-cm \
+                  --type merge \
+                  -p '{"data":{"redis.server":"argocd-redis:6379"}}'
+
+                for deployment in {{ platform_argocd_core_deployments | join(' ') }}; do
+                  if "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null 2>&1; then
+                    "$K" --kubeconfig "$C" -n argocd rollout restart "deployment/${deployment}"
+                  fi
+                done
+
+                for statefulset in {{ platform_argocd_core_statefulsets | join(' ') }}; do
+                  if "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null 2>&1; then
+                    "$K" --kubeconfig "$C" -n argocd rollout restart "statefulset/${statefulset}"
+                  fi
+                done
+              args:
+                executable: /bin/bash
+              register: platform_argocd_fallback_redis_patch
+              changed_when: >-
+                'patched' in platform_argocd_fallback_redis_patch.stdout or
+                'restarted' in platform_argocd_fallback_redis_patch.stdout
               delegate_to: "{{ rke2_first_server }}"
               run_once: true
 
