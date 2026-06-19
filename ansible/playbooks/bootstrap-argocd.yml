@@ -236,7 +236,7 @@
         done
 
         if "$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 >/dev/null 2>&1; then
-          "$K" --kubeconfig "$C" -n argocd delete pod/argocd-application-controller-0 --wait=false
+          "$K" --kubeconfig "$C" -n argocd delete pod/argocd-application-controller-0 --wait=true --timeout=90s
         fi
       args:
         executable: /bin/bash
@@ -294,6 +294,10 @@
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
             echo "===== failing argocd pods first ====="
+            echo "===== argocd redis command parameters ====="
+            "$K" --kubeconfig "$C" -n argocd get configmap argocd-cmd-params-cm \
+              -o jsonpath='redis.server={.data.redis\.server}{"\n"}redis.db={.data.redis\.db}{"\n"}redis.compression={.data.redis\.compression}{"\n"}' || true
+            echo
             failing_pods="$("$K" --kubeconfig "$C" -n argocd get pods --no-headers 2>/dev/null |
               awk '$3 != "Running" { print $1; next } { split($2, ready, "/"); if (ready[1] != ready[2]) print $1 }')"
             if [ -z "${failing_pods}" ]; then
@@ -441,7 +445,7 @@
                 done
 
                 if "$K" --kubeconfig "$C" -n argocd get pod/argocd-application-controller-0 >/dev/null 2>&1; then
-                  "$K" --kubeconfig "$C" -n argocd delete pod/argocd-application-controller-0 --wait=false
+                  "$K" --kubeconfig "$C" -n argocd delete pod/argocd-application-controller-0 --wait=true --timeout=90s
                 fi
               args:
                 executable: /bin/bash
@@ -497,6 +501,10 @@
                   ansible.builtin.shell: |
                     K=/var/lib/rancher/rke2/bin/kubectl
                     C=/etc/rancher/rke2/rke2.yaml
+                    echo "===== argocd redis command parameters ====="
+                    "$K" --kubeconfig "$C" -n argocd get configmap argocd-cmd-params-cm \
+                      -o jsonpath='redis.server={.data.redis\.server}{"\n"}redis.db={.data.redis\.db}{"\n"}redis.compression={.data.redis\.compression}{"\n"}' || true
+                    echo
                     echo "===== argocd pods ====="
                     "$K" --kubeconfig "$C" -n argocd get pods -o wide || true
                     echo
