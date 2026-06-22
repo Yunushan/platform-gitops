@@ -18,6 +18,7 @@
     platform_longhorn_image_pull_retry_delay_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_RETRY_DELAY') }}"
     platform_longhorn_image_pull_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_TIMEOUT') }}"
     platform_longhorn_image_pull_fast_fail_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_FAST_FAIL') }}"
+    platform_longhorn_default_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
     platform_longhorn_chart_repo_effective: "{{ platform_longhorn_chart_repo | default(platform_longhorn_chart_repo_from_env, true) | default('https://charts.longhorn.io', true) }}"
     platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) }}"
     platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"
@@ -33,6 +34,7 @@
     platform_longhorn_image_pull_retry_delay_effective: "{{ platform_longhorn_image_pull_retry_delay | default(platform_longhorn_image_pull_retry_delay_from_env, true) | default(20, true) | int }}"
     platform_longhorn_image_pull_timeout_effective: "{{ platform_longhorn_image_pull_timeout | default(platform_longhorn_image_pull_timeout_from_env, true) | default(300, true) | int }}"
     platform_longhorn_image_pull_fast_fail_effective: "{{ platform_longhorn_image_pull_fast_fail | default(platform_longhorn_image_pull_fast_fail_from_env, true) | default(false, true) | bool }}"
+    platform_longhorn_default_disk_path_effective: "{{ platform_longhorn_default_disk_path | default(platform_longhorn_default_disk_path_from_env, true) | default('/var/lib/longhorn', true) }}"
     platform_longhorn_required_crds:
       - nodes.longhorn.io
       - engines.longhorn.io
@@ -110,6 +112,14 @@
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
+
+        - name: Ensure Longhorn default disk path exists on all nodes
+          ansible.builtin.file:
+            path: "{{ platform_longhorn_default_disk_path_effective }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
 
         - name: Apply Longhorn namespace, storage classes, and RKE2 HelmChart
           ansible.builtin.shell: |
@@ -507,6 +517,138 @@
           retries: "{{ (((platform_longhorn_wait_timeout_effective | int) / 30) | round(0, 'ceil') | int) + 1 }}"
           delay: 10
           until: platform_longhorn_workloads.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Longhorn node objects
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            missing=""
+            for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+              if ! "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" >/dev/null 2>&1; then
+                missing="${missing} ${node}"
+              fi
+            done
+            missing="$(printf '%s' "${missing}" | xargs)"
+            echo "===== Longhorn nodes ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide || true
+            if [ -n "${missing}" ]; then
+              echo "Missing Longhorn node objects: ${missing}" >&2
+              exit 1
+            fi
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_node_objects
+          retries: "{{ (((platform_longhorn_wait_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: platform_longhorn_node_objects.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Configure Longhorn default disks on all nodes
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            disk_path={{ platform_longhorn_default_disk_path_effective | quote }}
+            changed=0
+
+            for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+              disk_paths="$("$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" \
+                -o jsonpath='{range .spec.disks[*]}{.path}{"\n"}{end}' 2>/dev/null || true)"
+              if [ -n "${disk_paths}" ]; then
+                echo "${node} already has Longhorn disk configuration."
+                continue
+              fi
+
+              echo "Adding default Longhorn disk on ${node}: ${disk_path}"
+              "$K" --kubeconfig "$C" -n longhorn-system patch "nodes.longhorn.io/${node}" \
+                --type=merge \
+                -p "{\"spec\":{\"allowScheduling\":true,\"disks\":{\"default-disk\":{\"path\":\"${disk_path}\",\"allowScheduling\":true,\"storageReserved\":0,\"tags\":[],\"diskType\":\"filesystem\",\"evictionRequested\":false}}}}"
+              changed=1
+            done
+
+            echo "===== Longhorn node disk state ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o yaml |
+              sed -n '/name: node-/p; /disks:/,/conditions:/p' || true
+
+            test "${changed}" -eq 0 && echo "No Longhorn disk repair changes were required."
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_default_disk_config
+          changed_when: "'Adding default Longhorn disk' in platform_longhorn_default_disk_config.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Longhorn default disks to become ready
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json |
+              python3 -c '
+            import json
+            import sys
+
+            data = json.load(sys.stdin)
+            missing_spec = []
+            missing_status = []
+            not_schedulable = []
+
+            for item in data.get("items", []):
+                name = item.get("metadata", {}).get("name", "")
+                spec_disks = item.get("spec", {}).get("disks") or {}
+                status_disks = item.get("status", {}).get("diskStatus") or {}
+                if not spec_disks:
+                    missing_spec.append(name)
+                    continue
+                if not status_disks:
+                    missing_status.append(name)
+                    continue
+                ready_disk = False
+                for disk_name, disk in status_disks.items():
+                    conditions = {
+                        condition.get("type"): condition.get("status")
+                        for condition in disk.get("conditions", [])
+                    }
+                    allow_scheduling = spec_disks.get(disk_name, {}).get("allowScheduling", False)
+                    ready = conditions.get("Ready") == "True"
+                    schedulable = conditions.get("Schedulable") == "True"
+                    if allow_scheduling and ready and schedulable:
+                        ready_disk = True
+                        break
+                if not ready_disk:
+                    not_schedulable.append(name)
+
+            print("===== Longhorn disk readiness =====")
+            for item in data.get("items", []):
+                name = item.get("metadata", {}).get("name", "")
+                spec_disks = item.get("spec", {}).get("disks") or {}
+                status_disks = item.get("status", {}).get("diskStatus") or {}
+                print(f"{name}: specDisks={list(spec_disks.keys())} statusDisks={list(status_disks.keys())}")
+
+            problems = []
+            if missing_spec:
+                problems.append("missing Spec.Disks: " + " ".join(missing_spec))
+            if missing_status:
+                problems.append("missing status.diskStatus: " + " ".join(missing_status))
+            if not_schedulable:
+                problems.append("no ready schedulable disk: " + " ".join(not_schedulable))
+
+            if problems:
+                print("Longhorn disk readiness problems: " + "; ".join(problems), file=sys.stderr)
+                sys.exit(1)
+            '
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_default_disks_ready
+          retries: "{{ (((platform_longhorn_wait_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: platform_longhorn_default_disks_ready.rc == 0
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true

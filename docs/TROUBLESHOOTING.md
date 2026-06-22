@@ -102,12 +102,13 @@ make platform-longhorn-bootstrap
 ```
 
 This applies the premium Longhorn storage classes, installs the Longhorn Helm
-chart, refreshes the Longhorn and Forgejo Argo CD applications, and prints
-storage/PVC status. If the `longhorn-critical` priority class already exists,
-the bootstrap adopts it for Helm metadata instead of changing immutable fields.
-It is a first-deployment recovery path for the storage chicken-and-egg case;
-after Argo CD and pod networking are healthy, GitOps continues to own the
-desired Longhorn manifests.
+chart, creates the default Longhorn data path on every node, configures a
+schedulable default disk on each Longhorn node object, refreshes the Longhorn
+and Forgejo Argo CD applications, and prints storage/PVC status. If the
+`longhorn-critical` priority class already exists, the bootstrap adopts it for
+Helm metadata instead of changing immutable fields. It is a first-deployment
+recovery path for the storage chicken-and-egg case; after Argo CD and pod
+networking are healthy, GitOps continues to own the desired Longhorn manifests.
 
 If Longhorn pods show `ImagePullBackOff` for `docker.io/longhornio/*` with
 `TLS handshake timeout` or `connection reset by peer`, the Longhorn chart is
@@ -195,9 +196,10 @@ PLATFORM_FORGEJO_POD_IP_WAIT_TIMEOUT=120 make platform-forgejo-storage-repair
 
 If the PV has `longhorn.io/volume-scheduling-error: precheck new replica failed:
 disks are unavailable` and `nodes.longhorn.io` shows empty `Spec.Disks`, the
-repair target adds a default schedulable Longhorn disk on each node at
-`/var/lib/longhorn` before retrying the Forgejo attach. To use a dedicated disk
-path:
+repair target creates the default Longhorn data path, adds a schedulable
+Longhorn disk on each node at `/var/lib/longhorn`, waits for Longhorn
+`status.diskStatus` to report a ready schedulable disk, and only then retries
+the Forgejo attach. To use a dedicated disk path:
 
 ```bash
 PLATFORM_LONGHORN_DEFAULT_DISK_PATH=/mnt/longhorn make platform-forgejo-storage-repair

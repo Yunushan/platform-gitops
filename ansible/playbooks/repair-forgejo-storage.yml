@@ -523,6 +523,15 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Ensure Longhorn default disk path exists on all nodes
+          ansible.builtin.file:
+            path: "{{ platform_longhorn_default_disk_path_effective }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          when: platform_longhorn_default_disk_repair_enabled_effective | bool
+
         - name: Wait for Longhorn manager after attach repair restart
           ansible.builtin.command:
             argv:
@@ -597,7 +606,7 @@
               echo "Adding default Longhorn disk on ${node}: ${disk_path}"
               "$K" --kubeconfig "$C" -n longhorn-system patch "nodes.longhorn.io/${node}" \
                 --type=merge \
-                -p "{\"spec\":{\"disks\":{\"default-disk\":{\"path\":\"${disk_path}\",\"allowScheduling\":true,\"storageReserved\":0,\"tags\":[]}}}}"
+                -p "{\"spec\":{\"allowScheduling\":true,\"disks\":{\"default-disk\":{\"path\":\"${disk_path}\",\"allowScheduling\":true,\"storageReserved\":0,\"tags\":[],\"diskType\":\"filesystem\",\"evictionRequested\":false}}}}"
               changed=1
             done
 
@@ -619,24 +628,66 @@
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            missing=""
-            for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
-              disk_paths="$("$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" \
-                -o jsonpath='{range .spec.disks[*]}{.path}{"\n"}{end}' 2>/dev/null || true)"
-              if [ -z "${disk_paths}" ]; then
-                missing="${missing} ${node}"
-              fi
-            done
-            missing="$(printf '%s' "${missing}" | xargs)"
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json |
+              python3 -c '
+            import json
+            import sys
+
+            data = json.load(sys.stdin)
+            missing_spec = []
+            missing_status = []
+            not_schedulable = []
+
+            for item in data.get("items", []):
+                name = item.get("metadata", {}).get("name", "")
+                spec_disks = item.get("spec", {}).get("disks") or {}
+                status_disks = item.get("status", {}).get("diskStatus") or {}
+                if not spec_disks:
+                    missing_spec.append(name)
+                    continue
+                if not status_disks:
+                    missing_status.append(name)
+                    continue
+
+                ready_disk = False
+                for disk_name, disk in status_disks.items():
+                    conditions = {
+                        condition.get("type"): condition.get("status")
+                        for condition in disk.get("conditions", [])
+                    }
+                    allow_scheduling = spec_disks.get(disk_name, {}).get("allowScheduling", False)
+                    ready = conditions.get("Ready") == "True"
+                    schedulable = conditions.get("Schedulable") == "True"
+                    if allow_scheduling and ready and schedulable:
+                        ready_disk = True
+                        break
+                if not ready_disk:
+                    not_schedulable.append(name)
+
+            print("===== Longhorn disk readiness =====")
+            for item in data.get("items", []):
+                name = item.get("metadata", {}).get("name", "")
+                spec_disks = item.get("spec", {}).get("disks") or {}
+                status_disks = item.get("status", {}).get("diskStatus") or {}
+                print(f"{name}: specDisks={list(spec_disks.keys())} statusDisks={list(status_disks.keys())}")
+
+            problems = []
+            if missing_spec:
+                problems.append("missing Spec.Disks: " + " ".join(missing_spec))
+            if missing_status:
+                problems.append("missing status.diskStatus: " + " ".join(missing_status))
+            if not_schedulable:
+                problems.append("no ready schedulable disk: " + " ".join(not_schedulable))
+
+            if problems:
+                print("Longhorn disk readiness problems: " + "; ".join(problems), file=sys.stderr)
+                sys.exit(1)
+            '
             echo "===== Longhorn nodes ====="
             "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide || true
             echo "===== Longhorn node disks ====="
             "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o yaml |
               sed -n '/name: node-/p; /disks:/,/conditions:/p' || true
-            if [ -n "${missing}" ]; then
-              echo "Longhorn nodes still missing disks: ${missing}" >&2
-              exit 1
-            fi
           args:
             executable: /bin/bash
           register: forgejo_attach_longhorn_disks_ready
