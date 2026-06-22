@@ -165,6 +165,12 @@ resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
 make platform-longhorn-crd-repair
 ```
 
+If `kubectl apply` reports `PriorityClass "longhorn-critical" is invalid:
+value: Forbidden: may not be changed in an update`, leave the existing
+PriorityClass value alone. The bootstrap now only patches Helm ownership
+metadata on an existing `longhorn-critical` PriorityClass and no longer tries to
+update its immutable `value`.
+
 If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
 
 ```bash

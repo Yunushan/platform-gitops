@@ -90,6 +90,27 @@
           run_once: true
           when: platform_longhorn_cleanup_helm_jobs_effective | bool
 
+        - name: Mark existing Longhorn PriorityClass as Helm-owned
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            if "$K" --kubeconfig "$C" get priorityclass longhorn-critical >/dev/null 2>&1; then
+              "$K" --kubeconfig "$C" label priorityclass longhorn-critical \
+                app.kubernetes.io/managed-by=Helm --overwrite
+              "$K" --kubeconfig "$C" annotate priorityclass longhorn-critical \
+                meta.helm.sh/release-name=platform-longhorn \
+                meta.helm.sh/release-namespace=longhorn-system \
+                --overwrite
+            else
+              echo "longhorn-critical PriorityClass does not exist yet; Longhorn chart can create it."
+            fi
+          args:
+            executable: /bin/bash
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Apply Longhorn namespace, storage classes, and RKE2 HelmChart
           ansible.builtin.shell: |
             set -o pipefail
@@ -102,19 +123,6 @@
               kind: Namespace
               metadata:
                 name: longhorn-system
-              ---
-              apiVersion: scheduling.k8s.io/v1
-              kind: PriorityClass
-              metadata:
-                name: longhorn-critical
-                labels:
-                  app.kubernetes.io/managed-by: Helm
-                annotations:
-                  meta.helm.sh/release-name: platform-longhorn
-                  meta.helm.sh/release-namespace: longhorn-system
-              value: 1000000
-              globalDefault: false
-              description: Priority class for Longhorn system components in the premium 3-node profile.
               ---
               apiVersion: storage.k8s.io/v1
               kind: StorageClass
