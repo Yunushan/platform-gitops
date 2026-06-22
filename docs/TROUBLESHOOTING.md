@@ -151,7 +151,9 @@ for that node are still unhealthy. Check the Longhorn node objects and manager
 logs:
 
 ```bash
-kubectl -n longhorn-system get nodes.longhorn.io,instancemanagers.longhorn.io,engineimages.longhorn.io -o wide
+kubectl api-resources --api-group=longhorn.io -o wide
+kubectl get crd | grep 'longhorn\.io'
+kubectl -n longhorn-system get nodes.longhorn.io instancemanagers.longhorn.io engineimages.longhorn.io -o wide
 kubectl -n longhorn-system logs -l app=longhorn-manager --all-containers --tail=180
 ```
 
