@@ -238,6 +238,7 @@
           ansible.builtin.shell: |
             set -o pipefail
             CRICTL=/var/lib/rancher/rke2/bin/crictl
+            image="{{ item }}"
             if [ ! -x "${CRICTL}" ]; then
               echo "RKE2 crictl not found at ${CRICTL}" >&2
               exit 1
@@ -250,28 +251,27 @@
               crictl_args+=(--runtime-endpoint unix:///run/containerd/containerd.sock)
             fi
 
-            while IFS= read -r image; do
-              [ -n "${image}" ] || continue
-              if "${CRICTL}" "${crictl_args[@]}" images --quiet "${image}" 2>/dev/null | grep -q .; then
-                echo "Already present: ${image}"
-                continue
-              fi
+            if "${CRICTL}" "${crictl_args[@]}" images --quiet "${image}" 2>/dev/null | grep -q .; then
+              echo "Already present on $(hostname -f 2>/dev/null || hostname): ${image}"
+              exit 0
+            fi
 
-              echo "Pulling: ${image}"
-              if command -v timeout >/dev/null 2>&1; then
-                timeout --preserve-status "{{ platform_longhorn_image_pull_timeout_effective }}" \
-                  "${CRICTL}" "${crictl_args[@]}" pull "${image}"
-              else
+            echo "Pulling on $(hostname -f 2>/dev/null || hostname): ${image}"
+            if command -v timeout >/dev/null 2>&1; then
+              timeout --preserve-status "{{ platform_longhorn_image_pull_timeout_effective }}" \
                 "${CRICTL}" "${crictl_args[@]}" pull "${image}"
-              fi
-            done
+            else
+              "${CRICTL}" "${crictl_args[@]}" pull "${image}"
+            fi
           args:
             executable: /bin/bash
-            stdin: "{{ (platform_longhorn_image_list | join('\n')) ~ '\n' }}"
           register: platform_longhorn_image_prepull
           retries: "{{ platform_longhorn_image_pull_retries_effective }}"
           delay: "{{ platform_longhorn_image_pull_retry_delay_effective }}"
           until: platform_longhorn_image_prepull.rc == 0
+          loop: "{{ platform_longhorn_image_list }}"
+          loop_control:
+            label: "{{ item }}"
           when: platform_longhorn_prepull_images_effective | bool
 
         - name: Stop early when Longhorn image pull failures are present
