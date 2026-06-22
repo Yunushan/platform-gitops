@@ -10,11 +10,13 @@
     platform_forgejo_pvc_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_PVC_NAME') }}"
     platform_forgejo_reset_stuck_pvc_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RESET_STUCK_PVC') }}"
     platform_forgejo_reset_longhorn_volume_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RESET_LONGHORN_VOLUME') }}"
+    platform_forgejo_pod_termination_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_POD_TERMINATION_TIMEOUT') }}"
     platform_forgejo_storage_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_STORAGE_REPAIR_TIMEOUT') }}"
     platform_forgejo_namespace_effective: "{{ platform_forgejo_namespace | default(platform_forgejo_namespace_from_env, true) | default('forgejo', true) }}"
     platform_forgejo_pvc_name_effective: "{{ platform_forgejo_pvc_name | default(platform_forgejo_pvc_name_from_env, true) | default('gitea-shared-storage', true) }}"
     platform_forgejo_reset_stuck_pvc_effective: "{{ platform_forgejo_reset_stuck_pvc | default(platform_forgejo_reset_stuck_pvc_from_env, true) | default(false, true) | bool }}"
     platform_forgejo_reset_longhorn_volume_effective: "{{ platform_forgejo_reset_longhorn_volume | default(platform_forgejo_reset_longhorn_volume_from_env, true) | default(true, true) | bool }}"
+    platform_forgejo_pod_termination_timeout_effective: "{{ platform_forgejo_pod_termination_timeout | default(platform_forgejo_pod_termination_timeout_from_env, true) | default(60, true) | int }}"
     platform_forgejo_storage_repair_timeout_effective: "{{ platform_forgejo_storage_repair_timeout | default(platform_forgejo_storage_repair_timeout_from_env, true) | default(300, true) | int }}"
   tasks:
     - name: Inspect Forgejo storage state
@@ -127,7 +129,7 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
-        - name: Wait for Forgejo pods to terminate
+        - name: Wait briefly for Forgejo pods to terminate
           ansible.builtin.shell: |
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
@@ -148,9 +150,69 @@
           args:
             executable: /bin/bash
           register: forgejo_pods_gone
-          retries: "{{ (((platform_forgejo_storage_repair_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          retries: "{{ (((platform_forgejo_pod_termination_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
           delay: 10
           until: forgejo_pods_gone.rc == 0
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Force-delete Forgejo pods still stuck after graceful wait
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pods="$(
+              "$K" --kubeconfig "$C" -n "$ns" get pods \
+                -l app.kubernetes.io/instance=forgejo -o name 2>/dev/null || true
+              "$K" --kubeconfig "$C" -n "$ns" get pods \
+                -l app.kubernetes.io/name=forgejo -o name 2>/dev/null || true
+            )"
+            pods="$(printf '%s\n' "${pods}" | sed '/^$/d' | sort -u)"
+            if [ -z "${pods}" ]; then
+              echo "No Forgejo pods require force deletion."
+              exit 0
+            fi
+
+            echo "Force-deleting Forgejo pods still present after {{ platform_forgejo_pod_termination_timeout_effective }}s:"
+            printf '%s\n' "${pods}"
+            printf '%s\n' "${pods}" |
+              xargs -r "$K" --kubeconfig "$C" -n "$ns" delete \
+                --force --grace-period=0 --wait=false
+          args:
+            executable: /bin/bash
+          register: forgejo_force_delete_pods
+          changed_when: "'Force-deleting Forgejo pods' in forgejo_force_delete_pods.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: forgejo_pods_gone.rc != 0
+
+        - name: Confirm Forgejo pods are gone after force deletion
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pods="$(
+              "$K" --kubeconfig "$C" -n "$ns" get pods \
+                -l app.kubernetes.io/instance=forgejo -o name 2>/dev/null || true
+              "$K" --kubeconfig "$C" -n "$ns" get pods \
+                -l app.kubernetes.io/name=forgejo -o name 2>/dev/null || true
+            )"
+            pods="$(printf '%s\n' "${pods}" | sed '/^$/d' | sort -u)"
+            if [ -n "${pods}" ]; then
+              printf '%s\n' "${pods}"
+              exit 1
+            fi
+            echo "No Forgejo pods remain."
+          args:
+            executable: /bin/bash
+          register: forgejo_pods_gone_after_force
+          retries: "{{ (((platform_forgejo_pod_termination_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_pods_gone_after_force.rc == 0
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
