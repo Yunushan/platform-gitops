@@ -1,0 +1,357 @@
+---
+- name: Repair Forgejo storage after an interrupted first deploy
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_forgejo_namespace_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_NAMESPACE') }}"
+    platform_forgejo_pvc_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_PVC_NAME') }}"
+    platform_forgejo_reset_stuck_pvc_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RESET_STUCK_PVC') }}"
+    platform_forgejo_reset_longhorn_volume_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RESET_LONGHORN_VOLUME') }}"
+    platform_forgejo_storage_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_STORAGE_REPAIR_TIMEOUT') }}"
+    platform_forgejo_namespace_effective: "{{ platform_forgejo_namespace | default(platform_forgejo_namespace_from_env, true) | default('forgejo', true) }}"
+    platform_forgejo_pvc_name_effective: "{{ platform_forgejo_pvc_name | default(platform_forgejo_pvc_name_from_env, true) | default('gitea-shared-storage', true) }}"
+    platform_forgejo_reset_stuck_pvc_effective: "{{ platform_forgejo_reset_stuck_pvc | default(platform_forgejo_reset_stuck_pvc_from_env, true) | default(false, true) | bool }}"
+    platform_forgejo_reset_longhorn_volume_effective: "{{ platform_forgejo_reset_longhorn_volume | default(platform_forgejo_reset_longhorn_volume_from_env, true) | default(true, true) | bool }}"
+    platform_forgejo_storage_repair_timeout_effective: "{{ platform_forgejo_storage_repair_timeout | default(platform_forgejo_storage_repair_timeout_from_env, true) | default(300, true) | int }}"
+  tasks:
+    - name: Inspect Forgejo storage state
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        ns={{ platform_forgejo_namespace_effective | quote }}
+        pvc={{ platform_forgejo_pvc_name_effective | quote }}
+
+        echo "===== Forgejo namespace ====="
+        if ! "$K" --kubeconfig "$C" get "namespace/${ns}" >/dev/null 2>&1; then
+          echo "namespace/${ns} does not exist"
+          exit 0
+        fi
+        "$K" --kubeconfig "$C" get "namespace/${ns}"
+
+        echo "===== Forgejo resources ====="
+        "$K" --kubeconfig "$C" -n "$ns" get deployment,statefulset,pods,pvc,svc,ingress -o wide || true
+
+        echo "===== target PVC state ====="
+        if ! "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" >/dev/null 2>&1; then
+          echo "pvc/${pvc} is not present"
+          exit 0
+        fi
+
+        deletion="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)"
+        phase="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+        pv="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+        handle=""
+        if [ -n "${pv}" ]; then
+          handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+        fi
+        printf 'pvc=%s\nphase=%s\ndeletionTimestamp=%s\npv=%s\nlonghornVolume=%s\n' \
+          "${pvc}" "${phase:-unknown}" "${deletion:-none}" "${pv:-none}" "${handle:-none}"
+
+        if [ -n "${deletion}" ]; then
+          echo "FORGEJO_PVC_TERMINATING=true"
+          exit 42
+        fi
+
+        echo "FORGEJO_PVC_TERMINATING=false"
+      args:
+        executable: /bin/bash
+      register: forgejo_storage_state
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Forgejo storage state
+      ansible.builtin.debug:
+        var: forgejo_storage_state.stdout_lines
+      run_once: true
+
+    - name: Stop before destructive Forgejo PVC reset unless explicitly enabled
+      ansible.builtin.fail:
+        msg: |-
+          Forgejo PVC {{ platform_forgejo_namespace_effective }}/{{ platform_forgejo_pvc_name_effective }}
+          is stuck in Terminating.
+
+          This repair can delete and recreate the Forgejo data PVC/PV. That is
+          acceptable for an empty first deployment, but not for a Forgejo instance
+          that already contains repositories, users, or issues.
+
+          If this is still your first deployment and Forgejo has no data yet, run:
+
+          PLATFORM_FORGEJO_RESET_STUCK_PVC=true make platform-forgejo-storage-repair
+
+          Current state:
+          {{ forgejo_storage_state.stdout }}
+      when:
+        - forgejo_storage_state.rc == 42
+        - not platform_forgejo_reset_stuck_pvc_effective
+      run_once: true
+
+    - block:
+        - name: Scale Forgejo workloads down before PVC reset
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+
+            workloads="$("$K" --kubeconfig "$C" -n "$ns" get deployment,statefulset \
+              -l app.kubernetes.io/instance=forgejo -o name 2>/dev/null || true)"
+            fallback_workloads="$(
+              for item in deployment/forgejo statefulset/forgejo; do
+                if "$K" --kubeconfig "$C" -n "$ns" get "$item" >/dev/null 2>&1; then
+                  printf '%s\n' "$item"
+                fi
+              done
+            )"
+            workloads="$(printf '%s\n%s\n' "${workloads}" "${fallback_workloads}" | sed '/^$/d' | sort -u)"
+            if [ -z "${workloads}" ]; then
+              echo "No Forgejo deployment/statefulset exists to scale down."
+            else
+              printf '%s\n' "${workloads}" |
+                xargs -r "$K" --kubeconfig "$C" -n "$ns" scale --replicas=0
+            fi
+
+            "$K" --kubeconfig "$C" -n "$ns" delete pod \
+              -l app.kubernetes.io/instance=forgejo --ignore-not-found=true --wait=false
+            "$K" --kubeconfig "$C" -n "$ns" delete pod \
+              -l app.kubernetes.io/name=forgejo --ignore-not-found=true --wait=false
+          args:
+            executable: /bin/bash
+          register: forgejo_scale_down
+          changed_when: true
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Forgejo pods to terminate
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pods="$(
+              "$K" --kubeconfig "$C" -n "$ns" get pods \
+                -l app.kubernetes.io/instance=forgejo -o name 2>/dev/null || true
+              "$K" --kubeconfig "$C" -n "$ns" get pods \
+                -l app.kubernetes.io/name=forgejo -o name 2>/dev/null || true
+            )"
+            pods="$(printf '%s\n' "${pods}" | sed '/^$/d' | sort -u)"
+            if [ -n "${pods}" ]; then
+              printf '%s\n' "${pods}"
+              exit 1
+            fi
+            echo "No Forgejo pods remain."
+          args:
+            executable: /bin/bash
+          register: forgejo_pods_gone
+          retries: "{{ (((platform_forgejo_storage_repair_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_pods_gone.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Capture Forgejo PVC backing objects before reset
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pvc={{ platform_forgejo_pvc_name_effective | quote }}
+
+            pv=""
+            handle=""
+            if "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" >/dev/null 2>&1; then
+              pv="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+            fi
+            if [ -n "${pv}" ] && "$K" --kubeconfig "$C" get "pv/${pv}" >/dev/null 2>&1; then
+              handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+            fi
+            printf 'pv=%s\nlonghornVolume=%s\n' "${pv}" "${handle}"
+          args:
+            executable: /bin/bash
+          register: forgejo_backing_storage
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Delete stuck Forgejo PVC
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pvc={{ platform_forgejo_pvc_name_effective | quote }}
+            timeout={{ platform_forgejo_storage_repair_timeout_effective | int }}
+
+            "$K" --kubeconfig "$C" -n "$ns" delete "pvc/${pvc}" \
+              --ignore-not-found=true --wait=false
+
+            deadline=$((SECONDS + timeout))
+            while "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" >/dev/null 2>&1; do
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                echo "PVC still exists after ${timeout}s; removing finalizers for first-deploy reset."
+                "$K" --kubeconfig "$C" -n "$ns" patch "pvc/${pvc}" \
+                  --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+                "$K" --kubeconfig "$C" -n "$ns" delete "pvc/${pvc}" \
+                  --ignore-not-found=true --wait=false
+                break
+              fi
+              sleep 5
+            done
+
+            deadline=$((SECONDS + 60))
+            while "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" >/dev/null 2>&1; do
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                echo "PVC ${ns}/${pvc} still exists after finalizer cleanup." >&2
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "PVC ${ns}/${pvc} has been removed."
+          args:
+            executable: /bin/bash
+          register: forgejo_pvc_reset
+          changed_when: true
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Delete retained Forgejo PV
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            pv="$(printf '%s\n' {{ forgejo_backing_storage.stdout | quote }} | sed -n 's/^pv=//p' | head -1)"
+            timeout={{ platform_forgejo_storage_repair_timeout_effective | int }}
+            if [ -z "${pv}" ] || ! "$K" --kubeconfig "$C" get "pv/${pv}" >/dev/null 2>&1; then
+              echo "No retained Forgejo PV found."
+              exit 0
+            fi
+
+            "$K" --kubeconfig "$C" delete "pv/${pv}" --wait=false
+            deadline=$((SECONDS + timeout))
+            while "$K" --kubeconfig "$C" get "pv/${pv}" >/dev/null 2>&1; do
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                echo "PV still exists after ${timeout}s; removing finalizers for first-deploy reset."
+                "$K" --kubeconfig "$C" patch "pv/${pv}" \
+                  --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+                "$K" --kubeconfig "$C" delete "pv/${pv}" --wait=false || true
+                break
+              fi
+              sleep 5
+            done
+            echo "PV ${pv} removal requested."
+          args:
+            executable: /bin/bash
+          register: forgejo_pv_reset
+          changed_when: "'No retained Forgejo PV found' not in forgejo_pv_reset.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Delete old Longhorn volume for first-deploy reset
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            handle="$(printf '%s\n' {{ forgejo_backing_storage.stdout | quote }} | sed -n 's/^longhornVolume=//p' | head -1)"
+            if [ -z "${handle}" ]; then
+              echo "No Longhorn volume handle was recorded."
+              exit 0
+            fi
+            if ! "$K" --kubeconfig "$C" get crd/volumes.longhorn.io >/dev/null 2>&1; then
+              echo "Longhorn volume CRD is not registered."
+              exit 0
+            fi
+            if ! "$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" >/dev/null 2>&1; then
+              echo "Longhorn volume ${handle} is already absent."
+              exit 0
+            fi
+
+            "$K" --kubeconfig "$C" -n longhorn-system delete \
+              "volumes.longhorn.io/${handle}" --wait=false || true
+            echo "Longhorn volume ${handle} removal requested."
+          args:
+            executable: /bin/bash
+          register: forgejo_longhorn_volume_reset
+          changed_when: "'removal requested' in forgejo_longhorn_volume_reset.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_forgejo_reset_longhorn_volume_effective | bool
+
+        - name: Refresh and sync Forgejo Argo CD application
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            if ! "$K" --kubeconfig "$C" -n argocd get application/forgejo >/dev/null 2>&1; then
+              echo "Argo CD application/forgejo is not present."
+              exit 0
+            fi
+            "$K" --kubeconfig "$C" -n argocd annotate application/forgejo \
+              argocd.argoproj.io/refresh=hard --overwrite
+            "$K" --kubeconfig "$C" -n argocd patch application/forgejo --type merge \
+              -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' || true
+          args:
+            executable: /bin/bash
+          register: forgejo_argocd_refresh
+          changed_when: true
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Forgejo PVC to be recreated cleanly
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pvc={{ platform_forgejo_pvc_name_effective | quote }}
+
+            "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" >/dev/null
+            deletion="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)"
+            phase="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            printf 'pvc=%s phase=%s deletionTimestamp=%s\n' "${pvc}" "${phase:-unknown}" "${deletion:-none}"
+            test -z "${deletion}"
+          args:
+            executable: /bin/bash
+          register: forgejo_pvc_recreated
+          retries: "{{ (((platform_forgejo_storage_repair_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_pvc_recreated.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+      when:
+        - forgejo_storage_state.rc == 42
+        - platform_forgejo_reset_stuck_pvc_effective
+
+    - name: Show Forgejo storage repair result
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        ns={{ platform_forgejo_namespace_effective | quote }}
+
+        echo "===== Argo CD Forgejo app ====="
+        "$K" --kubeconfig "$C" -n argocd get application/forgejo -o wide || true
+        echo "===== Forgejo resources ====="
+        "$K" --kubeconfig "$C" -n "$ns" get deployment,statefulset,pods,pvc,svc,ingress -o wide || true
+        echo "===== Longhorn volumes ====="
+        if "$K" --kubeconfig "$C" get crd/volumes.longhorn.io >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n longhorn-system get volumes.longhorn.io -o wide || true
+        fi
+      args:
+        executable: /bin/bash
+      register: forgejo_storage_repair_result
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Forgejo storage repair result
+      ansible.builtin.debug:
+        var: forgejo_storage_repair_result.stdout_lines
+      run_once: true

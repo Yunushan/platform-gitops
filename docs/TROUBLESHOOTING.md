@@ -101,11 +101,13 @@ StorageClass does not exist and the Longhorn Argo CD application remains
 make platform-longhorn-bootstrap
 ```
 
-This applies the premium Longhorn priority class and storage classes, installs
-the Longhorn Helm chart, refreshes the Longhorn and Forgejo Argo CD
-applications, and prints storage/PVC status. It is a first-deployment recovery
-path for the storage chicken-and-egg case; after Argo CD and pod networking are
-healthy, GitOps continues to own the desired Longhorn manifests.
+This applies the premium Longhorn storage classes, installs the Longhorn Helm
+chart, refreshes the Longhorn and Forgejo Argo CD applications, and prints
+storage/PVC status. If the `longhorn-critical` priority class already exists,
+the bootstrap adopts it for Helm metadata instead of changing immutable fields.
+It is a first-deployment recovery path for the storage chicken-and-egg case;
+after Argo CD and pod networking are healthy, GitOps continues to own the
+desired Longhorn manifests.
 
 If Longhorn pods show `ImagePullBackOff` for `docker.io/longhornio/*` with
 `TLS handshake timeout` or `connection reset by peer`, the Longhorn chart is
@@ -143,6 +145,20 @@ init-container state, logs, PVC/PV mapping, and Longhorn volume attachment:
 ```bash
 make platform-forgejo-diagnose
 ```
+
+If the Forgejo PVC is stuck in `Terminating` during the first deployment, stop
+before manually removing finalizers. The repair target diagnoses the state by
+default, and only resets storage when explicitly allowed:
+
+```bash
+make platform-forgejo-storage-repair
+PLATFORM_FORGEJO_RESET_STUCK_PVC=true make platform-forgejo-storage-repair
+```
+
+Use the reset flag only when Forgejo is still empty. It scales Forgejo down,
+removes the stuck first-deploy PVC/PV state, optionally removes the old Longhorn
+volume, and refreshes the Forgejo Argo CD application so the chart can recreate
+clean storage.
 
 If Forgejo events show `AttachVolume.Attach failed` with `node <name> not
 found`, the pod cannot start because Longhorn has not registered that Kubernetes
