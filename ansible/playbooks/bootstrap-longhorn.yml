@@ -185,6 +185,21 @@
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
+            pull_failures="$("$K" --kubeconfig "$C" -n longhorn-system get pods \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.name}={.state.waiting.reason}{" "}{end}{"\n"}{end}' |
+              grep -E 'ImagePullBackOff|ErrImagePull|InvalidImageName' || true)"
+            if [ -n "${pull_failures}" ]; then
+              echo "Longhorn image pull failure detected:" >&2
+              printf '%s\n' "${pull_failures}" >&2
+              echo "===== Longhorn images =====" >&2
+              "$K" --kubeconfig "$C" -n longhorn-system get pods \
+                -o jsonpath='{range .items[*].spec.initContainers[*]}init:{.image}{"\n"}{end}{range .items[*].spec.containers[*]}container:{.image}{"\n"}{end}' |
+                sort -u >&2 || true
+              echo "===== Longhorn pod events =====" >&2
+              "$K" --kubeconfig "$C" -n longhorn-system describe pods |
+                sed -n '/Events:/,$p' >&2 || true
+              exit 42
+            fi
             "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-manager >/dev/null
             "$K" --kubeconfig "$C" -n longhorn-system rollout status daemonset/longhorn-manager --timeout=30s
             if "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-csi-plugin >/dev/null 2>&1; then
@@ -202,6 +217,7 @@
           delay: 10
           until: platform_longhorn_workloads.rc == 0
           changed_when: false
+          failed_when: platform_longhorn_workloads.rc == 42
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
