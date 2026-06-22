@@ -40,7 +40,8 @@
         echo "===== target PVC state ====="
         if ! "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" >/dev/null 2>&1; then
           echo "pvc/${pvc} is not present"
-          exit 0
+          echo "FORGEJO_PVC_ABSENT=true"
+          exit 43
         fi
 
         deletion="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)"
@@ -390,6 +391,52 @@
       when:
         - forgejo_storage_state.rc == 42
         - platform_forgejo_reset_stuck_pvc_effective
+
+    - block:
+        - name: Refresh and sync Forgejo Argo CD application when PVC is absent
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            if ! "$K" --kubeconfig "$C" -n argocd get application/forgejo >/dev/null 2>&1; then
+              echo "Argo CD application/forgejo is not present."
+              exit 1
+            fi
+            "$K" --kubeconfig "$C" -n argocd annotate application/forgejo \
+              argocd.argoproj.io/refresh=hard --overwrite
+            "$K" --kubeconfig "$C" -n argocd patch application/forgejo --type merge \
+              -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' || true
+          args:
+            executable: /bin/bash
+          register: forgejo_absent_pvc_argocd_refresh
+          changed_when: true
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Forgejo PVC after absent-PVC resync
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pvc={{ platform_forgejo_pvc_name_effective | quote }}
+
+            "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" >/dev/null
+            deletion="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)"
+            phase="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            printf 'pvc=%s phase=%s deletionTimestamp=%s\n' "${pvc}" "${phase:-unknown}" "${deletion:-none}"
+            test -z "${deletion}"
+          args:
+            executable: /bin/bash
+          register: forgejo_absent_pvc_recreated
+          retries: "{{ (((platform_forgejo_storage_repair_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_absent_pvc_recreated.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+      when: forgejo_storage_state.rc == 43
 
     - name: Show Forgejo storage repair result
       ansible.builtin.shell: |
