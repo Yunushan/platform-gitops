@@ -208,6 +208,22 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Clean Longhorn uninstall job created by chart hooks
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" -n longhorn-system delete job/longhorn-uninstall \
+              --ignore-not-found=true --wait=false
+            "$K" --kubeconfig "$C" -n longhorn-system delete pods \
+              -l job-name=longhorn-uninstall --ignore-not-found=true --wait=false
+          args:
+            executable: /bin/bash
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_cleanup_helm_jobs_effective | bool
+
         - name: Collect Longhorn images for node pre-pull
           ansible.builtin.shell: |
             set -o pipefail
@@ -251,7 +267,7 @@
               crictl_args+=(--runtime-endpoint unix:///run/containerd/containerd.sock)
             fi
 
-            if "${CRICTL}" "${crictl_args[@]}" images --quiet "${image}" 2>/dev/null | grep -q .; then
+            if "${CRICTL}" "${crictl_args[@]}" inspecti "${image}" >/dev/null 2>&1; then
               echo "Already present on $(hostname -f 2>/dev/null || hostname): ${image}"
               exit 0
             fi
@@ -273,6 +289,48 @@
           loop_control:
             label: "{{ item }}"
           when: platform_longhorn_prepull_images_effective | bool
+
+        - name: Restart Longhorn pods stuck in old image-pull backoff after pre-pull
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            pods="$("$K" --kubeconfig "$C" -n longhorn-system get pods \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.state.waiting.reason}{" "}{end}{"\n"}{end}' |
+              awk '/ImagePullBackOff|ErrImagePull|InvalidImageName/ { print $1 }')"
+            if [ -z "${pods}" ]; then
+              echo "No Longhorn pods are in image-pull backoff."
+              exit 0
+            fi
+
+            echo "Deleting Longhorn pods stuck in image-pull backoff:"
+            printf '%s\n' ${pods}
+            for pod in ${pods}; do
+              "$K" --kubeconfig "$C" -n longhorn-system delete "pod/${pod}" --wait=false
+            done
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_backoff_restart
+          changed_when: "'Deleting Longhorn pods stuck in image-pull backoff' in platform_longhorn_backoff_restart.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_prepull_images_effective | bool
+
+        - name: Clean Longhorn uninstall job after pod backoff restart
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" -n longhorn-system delete job/longhorn-uninstall \
+              --ignore-not-found=true --wait=false
+            "$K" --kubeconfig "$C" -n longhorn-system delete pods \
+              -l job-name=longhorn-uninstall --ignore-not-found=true --wait=false
+          args:
+            executable: /bin/bash
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_cleanup_helm_jobs_effective | bool
 
         - name: Stop early when Longhorn image pull failures are present
           ansible.builtin.shell: |
