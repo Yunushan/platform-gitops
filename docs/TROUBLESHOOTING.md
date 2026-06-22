@@ -193,6 +193,16 @@ To fail faster after the repair retry and print attach diagnostics sooner:
 PLATFORM_FORGEJO_POD_IP_WAIT_TIMEOUT=120 make platform-forgejo-storage-repair
 ```
 
+If the PV has `longhorn.io/volume-scheduling-error: precheck new replica failed:
+disks are unavailable` and `nodes.longhorn.io` shows empty `Spec.Disks`, the
+repair target adds a default schedulable Longhorn disk on each node at
+`/var/lib/longhorn` before retrying the Forgejo attach. To use a dedicated disk
+path:
+
+```bash
+PLATFORM_LONGHORN_DEFAULT_DISK_PATH=/mnt/longhorn make platform-forgejo-storage-repair
+```
+
 If Longhorn manager logs repeat `the server could not find the requested
 resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
 `engineimages.longhorn.io`, restore the missing CRDs and restart Longhorn:

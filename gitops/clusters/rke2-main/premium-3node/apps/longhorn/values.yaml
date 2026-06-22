@@ -5,7 +5,7 @@ defaultSettings:
   defaultDataPath: /var/lib/longhorn
   backupTarget: <LONGHORN_BACKUP_TARGET>
   backupTargetCredentialSecret: longhorn-backup-target
-  createDefaultDiskLabeledNodes: true
+  createDefaultDiskLabeledNodes: false
   defaultReplicaCount: 2
   defaultDataLocality: best-effort
   replicaAutoBalance: best-effort

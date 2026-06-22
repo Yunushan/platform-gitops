@@ -14,6 +14,8 @@
     platform_forgejo_storage_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_STORAGE_REPAIR_TIMEOUT') }}"
     platform_forgejo_volume_attach_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_VOLUME_ATTACH_REPAIR_TIMEOUT') }}"
     platform_forgejo_pod_ip_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_POD_IP_WAIT_TIMEOUT') }}"
+    platform_longhorn_default_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
+    platform_longhorn_default_disk_repair_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_REPAIR_ENABLED') }}"
     platform_forgejo_namespace_effective: "{{ platform_forgejo_namespace | default(platform_forgejo_namespace_from_env, true) | default('forgejo', true) }}"
     platform_forgejo_pvc_name_effective: "{{ platform_forgejo_pvc_name | default(platform_forgejo_pvc_name_from_env, true) | default('gitea-shared-storage', true) }}"
     platform_forgejo_reset_stuck_pvc_effective: "{{ platform_forgejo_reset_stuck_pvc | default(platform_forgejo_reset_stuck_pvc_from_env, true) | default(false, true) | bool }}"
@@ -22,6 +24,8 @@
     platform_forgejo_storage_repair_timeout_effective: "{{ platform_forgejo_storage_repair_timeout | default(platform_forgejo_storage_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_forgejo_volume_attach_repair_timeout_effective: "{{ platform_forgejo_volume_attach_repair_timeout | default(platform_forgejo_volume_attach_repair_timeout_from_env, true) | default(600, true) | int }}"
     platform_forgejo_pod_ip_wait_timeout_effective: "{{ platform_forgejo_pod_ip_wait_timeout | default(platform_forgejo_pod_ip_wait_timeout_from_env, true) | default(180, true) | int }}"
+    platform_longhorn_default_disk_path_effective: "{{ platform_longhorn_default_disk_path | default(platform_longhorn_default_disk_path_from_env, true) | default('/var/lib/longhorn', true) }}"
+    platform_longhorn_default_disk_repair_enabled_effective: "{{ platform_longhorn_default_disk_repair_enabled | default(platform_longhorn_default_disk_repair_enabled_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Inspect Forgejo storage state
       ansible.builtin.shell: |
@@ -568,6 +572,81 @@
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
+
+        - name: Repair missing Longhorn default disks on all nodes
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            disk_path={{ platform_longhorn_default_disk_path_effective | quote }}
+            changed=0
+
+            for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+              if ! "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" >/dev/null 2>&1; then
+                echo "Skipping ${node}; Longhorn node object is not present yet."
+                continue
+              fi
+
+              disk_paths="$("$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" \
+                -o jsonpath='{range .spec.disks[*]}{.path}{"\n"}{end}' 2>/dev/null || true)"
+              if [ -n "${disk_paths}" ]; then
+                echo "${node} already has Longhorn disk configuration."
+                continue
+              fi
+
+              echo "Adding default Longhorn disk on ${node}: ${disk_path}"
+              "$K" --kubeconfig "$C" -n longhorn-system patch "nodes.longhorn.io/${node}" \
+                --type=merge \
+                -p "{\"spec\":{\"disks\":{\"default-disk\":{\"path\":\"${disk_path}\",\"allowScheduling\":true,\"storageReserved\":0,\"tags\":[]}}}}"
+              changed=1
+            done
+
+            echo "===== Longhorn node disk state ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o yaml |
+              sed -n '/^metadata:/d; /name: node-/p; /disks:/,/conditions:/p' || true
+
+            test "${changed}" -eq 0 && echo "No Longhorn disk repair changes were required."
+          args:
+            executable: /bin/bash
+          register: forgejo_attach_longhorn_disk_repair
+          changed_when: "'Adding default Longhorn disk' in forgejo_attach_longhorn_disk_repair.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_default_disk_repair_enabled_effective | bool
+
+        - name: Wait for Longhorn disks to become schedulable
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            missing=""
+            for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+              disk_paths="$("$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" \
+                -o jsonpath='{range .spec.disks[*]}{.path}{"\n"}{end}' 2>/dev/null || true)"
+              if [ -z "${disk_paths}" ]; then
+                missing="${missing} ${node}"
+              fi
+            done
+            missing="$(printf '%s' "${missing}" | xargs)"
+            echo "===== Longhorn nodes ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide || true
+            echo "===== Longhorn node disks ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o yaml |
+              sed -n '/name: node-/p; /disks:/,/conditions:/p' || true
+            if [ -n "${missing}" ]; then
+              echo "Longhorn nodes still missing disks: ${missing}" >&2
+              exit 1
+            fi
+          args:
+            executable: /bin/bash
+          register: forgejo_attach_longhorn_disks_ready
+          retries: "{{ (((platform_forgejo_volume_attach_repair_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_attach_longhorn_disks_ready.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_default_disk_repair_enabled_effective | bool
 
         - name: Restart Longhorn CSI components before Forgejo attach retry
           ansible.builtin.shell: |

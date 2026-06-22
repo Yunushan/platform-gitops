@@ -188,7 +188,7 @@
                     defaultDataPath: /var/lib/longhorn
                     backupTarget: {{ platform_longhorn_backup_target_effective | to_json }}
                     backupTargetCredentialSecret: longhorn-backup-target
-                    createDefaultDiskLabeledNodes: true
+                    createDefaultDiskLabeledNodes: false
                     defaultReplicaCount: 2
                     defaultDataLocality: best-effort
                     replicaAutoBalance: best-effort
