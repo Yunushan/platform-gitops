@@ -57,6 +57,24 @@
           run_once: true
           when: platform_longhorn_cleanup_helm_jobs_effective | bool
 
+        - name: Clean stale Longhorn uninstall job
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            if "$K" --kubeconfig "$C" get ns longhorn-system >/dev/null 2>&1; then
+              "$K" --kubeconfig "$C" -n longhorn-system delete job/longhorn-uninstall \
+                --ignore-not-found=true --wait=false
+              "$K" --kubeconfig "$C" -n longhorn-system delete pods \
+                -l job-name=longhorn-uninstall --ignore-not-found=true --wait=false
+            fi
+          args:
+            executable: /bin/bash
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_cleanup_helm_jobs_effective | bool
+
         - name: Apply Longhorn namespace, storage classes, and RKE2 HelmChart
           ansible.builtin.shell: |
             set -o pipefail
