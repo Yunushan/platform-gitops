@@ -1,0 +1,283 @@
+---
+- name: Bootstrap Longhorn storage directly
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_longhorn_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CHART_REPO') }}"
+    platform_longhorn_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CHART_VERSION') }}"
+    platform_longhorn_backup_target_from_env: "{{ lookup('ansible.builtin.env', 'LONGHORN_BACKUP_TARGET') }}"
+    platform_longhorn_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_WAIT_TIMEOUT') }}"
+    platform_longhorn_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CLEANUP_HELM_JOBS') }}"
+    platform_longhorn_chart_repo_effective: "{{ platform_longhorn_chart_repo | default(platform_longhorn_chart_repo_from_env, true) | default('https://charts.longhorn.io', true) }}"
+    platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) }}"
+    platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"
+    platform_longhorn_wait_timeout_effective: "{{ platform_longhorn_wait_timeout | default(platform_longhorn_wait_timeout_from_env, true) | default(900, true) | int }}"
+    platform_longhorn_cleanup_helm_jobs_effective: "{{ platform_longhorn_cleanup_helm_jobs | default(platform_longhorn_cleanup_helm_jobs_from_env, true) | default(true, true) | bool }}"
+  tasks:
+    - block:
+        - name: Verify RKE2 HelmChart CRD exists
+          ansible.builtin.command:
+            argv:
+              - /var/lib/rancher/rke2/bin/kubectl
+              - --kubeconfig
+              - /etc/rancher/rke2/rke2.yaml
+              - get
+              - crd
+              - helmcharts.helm.cattle.io
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Clean stale Longhorn Helm install job
+          ansible.builtin.command:
+            argv:
+              - /var/lib/rancher/rke2/bin/kubectl
+              - --kubeconfig
+              - /etc/rancher/rke2/rke2.yaml
+              - -n
+              - kube-system
+              - delete
+              - job/helm-install-platform-longhorn
+              - --ignore-not-found=true
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_cleanup_helm_jobs_effective | bool
+
+        - name: Apply Longhorn namespace, storage classes, and RKE2 HelmChart
+          ansible.builtin.shell: |
+            set -o pipefail
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+          args:
+            executable: /bin/bash
+            stdin: |
+              ---
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: longhorn-system
+              ---
+              apiVersion: scheduling.k8s.io/v1
+              kind: PriorityClass
+              metadata:
+                name: longhorn-critical
+              value: 1000000
+              globalDefault: false
+              description: Priority class for Longhorn system components in the premium 3-node profile.
+              ---
+              apiVersion: storage.k8s.io/v1
+              kind: StorageClass
+              metadata:
+                name: longhorn-standard
+                annotations:
+                  storageclass.kubernetes.io/is-default-class: "true"
+              provisioner: driver.longhorn.io
+              allowVolumeExpansion: true
+              reclaimPolicy: Retain
+              volumeBindingMode: WaitForFirstConsumer
+              parameters:
+                numberOfReplicas: "2"
+                staleReplicaTimeout: "30"
+                dataLocality: best-effort
+                fsType: ext4
+              ---
+              apiVersion: storage.k8s.io/v1
+              kind: StorageClass
+              metadata:
+                name: longhorn-critical
+              provisioner: driver.longhorn.io
+              allowVolumeExpansion: true
+              reclaimPolicy: Retain
+              volumeBindingMode: WaitForFirstConsumer
+              parameters:
+                numberOfReplicas: "3"
+                staleReplicaTimeout: "30"
+                dataLocality: best-effort
+                fsType: ext4
+              ---
+              apiVersion: storage.k8s.io/v1
+              kind: StorageClass
+              metadata:
+                name: longhorn-cache
+              provisioner: driver.longhorn.io
+              allowVolumeExpansion: true
+              reclaimPolicy: Delete
+              volumeBindingMode: WaitForFirstConsumer
+              parameters:
+                numberOfReplicas: "1"
+                staleReplicaTimeout: "30"
+                dataLocality: best-effort
+                fsType: ext4
+              ---
+              apiVersion: helm.cattle.io/v1
+              kind: HelmChart
+              metadata:
+                name: platform-longhorn
+                namespace: kube-system
+              spec:
+                repo: {{ platform_longhorn_chart_repo_effective }}
+                chart: longhorn
+              {% if platform_longhorn_chart_version_effective | length > 0 %}
+                version: {{ platform_longhorn_chart_version_effective }}
+              {% endif %}
+                targetNamespace: longhorn-system
+                createNamespace: true
+                valuesContent: |-
+                  persistence:
+                    defaultClass: false
+                  defaultSettings:
+                    defaultDataPath: /var/lib/longhorn
+                    backupTarget: {{ platform_longhorn_backup_target_effective | to_json }}
+                    backupTargetCredentialSecret: longhorn-backup-target
+                    createDefaultDiskLabeledNodes: true
+                    defaultReplicaCount: 2
+                    defaultDataLocality: best-effort
+                    replicaAutoBalance: best-effort
+                    storageOverProvisioningPercentage: 100
+                    storageMinimalAvailablePercentage: 10
+                    orphanAutoDeletion: true
+                    concurrentAutomaticEngineUpgradePerNodeLimit: 1
+                  longhornManager:
+                    priorityClass: longhorn-critical
+                    resources:
+                      requests:
+                        cpu: 250m
+                        memory: 512Mi
+                      limits:
+                        memory: 1Gi
+                  longhornDriver:
+                    priorityClass: longhorn-critical
+          register: platform_longhorn_apply
+          changed_when: >-
+            'created' in platform_longhorn_apply.stdout or
+            'configured' in platform_longhorn_apply.stdout
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Longhorn CRDs
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            for crd in settings.longhorn.io nodes.longhorn.io volumes.longhorn.io engines.longhorn.io; do
+              "$K" --kubeconfig "$C" get "crd/${crd}" >/dev/null
+            done
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_crds
+          retries: "{{ ((platform_longhorn_wait_timeout_effective / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: platform_longhorn_crds.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for core Longhorn workloads
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-manager >/dev/null
+            "$K" --kubeconfig "$C" -n longhorn-system rollout status daemonset/longhorn-manager --timeout=30s
+            if "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-csi-plugin >/dev/null 2>&1; then
+              "$K" --kubeconfig "$C" -n longhorn-system rollout status daemonset/longhorn-csi-plugin --timeout=30s
+            fi
+            for deployment in longhorn-driver-deployer longhorn-ui; do
+              if "$K" --kubeconfig "$C" -n longhorn-system get "deployment/${deployment}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n longhorn-system rollout status "deployment/${deployment}" --timeout=30s
+              fi
+            done
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_workloads
+          retries: "{{ ((platform_longhorn_wait_timeout_effective / 30) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: platform_longhorn_workloads.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Refresh Longhorn and Forgejo applications after direct storage bootstrap
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            for app in longhorn forgejo; do
+              if "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+                  argocd.argoproj.io/refresh=hard --overwrite
+              fi
+            done
+          args:
+            executable: /bin/bash
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Show Longhorn bootstrap status
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== HelmChart ====="
+            "$K" --kubeconfig "$C" -n kube-system get helmchart platform-longhorn -o wide || true
+            echo "===== helm install jobs ====="
+            "$K" --kubeconfig "$C" -n kube-system get job,pods -o wide | grep -E 'helm-install-platform-longhorn|platform-longhorn|longhorn|NAME' || true
+            echo "===== Longhorn pods ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get pods -o wide || true
+            echo "===== StorageClasses ====="
+            "$K" --kubeconfig "$C" get storageclass || true
+            echo "===== Forgejo PVC/pod ====="
+            "$K" --kubeconfig "$C" -n forgejo get pvc,pods,ingress -o wide || true
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_status
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print Longhorn bootstrap status
+          ansible.builtin.debug:
+            var: platform_longhorn_status.stdout_lines
+          run_once: true
+
+      rescue:
+        - name: Collect Longhorn bootstrap failure diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== HelmChart resources ====="
+            "$K" --kubeconfig "$C" -n kube-system get helmchart platform-longhorn -o yaml || true
+            echo "===== Helm install jobs and pods ====="
+            "$K" --kubeconfig "$C" -n kube-system get job,pods -o wide | grep -E 'helm-install-platform-longhorn|platform-longhorn|longhorn|NAME' || true
+            "$K" --kubeconfig "$C" -n kube-system describe job helm-install-platform-longhorn || true
+            for pod in $("$K" --kubeconfig "$C" -n kube-system get pods -l job-name=helm-install-platform-longhorn -o name 2>/dev/null); do
+              echo "===== ${pod} logs ====="
+              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --tail=160 || true
+              echo "===== ${pod} describe ====="
+              "$K" --kubeconfig "$C" -n kube-system describe "${pod}" || true
+            done
+            echo "===== Longhorn namespace ====="
+            "$K" --kubeconfig "$C" get ns longhorn-system || true
+            "$K" --kubeconfig "$C" -n longhorn-system get all -o wide || true
+            "$K" --kubeconfig "$C" -n longhorn-system get events --sort-by=.lastTimestamp | tail -120 || true
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_failure
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Stop after Longhorn bootstrap failure
+          ansible.builtin.fail:
+            msg: |-
+              Direct Longhorn bootstrap did not become ready within
+              {{ platform_longhorn_wait_timeout_effective }}s.
+
+              Diagnostic summary:
+              {{ platform_longhorn_failure.stdout }}
+
+              Common causes are blocked chart/image pulls, missing Longhorn host
+              prerequisites, insufficient disk space, CNI pod networking problems,
+              or Longhorn manager/CSI pods waiting on scheduling.

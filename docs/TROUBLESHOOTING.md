@@ -93,6 +93,20 @@ To keep node-local placement but avoid the host-network/direct-node-IP fallback:
 PLATFORM_ARGOCD_SERVICE_REPAIR_HOST_NETWORK=false make platform-argocd-service-repair
 ```
 
+If Forgejo is synced but stuck in `Pending` because the `longhorn-critical`
+StorageClass does not exist and the Longhorn Argo CD application remains
+`Unknown`, bootstrap Longhorn directly through the RKE2 Helm controller:
+
+```bash
+make platform-longhorn-bootstrap
+```
+
+This applies the premium Longhorn priority class and storage classes, installs
+the Longhorn Helm chart, refreshes the Longhorn and Forgejo Argo CD
+applications, and prints storage/PVC status. It is a first-deployment recovery
+path for the storage chicken-and-egg case; after Argo CD and pod networking are
+healthy, GitOps continues to own the desired Longhorn manifests.
+
 If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
 
 ```bash
