@@ -168,7 +168,7 @@
           args:
             executable: /bin/bash
           register: platform_longhorn_crds
-          retries: "{{ ((platform_longhorn_wait_timeout_effective / 10) | round(0, 'ceil') | int) + 1 }}"
+          retries: "{{ (((platform_longhorn_wait_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
           delay: 10
           until: platform_longhorn_crds.rc == 0
           changed_when: false
@@ -193,7 +193,7 @@
           args:
             executable: /bin/bash
           register: platform_longhorn_workloads
-          retries: "{{ ((platform_longhorn_wait_timeout_effective / 30) | round(0, 'ceil') | int) + 1 }}"
+          retries: "{{ (((platform_longhorn_wait_timeout_effective | int) / 30) | round(0, 'ceil') | int) + 1 }}"
           delay: 10
           until: platform_longhorn_workloads.rc == 0
           changed_when: false
@@ -281,3 +281,4 @@
               Common causes are blocked chart/image pulls, missing Longhorn host
               prerequisites, insufficient disk space, CNI pod networking problems,
               or Longhorn manager/CSI pods waiting on scheduling.
+          run_once: true
