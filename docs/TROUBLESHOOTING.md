@@ -136,6 +136,14 @@ PLATFORM_LONGHORN_IMAGE_PULL_FAST_FAIL=true make platform-longhorn-bootstrap
 For production, configure a local registry mirror or preload the Longhorn images
 on all RKE2 nodes.
 
+If the Forgejo PVC is `Bound` but the Forgejo pod remains in `Init:*`, Longhorn
+has provisioned storage and the next useful signal is the Forgejo pod's
+init-container state, logs, PVC/PV mapping, and Longhorn volume attachment:
+
+```bash
+make platform-forgejo-diagnose
+```
+
 If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
 
 ```bash

@@ -1,0 +1,87 @@
+---
+- name: Diagnose Forgejo deployment
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+  tasks:
+    - name: Collect Forgejo diagnostics
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        echo "===== Argo CD Forgejo application ====="
+        "$K" --kubeconfig "$C" -n argocd get application forgejo -o wide || true
+        "$K" --kubeconfig "$C" -n argocd describe application forgejo |
+          sed -n '/Status:/,/Events:/p' || true
+
+        echo "===== Forgejo namespace resources ====="
+        "$K" --kubeconfig "$C" get ns forgejo || true
+        "$K" --kubeconfig "$C" -n forgejo get pods,pvc,svc,ingress -o wide || true
+
+        echo "===== Forgejo pods: init/container images and states ====="
+        "$K" --kubeconfig "$C" -n forgejo get pods \
+          -o jsonpath='{range .items[*]}pod:{.metadata.name}{" node="}{.spec.nodeName}{" phase="}{.status.phase}{"\n"}{range .spec.initContainers[*]}  init:{.name} image={.image}{"\n"}{end}{range .spec.containers[*]}  container:{.name} image={.image}{"\n"}{end}{range .status.initContainerStatuses[*]}  init-status:{.name} ready={.ready} reason={.state.waiting.reason}{.state.terminated.reason} exit={.state.terminated.exitCode}{"\n"}{end}{range .status.containerStatuses[*]}  container-status:{.name} ready={.ready} reason={.state.waiting.reason}{.state.terminated.reason} restarts={.restartCount}{"\n"}{end}{end}' || true
+
+        pods="$("$K" --kubeconfig "$C" -n forgejo get pods \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        for pod in ${pods}; do
+          echo "===== describe pod/${pod} ====="
+          "$K" --kubeconfig "$C" -n forgejo describe "pod/${pod}" || true
+
+          containers="$("$K" --kubeconfig "$C" -n forgejo get "pod/${pod}" \
+            -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}{range .spec.containers[*]}{.name}{"\n"}{end}' 2>/dev/null || true)"
+          for container in ${containers}; do
+            echo "===== logs pod/${pod} container/${container} ====="
+            "$K" --kubeconfig "$C" -n forgejo logs "pod/${pod}" \
+              -c "${container}" --tail=120 || true
+            echo "===== previous logs pod/${pod} container/${container} ====="
+            "$K" --kubeconfig "$C" -n forgejo logs "pod/${pod}" \
+              -c "${container}" --previous --tail=120 || true
+          done
+        done
+
+        echo "===== Forgejo PVC and backing PV / Longhorn volume ====="
+        pvcs="$("$K" --kubeconfig "$C" -n forgejo get pvc \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        for pvc in ${pvcs}; do
+          echo "----- pvc/${pvc} -----"
+          "$K" --kubeconfig "$C" -n forgejo describe "pvc/${pvc}" || true
+          pv="$("$K" --kubeconfig "$C" -n forgejo get "pvc/${pvc}" \
+            -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+          if [ -n "${pv}" ]; then
+            echo "----- pv/${pv} -----"
+            "$K" --kubeconfig "$C" get "pv/${pv}" -o wide || true
+            "$K" --kubeconfig "$C" describe "pv/${pv}" || true
+            handle="$("$K" --kubeconfig "$C" get "pv/${pv}" \
+              -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+            if [ -n "${handle}" ]; then
+              echo "----- longhorn volume/${handle} -----"
+              "$K" --kubeconfig "$C" -n longhorn-system get \
+                "volumes.longhorn.io/${handle}" -o wide || true
+              "$K" --kubeconfig "$C" -n longhorn-system describe \
+                "volumes.longhorn.io/${handle}" || true
+            fi
+          fi
+        done
+
+        echo "===== Longhorn workload summary ====="
+        "$K" --kubeconfig "$C" -n longhorn-system get pods -o wide || true
+        "$K" --kubeconfig "$C" -n longhorn-system get engines,replicas,volumes -o wide || true
+
+        echo "===== Forgejo recent events ====="
+        "$K" --kubeconfig "$C" -n forgejo get events \
+          --sort-by=.lastTimestamp | tail -120 || true
+      args:
+        executable: /bin/bash
+      register: forgejo_diagnostics
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Forgejo diagnostics
+      ansible.builtin.debug:
+        var: forgejo_diagnostics.stdout_lines
+      run_once: true
