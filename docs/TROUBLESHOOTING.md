@@ -144,6 +144,17 @@ init-container state, logs, PVC/PV mapping, and Longhorn volume attachment:
 make platform-forgejo-diagnose
 ```
 
+If Forgejo events show `AttachVolume.Attach failed` with `node <name> not
+found`, the pod cannot start because Longhorn has not registered that Kubernetes
+node as a healthy Longhorn node yet, or the instance-manager/engine-image pods
+for that node are still unhealthy. Check the Longhorn node objects and manager
+logs:
+
+```bash
+kubectl -n longhorn-system get nodes.longhorn.io,instancemanagers.longhorn.io,engineimages.longhorn.io -o wide
+kubectl -n longhorn-system logs -l app=longhorn-manager --all-containers --tail=180
+```
+
 If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
 
 ```bash

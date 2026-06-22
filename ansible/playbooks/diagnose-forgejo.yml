@@ -71,6 +71,21 @@
         "$K" --kubeconfig "$C" -n longhorn-system get pods -o wide || true
         "$K" --kubeconfig "$C" -n longhorn-system get engines,replicas,volumes -o wide || true
 
+        echo "===== Longhorn node and instance-manager state ====="
+        "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide || true
+        "$K" --kubeconfig "$C" -n longhorn-system get engineimages.longhorn.io -o wide || true
+        "$K" --kubeconfig "$C" -n longhorn-system get instancemanagers.longhorn.io -o wide || true
+        "$K" --kubeconfig "$C" -n longhorn-system get settings.longhorn.io default-data-path create-default-disk-labeled-nodes -o yaml || true
+        for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+          echo "----- kubernetes node/${node} -----"
+          "$K" --kubeconfig "$C" get "node/${node}" -o wide || true
+          "$K" --kubeconfig "$C" -n longhorn-system describe "nodes.longhorn.io/${node}" || true
+        done
+
+        echo "===== Longhorn manager recent logs ====="
+        "$K" --kubeconfig "$C" -n longhorn-system logs \
+          -l app=longhorn-manager --all-containers --tail=180 || true
+
         echo "===== Forgejo recent events ====="
         "$K" --kubeconfig "$C" -n forgejo get events \
           --sort-by=.lastTimestamp | tail -120 || true
