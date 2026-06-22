@@ -187,6 +187,12 @@ For slow clusters:
 PLATFORM_FORGEJO_VOLUME_ATTACH_REPAIR_TIMEOUT=900 make platform-forgejo-storage-repair
 ```
 
+To fail faster after the repair retry and print attach diagnostics sooner:
+
+```bash
+PLATFORM_FORGEJO_POD_IP_WAIT_TIMEOUT=120 make platform-forgejo-storage-repair
+```
+
 If Longhorn manager logs repeat `the server could not find the requested
 resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
 `engineimages.longhorn.io`, restore the missing CRDs and restart Longhorn:

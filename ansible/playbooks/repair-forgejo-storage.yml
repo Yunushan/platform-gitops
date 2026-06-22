@@ -13,6 +13,7 @@
     platform_forgejo_pod_termination_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_POD_TERMINATION_TIMEOUT') }}"
     platform_forgejo_storage_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_STORAGE_REPAIR_TIMEOUT') }}"
     platform_forgejo_volume_attach_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_VOLUME_ATTACH_REPAIR_TIMEOUT') }}"
+    platform_forgejo_pod_ip_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_POD_IP_WAIT_TIMEOUT') }}"
     platform_forgejo_namespace_effective: "{{ platform_forgejo_namespace | default(platform_forgejo_namespace_from_env, true) | default('forgejo', true) }}"
     platform_forgejo_pvc_name_effective: "{{ platform_forgejo_pvc_name | default(platform_forgejo_pvc_name_from_env, true) | default('gitea-shared-storage', true) }}"
     platform_forgejo_reset_stuck_pvc_effective: "{{ platform_forgejo_reset_stuck_pvc | default(platform_forgejo_reset_stuck_pvc_from_env, true) | default(false, true) | bool }}"
@@ -20,6 +21,7 @@
     platform_forgejo_pod_termination_timeout_effective: "{{ platform_forgejo_pod_termination_timeout | default(platform_forgejo_pod_termination_timeout_from_env, true) | default(60, true) | int }}"
     platform_forgejo_storage_repair_timeout_effective: "{{ platform_forgejo_storage_repair_timeout | default(platform_forgejo_storage_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_forgejo_volume_attach_repair_timeout_effective: "{{ platform_forgejo_volume_attach_repair_timeout | default(platform_forgejo_volume_attach_repair_timeout_from_env, true) | default(600, true) | int }}"
+    platform_forgejo_pod_ip_wait_timeout_effective: "{{ platform_forgejo_pod_ip_wait_timeout | default(platform_forgejo_pod_ip_wait_timeout_from_env, true) | default(180, true) | int }}"
   tasks:
     - name: Inspect Forgejo storage state
       ansible.builtin.shell: |
@@ -567,6 +569,55 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Restart Longhorn CSI components before Forgejo attach retry
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns=longhorn-system
+            for workload in \
+              deployment/csi-attacher \
+              deployment/csi-provisioner \
+              deployment/csi-resizer \
+              deployment/csi-snapshotter \
+              daemonset/longhorn-csi-plugin; do
+              if "$K" --kubeconfig "$C" -n "$ns" get "$workload" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n "$ns" rollout restart "$workload"
+              fi
+            done
+          args:
+            executable: /bin/bash
+          register: forgejo_attach_longhorn_csi_restart
+          changed_when: "'restarted' in forgejo_attach_longhorn_csi_restart.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Longhorn CSI components after attach repair restart
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns=longhorn-system
+            for workload in \
+              deployment/csi-attacher \
+              deployment/csi-provisioner \
+              deployment/csi-resizer \
+              deployment/csi-snapshotter \
+              daemonset/longhorn-csi-plugin; do
+              if "$K" --kubeconfig "$C" -n "$ns" get "$workload" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n "$ns" rollout status "$workload" --timeout=30s
+              fi
+            done
+          args:
+            executable: /bin/bash
+          register: forgejo_attach_longhorn_csi_rollout
+          retries: "{{ (((platform_forgejo_volume_attach_repair_timeout_effective | int) / 30) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_attach_longhorn_csi_rollout.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Restart Forgejo pod after Longhorn attach repair
           ansible.builtin.shell: |
             set -o pipefail
@@ -600,11 +651,70 @@
           args:
             executable: /bin/bash
           register: forgejo_attach_pod_has_ip
-          retries: "{{ (((platform_forgejo_volume_attach_repair_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          retries: "{{ (((platform_forgejo_pod_ip_wait_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
           delay: 10
           until: forgejo_attach_pod_has_ip.rc == 0
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+      rescue:
+        - name: Collect Forgejo attach repair failure diagnostics
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pvc={{ platform_forgejo_pvc_name_effective | quote }}
+
+            echo "===== Forgejo pods ====="
+            "$K" --kubeconfig "$C" -n "$ns" get pods -l app.kubernetes.io/name=forgejo -o wide || true
+            for pod in $("$K" --kubeconfig "$C" -n "$ns" get pods -l app.kubernetes.io/name=forgejo -o name 2>/dev/null); do
+              echo "===== ${pod} describe ====="
+              "$K" --kubeconfig "$C" -n "$ns" describe "$pod" || true
+            done
+
+            echo "===== Forgejo PVC/PV ====="
+            "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o wide || true
+            "$K" --kubeconfig "$C" -n "$ns" describe "pvc/${pvc}" || true
+            pv="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+            handle=""
+            if [ -n "${pv}" ]; then
+              "$K" --kubeconfig "$C" get "pv/${pv}" -o wide || true
+              "$K" --kubeconfig "$C" describe "pv/${pv}" || true
+              handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+            fi
+
+            echo "===== Longhorn nodes ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide || true
+            for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+              "$K" --kubeconfig "$C" -n longhorn-system describe "nodes.longhorn.io/${node}" || true
+            done
+
+            echo "===== Longhorn volume ====="
+            if [ -n "${handle}" ]; then
+              "$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" -o yaml || true
+            fi
+
+            echo "===== Longhorn workloads ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get pods,daemonset,deployment -o wide || true
+            echo "===== Longhorn recent events ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get events --sort-by=.lastTimestamp | tail -120 || true
+          args:
+            executable: /bin/bash
+          register: forgejo_attach_repair_failure
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Stop after Forgejo attach repair failure
+          ansible.builtin.fail:
+            msg: |-
+              Forgejo still did not receive a pod IP after Longhorn attach repair
+              within {{ platform_forgejo_pod_ip_wait_timeout_effective }}s.
+
+              Diagnostic summary:
+              {{ forgejo_attach_repair_failure.stdout }}
           run_once: true
 
       when: forgejo_longhorn_attach_problem.rc == 42
