@@ -71,7 +71,7 @@
         "$K" --kubeconfig "$C" -n longhorn-system get pods -o wide || true
         "$K" --kubeconfig "$C" api-resources --api-group=longhorn.io -o name || true
         for resource in engines.longhorn.io replicas.longhorn.io volumes.longhorn.io; do
-          if "$K" --kubeconfig "$C" api-resources --api-group=longhorn.io -o name 2>/dev/null | grep -qx "${resource}"; then
+          if "$K" --kubeconfig "$C" get "crd/${resource}" >/dev/null 2>&1; then
             "$K" --kubeconfig "$C" -n longhorn-system get "${resource}" -o wide || true
           else
             echo "Longhorn API resource not registered: ${resource}"
@@ -84,13 +84,13 @@
         echo "----- Longhorn API resources -----"
         "$K" --kubeconfig "$C" api-resources --api-group=longhorn.io -o wide || true
         for resource in nodes.longhorn.io engineimages.longhorn.io instancemanagers.longhorn.io; do
-          if "$K" --kubeconfig "$C" api-resources --api-group=longhorn.io -o name 2>/dev/null | grep -qx "${resource}"; then
+          if "$K" --kubeconfig "$C" get "crd/${resource}" >/dev/null 2>&1; then
             "$K" --kubeconfig "$C" -n longhorn-system get "${resource}" -o wide || true
           else
             echo "Longhorn API resource not registered: ${resource}"
           fi
         done
-        if "$K" --kubeconfig "$C" api-resources --api-group=longhorn.io -o name 2>/dev/null | grep -qx 'settings.longhorn.io'; then
+        if "$K" --kubeconfig "$C" get crd/settings.longhorn.io >/dev/null 2>&1; then
           "$K" --kubeconfig "$C" -n longhorn-system get settings.longhorn.io default-data-path create-default-disk-labeled-nodes -o yaml || true
         else
           echo "Longhorn API resource not registered: settings.longhorn.io"
@@ -98,7 +98,7 @@
         for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
           echo "----- kubernetes node/${node} -----"
           "$K" --kubeconfig "$C" get "node/${node}" -o wide || true
-          if "$K" --kubeconfig "$C" api-resources --api-group=longhorn.io -o name 2>/dev/null | grep -qx 'nodes.longhorn.io'; then
+          if "$K" --kubeconfig "$C" get crd/nodes.longhorn.io >/dev/null 2>&1; then
             "$K" --kubeconfig "$C" -n longhorn-system describe "nodes.longhorn.io/${node}" || true
           fi
         done

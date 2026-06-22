@@ -157,6 +157,14 @@ kubectl -n longhorn-system get nodes.longhorn.io instancemanagers.longhorn.io en
 kubectl -n longhorn-system logs -l app=longhorn-manager --all-containers --tail=180
 ```
 
+If Longhorn manager logs repeat `the server could not find the requested
+resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
+`engineimages.longhorn.io`, restore the missing CRDs and restart Longhorn:
+
+```bash
+make platform-longhorn-crd-repair
+```
+
 If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
 
 ```bash

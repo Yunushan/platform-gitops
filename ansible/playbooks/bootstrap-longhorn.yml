@@ -11,6 +11,8 @@
     platform_longhorn_backup_target_from_env: "{{ lookup('ansible.builtin.env', 'LONGHORN_BACKUP_TARGET') }}"
     platform_longhorn_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_WAIT_TIMEOUT') }}"
     platform_longhorn_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CLEANUP_HELM_JOBS') }}"
+    platform_longhorn_crd_repair_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CRD_REPAIR_ENABLED') }}"
+    platform_longhorn_crd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CRD_MANIFEST_URL') }}"
     platform_longhorn_prepull_images_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_PREPULL_IMAGES') }}"
     platform_longhorn_image_pull_retries_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_RETRIES') }}"
     platform_longhorn_image_pull_retry_delay_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_RETRY_DELAY') }}"
@@ -21,11 +23,24 @@
     platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"
     platform_longhorn_wait_timeout_effective: "{{ platform_longhorn_wait_timeout | default(platform_longhorn_wait_timeout_from_env, true) | default(900, true) | int }}"
     platform_longhorn_cleanup_helm_jobs_effective: "{{ platform_longhorn_cleanup_helm_jobs | default(platform_longhorn_cleanup_helm_jobs_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_crd_repair_enabled_effective: "{{ platform_longhorn_crd_repair_enabled | default(platform_longhorn_crd_repair_enabled_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_crd_manifest_url_effective: >-
+      {{ platform_longhorn_crd_manifest_url
+         | default(platform_longhorn_crd_manifest_url_from_env, true)
+         | default('https://raw.githubusercontent.com/longhorn/longhorn/v' ~ (platform_longhorn_chart_version_effective | default('1.12.0', true)) ~ '/deploy/longhorn.yaml', true) }}
     platform_longhorn_prepull_images_effective: "{{ platform_longhorn_prepull_images | default(platform_longhorn_prepull_images_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_image_pull_retries_effective: "{{ platform_longhorn_image_pull_retries | default(platform_longhorn_image_pull_retries_from_env, true) | default(4, true) | int }}"
     platform_longhorn_image_pull_retry_delay_effective: "{{ platform_longhorn_image_pull_retry_delay | default(platform_longhorn_image_pull_retry_delay_from_env, true) | default(20, true) | int }}"
     platform_longhorn_image_pull_timeout_effective: "{{ platform_longhorn_image_pull_timeout | default(platform_longhorn_image_pull_timeout_from_env, true) | default(300, true) | int }}"
     platform_longhorn_image_pull_fast_fail_effective: "{{ platform_longhorn_image_pull_fast_fail | default(platform_longhorn_image_pull_fast_fail_from_env, true) | default(false, true) | bool }}"
+    platform_longhorn_required_crds:
+      - nodes.longhorn.io
+      - engines.longhorn.io
+      - engineimages.longhorn.io
+      - volumes.longhorn.io
+      - replicas.longhorn.io
+      - instancemanagers.longhorn.io
+      - settings.longhorn.io
   tasks:
     - block:
         - name: Verify RKE2 HelmChart CRD exists
@@ -190,12 +205,82 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Check required Longhorn CRDs
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            missing=""
+            for crd in {{ platform_longhorn_required_crds | join(' ') }}; do
+              if ! "$K" --kubeconfig "$C" get "crd/${crd}" >/dev/null 2>&1; then
+                missing="${missing} ${crd}"
+              fi
+            done
+            missing="$(printf '%s' "${missing}" | xargs)"
+            printf '%s\n' "${missing}"
+            test -z "${missing}"
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_required_crd_check
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Restore missing Longhorn CRDs from upstream manifest
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            url={{ platform_longhorn_crd_manifest_url_effective | quote }}
+            tmp="$(mktemp)"
+            crds="$(mktemp)"
+            cleanup() {
+              rm -f "${tmp}" "${crds}"
+            }
+            trap cleanup EXIT
+
+            curl -fsSL --connect-timeout 20 --max-time 120 "${url}" -o "${tmp}"
+            awk '
+              /^---[[:space:]]*$/ {
+                if (doc ~ /kind:[[:space:]]*CustomResourceDefinition/) {
+                  printf "%s", doc
+                }
+                doc = $0 "\n"
+                next
+              }
+              { doc = doc $0 "\n" }
+              END {
+                if (doc ~ /kind:[[:space:]]*CustomResourceDefinition/) {
+                  printf "%s", doc
+                }
+              }
+            ' "${tmp}" > "${crds}"
+
+            if [ ! -s "${crds}" ]; then
+              echo "No CRD documents were extracted from ${url}" >&2
+              exit 1
+            fi
+
+            "$K" --kubeconfig "$C" apply -f "${crds}"
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_crd_restore
+          changed_when: >-
+            'created' in platform_longhorn_crd_restore.stdout or
+            'configured' in platform_longhorn_crd_restore.stdout
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_longhorn_crd_repair_enabled_effective | bool
+            - platform_longhorn_required_crd_check.stdout | trim | length > 0
+
         - name: Wait for Longhorn CRDs
           ansible.builtin.shell: |
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            for crd in settings.longhorn.io nodes.longhorn.io volumes.longhorn.io engines.longhorn.io; do
+            for crd in {{ platform_longhorn_required_crds | join(' ') }}; do
               "$K" --kubeconfig "$C" get "crd/${crd}" >/dev/null
             done
           args:
@@ -207,6 +292,25 @@
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
+
+        - name: Restart Longhorn manager after CRD repair
+          ansible.builtin.command:
+            argv:
+              - /var/lib/rancher/rke2/bin/kubectl
+              - --kubeconfig
+              - /etc/rancher/rke2/rke2.yaml
+              - -n
+              - longhorn-system
+              - rollout
+              - restart
+              - daemonset/longhorn-manager
+          register: platform_longhorn_crd_repair_manager_restart
+          changed_when: "'restarted' in platform_longhorn_crd_repair_manager_restart.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_longhorn_crd_repair_enabled_effective | bool
+            - platform_longhorn_required_crd_check.stdout | trim | length > 0
 
         - name: Clean Longhorn uninstall job created by chart hooks
           ansible.builtin.shell: |
