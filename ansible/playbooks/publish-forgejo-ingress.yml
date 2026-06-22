@@ -1,0 +1,243 @@
+---
+- name: Publish and verify Forgejo ingress
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
+    platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    platform_forgejo_ingress_verify_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_INGRESS_VERIFY_TIMEOUT') }}"
+    platform_forgejo_ingress_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_INGRESS_CONNECT_TIMEOUT') }}"
+    platform_forgejo_ingress_max_time_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_INGRESS_MAX_TIME') }}"
+    platform_forgejo_ingress_verify_timeout_effective: "{{ platform_forgejo_ingress_verify_timeout | default(platform_forgejo_ingress_verify_timeout_from_env, true) | default(180, true) | string | regex_replace('s$', '') | int }}"
+    platform_forgejo_ingress_connect_timeout_effective: "{{ platform_forgejo_ingress_connect_timeout | default(platform_forgejo_ingress_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
+    platform_forgejo_ingress_max_time_effective: "{{ platform_forgejo_ingress_max_time | default(platform_forgejo_ingress_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
+    platform_forgejo_ingress_poll_interval_effective: 10
+    platform_forgejo_ingress_verify_retries: "{{ (((platform_forgejo_ingress_verify_timeout_effective | int) / (platform_forgejo_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
+  vars_files:
+    - ../vars/platform-hostnames.yml
+  tasks:
+    - name: Require Forgejo ingress settings
+      ansible.builtin.assert:
+        that:
+          - rke2_ingress_vip_effective | length > 0
+          - not (rke2_ingress_vip_effective is match("^<.*>$"))
+          - platform_forgejo_host_effective | length > 0
+          - not (platform_forgejo_host_effective is match("^<.*>$"))
+          - platform_forgejo_ingress_verify_timeout_effective | int > 0
+          - platform_forgejo_ingress_connect_timeout_effective | int > 0
+          - platform_forgejo_ingress_max_time_effective | int > 0
+        fail_msg: "Set rke2_ingress_vip and platform_git_host/platform_forgejo_host in inventory/hosts.local.ini."
+      run_once: true
+
+    - name: Verify Forgejo backend is ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        "$K" --kubeconfig "$C" -n forgejo get service/forgejo-http >/dev/null
+        ready="$("$K" --kubeconfig "$C" -n forgejo get pods \
+          -l app.kubernetes.io/name=forgejo \
+          -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.ready}{"\n"}{end}{end}' |
+          awk '$1 == "true" { ready++ } END { print ready + 0 }')"
+        "$K" --kubeconfig "$C" -n forgejo get pods,svc,ingress -o wide
+        test "${ready}" -ge 1
+      args:
+        executable: /bin/bash
+      register: platform_forgejo_backend_ready
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Annotate Forgejo service for Traefik native load balancing
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - -n
+          - forgejo
+          - annotate
+          - service/forgejo-http
+          - traefik.ingress.kubernetes.io/service.nativelb=true
+          - --overwrite
+      register: platform_forgejo_service_native_lb
+      changed_when: "'annotated' in platform_forgejo_service_native_lb.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Publish Forgejo through Kubernetes Ingress fallback
+      ansible.builtin.shell: |
+        set -o pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+      args:
+        executable: /bin/bash
+        stdin: |
+          ---
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: platform-forgejo
+            namespace: forgejo
+            annotations:
+              traefik.ingress.kubernetes.io/router.entrypoints: websecure
+              traefik.ingress.kubernetes.io/router.tls: "true"
+              traefik.ingress.kubernetes.io/service.nativelb: "true"
+          spec:
+            ingressClassName: traefik
+            rules:
+              - host: {{ platform_forgejo_host_effective }}
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: forgejo-http
+                          port:
+                            number: 3000
+            tls:
+              - hosts:
+                  - {{ platform_forgejo_host_effective }}
+      register: platform_forgejo_ingress_apply
+      changed_when: "'created' in platform_forgejo_ingress_apply.stdout or 'configured' in platform_forgejo_ingress_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Publish Forgejo through Traefik IngressRoute when CRDs are available
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        api_version=""
+        if "$K" --kubeconfig "$C" get crd ingressroutes.traefik.io >/dev/null 2>&1; then
+          api_version="traefik.io/v1alpha1"
+        elif "$K" --kubeconfig "$C" get crd ingressroutes.traefik.containo.us >/dev/null 2>&1; then
+          api_version="traefik.containo.us/v1alpha1"
+        else
+          echo "No Traefik IngressRoute CRD found; standard Kubernetes Ingress remains active."
+          exit 0
+        fi
+
+        cat >/tmp/platform-forgejo-ingressroute.yaml <<'INGRESSROUTE'
+        apiVersion: PLATFORM_TRAEFIK_INGRESSROUTE_API_VERSION
+        kind: IngressRoute
+        metadata:
+          name: forgejo-http
+          namespace: forgejo
+        spec:
+          entryPoints:
+            - websecure
+          routes:
+            - match: Host(`{{ platform_forgejo_host_effective }}`)
+              kind: Rule
+              services:
+                - name: forgejo-http
+                  namespace: forgejo
+                  port: 3000
+                  scheme: http
+                  nativeLB: true
+          tls: {}
+        INGRESSROUTE
+        sed -i "s#PLATFORM_TRAEFIK_INGRESSROUTE_API_VERSION#${api_version}#" /tmp/platform-forgejo-ingressroute.yaml
+        "$K" --kubeconfig "$C" apply -f /tmp/platform-forgejo-ingressroute.yaml
+      args:
+        executable: /bin/bash
+      register: platform_forgejo_ingressroute_apply
+      changed_when: "'created' in platform_forgejo_ingressroute_apply.stdout or 'configured' in platform_forgejo_ingressroute_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Verify Forgejo ingress over app VIP from Ansible controller
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "curl is not installed on the Ansible controller." >&2
+          exit 127
+        fi
+
+        echo "Checking https://{{ platform_forgejo_host_effective }}/ through {{ rke2_ingress_vip_effective }}:443 from Ansible controller"
+        code="$(curl --silent --show-error --insecure --output /dev/null \
+          --write-out '%{http_code}' \
+          --connect-timeout {{ platform_forgejo_ingress_connect_timeout_effective }} \
+          --max-time {{ platform_forgejo_ingress_max_time_effective }} \
+          --resolve {{ platform_forgejo_host_effective }}:443:{{ rke2_ingress_vip_effective }} \
+          https://{{ platform_forgejo_host_effective }}/)"
+        printf 'http_code=%s\n' "${code}"
+        case "${code}" in
+          200|301|302|303|307|308|401|403) exit 0 ;;
+          *) exit 1 ;;
+        esac
+      args:
+        executable: /bin/bash
+      register: platform_forgejo_ingress_controller_check
+      retries: "{{ platform_forgejo_ingress_verify_retries }}"
+      delay: "{{ platform_forgejo_ingress_poll_interval_effective }}"
+      until: platform_forgejo_ingress_controller_check.rc == 0
+      changed_when: false
+      failed_when: false
+      become: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Collect Forgejo ingress diagnostics after verification failure
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        echo "===== Forgejo resources ====="
+        "$K" --kubeconfig "$C" -n forgejo get pods,svc,endpoints,endpointslice,ingress -o wide || true
+        echo "===== Forgejo IngressRoute ====="
+        "$K" --kubeconfig "$C" -n forgejo get ingressroute -o wide || true
+        "$K" --kubeconfig "$C" -n forgejo describe ingress platform-forgejo || true
+        "$K" --kubeconfig "$C" -n forgejo describe ingress forgejo || true
+        echo "===== Traefik service and pods ====="
+        "$K" --kubeconfig "$C" -n traefik get svc,pods -o wide || true
+        echo "===== Traefik recent logs ====="
+        "$K" --kubeconfig "$C" -n traefik logs -l app.kubernetes.io/name=traefik --all-containers --tail=160 || true
+      args:
+        executable: /bin/bash
+      register: platform_forgejo_ingress_failure
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_forgejo_ingress_controller_check.rc != 0
+
+    - name: Stop after Forgejo ingress verification failure
+      ansible.builtin.fail:
+        msg: |-
+          Forgejo is running, but https://{{ platform_forgejo_host_effective }}
+          did not answer through {{ rke2_ingress_vip_effective }}:443 within
+          {{ platform_forgejo_ingress_verify_timeout_effective }}s.
+
+          Controller/client VIP check:
+          rc={{ platform_forgejo_ingress_controller_check.rc | default('not run') }}
+          stdout:
+          {{ platform_forgejo_ingress_controller_check.stdout | default('not run') }}
+          stderr:
+          {{ platform_forgejo_ingress_controller_check.stderr | default('') }}
+
+          Diagnostic summary:
+          {{ platform_forgejo_ingress_failure.stdout | default('not collected') }}
+      run_once: true
+      when: platform_forgejo_ingress_controller_check.rc != 0
+
+    - name: Show Forgejo ingress access summary
+      ansible.builtin.debug:
+        msg: |-
+          Forgejo ingress is ready.
+
+          URL:
+          - https://{{ platform_forgejo_host_effective }}
+
+          App VIP:
+          - {{ rke2_ingress_vip_effective }}
+
+          DNS/hosts entry:
+          {{ rke2_ingress_vip_effective }} {{ platform_forgejo_host_effective }}
+      run_once: true

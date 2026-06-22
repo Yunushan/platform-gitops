@@ -205,6 +205,22 @@ the Forgejo attach. To use a dedicated disk path:
 PLATFORM_LONGHORN_DEFAULT_DISK_PATH=/mnt/longhorn make platform-forgejo-storage-repair
 ```
 
+If the Forgejo pod is `1/1 Running` but
+`https://<GIT_FQDN>` returns Traefik's plain `404 page not found`, the app VIP
+and Traefik are reachable but no Forgejo router matched the hostname. Publish
+and verify the explicit Forgejo Traefik route:
+
+```bash
+make platform-forgejo-ingress
+```
+
+To fail faster or wait longer while debugging VIP convergence:
+
+```bash
+PLATFORM_FORGEJO_INGRESS_VERIFY_TIMEOUT=60 make platform-forgejo-ingress
+PLATFORM_FORGEJO_INGRESS_VERIFY_TIMEOUT=600 make platform-forgejo-ingress
+```
+
 If Longhorn manager logs repeat `the server could not find the requested
 resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
 `engineimages.longhorn.io`, restore the missing CRDs and restart Longhorn:
