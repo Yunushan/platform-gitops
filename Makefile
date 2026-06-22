@@ -24,7 +24,7 @@ help:
 	@echo "  platform-argocd-unexpose  Remove the bootstrap Argo CD NodePort exposure"
 	@echo "  platform-argocd-diagnose  Show Argo CD rollout, image, event, log, and registry diagnostics"
 	@echo "  platform-argocd-service-repair  Repair Argo CD internal repo-server/Redis service reachability"
-	@echo "  platform-longhorn-bootstrap  Bootstrap Longhorn storage directly through the RKE2 Helm controller"
+	@echo "  platform-longhorn-bootstrap  Bootstrap Longhorn storage, pre-pull images on nodes, and verify CSI/PVC readiness"
 	@echo "  platform-dns-repair  Verify pod DNS and repair CoreDNS upstreams for external chart repositories"
 	@echo "  platform-dns-repair-traefik  Verify pod DNS against the Traefik chart repository"
 	@echo "  platform-ingress  Install MetalLB/Traefik, bind the app VIP, and publish Argo CD on 443"

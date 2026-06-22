@@ -107,6 +107,35 @@ applications, and prints storage/PVC status. It is a first-deployment recovery
 path for the storage chicken-and-egg case; after Argo CD and pod networking are
 healthy, GitOps continues to own the desired Longhorn manifests.
 
+If Longhorn pods show `ImagePullBackOff` for `docker.io/longhornio/*` with
+`TLS handshake timeout` or `connection reset by peer`, the Longhorn chart is
+installed but node image egress to Docker Hub is flaky. The bootstrap discovers
+the Longhorn image set and pre-pulls it on every RKE2 node with retries before
+waiting for workloads. For slow enterprise links, increase the per-image pull
+timeout:
+
+```bash
+PLATFORM_LONGHORN_IMAGE_PULL_TIMEOUT=600 \
+PLATFORM_LONGHORN_IMAGE_PULL_RETRIES=6 \
+PLATFORM_LONGHORN_WAIT_TIMEOUT=2400 \
+make platform-longhorn-bootstrap
+```
+
+To skip node pre-pulls and only rely on kubelet image pulls:
+
+```bash
+PLATFORM_LONGHORN_PREPULL_IMAGES=false make platform-longhorn-bootstrap
+```
+
+For a quick diagnostic failure instead:
+
+```bash
+PLATFORM_LONGHORN_IMAGE_PULL_FAST_FAIL=true make platform-longhorn-bootstrap
+```
+
+For production, configure a local registry mirror or preload the Longhorn images
+on all RKE2 nodes.
+
 If only the Argo CD HA Redis pods are failing, you can continue with a simpler bootstrap control plane while investigating Redis HA separately:
 
 ```bash

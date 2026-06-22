@@ -11,11 +11,21 @@
     platform_longhorn_backup_target_from_env: "{{ lookup('ansible.builtin.env', 'LONGHORN_BACKUP_TARGET') }}"
     platform_longhorn_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_WAIT_TIMEOUT') }}"
     platform_longhorn_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CLEANUP_HELM_JOBS') }}"
+    platform_longhorn_prepull_images_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_PREPULL_IMAGES') }}"
+    platform_longhorn_image_pull_retries_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_RETRIES') }}"
+    platform_longhorn_image_pull_retry_delay_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_RETRY_DELAY') }}"
+    platform_longhorn_image_pull_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_TIMEOUT') }}"
+    platform_longhorn_image_pull_fast_fail_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_FAST_FAIL') }}"
     platform_longhorn_chart_repo_effective: "{{ platform_longhorn_chart_repo | default(platform_longhorn_chart_repo_from_env, true) | default('https://charts.longhorn.io', true) }}"
     platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) }}"
     platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"
     platform_longhorn_wait_timeout_effective: "{{ platform_longhorn_wait_timeout | default(platform_longhorn_wait_timeout_from_env, true) | default(900, true) | int }}"
     platform_longhorn_cleanup_helm_jobs_effective: "{{ platform_longhorn_cleanup_helm_jobs | default(platform_longhorn_cleanup_helm_jobs_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_prepull_images_effective: "{{ platform_longhorn_prepull_images | default(platform_longhorn_prepull_images_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_image_pull_retries_effective: "{{ platform_longhorn_image_pull_retries | default(platform_longhorn_image_pull_retries_from_env, true) | default(4, true) | int }}"
+    platform_longhorn_image_pull_retry_delay_effective: "{{ platform_longhorn_image_pull_retry_delay | default(platform_longhorn_image_pull_retry_delay_from_env, true) | default(20, true) | int }}"
+    platform_longhorn_image_pull_timeout_effective: "{{ platform_longhorn_image_pull_timeout | default(platform_longhorn_image_pull_timeout_from_env, true) | default(300, true) | int }}"
+    platform_longhorn_image_pull_fast_fail_effective: "{{ platform_longhorn_image_pull_fast_fail | default(platform_longhorn_image_pull_fast_fail_from_env, true) | default(false, true) | bool }}"
   tasks:
     - block:
         - name: Verify RKE2 HelmChart CRD exists
@@ -180,6 +190,99 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Collect Longhorn images for node pre-pull
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            images="$("$K" --kubeconfig "$C" -n longhorn-system get pods \
+              -o jsonpath='{range .items[*].spec.initContainers[*]}{.image}{"\n"}{end}{range .items[*].spec.containers[*]}{.image}{"\n"}{end}' |
+              sort -u)"
+            test -n "${images}"
+            printf '%s\n' "${images}"
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_images
+          retries: "{{ (((platform_longhorn_wait_timeout_effective | int) / 15) | round(0, 'ceil') | int) + 1 }}"
+          delay: 15
+          until: platform_longhorn_images.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_prepull_images_effective | bool
+
+        - name: Publish Longhorn image list to all nodes
+          ansible.builtin.set_fact:
+            platform_longhorn_image_list: "{{ platform_longhorn_images.stdout_lines | default([]) }}"
+          when: platform_longhorn_prepull_images_effective | bool
+
+        - name: Pre-pull Longhorn images on all RKE2 nodes
+          ansible.builtin.shell: |
+            set -o pipefail
+            CRICTL=/var/lib/rancher/rke2/bin/crictl
+            if [ ! -x "${CRICTL}" ]; then
+              echo "RKE2 crictl not found at ${CRICTL}" >&2
+              exit 1
+            fi
+
+            crictl_args=(--timeout "{{ platform_longhorn_image_pull_timeout_effective }}s")
+            if [ -S /run/k3s/containerd/containerd.sock ]; then
+              crictl_args+=(--runtime-endpoint unix:///run/k3s/containerd/containerd.sock)
+            elif [ -S /run/containerd/containerd.sock ]; then
+              crictl_args+=(--runtime-endpoint unix:///run/containerd/containerd.sock)
+            fi
+
+            while IFS= read -r image; do
+              [ -n "${image}" ] || continue
+              if "${CRICTL}" "${crictl_args[@]}" images --quiet "${image}" 2>/dev/null | grep -q .; then
+                echo "Already present: ${image}"
+                continue
+              fi
+
+              echo "Pulling: ${image}"
+              if command -v timeout >/dev/null 2>&1; then
+                timeout --preserve-status "{{ platform_longhorn_image_pull_timeout_effective }}" \
+                  "${CRICTL}" "${crictl_args[@]}" pull "${image}"
+              else
+                "${CRICTL}" "${crictl_args[@]}" pull "${image}"
+              fi
+            done
+          args:
+            executable: /bin/bash
+            stdin: "{{ (platform_longhorn_image_list | join('\n')) ~ '\n' }}"
+          register: platform_longhorn_image_prepull
+          retries: "{{ platform_longhorn_image_pull_retries_effective }}"
+          delay: "{{ platform_longhorn_image_pull_retry_delay_effective }}"
+          until: platform_longhorn_image_prepull.rc == 0
+          when: platform_longhorn_prepull_images_effective | bool
+
+        - name: Stop early when Longhorn image pull failures are present
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            pull_failures="$("$K" --kubeconfig "$C" -n longhorn-system get pods \
+              -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.name}={.state.waiting.reason}{" "}{end}{"\n"}{end}' |
+              grep -E 'ImagePullBackOff|ErrImagePull|InvalidImageName' || true)"
+            if [ -n "${pull_failures}" ]; then
+              echo "Longhorn image pull failure detected:" >&2
+              printf '%s\n' "${pull_failures}" >&2
+              echo "===== Longhorn images =====" >&2
+              "$K" --kubeconfig "$C" -n longhorn-system get pods \
+                -o jsonpath='{range .items[*].spec.initContainers[*]}init:{.image}{"\n"}{end}{range .items[*].spec.containers[*]}container:{.image}{"\n"}{end}' |
+                sort -u >&2 || true
+              echo "===== Longhorn pod events =====" >&2
+              "$K" --kubeconfig "$C" -n longhorn-system describe pods |
+                sed -n '/Events:/,$p' >&2 || true
+              exit 1
+            fi
+          args:
+            executable: /bin/bash
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_image_pull_fast_fail_effective | bool
+
         - name: Wait for core Longhorn workloads
           ansible.builtin.shell: |
             set -o pipefail
@@ -198,7 +301,7 @@
               echo "===== Longhorn pod events =====" >&2
               "$K" --kubeconfig "$C" -n longhorn-system describe pods |
                 sed -n '/Events:/,$p' >&2 || true
-              exit 42
+              exit 1
             fi
             "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-manager >/dev/null
             "$K" --kubeconfig "$C" -n longhorn-system rollout status daemonset/longhorn-manager --timeout=30s
@@ -217,7 +320,6 @@
           delay: 10
           until: platform_longhorn_workloads.rc == 0
           changed_when: false
-          failed_when: platform_longhorn_workloads.rc == 42
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
