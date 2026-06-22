@@ -576,7 +576,10 @@
             "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o yaml |
               sed -n '/name: node-/p; /disks:/,/conditions:/p' || true
 
-            test "${changed}" -eq 0 && echo "No Longhorn disk repair changes were required."
+            if [ "${changed}" -eq 0 ]; then
+              echo "No Longhorn disk repair changes were required."
+            fi
+            exit 0
           args:
             executable: /bin/bash
           register: platform_longhorn_default_disk_config
