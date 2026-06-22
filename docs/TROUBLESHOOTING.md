@@ -173,6 +173,20 @@ kubectl -n longhorn-system get nodes.longhorn.io instancemanagers.longhorn.io en
 kubectl -n longhorn-system logs -l app=longhorn-manager --all-containers --tail=180
 ```
 
+The Forgejo storage repair target also detects this attach failure, restarts the
+Longhorn manager DaemonSet, waits for Longhorn node objects to match Kubernetes
+nodes, and restarts the Forgejo pod so the volume attach is retried:
+
+```bash
+make platform-forgejo-storage-repair
+```
+
+For slow clusters:
+
+```bash
+PLATFORM_FORGEJO_VOLUME_ATTACH_REPAIR_TIMEOUT=900 make platform-forgejo-storage-repair
+```
+
 If Longhorn manager logs repeat `the server could not find the requested
 resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
 `engineimages.longhorn.io`, restore the missing CRDs and restart Longhorn:

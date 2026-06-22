@@ -12,12 +12,14 @@
     platform_forgejo_reset_longhorn_volume_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RESET_LONGHORN_VOLUME') }}"
     platform_forgejo_pod_termination_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_POD_TERMINATION_TIMEOUT') }}"
     platform_forgejo_storage_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_STORAGE_REPAIR_TIMEOUT') }}"
+    platform_forgejo_volume_attach_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_VOLUME_ATTACH_REPAIR_TIMEOUT') }}"
     platform_forgejo_namespace_effective: "{{ platform_forgejo_namespace | default(platform_forgejo_namespace_from_env, true) | default('forgejo', true) }}"
     platform_forgejo_pvc_name_effective: "{{ platform_forgejo_pvc_name | default(platform_forgejo_pvc_name_from_env, true) | default('gitea-shared-storage', true) }}"
     platform_forgejo_reset_stuck_pvc_effective: "{{ platform_forgejo_reset_stuck_pvc | default(platform_forgejo_reset_stuck_pvc_from_env, true) | default(false, true) | bool }}"
     platform_forgejo_reset_longhorn_volume_effective: "{{ platform_forgejo_reset_longhorn_volume | default(platform_forgejo_reset_longhorn_volume_from_env, true) | default(true, true) | bool }}"
     platform_forgejo_pod_termination_timeout_effective: "{{ platform_forgejo_pod_termination_timeout | default(platform_forgejo_pod_termination_timeout_from_env, true) | default(60, true) | int }}"
     platform_forgejo_storage_repair_timeout_effective: "{{ platform_forgejo_storage_repair_timeout | default(platform_forgejo_storage_repair_timeout_from_env, true) | default(300, true) | int }}"
+    platform_forgejo_volume_attach_repair_timeout_effective: "{{ platform_forgejo_volume_attach_repair_timeout | default(platform_forgejo_volume_attach_repair_timeout_from_env, true) | default(600, true) | int }}"
   tasks:
     - name: Inspect Forgejo storage state
       ansible.builtin.shell: |
@@ -438,6 +440,175 @@
 
       when: forgejo_storage_state.rc == 43
 
+    - name: Detect Forgejo Longhorn attach problems
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        ns={{ platform_forgejo_namespace_effective | quote }}
+        pvc={{ platform_forgejo_pvc_name_effective | quote }}
+
+        if ! "$K" --kubeconfig "$C" get "namespace/${ns}" >/dev/null 2>&1; then
+          echo "namespace/${ns} does not exist"
+          exit 0
+        fi
+
+        pods="$(
+          "$K" --kubeconfig "$C" -n "$ns" get pods \
+            -l app.kubernetes.io/instance=forgejo -o name 2>/dev/null || true
+          "$K" --kubeconfig "$C" -n "$ns" get pods \
+            -l app.kubernetes.io/name=forgejo -o name 2>/dev/null || true
+        )"
+        pods="$(printf '%s\n' "${pods}" | sed '/^$/d' | sort -u)"
+        if [ -z "${pods}" ]; then
+          echo "No Forgejo pods exist."
+          exit 0
+        fi
+
+        echo "===== Forgejo pod summary ====="
+        "$K" --kubeconfig "$C" -n "$ns" get pods -l app.kubernetes.io/name=forgejo -o wide || true
+        echo "===== Forgejo PVC ====="
+        "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o wide || true
+        pv="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+        handle=""
+        if [ -n "${pv}" ]; then
+          handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+        fi
+        printf 'pv=%s\nlonghornVolume=%s\n' "${pv:-none}" "${handle:-none}"
+
+        echo "===== Forgejo pod events ====="
+        describe="$("$K" --kubeconfig "$C" -n "$ns" describe ${pods} || true)"
+        printf '%s\n' "${describe}" | sed -n '/Events:/,$p'
+
+        if printf '%s\n' "${describe}" |
+          grep -E 'AttachVolume.Attach failed.*(node .* not found|volume .* is not ready for workloads|not ready for workloads)' >/dev/null; then
+          echo "FORGEJO_LONGHORN_ATTACH_REPAIR_NEEDED=true"
+          exit 42
+        fi
+
+        echo "FORGEJO_LONGHORN_ATTACH_REPAIR_NEEDED=false"
+      args:
+        executable: /bin/bash
+      register: forgejo_longhorn_attach_problem
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Forgejo Longhorn attach detection
+      ansible.builtin.debug:
+        var: forgejo_longhorn_attach_problem.stdout_lines
+      run_once: true
+
+    - block:
+        - name: Restart Longhorn manager for node registration and attach repair
+          ansible.builtin.command:
+            argv:
+              - /var/lib/rancher/rke2/bin/kubectl
+              - --kubeconfig
+              - /etc/rancher/rke2/rke2.yaml
+              - -n
+              - longhorn-system
+              - rollout
+              - restart
+              - daemonset/longhorn-manager
+          register: forgejo_attach_longhorn_manager_restart
+          changed_when: "'restarted' in forgejo_attach_longhorn_manager_restart.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Longhorn manager after attach repair restart
+          ansible.builtin.command:
+            argv:
+              - /var/lib/rancher/rke2/bin/kubectl
+              - --kubeconfig
+              - /etc/rancher/rke2/rke2.yaml
+              - -n
+              - longhorn-system
+              - rollout
+              - status
+              - daemonset/longhorn-manager
+              - --timeout=30s
+          register: forgejo_attach_longhorn_manager_rollout
+          retries: "{{ (((platform_forgejo_volume_attach_repair_timeout_effective | int) / 30) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_attach_longhorn_manager_rollout.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Longhorn node objects to match Kubernetes nodes
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            missing=""
+            for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+              if ! "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" >/dev/null 2>&1; then
+                missing="${missing} ${node}"
+              fi
+            done
+            missing="$(printf '%s' "${missing}" | xargs)"
+            echo "===== Kubernetes nodes ====="
+            "$K" --kubeconfig "$C" get nodes -o wide
+            echo "===== Longhorn nodes ====="
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide || true
+            if [ -n "${missing}" ]; then
+              echo "Missing Longhorn node objects: ${missing}" >&2
+              exit 1
+            fi
+          args:
+            executable: /bin/bash
+          register: forgejo_attach_longhorn_nodes_ready
+          retries: "{{ (((platform_forgejo_volume_attach_repair_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_attach_longhorn_nodes_ready.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Restart Forgejo pod after Longhorn attach repair
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+
+            "$K" --kubeconfig "$C" -n "$ns" delete pod \
+              -l app.kubernetes.io/instance=forgejo --ignore-not-found=true --wait=false
+            "$K" --kubeconfig "$C" -n "$ns" delete pod \
+              -l app.kubernetes.io/name=forgejo --ignore-not-found=true --wait=false
+          args:
+            executable: /bin/bash
+          register: forgejo_attach_pod_restart
+          changed_when: true
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Forgejo pod to get a pod IP after attach repair
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pod_lines="$("$K" --kubeconfig "$C" -n "$ns" get pods \
+              -l app.kubernetes.io/name=forgejo \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{.status.podIP}{"|"}{.spec.nodeName}{"\n"}{end}' 2>/dev/null || true)"
+            printf '%s\n' "${pod_lines}"
+            printf '%s\n' "${pod_lines}" |
+              awk -F'|' 'NF >= 4 && $3 != "" && $3 != "<none>" { found=1 } END { exit(found ? 0 : 1) }'
+          args:
+            executable: /bin/bash
+          register: forgejo_attach_pod_has_ip
+          retries: "{{ (((platform_forgejo_volume_attach_repair_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_attach_pod_has_ip.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+      when: forgejo_longhorn_attach_problem.rc == 42
+
     - name: Show Forgejo storage repair result
       ansible.builtin.shell: |
         set -o pipefail
@@ -449,6 +620,10 @@
         "$K" --kubeconfig "$C" -n argocd get application/forgejo -o wide || true
         echo "===== Forgejo resources ====="
         "$K" --kubeconfig "$C" -n "$ns" get deployment,statefulset,pods,pvc,svc,ingress -o wide || true
+        echo "===== Longhorn nodes ====="
+        if "$K" --kubeconfig "$C" get crd/nodes.longhorn.io >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide || true
+        fi
         echo "===== Longhorn volumes ====="
         if "$K" --kubeconfig "$C" get crd/volumes.longhorn.io >/dev/null 2>&1; then
           "$K" --kubeconfig "$C" -n longhorn-system get volumes.longhorn.io -o wide || true
