@@ -60,7 +60,15 @@ fi
 
 if [[ "${PLATFORM_SEED_SYNC_PUSH_ORIGIN}" == "true" ]]; then
   if git remote get-url "${PLATFORM_SOURCE_REMOTE_NAME}" >/dev/null 2>&1; then
-    GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SOURCE_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+    source_remote_head="$(
+      git rev-parse --verify "${PLATFORM_SOURCE_REMOTE_NAME}/${PLATFORM_DEPLOY_BRANCH}" 2>/dev/null || true
+    )"
+    local_head="$(git rev-parse HEAD)"
+    if [[ -n "${source_remote_head}" && "${source_remote_head}" == "${local_head}" ]]; then
+      echo "${PLATFORM_SOURCE_REMOTE_NAME}/${PLATFORM_DEPLOY_BRANCH} already matches HEAD; skipping source remote push."
+    else
+      GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SOURCE_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+    fi
   else
     echo "Source remote ${PLATFORM_SOURCE_REMOTE_NAME} does not exist; skipping origin push." >&2
   fi
