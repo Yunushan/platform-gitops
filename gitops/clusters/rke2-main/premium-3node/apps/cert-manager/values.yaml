@@ -13,9 +13,9 @@ cainjector:
   replicaCount: 2
 
 prometheus:
-  enabled: true
+  enabled: false
   servicemonitor:
-    enabled: true
+    enabled: false
 
 resources:
   requests:

@@ -1,7 +1,7 @@
 replicaCount: 2
 
 monitoring:
-  podMonitorEnabled: true
+  podMonitorEnabled: false
 
 resources:
   requests:
