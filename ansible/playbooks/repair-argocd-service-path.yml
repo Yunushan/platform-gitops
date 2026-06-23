@@ -137,20 +137,28 @@
 
         if [ "{{ platform_argocd_service_repair_host_network_effective | bool | lower }}" = "true" ]; then
           patch="$(printf '{"spec":{"template":{"spec":{"hostNetwork":true,"dnsPolicy":"ClusterFirstWithHostNet","nodeSelector":{"kubernetes.io/hostname":"%s"}}}}}' "${hostname_label}")"
+          repo_server_patch="$(printf '{"spec":{"template":{"spec":{"hostNetwork":true,"dnsPolicy":"Default","nodeSelector":{"kubernetes.io/hostname":"%s"}}}}}' "${hostname_label}")"
           "$K" --kubeconfig "$C" -n argocd patch configmap argocd-cmd-params-cm \
             --type merge \
             -p "$(printf '{"data":{"repo.server":"%s:8081","redis.server":"%s:6379"}}' "${node_ip}" "${node_ip}")"
         else
           patch="$(printf '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"%s"}}}}}' "${hostname_label}")"
+          repo_server_patch="${patch}"
         fi
 
-        for deployment in argocd-redis argocd-repo-server; do
+        for deployment in argocd-redis; do
           if "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null 2>&1; then
             "$K" --kubeconfig "$C" -n argocd patch "deployment/${deployment}" \
               --type merge -p "${patch}"
             "$K" --kubeconfig "$C" -n argocd rollout restart "deployment/${deployment}"
           fi
         done
+
+        if "$K" --kubeconfig "$C" -n argocd get deployment/argocd-repo-server >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n argocd patch deployment/argocd-repo-server \
+            --type merge -p "${repo_server_patch}"
+          "$K" --kubeconfig "$C" -n argocd rollout restart deployment/argocd-repo-server
+        fi
 
         if "$K" --kubeconfig "$C" -n argocd get statefulset/argocd-application-controller >/dev/null 2>&1; then
           "$K" --kubeconfig "$C" -n argocd patch statefulset/argocd-application-controller \
@@ -161,6 +169,7 @@
         echo "Argo CD internal bootstrap components pinned to kubernetes.io/hostname=${hostname_label}"
         if [ "{{ platform_argocd_service_repair_host_network_effective | bool | lower }}" = "true" ]; then
           echo "Argo CD internal bootstrap components use hostNetwork and direct ${node_ip}:8081/${node_ip}:6379 command parameters"
+          echo "Argo CD repo-server uses node DNS policy so Helm chart rendering does not depend on CoreDNS external recursion."
         fi
       args:
         executable: /bin/bash
