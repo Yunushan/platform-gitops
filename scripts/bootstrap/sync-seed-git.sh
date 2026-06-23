@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+env_file="${PLATFORM_SEED_DEPLOY_ENV_FILE:-private/seed-git.env}"
+if [[ -f "${env_file}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${env_file}"
+  set +a
+fi
+
+PLATFORM_DEPLOY_BRANCH="${PLATFORM_DEPLOY_BRANCH:-main}"
+PLATFORM_SOURCE_REMOTE_NAME="${PLATFORM_SOURCE_REMOTE_NAME:-origin}"
+PLATFORM_SEED_GIT_REMOTE_NAME="${PLATFORM_SEED_GIT_REMOTE_NAME:-seed}"
+PLATFORM_SEED_GIT_ROOT="${PLATFORM_SEED_GIT_ROOT:-/opt/platform/seed-git}"
+PLATFORM_SEED_GIT_REPO_NAME="${PLATFORM_SEED_GIT_REPO_NAME:-platform-gitops.git}"
+PLATFORM_SEED_GIT_PORT="${PLATFORM_SEED_GIT_PORT:-9418}"
+PLATFORM_SEED_GIT_OWNER="${PLATFORM_SEED_GIT_OWNER:-}"
+PLATFORM_SEED_GIT_WAIT_TIMEOUT="${PLATFORM_SEED_GIT_WAIT_TIMEOUT:-45}"
+PLATFORM_SEED_GIT_FORCE_WITH_LEASE="${PLATFORM_SEED_GIT_FORCE_WITH_LEASE:-true}"
+PLATFORM_SEED_SYNC_PULL="${PLATFORM_SEED_SYNC_PULL:-true}"
+PLATFORM_SEED_SYNC_PUSH_ORIGIN="${PLATFORM_SEED_SYNC_PUSH_ORIGIN:-true}"
+PLATFORM_SEED_SYNC_ENSURE_SERVICE="${PLATFORM_SEED_SYNC_ENSURE_SERVICE:-true}"
+PLATFORM_AUTO_COMMIT="${PLATFORM_AUTO_COMMIT:-false}"
+PLATFORM_AUTO_COMMIT_MESSAGE="${PLATFORM_AUTO_COMMIT_MESSAGE:-Sync platform GitOps deployment}"
+PLATFORM_VALIDATE_BEFORE_PUSH="${PLATFORM_VALIDATE_BEFORE_PUSH:-true}"
+PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS:-true}"
+
+export PLATFORM_SEED_GIT_ROOT
+export PLATFORM_SEED_GIT_REPO_NAME
+export PLATFORM_SEED_GIT_PORT
+export PLATFORM_SEED_GIT_OWNER
+export PLATFORM_SEED_GIT_WAIT_TIMEOUT
+
+git rev-parse --is-inside-work-tree >/dev/null
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  if [[ "${PLATFORM_AUTO_COMMIT}" == "true" ]]; then
+    git add -A
+    if ! git diff --cached --quiet; then
+      git commit -m "${PLATFORM_AUTO_COMMIT_MESSAGE}"
+    fi
+  else
+    echo "Working tree has uncommitted changes and PLATFORM_AUTO_COMMIT is not true." >&2
+    echo "Commit them manually, or rerun with PLATFORM_AUTO_COMMIT=true." >&2
+    exit 1
+  fi
+fi
+
+if [[ "${PLATFORM_SEED_SYNC_PULL}" == "true" ]]; then
+  GIT_TERMINAL_PROMPT=0 git pull --rebase "${PLATFORM_SOURCE_REMOTE_NAME}" "${PLATFORM_DEPLOY_BRANCH}"
+fi
+
+if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then
+  python3 scripts/validate_project.py
+  if [[ "${PLATFORM_RUN_NO_SECRETS}" == "true" ]]; then
+    python3 scripts/validate_no_secrets.py
+  fi
+fi
+
+if [[ "${PLATFORM_SEED_SYNC_PUSH_ORIGIN}" == "true" ]]; then
+  if git remote get-url "${PLATFORM_SOURCE_REMOTE_NAME}" >/dev/null 2>&1; then
+    GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SOURCE_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+  else
+    echo "Source remote ${PLATFORM_SOURCE_REMOTE_NAME} does not exist; skipping origin push." >&2
+  fi
+fi
+
+if [[ "${PLATFORM_SEED_SYNC_ENSURE_SERVICE}" == "true" ]]; then
+  ANSIBLE_TIMEOUT="${ANSIBLE_TIMEOUT:-20}" ansible-playbook \
+    -i inventory/hosts.local.ini \
+    ansible/playbooks/deploy-seed-git.yml
+fi
+
+first_server_line="$(
+  awk '
+    /^\[rke2_servers\]$/ { in_group=1; next }
+    /^\[/ { in_group=0 }
+    in_group && $0 !~ /^[[:space:]]*(#|$)/ { print; exit }
+  ' inventory/hosts.local.ini
+)"
+
+if [[ -z "${first_server_line}" ]]; then
+  echo "Could not find the first rke2_servers host in inventory/hosts.local.ini." >&2
+  exit 1
+fi
+
+first_server_name="$(awk '{ print $1 }' <<<"${first_server_line}")"
+seed_push_host="${PLATFORM_SEED_PUSH_HOST:-}"
+seed_push_user="${PLATFORM_SEED_PUSH_USER:-}"
+
+if [[ -z "${seed_push_host}" ]]; then
+  seed_push_host="$(
+    tr ' ' '\n' <<<"${first_server_line}" |
+      awk -F= '$1 == "ansible_host" { print $2; exit }'
+  )"
+fi
+
+if [[ -z "${seed_push_user}" ]]; then
+  seed_push_user="$(
+    tr ' ' '\n' <<<"${first_server_line}" |
+      awk -F= '$1 == "ansible_user" { print $2; exit }'
+  )"
+fi
+
+seed_push_host="${seed_push_host:-${first_server_name}}"
+seed_user_prefix=""
+if [[ -n "${seed_push_user}" ]]; then
+  seed_user_prefix="${seed_push_user}@"
+fi
+
+seed_push_url="ssh://${seed_user_prefix}${seed_push_host}${PLATFORM_SEED_GIT_ROOT}/${PLATFORM_SEED_GIT_REPO_NAME}"
+seed_read_host="${PLATFORM_SEED_READ_HOST:-${seed_push_host}}"
+seed_read_url="git://${seed_read_host}:${PLATFORM_SEED_GIT_PORT}/${PLATFORM_SEED_GIT_REPO_NAME}"
+
+if git remote get-url "${PLATFORM_SEED_GIT_REMOTE_NAME}" >/dev/null 2>&1; then
+  git remote set-url "${PLATFORM_SEED_GIT_REMOTE_NAME}" "${seed_push_url}"
+else
+  git remote add "${PLATFORM_SEED_GIT_REMOTE_NAME}" "${seed_push_url}"
+fi
+
+if [[ "${PLATFORM_SEED_GIT_FORCE_WITH_LEASE}" == "true" ]]; then
+  seed_remote_head="$(
+    GIT_TERMINAL_PROMPT=0 git ls-remote --heads "${PLATFORM_SEED_GIT_REMOTE_NAME}" "${PLATFORM_DEPLOY_BRANCH}" |
+      awk '{ print $1; exit }'
+  )"
+  if [[ -n "${seed_remote_head}" ]]; then
+    echo "Updating temporary seed Git mirror with --force-with-lease."
+    GIT_TERMINAL_PROMPT=0 git push \
+      --force-with-lease="refs/heads/${PLATFORM_DEPLOY_BRANCH}:${seed_remote_head}" \
+      "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+  else
+    GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+  fi
+else
+  GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
+fi
+
+cat <<EOF
+
+Platform GitOps repository synchronized.
+
+Source remote:
+- ${PLATFORM_SOURCE_REMOTE_NAME}/${PLATFORM_DEPLOY_BRANCH}
+
+Temporary seed Git:
+- write: ${seed_push_url}
+- read:  ${seed_read_url}
+
+Argo CD source URL should remain:
+${seed_read_url}
+EOF
