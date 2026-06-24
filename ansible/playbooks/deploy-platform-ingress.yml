@@ -365,6 +365,33 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Check existing platform ingress VIP pool
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        expected_address="{{ rke2_ingress_vip_effective }}/32"
+        pool_addresses="$("$K" --kubeconfig "$C" -n metallb-system get ipaddresspool/platform-ingress \
+          -o jsonpath='{range .spec.addresses[*]}{.}{"\n"}{end}' 2>/dev/null || true)"
+        advertisement_pools="$("$K" --kubeconfig "$C" -n metallb-system get l2advertisement/platform-ingress \
+          -o jsonpath='{range .spec.ipAddressPools[*]}{.}{"\n"}{end}' 2>/dev/null || true)"
+        printf 'pool_addresses=%s\nadvertisement_pools=%s\n' "${pool_addresses}" "${advertisement_pools}"
+        printf '%s\n' "${pool_addresses}" | grep -Fx "${expected_address}" >/dev/null
+        printf '%s\n' "${advertisement_pools}" | grep -Fx platform-ingress >/dev/null
+      args:
+        executable: /bin/bash
+      register: platform_metallb_ingress_pool_present
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Reuse existing platform ingress VIP pool
+      ansible.builtin.debug:
+        msg: "MetalLB platform-ingress pool already contains {{ rke2_ingress_vip_effective }}/32; skipping webhook-gated pool apply."
+      when: platform_metallb_ingress_pool_present.rc == 0
+      run_once: true
+
     - name: Prefer platform MetalLB controller for the validating webhook
       ansible.builtin.shell: |
         set -eu
@@ -387,8 +414,10 @@
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
+      when: platform_metallb_ingress_pool_present.rc != 0
 
     - name: Wait for MetalLB validating webhook
+      when: platform_metallb_ingress_pool_present.rc != 0
       block:
         - name: Poll MetalLB webhook service endpoints
           ansible.builtin.shell: |
@@ -453,7 +482,7 @@
               "https://${svc_ip}:443/" || true)"
             echo "service=${svc} cluster_ip=${svc_ip} http_code=${code}"
             case "${code}" in
-              000|"") exit 1 ;;
+              000|"") echo "direct node-to-webhook ClusterIP probe failed; continuing to server-side admission check" ;;
               *) exit 0 ;;
             esac
           args:
@@ -670,7 +699,7 @@
                 "https://${svc_ip}:443/" || true)"
               echo "webhook_cluster_ip_http_code=${code}"
               case "${code}" in
-                000|"") exit 1 ;;
+                000|"") echo "direct node-to-webhook ClusterIP probe failed; continuing to server-side admission check" ;;
               esac
             fi
             "$K" --kubeconfig "$C" \
@@ -809,6 +838,7 @@
           when: platform_metallb_webhook_repair_retry is not defined or platform_metallb_webhook_repair_retry.rc != 0
 
     - name: Apply platform ingress VIP pool
+      when: platform_metallb_ingress_pool_present.rc != 0
       block:
         - name: Apply platform ingress VIP pool manifest
           ansible.builtin.shell: |
