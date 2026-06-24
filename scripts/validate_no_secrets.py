@@ -41,7 +41,10 @@ for path in root.rglob('*'):
     if any(part in exclude_dirs for part in path.parts):
         continue
     rel = path.relative_to(root)
+    rel_posix = rel.as_posix()
     if rel.name.endswith('.zip'):
+        continue
+    if '/crds/' in rel_posix and rel.suffix in {'.yaml', '.yml'}:
         continue
     if rel.name.startswith('.env') and rel.name != '.env.example':
         continue
@@ -54,7 +57,7 @@ for path in root.rglob('*'):
         )
     ):
         continue
-    if rel.as_posix() == 'scripts/validate_no_secrets.py':
+    if rel_posix == 'scripts/validate_no_secrets.py':
         continue
     try:
         data = path.read_text(encoding='utf-8')

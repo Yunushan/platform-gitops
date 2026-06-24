@@ -12,13 +12,13 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: cert-manager
-  syncPolicy:
-    automated:
-      prune: false
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
----
+    syncPolicy:
+      automated:
+        prune: false
+        selfHeal: true
+      syncOptions:
+        - CreateNamespace=true
+  ---
 
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -106,6 +106,7 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      - ServerSideApply=true
 ---
 
 apiVersion: argoproj.io/v1alpha1

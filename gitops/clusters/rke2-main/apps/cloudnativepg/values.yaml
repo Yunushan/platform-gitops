@@ -1,4 +1,4 @@
 # Values are intentionally minimal and safe.
 # Replace placeholders through private overlays, encrypted secrets, or Argo CD parameterization.
 crds:
-  create: true
+  create: false
