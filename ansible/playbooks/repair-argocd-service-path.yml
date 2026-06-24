@@ -10,10 +10,14 @@
     platform_argocd_service_repair_refresh_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_REFRESH_APPS') }}"
     platform_argocd_service_repair_node_local_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_NODE_LOCAL') }}"
     platform_argocd_service_repair_host_network_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_HOST_NETWORK') }}"
+    platform_argocd_controller_readiness_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_TIMEOUT') }}"
+    platform_argocd_controller_readiness_failure_threshold_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_FAILURE_THRESHOLD') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_node_local_effective: "{{ platform_argocd_service_repair_node_local | default(platform_argocd_service_repair_node_local_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_host_network_effective: "{{ platform_argocd_service_repair_host_network | default(platform_argocd_service_repair_host_network_from_env, true) | default(true, true) | bool }}"
+    platform_argocd_controller_readiness_timeout_effective: "{{ platform_argocd_controller_readiness_timeout | default(platform_argocd_controller_readiness_timeout_from_env, true) | default(10, true) | int }}"
+    platform_argocd_controller_readiness_failure_threshold_effective: "{{ platform_argocd_controller_readiness_failure_threshold | default(platform_argocd_controller_readiness_failure_threshold_from_env, true) | default(18, true) | int }}"
   tasks:
     - name: Show current Argo CD service path state
       ansible.builtin.shell: |
@@ -180,6 +184,24 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: platform_argocd_service_repair_node_local_effective | bool
+
+    - name: Relax Argo CD application controller readiness probe for loaded clusters
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        if "$K" --kubeconfig "$C" -n argocd get statefulset/argocd-application-controller >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n argocd patch statefulset/argocd-application-controller \
+            --type strategic \
+            -p '{"spec":{"template":{"spec":{"containers":[{"name":"argocd-application-controller","readinessProbe":{"timeoutSeconds":{{ platform_argocd_controller_readiness_timeout_effective }},"failureThreshold":{{ platform_argocd_controller_readiness_failure_threshold_effective }}}}]}}}}'
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_argocd_controller_readiness_patch
+      changed_when: "'patched' in platform_argocd_controller_readiness_patch.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
 
     - name: Wait for Argo CD internal service endpoints
       ansible.builtin.shell: |

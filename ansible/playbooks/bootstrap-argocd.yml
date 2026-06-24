@@ -19,6 +19,8 @@
     platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
     platform_argocd_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_POLL_INTERVAL') }}"
     platform_argocd_service_path_fast_fail_after_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_PATH_FAST_FAIL_AFTER') }}"
+    platform_argocd_controller_readiness_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_TIMEOUT') }}"
+    platform_argocd_controller_readiness_failure_threshold_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_FAILURE_THRESHOLD') }}"
     platform_repo_url_effective: "{{ platform_repo_url | default(platform_repo_url_from_env, true) }}"
     platform_repo_username_effective: "{{ platform_repo_username | default(platform_repo_username_from_env, true) | default('x-access-token', true) }}"
     platform_repo_token_effective: "{{ platform_repo_token | default(platform_repo_token_from_env, true) | default('', true) }}"
@@ -40,6 +42,8 @@
     platform_argocd_rollout_timeout_effective: "{{ platform_argocd_rollout_timeout | default(platform_argocd_rollout_timeout_from_env, true) | default('600', true) | string | regex_replace('s$', '') | int }}"
     platform_argocd_poll_interval_effective: "{{ platform_argocd_poll_interval | default(platform_argocd_poll_interval_from_env, true) | default(10, true) | int }}"
     platform_argocd_service_path_fast_fail_after_effective: "{{ platform_argocd_service_path_fast_fail_after | default(platform_argocd_service_path_fast_fail_after_from_env, true) | default(90, true) | int }}"
+    platform_argocd_controller_readiness_timeout_effective: "{{ platform_argocd_controller_readiness_timeout | default(platform_argocd_controller_readiness_timeout_from_env, true) | default(10, true) | int }}"
+    platform_argocd_controller_readiness_failure_threshold_effective: "{{ platform_argocd_controller_readiness_failure_threshold | default(platform_argocd_controller_readiness_failure_threshold_from_env, true) | default(18, true) | int }}"
     platform_argocd_deployments_effective: >-
       {{
         (platform_argocd_bootstrap_mode_effective == 'core')
@@ -234,6 +238,24 @@
       changed_when: >-
         'patched' in platform_argocd_kustomize_helm_patch.stdout or
         'restarted' in platform_argocd_kustomize_helm_patch.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Relax Argo CD application controller readiness probe for loaded clusters
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        if "$K" --kubeconfig "$C" -n argocd get statefulset/argocd-application-controller >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n argocd patch statefulset/argocd-application-controller \
+            --type strategic \
+            -p '{"spec":{"template":{"spec":{"containers":[{"name":"argocd-application-controller","readinessProbe":{"timeoutSeconds":{{ platform_argocd_controller_readiness_timeout_effective }},"failureThreshold":{{ platform_argocd_controller_readiness_failure_threshold_effective }}}}]}}}}'
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_argocd_controller_readiness_patch
+      changed_when: "'patched' in platform_argocd_controller_readiness_patch.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
