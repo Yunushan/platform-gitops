@@ -709,6 +709,7 @@
             grep -nE '<[A-Z0-9_]+>' "$path" | grep -v '<THIS_REPO_URL>' || true
           elif [ -d "$path" ]; then
             find "$path" -type f \( -name '*.yaml' -o -name '*.yml' \) \
+              ! -path '*/charts/*' ! -path '*/crds/*' \
               ! -name '*.example.yaml' ! -name '*.example.yml' -print0 |
               xargs -0r grep -nE '<[A-Z0-9_]+>' 2>/dev/null | grep -v '<THIS_REPO_URL>' || true
           fi

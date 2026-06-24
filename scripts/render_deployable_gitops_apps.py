@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
+VENDORED_PATH_PARTS = {"charts", "crds"}
 
 
 def unresolved_in_text(text: str) -> list[str]:
@@ -31,6 +32,9 @@ def scan_path(path: Path, repo_root: Path) -> list[str]:
     files = [path] if path.is_file() else sorted(path.rglob("*"))
     for file_path in files:
         if not file_path.is_file():
+            continue
+        rel_parts = set(file_path.relative_to(path if path.is_dir() else path.parent).parts)
+        if rel_parts & VENDORED_PATH_PARTS:
             continue
         if file_path.suffix not in {".yaml", ".yml"}:
             continue
