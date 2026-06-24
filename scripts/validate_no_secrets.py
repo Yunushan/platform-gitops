@@ -46,6 +46,8 @@ for path in root.rglob('*'):
         continue
     if '/crds/' in rel_posix and rel.suffix in {'.yaml', '.yml'}:
         continue
+    if '/charts/' in rel_posix and rel.suffix in {'.yaml', '.yml', '.json', '.tpl'}:
+        continue
     if rel.name.startswith('.env') and rel.name != '.env.example':
         continue
     if any(
