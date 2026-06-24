@@ -677,7 +677,7 @@
                       {
                         "maxSkew": 1,
                         "topologyKey": "kubernetes.io/hostname",
-                        "whenUnsatisfiable": "ScheduleAnyway",
+                        "whenUnsatisfiable": "DoNotSchedule",
                         "labelSelector": {
                           "matchLabels": {
                             "k8s-app": "kube-dns"
@@ -687,20 +687,17 @@
                     ],
                     "affinity": {
                       "podAntiAffinity": {
-                        "requiredDuringSchedulingIgnoredDuringExecution": [],
-                        "preferredDuringSchedulingIgnoredDuringExecution": [
+                        "requiredDuringSchedulingIgnoredDuringExecution": [
                           {
-                            "weight": 100,
-                            "podAffinityTerm": {
-                              "labelSelector": {
-                                "matchLabels": {
-                                  "k8s-app": "kube-dns"
-                                }
-                              },
-                              "topologyKey": "kubernetes.io/hostname"
-                            }
+                            "labelSelector": {
+                              "matchLabels": {
+                                "k8s-app": "kube-dns"
+                              }
+                            },
+                            "topologyKey": "kubernetes.io/hostname"
                           }
-                        ]
+                        ],
+                        "preferredDuringSchedulingIgnoredDuringExecution": []
                       }
                     }
                   }
@@ -758,7 +755,7 @@
           changed_when: >-
             'patched' in (platform_dns_coredns_ha_local_routing.stdout | lower)
             or 'scaled' in (platform_dns_coredns_ha_local_routing.stdout | lower)
-          failed_when: false
+          failed_when: platform_dns_coredns_ha_local_routing.rc != 0
           retries: "{{ platform_dns_service_path_rollout_retries_effective }}"
           delay: "{{ platform_dns_service_path_poll_interval_effective }}"
           until: platform_dns_coredns_ha_local_routing.rc == 0
