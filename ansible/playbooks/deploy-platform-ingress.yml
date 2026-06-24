@@ -365,6 +365,29 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Prefer platform MetalLB controller for the validating webhook
+      ansible.builtin.shell: |
+        set -eu
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if "$K" --kubeconfig "$C" -n metallb-system get service/metallb-webhook-service >/dev/null 2>&1 &&
+          "$K" --kubeconfig "$C" -n metallb-system get pods \
+            -l app.kubernetes.io/instance=platform-metallb,app.kubernetes.io/component=controller \
+            -o name | grep -q .; then
+          "$K" --kubeconfig "$C" -n metallb-system patch service/metallb-webhook-service \
+            --type merge \
+            -p '{"spec":{"selector":{"app.kubernetes.io/component":"controller","app.kubernetes.io/instance":"platform-metallb","app.kubernetes.io/name":"metallb"}}}'
+        else
+          echo "platform MetalLB controller or webhook service not present; leaving webhook service selector unchanged"
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_metallb_webhook_selector_repair
+      changed_when: "'patched' in platform_metallb_webhook_selector_repair.stdout"
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Wait for MetalLB validating webhook
       block:
         - name: Poll MetalLB webhook service endpoints

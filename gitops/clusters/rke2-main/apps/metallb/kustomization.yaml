@@ -4,6 +4,6 @@ namespace: metallb-system
 helmCharts:
   - name: metallb
     repo: https://metallb.github.io/metallb
-    releaseName: metallb
+    releaseName: platform-metallb
     namespace: metallb-system
     valuesFile: values.yaml
