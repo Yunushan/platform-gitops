@@ -848,7 +848,6 @@
         stdin: "{{ platform_applications_manifest_effective }}"
       register: platform_applications_apply
       changed_when: "'created' in platform_applications_apply.stdout or 'configured' in platform_applications_apply.stdout"
-      no_log: true
       delegate_to: "{{ rke2_first_server }}"
       when: platform_apply_gitops_effective
       run_once: true
