@@ -51,11 +51,11 @@ service:
     externalTrafficPolicy: Local
     internalTrafficPolicy: Local
 
-logs:
-  general:
-    level: INFO
-  access:
-    enabled: true
+log:
+  level: INFO
+
+accessLog:
+  enabled: true
 
 metrics:
   prometheus:
@@ -63,7 +63,7 @@ metrics:
     service:
       enabled: true
     serviceMonitor:
-      enabled: true
+      enabled: false
 
 resources:
   requests:
