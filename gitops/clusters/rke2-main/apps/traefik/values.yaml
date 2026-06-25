@@ -8,6 +8,12 @@ podDisruptionBudget:
   enabled: true
   minAvailable: 2
 
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 0
+
 affinity:
   podAntiAffinity:
     requiredDuringSchedulingIgnoredDuringExecution:

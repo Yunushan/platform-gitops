@@ -2101,6 +2101,11 @@
               podDisruptionBudget:
                 enabled: true
                 minAvailable: 2
+              updateStrategy:
+                type: RollingUpdate
+                rollingUpdate:
+                  maxUnavailable: 1
+                  maxSurge: 0
               affinity:
                 podAntiAffinity:
                   requiredDuringSchedulingIgnoredDuringExecution:
@@ -2137,11 +2142,10 @@
                   loadBalancerIP: {{ rke2_ingress_vip_effective }}
                   externalTrafficPolicy: Local
                   internalTrafficPolicy: Local
-              logs:
-                general:
-                  level: INFO
-                access:
-                  enabled: true
+              log:
+                level: INFO
+              accessLog:
+                enabled: true
               resources:
                 requests:
                   cpu: 100m
@@ -2331,6 +2335,13 @@
         {
           "spec": {
             "replicas": ${expected_replicas},
+            "strategy": {
+              "type": "RollingUpdate",
+              "rollingUpdate": {
+                "maxUnavailable": 1,
+                "maxSurge": 0
+              }
+            },
             "template": {
               "spec": {
                 "topologySpreadConstraints": [
