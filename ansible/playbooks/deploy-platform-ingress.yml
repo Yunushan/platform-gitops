@@ -2103,17 +2103,15 @@
                 minAvailable: 2
               affinity:
                 podAntiAffinity:
-                  preferredDuringSchedulingIgnoredDuringExecution:
-                    - weight: 100
-                      podAffinityTerm:
-                        labelSelector:
-                          matchLabels:
-                            app.kubernetes.io/name: traefik
-                        topologyKey: kubernetes.io/hostname
+                  requiredDuringSchedulingIgnoredDuringExecution:
+                    - labelSelector:
+                        matchLabels:
+                          app.kubernetes.io/name: traefik
+                      topologyKey: kubernetes.io/hostname
               topologySpreadConstraints:
                 - maxSkew: 1
                   topologyKey: kubernetes.io/hostname
-                  whenUnsatisfiable: ScheduleAnyway
+                  whenUnsatisfiable: DoNotSchedule
                   labelSelector:
                     matchLabels:
                       app.kubernetes.io/name: traefik
@@ -2339,7 +2337,7 @@
                   {
                     "maxSkew": 1,
                     "topologyKey": "kubernetes.io/hostname",
-                    "whenUnsatisfiable": "ScheduleAnyway",
+                    "whenUnsatisfiable": "DoNotSchedule",
                     "labelSelector": {
                       "matchLabels": {
                         "app.kubernetes.io/name": "traefik"
@@ -2349,19 +2347,17 @@
                 ],
                 "affinity": {
                   "podAntiAffinity": {
-                    "preferredDuringSchedulingIgnoredDuringExecution": [
+                    "requiredDuringSchedulingIgnoredDuringExecution": [
                       {
-                        "weight": 100,
-                        "podAffinityTerm": {
-                          "labelSelector": {
-                            "matchLabels": {
-                              "app.kubernetes.io/name": "traefik"
-                            }
-                          },
-                          "topologyKey": "kubernetes.io/hostname"
-                        }
+                        "labelSelector": {
+                          "matchLabels": {
+                            "app.kubernetes.io/name": "traefik"
+                          }
+                        },
+                        "topologyKey": "kubernetes.io/hostname"
                       }
-                    ]
+                    ],
+                    "preferredDuringSchedulingIgnoredDuringExecution": []
                   }
                 }
               }
