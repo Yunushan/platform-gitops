@@ -1,20 +1,26 @@
+<<<<<<< HEAD
 crds:
   enabled: true
 
+=======
+# Monitoring bootstrap profile rendered by scripts/render_private_platform_values.py.
+# Uses persistent Grafana SQLite for first deployment. Switch Grafana to external
+# PostgreSQL for long-term HA.
+>>>>>>> c06f7fb (Render platform app values and app secrets)
 prometheus:
   ingress:
     enabled: true
     ingressClassName: traefik
     hosts:
-      - prometheus.<PLATFORM_DOMAIN>
+      - prometheus-gitops-arge.isbak.com.tr
     tls:
       - secretName: prometheus-tls
         hosts:
-          - prometheus.<PLATFORM_DOMAIN>
+          - prometheus-gitops-arge.isbak.com.tr
   prometheusSpec:
     replicas: 2
     retention: 15d
-    retentionSize: <PROMETHEUS_RETENTION_SIZE>
+    retentionSize: 20GB
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
     storageSpec:
@@ -25,7 +31,7 @@ prometheus:
             - ReadWriteOnce
           resources:
             requests:
-              storage: <PROMETHEUS_DATA_SIZE>
+              storage: 50Gi
 
 alertmanager:
   enabled: true
@@ -39,28 +45,26 @@ alertmanager:
             - ReadWriteOnce
           resources:
             requests:
-              storage: <ALERTMANAGER_DATA_SIZE>
+              storage: 10Gi
 
 grafana:
-  replicas: 2
-  grafana.ini:
-    database:
-      type: postgres
-      host: <GRAFANA_DATABASE_HOST>
-      name: <GRAFANA_DATABASE_NAME>
-      user: <GRAFANA_DATABASE_USER>
-      ssl_mode: require
+  replicas: 1
   persistence:
-    enabled: false
+    enabled: true
+    type: pvc
+    storageClassName: longhorn-standard
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
   ingress:
     enabled: true
     ingressClassName: traefik
     hosts:
-      - grafana.<PLATFORM_DOMAIN>
+      - grafana-gitops-arge.isbak.com.tr
     tls:
       - secretName: grafana-tls
         hosts:
-          - grafana.<PLATFORM_DOMAIN>
+          - grafana-gitops-arge.isbak.com.tr
 
 defaultRules:
   create: true

@@ -1,5 +1,5 @@
 global:
-  domain: argocd.<PLATFORM_DOMAIN>
+  domain: argocd-gitops-arge.isbak.com.tr
 
 server:
   replicas: 3
@@ -14,7 +14,16 @@ server:
     annotations:
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       traefik.ingress.kubernetes.io/router.tls: "true"
+<<<<<<< HEAD
     tls: true
+=======
+    hosts:
+      - argocd-gitops-arge.isbak.com.tr
+    tls:
+      - secretName: argocd-server-tls
+        hosts:
+          - argocd-gitops-arge.isbak.com.tr
+>>>>>>> c06f7fb (Render platform app values and app secrets)
   service:
     annotations:
       traefik.ingress.kubernetes.io/service.nativelb: "true"

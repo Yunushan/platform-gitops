@@ -1,58 +1,67 @@
+# Harbor bootstrap profile rendered by scripts/render_private_platform_values.py.
+# Uses internal PostgreSQL, Redis, and filesystem registry storage for first deployment.
+# Store HARBOR_ADMIN_PASSWORD in secret/harbor-admin and secretKey in
+# secret/harbor-secret-key before syncing this app.
 expose:
   type: ingress
   tls:
     enabled: true
-    certSource: secret
-    secret: { secretName: "<HARBOR_TLS_SECRET_NAME>" }
+    certSource: auto
   ingress:
     className: traefik
     hosts:
-      core: harbor.<PLATFORM_DOMAIN>
+      core: registry-gitops-arge.isbak.com.tr
 
-externalURL: https://harbor.<PLATFORM_DOMAIN>
+externalURL: https://registry-gitops-arge.isbak.com.tr
 
 portal:
-  replicas: 2
+  replicas: 1
 core:
-  replicas: 2
+  replicas: 1
 jobservice:
-  replicas: 2
+  replicas: 1
 registry:
-  replicas: 2
+  replicas: 1
 trivy:
   enabled: true
-  replicas: 2
+  replicas: 1
+
+updateStrategy:
+  type: Recreate
 
 persistence:
   enabled: true
   persistentVolumeClaim:
     registry:
       storageClass: longhorn-critical
-      size: <HARBOR_REGISTRY_CACHE_SIZE>
+      size: 50Gi
+    jobservice:
+      jobLog:
+        storageClass: longhorn-critical
+        size: 5Gi
+    database:
+      storageClass: longhorn-critical
+      size: 10Gi
+    redis:
+      storageClass: longhorn-critical
+      size: 5Gi
+    trivy:
+      storageClass: longhorn-critical
+      size: 10Gi
   imageChartStorage:
-    type: s3
-    s3:
-      region: <OBJECT_STORAGE_REGION>
-      bucket: <HARBOR_REGISTRY_BUCKET>
-      regionendpoint: <OBJECT_STORAGE_ENDPOINT>
-      encrypt: true
-      secure: true
+    type: filesystem
+    filesystem:
+      rootdirectory: /storage
 
 database:
-  type: external
-  external:
-    host: <HARBOR_DATABASE_HOST>
-    port: "5432"
-    username: <HARBOR_DATABASE_USER>
-    coreDatabase: <HARBOR_DATABASE_NAME>
-    existingSecret: harbor-database
-    sslmode: require
+  type: internal
 
 redis:
-  type: external
-  external:
-    addr: <HARBOR_REDIS_HOST>:<HARBOR_REDIS_PORT>
-    existingSecret: harbor-redis
+  type: internal
+
+existingSecretAdminPassword: harbor-admin
+existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD
+existingSecretSecretKey: harbor-secret-key
 
 metrics:
   enabled: true
