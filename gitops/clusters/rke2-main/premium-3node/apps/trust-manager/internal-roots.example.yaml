@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-internal-root-ca
+  namespace: cert-manager
+data:
+  root-ca.pem: |
+    <INTERNAL_ROOT_CA_PEM>
+---
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: platform-internal-roots
+spec:
+  sources:
+    - useDefaultCAs: true
+    - configMap:
+        name: platform-internal-root-ca
+        key: root-ca.pem
+  target:
+    configMap:
+      key: ca-certificates.crt
+      metadata:
+        labels:
+          app.kubernetes.io/part-of: platform-pki
+          platform.gitops/trust-bundle: internal-roots

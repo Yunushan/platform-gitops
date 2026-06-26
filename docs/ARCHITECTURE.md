@@ -20,7 +20,7 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 | Storage | Longhorn default, Rook/Ceph alternative |
 | LoadBalancer services | MetalLB |
 | Ingress | Traefik default, ingress-nginx alternative |
-| TLS | cert-manager |
+| TLS and trust | cert-manager, trust-manager, optional step-ca/internal CA |
 | Monitoring | Prometheus + Grafana |
 | Logs | Loki |
 | Backups | Velero plus database and off-cluster backups |
@@ -43,6 +43,18 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 The premium profile is available at `profiles/premium-3node.yaml` and deploys from `gitops/clusters/rke2-main/premium-3node`.
 
 It keeps the same recommended stack and adds hardened values for storage, backups, observability, and HA dependencies.
+
+## PKI Model
+
+cert-manager handles certificate lifecycle for Kubernetes workloads and
+ingress certificates. trust-manager distributes trust bundles, including public
+roots by default and optional organization roots from private overlays.
+
+step-ca is optional. It is useful when the organization needs an internal CA
+for private service certificates, mTLS, or offline/private environments. The
+upstream `step-certificates` chart supports one CA replica, so production
+resilience depends on durable storage, backup/restore, and root/intermediate
+key handling rather than multiple CA pods.
 
 ## CI/CD HA model
 

@@ -13,6 +13,8 @@ components:
   ingress: traefik
   api_vip_provider: kube-vip
   tls: cert-manager
+  trust: trust-manager
+  internal_ca_optional: step-ca
   monitoring: prometheus-grafana
   logging: loki
   backups: velero

@@ -146,6 +146,42 @@ For long-term premium production, switch the private deployment to
 `FORGEJO_DATABASE_NAME`, `FORGEJO_DATABASE_USER`, `FORGEJO_REDIS_HOST`, and
 `FORGEJO_REDIS_URL` through the private env file or another private value flow.
 
+## Optional Internal PKI
+
+The platform deploys cert-manager for certificate lifecycle and trust-manager
+for distributing trust bundles. This is useful even when certificates come
+from public ACME providers because workloads can consume a consistent CA bundle
+from Kubernetes ConfigMaps.
+
+step-ca is optional and should be enabled only when the organization needs an
+internal CA for private certificates, mTLS, or private/offline environments.
+Leave it disabled for normal public-ACME installs:
+
+```bash
+STEP_CA_MODE=disabled
+```
+
+For a first internal bootstrap, set:
+
+```bash
+STEP_CA_MODE=bootstrap
+STEP_CA_NAME="Platform Internal CA"
+STEP_CA_DNS_NAMES=step-ca.step-ca.svc.cluster.local,step-ca.step-ca.svc,step-ca
+STEP_CA_URL=https://step-ca.step-ca.svc.cluster.local
+STEP_CA_STORAGE_CLASS=longhorn-critical
+STEP_CA_DB_SIZE=10Gi
+```
+
+If you expose step-ca through ingress, also set `STEP_CA_HOST=<STEP_CA_FQDN>`.
+The CA remains a singleton because the upstream `step-certificates` chart only
+supports one CA replica. Treat its persistent volume and generated CA material
+as critical infrastructure: back it up immediately and keep CA keys/passwords
+out of plaintext Git.
+
+For long-term production PKI, prefer a private secret flow such as SOPS,
+External Secrets, Vault/OpenBao, or an HSM/KMS-backed process for CA material.
+The public template should contain only placeholders and safe values.
+
 ## No Previous Git Server
 
 If no private GitHub, GitLab, Forgejo, or internal Git server exists yet, use

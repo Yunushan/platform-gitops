@@ -47,7 +47,7 @@ Longhorn storage, with Rook/Ceph as an alternative
 MetalLB + Traefik, with ingress-nginx as an alternative
 Prometheus + Grafana + Loki
 Velero + off-cluster backups
-cert-manager
+cert-manager + trust-manager, optional step-ca internal CA
 SOPS + age
 Kyverno policy examples
 Cosign + Renovate supply-chain helpers
@@ -198,7 +198,7 @@ BSD and Solaris are supported as **operator/client workstations** for Git, SSH, 
 | Storage | Longhorn | Rook/Ceph |
 | Load balancer | MetalLB | External load balancer profile |
 | Ingress | Traefik | ingress-nginx |
-| TLS | cert-manager | External certificate workflow |
+| TLS and trust | cert-manager + trust-manager | External certificate workflow, optional step-ca/internal CA |
 | Monitoring | Prometheus + Grafana | Extendable |
 | Logs | Loki | Extendable |
 | Backups | Velero + DB backups + off-cluster target | External backup target profile |

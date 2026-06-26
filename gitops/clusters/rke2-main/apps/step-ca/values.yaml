@@ -1,0 +1,26 @@
+# Optional internal CA profile.
+# Render deployable values with STEP_CA_MODE=bootstrap or replace these
+# placeholders in a private deployment repository.
+kind: StatefulSet
+replicaCount: 1
+
+ca:
+  name: <STEP_CA_NAME>
+  dns: <STEP_CA_DNS_NAMES>
+  url: <STEP_CA_URL>
+  db:
+    enabled: true
+    persistent: true
+    storageClass: <STEP_CA_STORAGE_CLASS>
+    size: <STEP_CA_DB_SIZE>
+
+bootstrap:
+  enabled: true
+  configmaps: true
+  secrets: true
+
+existingSecrets:
+  enabled: false
+
+ingress:
+  enabled: false

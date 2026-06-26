@@ -39,6 +39,8 @@ components:
   ingress: traefik
   ingress_alternative: ingress-nginx
   tls: cert-manager
+  trust: trust-manager
+  internal_ca_optional: step-ca
   monitoring: prometheus-grafana
   logging: loki
   backups: velero

@@ -1,0 +1,32 @@
+crds:
+  enabled: true
+  keep: true
+
+replicaCount: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+defaultPackage:
+  enabled: true
+
+secretTargets:
+  enabled: false
+
+app:
+  trust:
+    namespace: cert-manager
+  webhook:
+    timeoutSeconds: 10
+  metrics:
+    service:
+      servicemonitor:
+        enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi

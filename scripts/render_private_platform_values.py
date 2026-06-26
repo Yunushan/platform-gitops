@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -46,6 +47,19 @@ def first_value(*values: str) -> str:
         if value:
             return value
     return ""
+
+
+def yaml_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def yaml_list(items: list[str], indent: int) -> str:
+    prefix = " " * indent
+    return "\n".join(f"{prefix}- {yaml_string(item)}" for item in items)
 
 
 def platform_domain(inventory: dict[str, str]) -> str:
@@ -647,6 +661,117 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
     return changed
 
 
+def step_ca_bootstrap_values(
+    name: str,
+    dns_names: list[str],
+    url: str,
+    storage_class: str,
+    db_size: str,
+    ingress_host: str,
+) -> str:
+    ingress = "ingress:\n  enabled: false\n"
+    if ingress_host:
+        ingress = f"""ingress:
+  enabled: true
+  ingressClassName: traefik
+  hosts:
+    - host: {ingress_host}
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: step-ca-tls
+      hosts:
+        - {ingress_host}
+"""
+
+    return f"""# step-ca bootstrap profile rendered by scripts/render_private_platform_values.py.
+# Smallstep step-certificates supports one CA replica; production resilience
+# depends on durable storage plus off-cluster backups.
+kind: StatefulSet
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 443
+  targetPort: 9000
+
+ca:
+  name: {yaml_string(name)}
+  address: :9000
+  dns: {yaml_string(",".join(dns_names))}
+  url: {yaml_string(url)}
+  db:
+    enabled: true
+    persistent: true
+    storageClass: {yaml_string(storage_class)}
+    accessModes:
+      - ReadWriteOnce
+    size: {db_size}
+  ssh:
+    enabled: false
+
+bootstrap:
+  enabled: true
+  configmaps: true
+  secrets: true
+
+existingSecrets:
+  enabled: false
+
+autocert:
+  enabled: false
+
+{ingress}
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+"""
+
+
+def render_step_ca(path: Path, inventory: dict[str, str]) -> bool:
+    mode = os.environ.get("STEP_CA_MODE", "disabled").strip().lower()
+    if mode in {"", "disabled", "skip", "false", "none"}:
+        return False
+    if mode != "bootstrap":
+        raise SystemExit("STEP_CA_MODE currently supports disabled or bootstrap")
+
+    host = platform_host(
+        "STEP_CA_HOST",
+        inventory,
+        ("platform_step_ca_host",),
+        "step-ca",
+    )
+    name = os.environ.get("STEP_CA_NAME", "Platform Internal CA").strip() or "Platform Internal CA"
+    dns_raw = os.environ.get("STEP_CA_DNS_NAMES", "").strip()
+    dns_names = split_csv(dns_raw) if dns_raw else []
+    if host and host not in dns_names:
+        dns_names.append(host)
+    for default_dns in ("step-ca.step-ca.svc.cluster.local", "step-ca.step-ca.svc", "step-ca"):
+        if default_dns not in dns_names:
+            dns_names.append(default_dns)
+    url = os.environ.get("STEP_CA_URL", "").strip() or "https://step-ca.step-ca.svc.cluster.local"
+    storage_class = os.environ.get("STEP_CA_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical"
+    db_size = os.environ.get("STEP_CA_DB_SIZE", "10Gi").strip() or "10Gi"
+
+    rendered = step_ca_bootstrap_values(
+        name=name,
+        dns_names=dns_names,
+        url=url,
+        storage_class=storage_class,
+        db_size=db_size,
+        ingress_host=host,
+    )
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    changed = rendered != old
+    if changed:
+        path.write_text(rendered, encoding="utf-8")
+    return changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, default=Path("inventory/hosts.local.ini"))
@@ -680,11 +805,17 @@ def main() -> int:
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/monitoring/values.yaml"),
     )
+    parser.add_argument(
+        "--step-ca-values",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"),
+    )
     parser.add_argument("--skip-longhorn", action="store_true")
     parser.add_argument("--skip-argocd", action="store_true")
     parser.add_argument("--skip-woodpecker", action="store_true")
     parser.add_argument("--skip-harbor", action="store_true")
     parser.add_argument("--skip-monitoring", action="store_true")
+    parser.add_argument("--skip-step-ca", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -761,6 +892,16 @@ def main() -> int:
             )
         )
         print(f"LONGHORN_BACKUP_TARGET={os.environ.get('LONGHORN_BACKUP_TARGET', '')}")
+        print(f"STEP_CA_MODE={os.environ.get('STEP_CA_MODE', 'disabled')}")
+        print(
+            "STEP_CA_HOST="
+            + (
+                platform_host("STEP_CA_HOST", inventory, ("platform_step_ca_host",), "step-ca")
+                or "<not exposed>"
+            )
+        )
+        print(f"STEP_CA_STORAGE_CLASS={os.environ.get('STEP_CA_STORAGE_CLASS', 'longhorn-critical')}")
+        print(f"STEP_CA_DB_SIZE={os.environ.get('STEP_CA_DB_SIZE', '10Gi')}")
         return 0 if host else 1
 
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
@@ -790,6 +931,9 @@ def main() -> int:
         and render_monitoring(args.monitoring_values, inventory)
     ):
         changed.append(str(args.monitoring_values))
+
+    if not args.skip_step_ca and render_step_ca(args.step_ca_values, inventory):
+        changed.append(str(args.step_ca_values))
 
     if changed:
         print("Rendered private platform values:")

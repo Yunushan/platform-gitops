@@ -1,2 +1,25 @@
-# Values are intentionally minimal and safe.
-# Replace placeholders through private overlays, encrypted secrets, or Argo CD parameterization.
+installCRDs: true
+
+crds:
+  enabled: true
+
+replicaCount: 1
+
+webhook:
+  replicaCount: 1
+  timeoutSeconds: 10
+
+cainjector:
+  replicaCount: 1
+
+prometheus:
+  enabled: false
+  servicemonitor:
+    enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 256Mi

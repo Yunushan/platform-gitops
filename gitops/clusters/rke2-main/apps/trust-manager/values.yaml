@@ -1,0 +1,26 @@
+crds:
+  enabled: true
+  keep: true
+
+replicaCount: 1
+
+defaultPackage:
+  enabled: true
+
+secretTargets:
+  enabled: false
+
+app:
+  trust:
+    namespace: cert-manager
+  metrics:
+    service:
+      servicemonitor:
+        enabled: false
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
