@@ -1,3 +1,6 @@
+crds:
+  enabled: true
+
 prometheus:
   ingress:
     enabled: true
