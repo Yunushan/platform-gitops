@@ -3,7 +3,8 @@
 
 server:
   enabled: true
-  replicas: 2
+  statefulSet:
+    replicaCount: 2
   env:
     WOODPECKER_HOST: https://woodpecker.<PLATFORM_DOMAIN>
     WOODPECKER_OPEN: "false"
@@ -11,18 +12,21 @@ server:
     WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>
   ingress:
     enabled: true
-    className: traefik
+    ingressClassName: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
     hosts:
       - host: woodpecker.<PLATFORM_DOMAIN>
         paths:
           - path: /
-            pathType: Prefix
+  persistentVolume:
+    enabled: true
+    size: <WOODPECKER_DATA_SIZE>
 
 agent:
   enabled: true
-  replicas: 3
-  backend: kubernetes
-
-persistentVolume:
-  enabled: true
-  size: <WOODPECKER_DATA_SIZE>
+  replicaCount: 3
+  env:
+    WOODPECKER_BACKEND: kubernetes
+    WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker

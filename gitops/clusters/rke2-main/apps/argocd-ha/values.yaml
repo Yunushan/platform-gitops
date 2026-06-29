@@ -1,5 +1,8 @@
 # Argo CD HA profile.
 
+global:
+  domain: argocd.<PLATFORM_DOMAIN>
+
 server:
   replicas: 3
   deploymentStrategy:
@@ -13,8 +16,6 @@ server:
     annotations:
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       traefik.ingress.kubernetes.io/router.tls: "true"
-    hosts:
-      - argocd.<PLATFORM_DOMAIN>
   service:
     annotations:
       traefik.ingress.kubernetes.io/service.nativelb: "true"

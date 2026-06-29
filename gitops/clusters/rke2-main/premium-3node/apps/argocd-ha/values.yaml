@@ -14,12 +14,7 @@ server:
     annotations:
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       traefik.ingress.kubernetes.io/router.tls: "true"
-    hosts:
-      - argocd.<PLATFORM_DOMAIN>
-    tls:
-      - secretName: argocd-server-tls
-        hosts:
-          - argocd.<PLATFORM_DOMAIN>
+    tls: true
   service:
     annotations:
       traefik.ingress.kubernetes.io/service.nativelb: "true"

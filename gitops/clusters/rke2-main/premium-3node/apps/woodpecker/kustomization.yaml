@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: woodpecker
 helmCharts:
   - name: woodpecker
+    version: 3.6.5
     repo: https://woodpecker-ci.org/
     releaseName: woodpecker
     namespace: woodpecker

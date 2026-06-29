@@ -346,13 +346,13 @@ server:
   ingress:
     enabled: true
     ingressClassName: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
     hosts:
       - host: {host}
         paths:
           - path: /
-            backend:
-              serviceName: woodpecker-server
-              servicePort: 80
     tls:
       - secretName: woodpecker-tls
         hosts:
