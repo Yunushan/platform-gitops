@@ -147,6 +147,16 @@ through `scripts/check_gitops_profile.py`. With the default
 `skip-incomplete`, it renders and validates the deployable Application subset
 that Argo CD will receive, while still allowing optional unresolved apps to be
 skipped during first bootstrap. Disable it only for a temporary local debug run.
+`PLATFORM_RUN_NO_SECRETS=true` also runs the safety scanner. First private
+deploy and first seed deploy default
+`PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES=true` so real internal FQDNs can
+live in the private deployment repo, while plaintext secrets, private keys,
+kubeconfigs, and private IPs are still blocked. Leave that allowance unset or
+false for any workflow that might push rendered values back to a public source
+remote, such as `make platform-seed-git-sync` with a public `origin`.
+Set `PYTHON=/path/to/python` in the env file if the bootstrap workstation does
+not expose `python3`; `make platform-argocd`, validation, rendering, and
+selected GitOps profile checks use the same interpreter.
 
 Object-storage backed apps are rendered with bucket names, endpoints, regions,
 cache sizes, and Kubernetes secret names only. `make platform-app-secrets` can

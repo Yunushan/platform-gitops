@@ -13,14 +13,14 @@ ingress:
   enabled: true
   className: traefik
   hosts:
-    - host: gitops-arge.isbak.com.tr
+    - host: forgejo.<PLATFORM_DOMAIN>
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: forgejo-tls
       hosts:
-        - gitops-arge.isbak.com.tr
+        - forgejo.<PLATFORM_DOMAIN>
 
 postgresql:
   enabled: false
@@ -36,9 +36,9 @@ persistence:
 gitea:
   config:
     server:
-      DOMAIN: gitops-arge.isbak.com.tr
-      ROOT_URL: https://gitops-arge.isbak.com.tr/
-      SSH_DOMAIN: gitops-arge.isbak.com.tr
+      DOMAIN: forgejo.<PLATFORM_DOMAIN>
+      ROOT_URL: https://forgejo.<PLATFORM_DOMAIN>/
+      SSH_DOMAIN: forgejo.<PLATFORM_DOMAIN>
       START_SSH_SERVER: true
     service:
       DISABLE_REGISTRATION: true

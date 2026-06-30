@@ -49,10 +49,25 @@ inventory/hosts.local.ini
 .env
 ```
 
+Organization-private deployment repositories may contain internal FQDNs and
+safe non-secret sizing/routing values. First private deploy flows set
+`PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES=true` for that reason. Do not use
+that allowance for public template validation or for any sync that might push
+rendered private values back to a public source remote. Even with the allowance,
+the scanner still blocks plaintext secrets, private keys, kubeconfigs, and
+private IPs.
+
 ## Required checks
 
 ```bash
 make no-secrets
+```
+
+If Python is installed under a non-default path, pass it explicitly:
+
+```bash
+PYTHON=/path/to/python make validate
+PYTHON=/path/to/python make platform-argocd
 ```
 
 This scanner is intentionally conservative. Use a professional scanner in production pipelines too.

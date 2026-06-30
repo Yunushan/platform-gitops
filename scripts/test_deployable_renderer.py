@@ -30,7 +30,13 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def render(renderer, repo: Path, applications_file: Path, output: Path) -> tuple[int, str]:
+def render(
+    renderer,
+    repo: Path,
+    applications_file: Path,
+    output: Path,
+    required_paths: list[Path] | None = None,
+) -> tuple[int, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
     args = SimpleNamespace(
@@ -38,6 +44,7 @@ def render(renderer, repo: Path, applications_file: Path, output: Path) -> tuple
         applications_file=applications_file,
         repo_url="git://seed.example/platform-gitops.git",
         output=output,
+        required_path=required_paths or [],
     )
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         rc = renderer.render(args)
@@ -45,6 +52,21 @@ def render(renderer, repo: Path, applications_file: Path, output: Path) -> tuple
 
 
 def create_fixture(repo: Path) -> Path:
+    write(
+        repo / "gitops/clusters/rke2-main/projects/platform-project.yaml",
+        """apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  destinations:
+    - namespace: '*'
+      server: https://kubernetes.default.svc
+  sourceRepos:
+    - '*'
+""",
+    )
     applications_file = repo / "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
     write(
         applications_file,
@@ -148,6 +170,27 @@ def main() -> int:
             raise AssertionError(f"expected no-deployable-apps failure rc=2, got rc={rc}\n{logs}")
         if "No deployable GitOps applications remain" not in logs:
             raise AssertionError(f"expected no-deployable-apps message\n{logs}")
+
+    with tempfile.TemporaryDirectory(prefix="deployable-renderer-required-") as tmp:
+        repo = Path(tmp)
+        applications_file = create_fixture(repo)
+        write(
+            repo / "gitops/clusters/rke2-main/projects/platform-project.yaml",
+            "spec:\n  sourceRepos:\n    - <PROJECT_REPO_URL>\n",
+        )
+        rc, logs = render(
+            renderer,
+            repo,
+            applications_file,
+            repo / "rendered.yaml",
+            required_paths=[Path("gitops/clusters/rke2-main/projects")],
+        )
+        if rc != 1:
+            raise AssertionError(f"expected incomplete required path failure rc=1, got rc={rc}\n{logs}")
+        if "Required shared GitOps paths are incomplete" not in logs:
+            raise AssertionError(f"expected required path failure message\n{logs}")
+        if "<PROJECT_REPO_URL>" not in logs:
+            raise AssertionError(f"expected required path placeholder in output\n{logs}")
 
     print("Deployable GitOps application renderer self-test passed.")
     return 0

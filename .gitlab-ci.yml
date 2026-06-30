@@ -9,5 +9,9 @@ validate:
     - python scripts/test_profile_checker.py
     - python scripts/test_deployable_renderer.py
     - python scripts/test_private_values_renderer.py
+    - python scripts/test_no_secrets.py
+    - python scripts/test_shell_syntax.py
+    - python scripts/test_docs_make_targets.py
+    - python scripts/test_ansible_playbook_references.py
     - python scripts/validate_platform_contract.py
     - python scripts/validate_no_secrets.py

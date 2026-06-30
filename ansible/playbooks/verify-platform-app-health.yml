@@ -1108,7 +1108,7 @@
           ClusterIP service.
 
           Recommended repair sequence:
-          make platform-dns-repair
+          make platform-service-path-repair
           make platform-argocd-service-repair
           make platform-ingress
 

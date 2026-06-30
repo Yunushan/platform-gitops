@@ -1,0 +1,193 @@
+---
+- name: Refresh platform workloads after service path repair
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_service_path_consumer_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SERVICE_PATH_CONSUMER_REPAIR_TIMEOUT') }}"
+    platform_service_path_consumer_repair_woodpecker_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SERVICE_PATH_CONSUMER_REPAIR_WOODPECKER') }}"
+    platform_service_path_consumer_repair_timeout_effective: "{{ platform_service_path_consumer_repair_timeout | default(platform_service_path_consumer_repair_timeout_from_env, true) | default(180, true) | int }}"
+    platform_service_path_consumer_repair_woodpecker_effective: "{{ platform_service_path_consumer_repair_woodpecker | default(platform_service_path_consumer_repair_woodpecker_from_env, true) | default(true, true) | bool }}"
+  tasks:
+    - name: Detect Woodpecker service path consumer state
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" get namespace woodpecker >/dev/null 2>&1; then
+          echo "WOODPECKER_NAMESPACE=false"
+          exit 0
+        fi
+        echo "WOODPECKER_NAMESPACE=true"
+        "$K" --kubeconfig "$C" -n woodpecker get pods,svc,endpoints,endpointslice -o wide || true
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_consumer_state_before
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_service_path_consumer_repair_woodpecker_effective | bool
+
+    - name: Print Woodpecker service path consumer state
+      ansible.builtin.debug:
+        var: platform_woodpecker_consumer_state_before.stdout_lines
+      run_once: true
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+
+    - name: Verify Woodpecker gRPC ClusterIP service path before agent refresh from every RKE2 node
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server >/dev/null 2>&1; then
+          echo "woodpecker_server_service=absent"
+          exit 0
+        fi
+        svc_ip="$("$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server -o jsonpath='{.spec.clusterIP}')"
+        test -n "${svc_ip}"
+        test "${svc_ip}" != "None"
+        if ! command -v timeout >/dev/null 2>&1; then
+          echo "timeout command missing; cannot bound Woodpecker gRPC probe" >&2
+          exit 1
+        fi
+        if timeout 5 bash -c ":</dev/tcp/${svc_ip}/9000"; then
+          echo "woodpecker-grpc cluster_ip=${svc_ip} result=ok from=$(hostname -f 2>/dev/null || hostname)"
+          exit 0
+        fi
+        echo "woodpecker-grpc cluster_ip=${svc_ip} result=fail from=$(hostname -f 2>/dev/null || hostname)" >&2
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_grpc_node_probe_before
+      changed_when: false
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+
+    - name: Refresh Woodpecker agents after service path repair
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" get namespace woodpecker >/dev/null 2>&1; then
+          echo "woodpecker_namespace=absent"
+          exit 0
+        fi
+        if "$K" --kubeconfig "$C" -n woodpecker get statefulset/woodpecker-agent >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n woodpecker rollout restart statefulset/woodpecker-agent
+          echo "woodpecker_agent_controller=statefulset/woodpecker-agent"
+        elif "$K" --kubeconfig "$C" -n woodpecker get deployment/woodpecker-agent >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n woodpecker rollout restart deployment/woodpecker-agent
+          echo "woodpecker_agent_controller=deployment/woodpecker-agent"
+        else
+          "$K" --kubeconfig "$C" -n woodpecker delete pod \
+            -l app.kubernetes.io/name=agent --ignore-not-found=true --wait=false
+          echo "woodpecker_agent_controller=pods"
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_agent_refresh
+      changed_when: >-
+        'restarted' in platform_woodpecker_agent_refresh.stdout or
+        'deleted' in platform_woodpecker_agent_refresh.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+
+    - name: Wait for Woodpecker agents after service path repair
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" get namespace woodpecker >/dev/null 2>&1; then
+          echo "woodpecker_namespace=absent"
+          exit 0
+        fi
+        if "$K" --kubeconfig "$C" -n woodpecker get statefulset/woodpecker-agent >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n woodpecker rollout status statefulset/woodpecker-agent \
+            --timeout={{ platform_service_path_consumer_repair_timeout_effective }}s
+        elif "$K" --kubeconfig "$C" -n woodpecker get deployment/woodpecker-agent >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n woodpecker rollout status deployment/woodpecker-agent \
+            --timeout={{ platform_service_path_consumer_repair_timeout_effective }}s
+        else
+          "$K" --kubeconfig "$C" -n woodpecker wait pod \
+            -l app.kubernetes.io/name=agent \
+            --for=condition=Ready \
+            --timeout={{ platform_service_path_consumer_repair_timeout_effective }}s
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_agent_rollout
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+
+    - name: Verify Woodpecker gRPC ClusterIP service path after agent refresh from every RKE2 node
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server >/dev/null 2>&1; then
+          echo "woodpecker_server_service=absent"
+          exit 0
+        fi
+        svc_ip="$("$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server -o jsonpath='{.spec.clusterIP}')"
+        test -n "${svc_ip}"
+        test "${svc_ip}" != "None"
+        if ! command -v timeout >/dev/null 2>&1; then
+          echo "timeout command missing; cannot bound Woodpecker gRPC probe" >&2
+          exit 1
+        fi
+        if timeout 5 bash -c ":</dev/tcp/${svc_ip}/9000"; then
+          echo "woodpecker-grpc cluster_ip=${svc_ip} result=ok from=$(hostname -f 2>/dev/null || hostname)"
+          exit 0
+        fi
+        echo "woodpecker-grpc cluster_ip=${svc_ip} result=fail from=$(hostname -f 2>/dev/null || hostname)" >&2
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_grpc_node_probe
+      changed_when: false
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+
+    - name: Show Woodpecker service path consumer repair result
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" get namespace woodpecker >/dev/null 2>&1; then
+          echo "Woodpecker namespace is absent; no consumer refresh was needed."
+          exit 0
+        fi
+        echo "===== woodpecker pods ====="
+        "$K" --kubeconfig "$C" -n woodpecker get pods -o wide || true
+        echo "===== woodpecker services/endpoints ====="
+        "$K" --kubeconfig "$C" -n woodpecker get svc,endpoints,endpointslice -o wide || true
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_consumer_state_after
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_service_path_consumer_repair_woodpecker_effective | bool
+
+    - name: Print Woodpecker service path consumer repair result
+      ansible.builtin.debug:
+        var: platform_woodpecker_consumer_state_after.stdout_lines
+      run_once: true
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_after is defined

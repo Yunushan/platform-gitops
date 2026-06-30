@@ -96,6 +96,10 @@ make validate
 make no-secrets
 ```
 
+`make validate` is a repository-only gate. It needs Python 3 and Bash, and it
+checks structure, renderers, privacy scanners, shell syntax, and the production
+contract. It does not contact a live cluster.
+
 Run this before calling a deployed cluster production-ready:
 
 ```bash

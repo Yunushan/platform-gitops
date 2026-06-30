@@ -63,6 +63,25 @@ def scan_path(path: Path, repo_root: Path) -> list[str]:
 def render(args: argparse.Namespace) -> int:
     repo_root = args.repo_root.resolve()
     applications_file = args.applications_file.resolve()
+    required_findings: list[tuple[Path, list[str]]] = []
+    for required_path in args.required_path:
+        findings = scan_path((repo_root / required_path).resolve(), repo_root)
+        if findings:
+            required_findings.append((required_path, findings))
+
+    if required_findings:
+        print(
+            "Required shared GitOps paths are incomplete and cannot be skipped.",
+            file=sys.stderr,
+        )
+        for required_path, findings in required_findings:
+            print(f"- {required_path}", file=sys.stderr)
+            for finding in findings[:8]:
+                print(f"  {finding}", file=sys.stderr)
+            if len(findings) > 8:
+                print(f"  ... {len(findings) - 8} more", file=sys.stderr)
+        return 1
+
     raw = applications_file.read_text(encoding="utf-8")
     documents = [doc.strip() for doc in re.split(r"(?m)^---\s*$", raw) if doc.strip()]
     kept: list[str] = []
@@ -122,6 +141,13 @@ def main() -> int:
     parser.add_argument("--applications-file", type=Path, required=True)
     parser.add_argument("--repo-url", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--required-path",
+        type=Path,
+        action="append",
+        default=[],
+        help="Shared GitOps path that must be complete and cannot be skipped.",
+    )
     return render(parser.parse_args())
 
 

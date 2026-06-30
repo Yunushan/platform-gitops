@@ -17,7 +17,9 @@ SOURCE_PATH_RE = re.compile(
 
 premium_apps = root / "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
 base_apps = root / "gitops/clusters/rke2-main/platform-apps.yaml"
+stale_premium_root_app = root / "gitops/bootstrap/root-app-premium-3node.yaml"
 health_playbook = root / "ansible/playbooks/verify-platform-app-health.yml"
+service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-service-path-consumers.yml"
 status_playbook = root / "ansible/playbooks/platform-status.yml"
 profile_check_script = root / "scripts/check_gitops_profile.py"
 profile_check_test = root / "scripts/test_profile_checker.py"
@@ -25,12 +27,21 @@ deployable_renderer = root / "scripts/render_deployable_gitops_apps.py"
 deployable_renderer_test = root / "scripts/test_deployable_renderer.py"
 private_values_renderer = root / "scripts/render_private_platform_values.py"
 private_values_renderer_test = root / "scripts/test_private_values_renderer.py"
+no_secrets_test = root / "scripts/test_no_secrets.py"
+no_secrets_script = root / "scripts/validate_no_secrets.py"
+shell_syntax_test = root / "scripts/test_shell_syntax.py"
+docs_make_targets_test = root / "scripts/test_docs_make_targets.py"
+ansible_playbook_references_test = root / "scripts/test_ansible_playbook_references.py"
 app_secrets_playbook = root / "ansible/playbooks/configure-platform-app-secrets.yml"
 makefile = root / "Makefile"
 installation_doc = root / "docs/INSTALLATION.md"
 premium_doc = root / "docs/PREMIUM_3NODE.md"
 troubleshooting_doc = root / "docs/TROUBLESHOOTING.md"
+readme_doc = root / "README.md"
+quick_start_doc = root / "docs/QUICK_START.md"
+release_guide_doc = root / "docs/RELEASE_GUIDE.md"
 bootstrap_plan_script = root / "scripts/bootstrap-plan.sh"
+gitignore_file = root / ".gitignore"
 first_deploy_env_example = root / "config/first-deploy.env.example"
 seed_git_env_example = root / "config/seed-git.env.example"
 ci_validation_files = [
@@ -171,6 +182,9 @@ def required_destination_namespaces(*paths: Path) -> list[str]:
 
 
 def main() -> None:
+    if stale_premium_root_app.exists():
+        fail(f"stale premium root app file still exists: {stale_premium_root_app.relative_to(root)}")
+
     assert_app_file(base_apps, required_premium_apps)
     assert_app_file(premium_apps, required_premium_apps)
 
@@ -314,6 +328,11 @@ def main() -> None:
     )
     require_text(
         health_text,
+        "make platform-service-path-repair",
+        "platform-app-health failure message must point ClusterIP failures to the service-path repair alias",
+    )
+    require_text(
+        health_text,
         "PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE",
         "platform-app-health must expose a diagnostic pod image override",
     )
@@ -376,6 +395,33 @@ def main() -> None:
     )
     require_text(
         bootstrap_argocd_text,
+        "platform_python_from_env",
+        "Argo CD bootstrap must honor PYTHON for GitOps profile validation",
+    )
+    require_text(
+        bootstrap_argocd_text,
+        "command -v python3",
+        "Argo CD bootstrap must discover python3/python when PYTHON is unset",
+    )
+    require_text(
+        bootstrap_argocd_text,
+        "install python3 or set PYTHON",
+        "Argo CD bootstrap must provide a clear Python override error",
+    )
+    require_text(
+        bootstrap_argocd_text,
+        "--required-path gitops/clusters/rke2-main/projects",
+        "Argo CD bootstrap skip-incomplete mode must require shared project manifests",
+    )
+    require_text(
+        bootstrap_argocd_text,
+        "--profile {{ platform_profile_effective | quote }}",
+        "Argo CD bootstrap must quote the selected profile in shell commands",
+    )
+    if "python3 scripts/" in bootstrap_argocd_text:
+        fail("Argo CD bootstrap must not hard-code python3 for repository scripts")
+    require_text(
+        bootstrap_argocd_text,
         "platform_placeholder_scan.rc | int != 0",
         "Argo CD bootstrap must gate incomplete profiles on profile checker exit code",
     )
@@ -416,8 +462,45 @@ def main() -> None:
         "scripts/render_deployable_gitops_apps.py",
         "GitOps selection helper must render a deployable subset in skip-incomplete mode",
     )
+    require_text(
+        gitops_selection_helper_text,
+        "--required-path gitops/clusters/rke2-main/projects",
+        "GitOps selection helper must require shared Argo CD project manifests in skip-incomplete mode",
+    )
     if "platform-app-health:" not in makefile_text:
         fail("Makefile is missing platform-app-health target")
+    if "PYTHON ?= python3" not in makefile_text:
+        fail("Makefile must expose PYTHON override for repository validation targets")
+    if "python3 scripts/" in makefile_text:
+        fail("Makefile validation targets must use $(PYTHON), not hard-coded python3")
+    if "platform-service-path-repair:" not in makefile_text:
+        fail("Makefile is missing platform-service-path-repair target")
+    if "@$(MAKE) platform-dns-repair" not in makefile_text:
+        fail("platform-service-path-repair must delegate to the shared DNS/ClusterIP service-path repair")
+    if "platform-service-path-consumers-repair:" not in makefile_text:
+        fail("Makefile is missing platform-service-path-consumers-repair target")
+    if "ansible/playbooks/repair-platform-service-path-consumers.yml" not in makefile_text:
+        fail("platform-service-path-consumers-repair target must invoke the consumer refresh playbook")
+    if "@$(MAKE) platform-service-path-consumers-repair" not in makefile_text:
+        fail("platform-service-path-repair must refresh service-path consumers after DNS/CNI repair")
+    service_path_consumers_text = read(service_path_consumers_playbook)
+    for needle in (
+        "Refresh Woodpecker agents after service path repair",
+        "Verify Woodpecker gRPC ClusterIP service path before agent refresh from every RKE2 node",
+        "Verify Woodpecker gRPC ClusterIP service path after agent refresh from every RKE2 node",
+        "statefulset/woodpecker-agent",
+        "woodpecker-server",
+        "/dev/tcp/${svc_ip}/9000",
+        "PLATFORM_SERVICE_PATH_CONSUMER_REPAIR_TIMEOUT",
+    ):
+        require_text(
+            service_path_consumers_text,
+            needle,
+            f"service-path consumer repair playbook must cover {needle}",
+        )
+    gitignore_text = read(gitignore_file)
+    for needle in ("__pycache__/", ".shell-syntax-*/", ".venv/", ".pytest_cache/", "*.pyc"):
+        require_text(gitignore_text, needle, f".gitignore must ignore generated validation/cache artifacts: {needle}")
     validate_project_text = read(root / "scripts/validate_project.py")
     for needle in ("conflict_marker_re", "Git conflict markers found"):
         require_text(
@@ -425,6 +508,32 @@ def main() -> None:
             needle,
             f"project validator must detect unresolved merge conflicts: {needle}",
         )
+    require_text(
+        validate_project_text,
+        "scripts/test_shell_syntax.py",
+        "project validator must require the shell syntax self-test",
+    )
+    require_text(
+        validate_project_text,
+        "scripts/test_docs_make_targets.py",
+        "project validator must require the documented make target self-test",
+    )
+    require_text(
+        validate_project_text,
+        "scripts/test_ansible_playbook_references.py",
+        "project validator must require the Ansible playbook reference self-test",
+    )
+    for needle in (
+        "part.startswith('.shell-syntax-')",
+        "'__pycache__'",
+        "'private'",
+        "'rendered'",
+        "'secrets'",
+        "'.venv'",
+        "'.pytest_cache'",
+        "should_skip",
+    ):
+        require_text(validate_project_text, needle, f"project validator must ignore generated validation/cache artifacts: {needle}")
     if "platform-profile-check:" not in makefile_text:
         fail("Makefile is missing platform-profile-check target")
     if "scripts/check_gitops_profile.py" not in makefile_text:
@@ -435,6 +544,14 @@ def main() -> None:
         fail("validate target must run the deployable renderer self-test")
     if "scripts/test_private_values_renderer.py" not in makefile_text:
         fail("validate target must run the private values renderer self-test")
+    if "scripts/test_no_secrets.py" not in makefile_text:
+        fail("validate target must run the secret/privacy scanner self-test")
+    if "scripts/test_shell_syntax.py" not in makefile_text:
+        fail("validate target must run the shell syntax self-test")
+    if "scripts/test_docs_make_targets.py" not in makefile_text:
+        fail("validate target must run the documented make target self-test")
+    if "scripts/test_ansible_playbook_references.py" not in makefile_text:
+        fail("validate target must run the Ansible playbook reference self-test")
     if "Render first-deploy private values for platform apps" not in makefile_text:
         fail("Makefile help must describe the full private values renderer scope")
     for bootstrap_script in (
@@ -442,31 +559,83 @@ def main() -> None:
         "scripts/bootstrap/seed-first-deploy.sh",
         "scripts/bootstrap/sync-seed-git.sh",
     ):
+        bootstrap_script_text = read(root / bootstrap_script)
         require_text(
-            read(root / bootstrap_script),
+            bootstrap_script_text,
             "scripts/bootstrap/validate-gitops-selection.sh",
             f"{bootstrap_script} must run the selected GitOps profile validation before pushing rendered values",
         )
         require_text(
-            read(root / bootstrap_script),
+            bootstrap_script_text,
             "PLATFORM_RUN_PROFILE_CHECK",
             f"{bootstrap_script} must expose a guard for the selected GitOps profile check",
         )
         require_text(
-            read(root / bootstrap_script),
+            bootstrap_script_text,
+            "PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES",
+            f"{bootstrap_script} must explicitly control private hostname handling in the safety scan",
+        )
+        require_text(
+            bootstrap_script_text,
+            "resolve_python()",
+            f"{bootstrap_script} must discover Python or explain how to set PYTHON",
+        )
+        require_text(
+            bootstrap_script_text,
+            'PYTHON_BIN="$(resolve_python)"',
+            f"{bootstrap_script} must use the discovered Python interpreter for validation and rendering",
+        )
+        require_text(
+            bootstrap_script_text,
+            "install python3 or set PYTHON",
+            f"{bootstrap_script} must provide a clear Python installation/override error",
+        )
+        require_text(
+            bootstrap_script_text,
+            'PYTHON="${PYTHON_BIN}" bash scripts/bootstrap/validate-gitops-selection.sh .',
+            f"{bootstrap_script} must pass the selected Python interpreter to the GitOps selection helper",
+        )
+        require_text(
+            bootstrap_script_text,
             "scripts/test_profile_checker.py",
             f"{bootstrap_script} must run the profile checker self-test before pushing rendered values",
         )
         require_text(
-            read(root / bootstrap_script),
+            bootstrap_script_text,
             "scripts/test_deployable_renderer.py",
             f"{bootstrap_script} must run the deployable renderer self-test before pushing rendered values",
         )
         require_text(
-            read(root / bootstrap_script),
+            bootstrap_script_text,
             "scripts/test_private_values_renderer.py",
             f"{bootstrap_script} must run the private values renderer self-test before pushing rendered values",
         )
+        require_text(
+            bootstrap_script_text,
+            "scripts/test_no_secrets.py",
+            f"{bootstrap_script} must run the secret/privacy scanner self-test before pushing rendered values",
+        )
+        require_text(
+            bootstrap_script_text,
+            "scripts/test_shell_syntax.py",
+            f"{bootstrap_script} must run the shell syntax self-test before pushing rendered values",
+        )
+        require_text(
+            bootstrap_script_text,
+            "scripts/test_docs_make_targets.py",
+            f"{bootstrap_script} must run the documented make target self-test before pushing rendered values",
+        )
+        require_text(
+            bootstrap_script_text,
+            "scripts/test_ansible_playbook_references.py",
+            f"{bootstrap_script} must run the Ansible playbook reference self-test before pushing rendered values",
+        )
+    if 'PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES:-true}"' not in read(root / "scripts/bootstrap/private-first-deploy.sh"):
+        fail("private-first-deploy must allow private hostnames by default while keeping secret scanning enabled")
+    if 'PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES:-true}"' not in read(root / "scripts/bootstrap/seed-first-deploy.sh"):
+        fail("seed-first-deploy must allow private hostnames by default while keeping secret scanning enabled")
+    if 'PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES:-false}"' not in read(root / "scripts/bootstrap/sync-seed-git.sh"):
+        fail("seed sync must keep public-template hostname leakage detection enabled by default")
     for ci_file in ci_validation_files:
         ci_text = read(ci_file)
         for script_name in (
@@ -474,6 +643,10 @@ def main() -> None:
             "scripts/test_profile_checker.py",
             "scripts/test_deployable_renderer.py",
             "scripts/test_private_values_renderer.py",
+            "scripts/test_no_secrets.py",
+            "scripts/test_shell_syntax.py",
+            "scripts/test_docs_make_targets.py",
+            "scripts/test_ansible_playbook_references.py",
             "scripts/validate_platform_contract.py",
             "scripts/validate_no_secrets.py",
         ):
@@ -499,6 +672,8 @@ def main() -> None:
     for needle in (
         "APPLICATION_PATH_RE",
         "missing application path",
+        "--required-path",
+        "Required shared GitOps paths are incomplete",
     ):
         require_text(
             deployable_renderer_text,
@@ -509,6 +684,8 @@ def main() -> None:
         "quoted and commented path",
         "Skipped incomplete GitOps applications",
         "No deployable GitOps applications remain",
+        "deployable-renderer-required-",
+        "<PROJECT_REPO_URL>",
         "IGNORED_CHART_PLACEHOLDER",
         "missing-app",
     ):
@@ -516,6 +693,33 @@ def main() -> None:
             deployable_renderer_test_text,
             needle,
             f"deployable renderer self-test must cover {needle}",
+        )
+    docs_make_targets_test_text = read(docs_make_targets_test)
+    for needle in (
+        "MAKE_LINE_RE",
+        "iter_make_snippets",
+        "unknown make target",
+        "README.md",
+        "docs",
+    ):
+        require_text(
+            docs_make_targets_test_text,
+            needle,
+            f"documented make target self-test must cover {needle}",
+        )
+    ansible_playbook_references_test_text = read(ansible_playbook_references_test)
+    for needle in (
+        "PLAYBOOK_REF_RE",
+        "referenced playbook",
+        "ansible/playbooks",
+        "CONFLICT_MARKER_RE",
+        "hosts:",
+        "YAML document marker",
+    ):
+        require_text(
+            ansible_playbook_references_test_text,
+            needle,
+            f"Ansible playbook reference self-test must cover {needle}",
         )
     if "ansible/playbooks/verify-platform-app-health.yml" not in makefile_text:
         fail("platform-app-health target does not invoke the health playbook")
@@ -550,6 +754,46 @@ def main() -> None:
         "${LOKI_S3_SECRET_ACCESS_KEY}",
     ):
         require_text(renderer_test_text, needle, f"private values renderer self-test must cover {needle}")
+    no_secrets_test_text = read(no_secrets_test)
+    for needle in (
+        "company domain fragment",
+        "private deployment hostname",
+        "include_internal_markers=False",
+        "private IP-like value",
+        "private node username",
+        "possible plaintext secret",
+        "forgejo.<PLATFORM_DOMAIN>",
+        ".shell-syntax-leftover",
+        "__pycache__",
+        "private",
+        "rendered",
+        "secrets",
+    ):
+        require_text(no_secrets_test_text, needle, f"secret/privacy scanner self-test must cover {needle}")
+    no_secrets_text = read(no_secrets_script)
+    for needle in (
+        "part.startswith('.shell-syntax-')",
+        "'private'",
+        "'rendered'",
+        "'secrets'",
+        "'.venv'",
+        "'.pytest_cache'",
+        "'__pycache__'",
+    ):
+        require_text(no_secrets_text, needle, f"secret/privacy scanner must ignore generated/private artifacts: {needle}")
+    shell_syntax_test_text = read(shell_syntax_test)
+    for needle in (
+        "bash is required for shell syntax validation",
+        "subprocess.run",
+        "'-n'",
+        "*.sh",
+        "part.startswith('.shell-syntax-')",
+        "'private'",
+        "'rendered'",
+        "'secrets'",
+        "'.venv'",
+    ):
+        require_text(shell_syntax_test_text, needle, f"shell syntax self-test must cover {needle}")
     for needle in (
         "Generate or preserve Loki object storage credentials secret",
         "Generate or preserve Velero cloud credentials secret",
@@ -587,6 +831,10 @@ def main() -> None:
             fail(f"{doc.relative_to(root)} does not document production object-storage secret enforcement")
         if "backend" not in doc_text:
             fail(f"{doc.relative_to(root)} does not document GUI backend endpoint readiness")
+        if "make platform-service-path-repair" not in doc_text:
+            fail(f"{doc.relative_to(root)} does not document ClusterIP service-path repair")
+        if "Woodpecker gRPC ClusterIP from every RKE2 node" not in doc_text:
+            fail(f"{doc.relative_to(root)} does not document Woodpecker consumer refresh after service-path repair")
     for doc in (installation_doc, root / "docs/PRIVATE_DEPLOYMENT.md"):
         if "PLATFORM_RUN_PROFILE_CHECK" not in read(doc):
             fail(f"{doc.relative_to(root)} must document selected GitOps profile validation before push")
@@ -602,6 +850,28 @@ def main() -> None:
         env_text = read(env_example)
         if "PLATFORM_RUN_PROFILE_CHECK=true" not in env_text:
             fail(f"{env_example.relative_to(root)} must keep selected profile checks enabled by default")
+        if "PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES=true" not in env_text:
+            fail(f"{env_example.relative_to(root)} must document private hostname safety-scan behavior")
+        if "PYTHON=/usr/bin/python3" not in env_text:
+            fail(f"{env_example.relative_to(root)} must document the PYTHON interpreter override")
+    for doc in (installation_doc, root / "docs/PRIVATE_DEPLOYMENT.md", root / "docs/SECRETS_AND_PRIVACY.md"):
+        doc_text = read(doc)
+        if "PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES" not in doc_text:
+            fail(f"{doc.relative_to(root)} must document private hostname safety-scan behavior")
+        if "PYTHON=/path/to/python" not in doc_text:
+            fail(f"{doc.relative_to(root)} must document the PYTHON interpreter override")
+        if "platform-argocd" not in doc_text:
+            fail(f"{doc.relative_to(root)} must document the PYTHON override for Argo CD bootstrap")
+    for doc in (readme_doc, quick_start_doc, release_guide_doc):
+        doc_text = read(doc)
+        for needle in (
+            "repository-only",
+            "Python 3 and Bash",
+            "does not contact a live cluster",
+            "make platform-production-check",
+        ):
+            if needle not in doc_text:
+                fail(f"{doc.relative_to(root)} must distinguish local validation from live production proof: {needle}")
 
     if "make platform-production-check" not in read(bootstrap_plan_script):
         fail("scripts/bootstrap-plan.sh does not include the production readiness gate")

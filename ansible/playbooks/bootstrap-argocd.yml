@@ -13,6 +13,7 @@
     platform_profile_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
     platform_apply_gitops_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APPLY_GITOPS') }}"
     platform_gitops_placeholder_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_GITOPS_PLACEHOLDER_MODE') }}"
+    platform_python_from_env: "{{ lookup('ansible.builtin.env', 'PYTHON') }}"
     platform_argocd_bootstrap_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_MODE') }}"
     platform_argocd_auto_core_fallback_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_AUTO_CORE_FALLBACK') }}"
     platform_argocd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_URL') }}"
@@ -28,6 +29,7 @@
     platform_profile_effective: "{{ platform_profile | default(platform_profile_from_env, true) | default('default', true) }}"
     platform_apply_gitops_effective: "{{ platform_apply_gitops | default(platform_apply_gitops_from_env, true) | default(false, true) | bool }}"
     platform_gitops_placeholder_mode_effective: "{{ platform_gitops_placeholder_mode | default(platform_gitops_placeholder_mode_from_env, true) | default('strict', true) }}"
+    platform_python_effective: "{{ platform_python | default(platform_python_from_env, true) | default('', true) }}"
     platform_argocd_bootstrap_mode_effective: "{{ platform_argocd_bootstrap_mode | default(platform_argocd_bootstrap_mode_from_env, true) | default('ha', true) }}"
     platform_argocd_auto_core_fallback_effective: "{{ platform_argocd_auto_core_fallback | default(platform_argocd_auto_core_fallback_from_env, true) | default(true, true) | bool }}"
     platform_argocd_default_manifest_url: >-
@@ -712,11 +714,24 @@
       run_once: true
 
     - name: Check selected GitOps profile for unresolved placeholders
-      ansible.builtin.command: >-
-        python3 scripts/check_gitops_profile.py
-        --repo-root .
-        --profile {{ platform_profile_effective }}
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python_bin={{ platform_python_effective | quote }}
+        if [ -z "${python_bin}" ]; then
+          if command -v python3 >/dev/null 2>&1; then
+            python_bin=python3
+          elif command -v python >/dev/null 2>&1; then
+            python_bin=python
+          else
+            echo "Python is required to check the selected GitOps profile; install python3 or set PYTHON." >&2
+            exit 127
+          fi
+        fi
+        "${python_bin}" scripts/check_gitops_profile.py \
+          --repo-root . \
+          --profile {{ platform_profile_effective | quote }}
       args:
+        executable: /bin/bash
         chdir: "{{ playbook_dir }}/../.."
       register: platform_placeholder_scan
       changed_when: false
@@ -745,11 +760,23 @@
     - name: Render deployable GitOps applications and skip incomplete apps
       ansible.builtin.shell: |
         set -euo pipefail
-        python3 scripts/render_deployable_gitops_apps.py \
+        python_bin={{ platform_python_effective | quote }}
+        if [ -z "${python_bin}" ]; then
+          if command -v python3 >/dev/null 2>&1; then
+            python_bin=python3
+          elif command -v python >/dev/null 2>&1; then
+            python_bin=python
+          else
+            echo "Python is required to render deployable GitOps applications; install python3 or set PYTHON." >&2
+            exit 127
+          fi
+        fi
+        "${python_bin}" scripts/render_deployable_gitops_apps.py \
           --repo-root "$PWD" \
           --applications-file "{{ platform_applications_file }}" \
           --repo-url "{{ platform_repo_url_effective }}" \
-          --output "{{ platform_rendered_applications_file }}"
+          --output "{{ platform_rendered_applications_file }}" \
+          --required-path gitops/clusters/rke2-main/projects
       args:
         executable: /bin/bash
         chdir: "{{ playbook_dir }}/../.."

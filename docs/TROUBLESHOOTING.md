@@ -30,6 +30,17 @@ node-to-pod networking. The service-path section checks both the node host path
 and short-lived diagnostic pods pinned to each RKE2 node, so Woodpecker agent
 gRPC failures on only one or two nodes are reported directly.
 
+For Argo CD repo-server/Redis timeouts, Woodpecker agent gRPC timeouts, or
+node-specific ClusterIP service failures, run the explicit service-path repair
+alias before rechecking health. The alias repairs CoreDNS/CNI service routing,
+then refreshes Woodpecker agents and verifies the Woodpecker gRPC ClusterIP from every RKE2 node so CrashLoopBackOff agents do not wait on exponential backoff:
+
+```bash
+make platform-service-path-repair
+make platform-argocd-service-repair
+make platform-app-health
+```
+
 To require RKE2 node-originated app VIP self-probes as well:
 
 ```bash

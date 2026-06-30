@@ -145,8 +145,18 @@ HTTP-to-HTTPS redirects for configured GUI hosts, ready GUI ingress backend
 endpoints, required Longhorn StorageClasses, and Argo CD / Woodpecker ClusterIP
 service reachability from every RKE2 node host and from diagnostic pods pinned
 to every RKE2 node. It also fails if platform PVCs are Pending, Lost, or stuck
-Terminating. Node-originated app VIP self-probes are advisory by default;
-enforce them with:
+Terminating.
+
+If a node-specific ClusterIP path fails, such as Woodpecker agents timing out on
+the server gRPC port, repair the shared service path and rerun the health gate.
+The repair also refreshes Woodpecker agents and verifies the Woodpecker gRPC ClusterIP from every RKE2 node:
+
+```bash
+make platform-service-path-repair
+make platform-app-health
+```
+
+Node-originated app VIP self-probes are advisory by default; enforce them with:
 
 ```bash
 PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT=true make platform-app-health

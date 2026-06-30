@@ -5,6 +5,10 @@ import sys
 
 root = Path(__file__).resolve().parents[1]
 conflict_marker_re = re.compile(r'^(<<<<<<< .+|=======|>>>>>>> .+)$', re.MULTILINE)
+exclude_dirs = {
+    '.git', '.cache', '.pytest_cache', '.terraform', '.venv',
+    '__pycache__', 'build', 'charts', 'dist', 'private', 'rendered', 'secrets',
+}
 required = [
     'README.md', 'LICENSE', 'Makefile',
     'config/cluster.example.yaml',
@@ -14,12 +18,17 @@ required = [
     'docs/SECRETS_AND_PRIVACY.md',
     'gitops/bootstrap/root-app.yaml',
     'ansible/playbooks/verify-platform-app-health.yml',
+    'ansible/playbooks/repair-platform-service-path-consumers.yml',
     'scripts/check_gitops_profile.py',
     'scripts/render_deployable_gitops_apps.py',
     'scripts/bootstrap/validate-gitops-selection.sh',
     'scripts/test_profile_checker.py',
     'scripts/test_deployable_renderer.py',
     'scripts/test_private_values_renderer.py',
+    'scripts/test_no_secrets.py',
+    'scripts/test_shell_syntax.py',
+    'scripts/test_docs_make_targets.py',
+    'scripts/test_ansible_playbook_references.py',
     'scripts/validate_platform_contract.py',
 ]
 missing = [p for p in required if not (root / p).exists()]
@@ -29,11 +38,15 @@ if missing:
         print(f' - {item}')
     sys.exit(1)
 
+def should_skip(path: Path) -> bool:
+    return any(part in exclude_dirs or part.startswith('.shell-syntax-') for part in path.parts)
+
+
 conflicted = []
 for path in root.rglob('*'):
     if path.is_dir():
         continue
-    if any(part in {'.git', 'charts'} for part in path.parts):
+    if should_skip(path):
         continue
     try:
         text = path.read_text(encoding='utf-8')
@@ -52,7 +65,7 @@ if conflicted:
 
 # Ensure local files are not accidentally committed.
 for pattern in ('*.local.yaml', '*.local.yml', '*.local.ini', '.env'):
-    committed_like = [p for p in root.rglob(pattern) if '.git' not in p.parts]
+    committed_like = [p for p in root.rglob(pattern) if not should_skip(p)]
     if committed_like:
         print('Local/private files exist in working tree. They are ignored, but verify before pushing:')
         for p in committed_like:

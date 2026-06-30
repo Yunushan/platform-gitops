@@ -44,7 +44,8 @@ case "${mode}" in
       --repo-root . \
       --applications-file "${applications_file}" \
       --repo-url "${repo_url}" \
-      --output "${rendered_file}"
+      --output "${rendered_file}" \
+      --required-path gitops/clusters/rke2-main/projects
     ;;
   *)
     echo "Unsupported PLATFORM_GITOPS_PLACEHOLDER_MODE=${mode}; expected strict or skip-incomplete." >&2

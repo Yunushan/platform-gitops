@@ -292,6 +292,15 @@ the selected GitOps registration mode is validated before any commit, push, or
 seed mirror update. In `strict` mode the full rendered profile must be complete.
 In the default `skip-incomplete` mode, the bootstrap validates that the
 deployable Application subset can be rendered before Argo CD receives it.
+They also keep `PLATFORM_RUN_NO_SECRETS=true`. Public template validation blocks
+internal hostnames, but first private deploy and first seed deploy default
+`PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES=true` so rendered private FQDNs
+can be pushed to a private deployment repository while plaintext secrets,
+private keys, kubeconfigs, and private IPs still fail the safety scan. Keep that
+allowance unset or false when pushing back to a public source remote.
+Set `PYTHON=/path/to/python` if the bootstrap workstation does not provide
+`python3` on `PATH`; `make validate`, `make platform-argocd`, first deploy, and
+seed sync all honor the same override.
 
 For object-storage backed apps, keep credentials in ignored env files or your
 secret manager. `make platform-app-secrets` can create the Kubernetes secrets
@@ -498,9 +507,20 @@ hosts have an Ingress/IngressRoute with ready backend endpoints, verifies the
 premium Longhorn StorageClasses by default, and checks Argo CD / Woodpecker
 ClusterIP paths from every RKE2 node host and from diagnostic pods pinned to
 every RKE2 node. It also fails if platform PVCs are Pending, Lost, or stuck
-Terminating. RKE2 node-originated app VIP self-probes are advisory by default
-because MetalLB L2 self-access can differ from real client access. To enforce
-those too:
+Terminating.
+
+If Argo CD, Woodpecker, or CoreDNS service checks report node-specific
+ClusterIP timeouts, run the service-path repair alias and then rerun the health
+gate. The alias repairs DNS/CNI service routing, refreshes Woodpecker agents,
+and verifies the Woodpecker gRPC ClusterIP from every RKE2 node:
+
+```bash
+make platform-service-path-repair
+make platform-app-health
+```
+
+RKE2 node-originated app VIP self-probes are advisory by default because MetalLB
+L2 self-access can differ from real client access. To enforce those too:
 
 ```bash
 PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT=true make platform-app-health

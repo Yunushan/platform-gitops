@@ -32,25 +32,50 @@ PLATFORM_PUSH_WITH_TOKEN="${PLATFORM_PUSH_WITH_TOKEN:-true}"
 PLATFORM_VALIDATE_BEFORE_PUSH="${PLATFORM_VALIDATE_BEFORE_PUSH:-true}"
 PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS:-true}"
 PLATFORM_RUN_PROFILE_CHECK="${PLATFORM_RUN_PROFILE_CHECK:-true}"
+PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES:-true}"
+
+resolve_python() {
+  if [[ -n "${PYTHON:-}" ]]; then
+    printf '%s\n' "${PYTHON}"
+    return
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s\n' python3
+    return
+  fi
+  if command -v python >/dev/null 2>&1; then
+    printf '%s\n' python
+    return
+  fi
+  echo "Python is required for private first deploy validation; install python3 or set PYTHON." >&2
+  exit 1
+}
+
+PYTHON_BIN="$(resolve_python)"
 
 export PLATFORM_PROFILE PLATFORM_GITOPS_PLACEHOLDER_MODE PLATFORM_FIRST_DEPLOY_DNS_REPAIR PLATFORM_REPO_URL
 export PLATFORM_AUTO_RENDER_PRIVATE_VALUES
 
 if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
-  python3 scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
+  "${PYTHON_BIN}" scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
 fi
 
 if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then
-  python3 scripts/validate_project.py
+  "${PYTHON_BIN}" scripts/validate_project.py
   if [[ "${PLATFORM_RUN_PROFILE_CHECK}" == "true" ]]; then
-    bash scripts/bootstrap/validate-gitops-selection.sh .
+    PYTHON="${PYTHON_BIN}" bash scripts/bootstrap/validate-gitops-selection.sh .
   fi
-  python3 scripts/test_profile_checker.py
-  python3 scripts/test_deployable_renderer.py
-  python3 scripts/test_private_values_renderer.py
-  python3 scripts/validate_platform_contract.py
+  "${PYTHON_BIN}" scripts/test_profile_checker.py
+  "${PYTHON_BIN}" scripts/test_deployable_renderer.py
+  "${PYTHON_BIN}" scripts/test_private_values_renderer.py
+  "${PYTHON_BIN}" scripts/test_no_secrets.py
+  "${PYTHON_BIN}" scripts/test_shell_syntax.py
+  "${PYTHON_BIN}" scripts/test_docs_make_targets.py
+  "${PYTHON_BIN}" scripts/test_ansible_playbook_references.py
+  "${PYTHON_BIN}" scripts/validate_platform_contract.py
   if [[ "${PLATFORM_RUN_NO_SECRETS}" == "true" ]]; then
-    python3 scripts/validate_no_secrets.py
+    PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES}" \
+      "${PYTHON_BIN}" scripts/validate_no_secrets.py
   fi
 fi
 

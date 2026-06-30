@@ -51,6 +51,11 @@ Thumbs.db
 
 # Build/cache output
 .cache/
+.pytest_cache/
+.venv/
+__pycache__/
+.shell-syntax-*/
+*.pyc
 dist/
 build/
 *.zip

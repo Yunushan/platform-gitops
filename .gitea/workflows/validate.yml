@@ -18,6 +18,14 @@ jobs:
         run: python scripts/test_deployable_renderer.py
       - name: Test private values renderer
         run: python scripts/test_private_values_renderer.py
+      - name: Test secret scanner
+        run: python scripts/test_no_secrets.py
+      - name: Test shell syntax
+        run: python scripts/test_shell_syntax.py
+      - name: Test documented make targets
+        run: python scripts/test_docs_make_targets.py
+      - name: Test Ansible playbook references
+        run: python scripts/test_ansible_playbook_references.py
       - name: Validate production contract
         run: python scripts/validate_platform_contract.py
       - name: Secret safety scan

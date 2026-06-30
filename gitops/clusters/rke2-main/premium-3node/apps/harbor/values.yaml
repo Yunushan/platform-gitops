@@ -10,9 +10,9 @@ expose:
   ingress:
     className: traefik
     hosts:
-      core: registry-gitops-arge.isbak.com.tr
+      core: harbor.<PLATFORM_DOMAIN>
 
-externalURL: https://registry-gitops-arge.isbak.com.tr
+externalURL: https://harbor.<PLATFORM_DOMAIN>
 
 portal:
   replicas: 1

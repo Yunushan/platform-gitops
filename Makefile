@@ -1,6 +1,7 @@
 SHELL := /usr/bin/env bash
+PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -35,6 +36,8 @@ help:
 	@echo "  platform-forgejo-storage-repair  Repair first-deploy Forgejo PVC, Longhorn disk, and volume attach issues"
 	@echo "  platform-forgejo-ingress  Publish and verify Forgejo through Traefik on the app VIP"
 	@echo "  platform-dns-repair  Verify pod DNS and repair CoreDNS upstreams for external chart repositories"
+	@echo "  platform-service-path-consumers-repair  Refresh Woodpecker agents after ClusterIP service-path repair"
+	@echo "  platform-service-path-repair  Repair ClusterIP/DNS service paths and refresh Woodpecker consumers"
 	@echo "  platform-dns-repair-traefik  Verify pod DNS against the Traefik chart repository"
 	@echo "  platform-ingress  Install MetalLB/Traefik, bind the app VIP, and publish Argo CD on 443"
 	@echo "  platform-ingress-vip  Alias for platform-ingress"
@@ -61,24 +64,28 @@ init-local:
 	@bash scripts/init-local-config.sh
 
 validate:
-	@python3 scripts/validate_project.py
-	@python3 scripts/test_profile_checker.py
-	@python3 scripts/test_deployable_renderer.py
-	@python3 scripts/test_private_values_renderer.py
-	@python3 scripts/validate_platform_contract.py
-	@python3 scripts/validate_no_secrets.py
+	@$(PYTHON) scripts/validate_project.py
+	@$(PYTHON) scripts/test_profile_checker.py
+	@$(PYTHON) scripts/test_deployable_renderer.py
+	@$(PYTHON) scripts/test_private_values_renderer.py
+	@$(PYTHON) scripts/test_no_secrets.py
+	@$(PYTHON) scripts/test_shell_syntax.py
+	@$(PYTHON) scripts/test_docs_make_targets.py
+	@$(PYTHON) scripts/test_ansible_playbook_references.py
+	@$(PYTHON) scripts/validate_platform_contract.py
+	@$(PYTHON) scripts/validate_no_secrets.py
 
 no-secrets:
-	@python3 scripts/validate_no_secrets.py
+	@$(PYTHON) scripts/validate_no_secrets.py
 
 bootstrap-plan:
 	@bash scripts/bootstrap-plan.sh
 
 platform-render-private-values:
-	@python3 scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
+	@$(PYTHON) scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
 
 platform-profile-check:
-	@python3 scripts/check_gitops_profile.py --repo-root . --profile "$${PLATFORM_PROFILE:-premium-3node}"
+	@$(PYTHON) scripts/check_gitops_profile.py --repo-root . --profile "$${PLATFORM_PROFILE:-premium-3node}"
 
 platform-bootstrap: rke2-verify rke2-api-vip rke2-controller-hosts platform-argocd platform-ingress platform-status
 
@@ -163,6 +170,13 @@ platform-forgejo-ingress:
 
 platform-dns-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-cluster-dns.yml
+
+platform-service-path-consumers-repair:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-platform-service-path-consumers.yml
+
+platform-service-path-repair:
+	@$(MAKE) platform-dns-repair
+	@$(MAKE) platform-service-path-consumers-repair
 
 platform-dns-repair-traefik:
 	@PLATFORM_DNS_CHECK_REPO=$${PLATFORM_TRAEFIK_CHART_REPO:-https://traefik.github.io/charts} ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-cluster-dns.yml
