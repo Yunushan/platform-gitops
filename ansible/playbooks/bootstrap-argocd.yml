@@ -712,32 +712,12 @@
       run_once: true
 
     - name: Check selected GitOps profile for unresolved placeholders
-      ansible.builtin.shell: |
-        set -o pipefail
-        paths=(
-        {% if platform_profile_effective == 'premium-3node' %}
-          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
-          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects"
-          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps"
-          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/apps/metallb"
-        {% else %}
-          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/platform-apps.yaml"
-          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects"
-          "{{ playbook_dir }}/../../gitops/clusters/rke2-main/apps"
-        {% endif %}
-        )
-        for path in "${paths[@]}"; do
-          if [ -f "$path" ]; then
-            grep -nE '<[A-Z0-9_]+>' "$path" | grep -v '<THIS_REPO_URL>' || true
-          elif [ -d "$path" ]; then
-            find "$path" -type f \( -name '*.yaml' -o -name '*.yml' \) \
-              ! -path '*/charts/*' ! -path '*/crds/*' \
-              ! -name '*.example.yaml' ! -name '*.example.yml' -print0 |
-              xargs -0r grep -nE '<[A-Z0-9_]+>' 2>/dev/null | grep -v '<THIS_REPO_URL>' || true
-          fi
-        done
+      ansible.builtin.command: >-
+        python3 scripts/check_gitops_profile.py
+        --repo-root .
+        --profile {{ platform_profile_effective }}
       args:
-        executable: /bin/bash
+        chdir: "{{ playbook_dir }}/../.."
       register: platform_placeholder_scan
       changed_when: false
       failed_when: false
@@ -755,11 +735,11 @@
           PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd
 
           Unresolved placeholders:
-          {{ platform_placeholder_scan.stdout }}
+          {{ (platform_placeholder_scan.stdout ~ '\n' ~ platform_placeholder_scan.stderr) | trim }}
       when:
         - platform_apply_gitops_effective
         - platform_gitops_placeholder_mode_effective == 'strict'
-        - platform_placeholder_scan.stdout | length > 0
+        - platform_placeholder_scan.rc | int != 0
       run_once: true
 
     - name: Render deployable GitOps applications and skip incomplete apps
@@ -780,7 +760,7 @@
       when:
         - platform_apply_gitops_effective
         - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
-        - platform_placeholder_scan.stdout | length > 0
+        - platform_placeholder_scan.rc | int != 0
       run_once: true
 
     - name: Show deployable and skipped GitOps applications
@@ -789,7 +769,7 @@
       when:
         - platform_apply_gitops_effective
         - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
-        - platform_placeholder_scan.stdout | length > 0
+        - platform_placeholder_scan.rc | int != 0
       run_once: true
 
     - name: Use rendered deployable GitOps application list
@@ -798,7 +778,7 @@
       when:
         - platform_apply_gitops_effective
         - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
-        - platform_placeholder_scan.stdout | length > 0
+        - platform_placeholder_scan.rc | int != 0
       run_once: true
 
     - name: Use complete GitOps application list

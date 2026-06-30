@@ -119,14 +119,14 @@ ingress:
   enabled: true
   className: traefik
   hosts:
-    - host: {host}
+    - host: {yaml_string(host)}
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: forgejo-tls
       hosts:
-        - {host}
+        - {yaml_string(host)}
 
 postgresql:
   enabled: false
@@ -136,15 +136,15 @@ redis-cluster:
 
 persistence:
   enabled: true
-  size: {data_size}
-  storageClass: {storage_class}
+  size: {yaml_string(data_size)}
+  storageClass: {yaml_string(storage_class)}
 
 gitea:
   config:
     server:
-      DOMAIN: {host}
-      ROOT_URL: https://{host}/
-      SSH_DOMAIN: {host}
+      DOMAIN: {yaml_string(host)}
+      ROOT_URL: {yaml_string(f"https://{host}/")}
+      SSH_DOMAIN: {yaml_string(host)}
       START_SSH_SERVER: true
     service:
       DISABLE_REGISTRATION: true
@@ -192,14 +192,14 @@ ingress:
   enabled: true
   className: traefik
   hosts:
-    - host: {host}
+    - host: {yaml_string(host)}
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: forgejo-tls
       hosts:
-        - {host}
+        - {yaml_string(host)}
 
 postgresql:
   enabled: false
@@ -209,15 +209,15 @@ redis-cluster:
 
 persistence:
   enabled: true
-  size: {data_size}
-  storageClass: {storage_class}
+  size: {yaml_string(data_size)}
+  storageClass: {yaml_string(storage_class)}
 
 gitea:
   config:
     server:
-      DOMAIN: {host}
-      ROOT_URL: https://{host}/
-      SSH_DOMAIN: {host}
+      DOMAIN: {yaml_string(host)}
+      ROOT_URL: {yaml_string(f"https://{host}/")}
+      SSH_DOMAIN: {yaml_string(host)}
       START_SSH_SERVER: true
     service:
       DISABLE_REGISTRATION: true
@@ -226,17 +226,17 @@ gitea:
       DEFAULT_BRANCH: main
     database:
       DB_TYPE: postgres
-      HOST: {database_host}
-      NAME: {database_name}
-      USER: {database_user}
+      HOST: {yaml_string(database_host)}
+      NAME: {yaml_string(database_name)}
+      USER: {yaml_string(database_user)}
     session:
       PROVIDER: db
     cache:
       ADAPTER: redis
-      HOST: {redis_host}
+      HOST: {yaml_string(redis_host)}
     queue:
       TYPE: redis
-      CONN_STR: {redis_url}
+      CONN_STR: {yaml_string(redis_url)}
 
 resources:
   requests:
@@ -335,13 +335,13 @@ server:
   statefulSet:
     replicaCount: 1
   env:
-    WOODPECKER_ADMIN: "{admin_users}"
-    WOODPECKER_HOST: https://{host}
+    WOODPECKER_ADMIN: {yaml_string(admin_users)}
+    WOODPECKER_HOST: {yaml_string(f"https://{host}")}
     WOODPECKER_OPEN: "false"
     WOODPECKER_FORGEJO: "true"
-    WOODPECKER_FORGEJO_URL: {forgejo_url}
+    WOODPECKER_FORGEJO_URL: {yaml_string(forgejo_url)}
   extraSecretNamesForEnvFrom:
-    - {oauth_secret_name}
+    - {yaml_string(oauth_secret_name)}
   createAgentSecret: true
   ingress:
     enabled: true
@@ -350,17 +350,17 @@ server:
       traefik.ingress.kubernetes.io/router.entrypoints: websecure
       traefik.ingress.kubernetes.io/router.tls: "true"
     hosts:
-      - host: {host}
+      - host: {yaml_string(host)}
         paths:
           - path: /
     tls:
       - secretName: woodpecker-tls
         hosts:
-          - {host}
+          - {yaml_string(host)}
   persistentVolume:
     enabled: true
-    size: {data_size}
-    storageClass: {storage_class}
+    size: {yaml_string(data_size)}
+    storageClass: {yaml_string(storage_class)}
   resources:
     requests:
       cpu: 100m
@@ -374,7 +374,7 @@ agent:
   env:
     WOODPECKER_BACKEND: kubernetes
     WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker
-    WOODPECKER_BACKEND_K8S_STORAGE_CLASS: {storage_class}
+    WOODPECKER_BACKEND_K8S_STORAGE_CLASS: {yaml_string(storage_class)}
     WOODPECKER_BACKEND_K8S_VOLUME_SIZE: 10G
     WOODPECKER_BACKEND_K8S_STORAGE_RWX: "false"
     WOODPECKER_MAX_WORKFLOWS: "2"
@@ -451,9 +451,9 @@ expose:
   ingress:
     className: traefik
     hosts:
-      core: {host}
+      core: {yaml_string(host)}
 
-externalURL: https://{host}
+externalURL: {yaml_string(f"https://{host}")}
 
 portal:
   replicas: 1
@@ -474,21 +474,21 @@ persistence:
   enabled: true
   persistentVolumeClaim:
     registry:
-      storageClass: {storage_class}
-      size: {registry_size}
+      storageClass: {yaml_string(storage_class)}
+      size: {yaml_string(registry_size)}
     jobservice:
       jobLog:
-        storageClass: {storage_class}
-        size: {joblog_size}
+        storageClass: {yaml_string(storage_class)}
+        size: {yaml_string(joblog_size)}
     database:
-      storageClass: {storage_class}
-      size: {database_size}
+      storageClass: {yaml_string(storage_class)}
+      size: {yaml_string(database_size)}
     redis:
-      storageClass: {storage_class}
-      size: {redis_size}
+      storageClass: {yaml_string(storage_class)}
+      size: {yaml_string(redis_size)}
     trivy:
-      storageClass: {storage_class}
-      size: {trivy_size}
+      storageClass: {yaml_string(storage_class)}
+      size: {yaml_string(trivy_size)}
   imageChartStorage:
     type: filesystem
     filesystem:
@@ -500,9 +500,9 @@ database:
 redis:
   type: internal
 
-existingSecretAdminPassword: {admin_secret_name}
+existingSecretAdminPassword: {yaml_string(admin_secret_name)}
 existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD
-existingSecretSecretKey: {secret_key_secret_name}
+existingSecretSecretKey: {yaml_string(secret_key_secret_name)}
 
 metrics:
   enabled: true
@@ -552,31 +552,34 @@ def monitoring_bootstrap_values(
     return f"""# Monitoring bootstrap profile rendered by scripts/render_private_platform_values.py.
 # Uses persistent Grafana SQLite for first deployment. Switch Grafana to external
 # PostgreSQL for long-term HA.
+crds:
+  enabled: true
+
 prometheus:
   ingress:
     enabled: true
     ingressClassName: traefik
     hosts:
-      - {prometheus_host}
+      - {yaml_string(prometheus_host)}
     tls:
       - secretName: prometheus-tls
         hosts:
-          - {prometheus_host}
+          - {yaml_string(prometheus_host)}
   prometheusSpec:
     replicas: 2
     retention: 15d
-    retentionSize: {retention_size}
+    retentionSize: {yaml_string(retention_size)}
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
     storageSpec:
       volumeClaimTemplate:
         spec:
-          storageClassName: {storage_class}
+          storageClassName: {yaml_string(storage_class)}
           accessModes:
             - ReadWriteOnce
           resources:
             requests:
-              storage: {prometheus_size}
+              storage: {yaml_string(prometheus_size)}
 
 alertmanager:
   enabled: true
@@ -585,31 +588,31 @@ alertmanager:
     storage:
       volumeClaimTemplate:
         spec:
-          storageClassName: {storage_class}
+          storageClassName: {yaml_string(storage_class)}
           accessModes:
             - ReadWriteOnce
           resources:
             requests:
-              storage: {alertmanager_size}
+              storage: {yaml_string(alertmanager_size)}
 
 grafana:
   replicas: 1
   persistence:
     enabled: true
     type: pvc
-    storageClassName: {storage_class}
+    storageClassName: {yaml_string(storage_class)}
     accessModes:
       - ReadWriteOnce
-    size: {grafana_size}
+    size: {yaml_string(grafana_size)}
   ingress:
     enabled: true
     ingressClassName: traefik
     hosts:
-      - {grafana_host}
+      - {yaml_string(grafana_host)}
     tls:
       - secretName: grafana-tls
         hosts:
-          - {grafana_host}
+          - {yaml_string(grafana_host)}
 
 defaultRules:
   create: true
@@ -661,6 +664,231 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
     return changed
 
 
+def loki_bootstrap_values(
+    host: str,
+    endpoint: str,
+    region: str,
+    chunks_bucket: str,
+    ruler_bucket: str,
+    admin_bucket: str,
+    write_cache_size: str,
+    backend_cache_size: str,
+    storage_class: str,
+    object_secret_name: str,
+    force_path_style: bool,
+    insecure: bool,
+) -> str:
+    return f"""# Loki premium profile rendered by scripts/render_private_platform_values.py.
+# Uses object storage for chunks/rules/admin data. Store LOKI_S3_ACCESS_KEY_ID
+# and LOKI_S3_SECRET_ACCESS_KEY in secret/{object_secret_name}.
+deploymentMode: SimpleScalable
+
+global:
+  extraArgs:
+    - -config.expand-env=true
+  extraEnvFrom:
+    - secretRef:
+        name: {yaml_string(object_secret_name)}
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 3
+  storage:
+    type: s3
+    bucketNames:
+      chunks: {yaml_string(chunks_bucket)}
+      ruler: {yaml_string(ruler_bucket)}
+      admin: {yaml_string(admin_bucket)}
+    s3:
+      endpoint: {yaml_string(endpoint)}
+      region: {yaml_string(region)}
+      accessKeyId: "${{LOKI_S3_ACCESS_KEY_ID}}"
+      secretAccessKey: "${{LOKI_S3_SECRET_ACCESS_KEY}}"
+      s3ForcePathStyle: {str(force_path_style).lower()}
+      insecure: {str(insecure).lower()}
+  schemaConfig:
+    configs:
+      - from: "2026-01-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+write:
+  replicas: 3
+  persistence:
+    storageClass: {yaml_string(storage_class)}
+    size: {yaml_string(write_cache_size)}
+
+read:
+  replicas: 3
+
+backend:
+  replicas: 3
+  persistence:
+    storageClass: {yaml_string(storage_class)}
+    size: {yaml_string(backend_cache_size)}
+
+gateway:
+  enabled: true
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - host: {yaml_string(host)}
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: loki-tls
+        hosts:
+          - {yaml_string(host)}
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+"""
+
+
+def render_loki(path: Path, inventory: dict[str, str]) -> bool:
+    host = require(
+        "PLATFORM_LOKI_HOST or platform_loki_host",
+        platform_host("PLATFORM_LOKI_HOST", inventory, ("platform_loki_host",), "loki"),
+    )
+    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", "https://s3.amazonaws.com").strip()
+    region = os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip() or "us-east-1"
+    bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
+    storage_class = os.environ.get("LOKI_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
+    object_secret_name = os.environ.get("LOKI_OBJECT_STORAGE_SECRET_NAME", "loki-object-storage").strip()
+    force_path_style = os.environ.get("OBJECT_STORAGE_FORCE_PATH_STYLE", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    insecure = os.environ.get("OBJECT_STORAGE_INSECURE", "false").strip().lower() in {"1", "true", "yes"}
+
+    rendered = loki_bootstrap_values(
+        host=host,
+        endpoint=endpoint,
+        region=region,
+        chunks_bucket=os.environ.get("LOKI_CHUNKS_BUCKET", f"{bucket_prefix}-loki-chunks").strip(),
+        ruler_bucket=os.environ.get("LOKI_RULER_BUCKET", f"{bucket_prefix}-loki-ruler").strip(),
+        admin_bucket=os.environ.get("LOKI_ADMIN_BUCKET", f"{bucket_prefix}-loki-admin").strip(),
+        write_cache_size=os.environ.get("LOKI_WRITE_CACHE_SIZE", "20Gi").strip() or "20Gi",
+        backend_cache_size=os.environ.get("LOKI_BACKEND_CACHE_SIZE", "20Gi").strip() or "20Gi",
+        storage_class=storage_class,
+        object_secret_name=object_secret_name,
+        force_path_style=force_path_style,
+        insecure=insecure,
+    )
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    changed = rendered != old
+    if changed:
+        path.write_text(rendered, encoding="utf-8")
+    return changed
+
+
+def velero_bootstrap_values(
+    provider: str,
+    bucket: str,
+    endpoint: str,
+    region: str,
+    credentials_secret_name: str,
+    schedule: str,
+    force_path_style: bool,
+    plugin_image: str,
+) -> str:
+    return f"""# Velero premium profile rendered by scripts/render_private_platform_values.py.
+# Store provider credentials in secret/{credentials_secret_name}. For S3-compatible
+# storage, platform-app-secrets can create the secret from VELERO_CLOUD_CREDENTIALS
+# or AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY.
+initContainers:
+  - name: {yaml_string(f"velero-plugin-for-{provider}")}
+    image: {yaml_string(plugin_image)}
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+configuration:
+  features: EnableCSI
+  defaultVolumesToFsBackup: false
+  backupStorageLocation:
+    - name: default
+      provider: {yaml_string(provider)}
+      bucket: {yaml_string(bucket)}
+      config:
+        region: {yaml_string(region)}
+        s3Url: {yaml_string(endpoint)}
+        s3ForcePathStyle: "{str(force_path_style).lower()}"
+  volumeSnapshotLocation:
+    - name: default
+      provider: {yaml_string(provider)}
+      config:
+        region: {yaml_string(region)}
+
+credentials:
+  useSecret: true
+  existingSecret: {yaml_string(credentials_secret_name)}
+
+deployNodeAgent: true
+
+snapshotsEnabled: true
+
+schedules:
+  platform-daily:
+    disabled: false
+    schedule: {yaml_string(schedule)}
+    template:
+      ttl: 720h0m0s
+      includedNamespaces:
+        - argocd
+        - cert-manager
+        - forgejo
+        - harbor
+        - logging
+        - monitoring
+        - velero
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+"""
+
+
+def render_velero(path: Path) -> bool:
+    provider = os.environ.get("BACKUP_PROVIDER", "aws").strip() or "aws"
+    if provider != "aws":
+        raise SystemExit("BACKUP_PROVIDER currently supports aws for automatic Velero rendering")
+    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", "https://s3.amazonaws.com").strip()
+    region = os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip() or "us-east-1"
+    bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
+    force_path_style = os.environ.get("OBJECT_STORAGE_FORCE_PATH_STYLE", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    rendered = velero_bootstrap_values(
+        provider=provider,
+        bucket=os.environ.get("BACKUP_BUCKET", f"{bucket_prefix}-velero-backups").strip(),
+        endpoint=endpoint,
+        region=region,
+        credentials_secret_name=os.environ.get("VELERO_CREDENTIALS_SECRET_NAME", "velero-credentials").strip(),
+        schedule=os.environ.get("VELERO_DAILY_BACKUP_CRON", "0 1 * * *").strip() or "0 1 * * *",
+        force_path_style=force_path_style,
+        plugin_image=os.environ.get("VELERO_AWS_PLUGIN_IMAGE", "velero/velero-plugin-for-aws:v1.13.1").strip(),
+    )
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    changed = rendered != old
+    if changed:
+        path.write_text(rendered, encoding="utf-8")
+    return changed
+
+
 def step_ca_bootstrap_values(
     name: str,
     dns_names: list[str],
@@ -675,14 +903,14 @@ def step_ca_bootstrap_values(
   enabled: true
   ingressClassName: traefik
   hosts:
-    - host: {ingress_host}
+    - host: {yaml_string(ingress_host)}
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: step-ca-tls
       hosts:
-        - {ingress_host}
+        - {yaml_string(ingress_host)}
 """
 
     return f"""# step-ca bootstrap profile rendered by scripts/render_private_platform_values.py.
@@ -707,7 +935,7 @@ ca:
     storageClass: {yaml_string(storage_class)}
     accessModes:
       - ReadWriteOnce
-    size: {db_size}
+    size: {yaml_string(db_size)}
   ssh:
     enabled: false
 
@@ -806,6 +1034,16 @@ def main() -> int:
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/monitoring/values.yaml"),
     )
     parser.add_argument(
+        "--loki-values",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/loki/values.yaml"),
+    )
+    parser.add_argument(
+        "--velero-values",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/velero/values.yaml"),
+    )
+    parser.add_argument(
         "--step-ca-values",
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"),
@@ -815,6 +1053,8 @@ def main() -> int:
     parser.add_argument("--skip-woodpecker", action="store_true")
     parser.add_argument("--skip-harbor", action="store_true")
     parser.add_argument("--skip-monitoring", action="store_true")
+    parser.add_argument("--skip-loki", action="store_true")
+    parser.add_argument("--skip-velero", action="store_true")
     parser.add_argument("--skip-step-ca", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -892,6 +1132,17 @@ def main() -> int:
             )
         )
         print(f"LONGHORN_BACKUP_TARGET={os.environ.get('LONGHORN_BACKUP_TARGET', '')}")
+        print(
+            "LOKI_HOST="
+            + (
+                platform_host("PLATFORM_LOKI_HOST", inventory, ("platform_loki_host",), "loki")
+                or "<missing>"
+            )
+        )
+        print(f"LOKI_OBJECT_STORAGE_SECRET_NAME={os.environ.get('LOKI_OBJECT_STORAGE_SECRET_NAME', 'loki-object-storage')}")
+        print(f"BACKUP_PROVIDER={os.environ.get('BACKUP_PROVIDER', 'aws')}")
+        print(f"BACKUP_BUCKET={os.environ.get('BACKUP_BUCKET', os.environ.get('OBJECT_STORAGE_BUCKET_PREFIX', 'platform') + '-velero-backups')}")
+        print(f"VELERO_CREDENTIALS_SECRET_NAME={os.environ.get('VELERO_CREDENTIALS_SECRET_NAME', 'velero-credentials')}")
         print(f"STEP_CA_MODE={os.environ.get('STEP_CA_MODE', 'disabled')}")
         print(
             "STEP_CA_HOST="
@@ -931,6 +1182,12 @@ def main() -> int:
         and render_monitoring(args.monitoring_values, inventory)
     ):
         changed.append(str(args.monitoring_values))
+
+    if not args.skip_loki and args.loki_values.exists() and render_loki(args.loki_values, inventory):
+        changed.append(str(args.loki_values))
+
+    if not args.skip_velero and args.velero_values.exists() and render_velero(args.velero_values):
+        changed.append(str(args.velero_values))
 
     if not args.skip_step_ca and render_step_ca(args.step_ca_values, inventory):
         changed.append(str(args.step_ca_values))

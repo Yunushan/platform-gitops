@@ -179,6 +179,24 @@
         echo "Argo CD Application count: ${app_count}"
         if [ "${app_count}" = "0" ]; then
           echo "No Argo CD Applications are registered yet. Non-Argo GUI hosts will return Traefik 404 until platform apps are registered and synced."
+        elif "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
+          not_ready_apps=0
+          app_rows="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.sync.status}{"|"}{.status.health.status}{"|"}{.status.conditions[*].type}{"\n"}{end}' 2>/dev/null || true)"
+          echo "Argo CD Application readiness:"
+          while IFS='|' read -r app sync_status health_status condition_types; do
+            [ -n "${app}" ] || continue
+            printf '  %-18s sync=%-10s health=%-12s conditions=%s\n' \
+              "${app}" "${sync_status:-unknown}" "${health_status:-unknown}" "${condition_types:-none}"
+            if [ "${sync_status}" != "Synced" ] || [ "${health_status}" != "Healthy" ] || [ -n "${condition_types}" ]; then
+              not_ready_apps=$((not_ready_apps + 1))
+            fi
+          done <<< "${app_rows}"
+          if [ "${not_ready_apps}" -gt 0 ]; then
+            echo "Production readiness: NOT READY - ${not_ready_apps} Argo CD application(s) are not Synced/Healthy without conditions."
+            echo "Run: make platform-app-health"
+          else
+            echo "Production readiness: Argo CD application sync/health is clean; run make platform-app-health for storage, ingress, and service-path proof."
+          fi
         fi
         echo
 

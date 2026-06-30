@@ -21,13 +21,13 @@ The premium profile keeps the compact 3-node RKE2 footprint, but uses stricter d
 
 ## Activation
 
-Use the premium root app instead of the default root app when bootstrapping Argo CD:
+Use the premium profile when registering platform applications in Argo CD:
 
-```text
-gitops/bootstrap/root-app-premium-3node.yaml
+```bash
+PLATFORM_PROFILE=premium-3node PLATFORM_APPLY_GITOPS=true PLATFORM_REPO_URL=<PRIVATE_REPO_URL> make platform-argocd
 ```
 
-That root app points Argo CD at:
+That registers applications from:
 
 ```text
 gitops/clusters/rke2-main/premium-3node
@@ -55,6 +55,18 @@ Required private inputs include:
 - Forgejo database, Redis, and repository backup settings.
 - Woodpecker OAuth and agent settings.
 - Grafana, Prometheus, and Loki storage sizes.
+
+`make platform-render-private-values` can render first-deploy private values
+for Forgejo, Argo CD, Woodpecker, Harbor, Grafana, Prometheus, Loki, Velero,
+Longhorn, and optional step-ca from `inventory/hosts.local.ini` plus
+environment variables. Object-storage credentials still stay out of Git:
+`make platform-app-secrets` can create the Loki and Velero Kubernetes secrets
+from `LOKI_S3_ACCESS_KEY_ID` / `LOKI_S3_SECRET_ACCESS_KEY`,
+`VELERO_CLOUD_CREDENTIALS`, or `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`. For production, set
+`PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` so missing Loki or Velero
+object-storage credential secrets fail during secret automation instead of
+surfacing later as unhealthy pods.
 
 ## CI/CD high availability
 
@@ -98,3 +110,78 @@ Do not call the platform production-ready until these checks pass:
 6. Harbor image push, pull, scan, retention, and restore test.
 7. Forgejo repository backup and restore test.
 8. Alert delivery test.
+9. Platform app production gate: required Argo CD Applications Synced/Healthy
+   with no active or failed operations, platform pods Ready, required Longhorn
+   StorageClasses present, platform PVCs Bound, GUI hosts backed by ready
+   service endpoints and reachable through the app VIP, and critical Argo CD /
+   Woodpecker ClusterIP service paths reachable from every node host and from
+   diagnostic pods pinned to every node:
+
+```bash
+make platform-app-health
+```
+
+Before final production registration, prove that the selected profile has no
+unresolved placeholders:
+
+```bash
+PLATFORM_PROFILE=premium-3node make platform-profile-check
+```
+
+This check must pass before treating the platform app layer as production-ready.
+
+For the full read-only production readiness gate, run:
+
+```bash
+make platform-production-check
+```
+
+That command chains repository validation, the selected GitOps profile
+placeholder check, RKE2 verification, platform status, and the platform app
+health gate.
+
+The app health gate requires controller/client access through the app VIP,
+HTTP-to-HTTPS redirects for configured GUI hosts, ready GUI ingress backend
+endpoints, required Longhorn StorageClasses, and Argo CD / Woodpecker ClusterIP
+service reachability from every RKE2 node host and from diagnostic pods pinned
+to every RKE2 node. It also fails if platform PVCs are Pending, Lost, or stuck
+Terminating. Node-originated app VIP self-probes are advisory by default;
+enforce them with:
+
+```bash
+PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT=true make platform-app-health
+```
+
+The pod-pinned service-path probe uses `rancher/klipper-helm:v0.10.0-build20260513`
+by default because the bootstrap flow already pulls it for DNS diagnostics. For
+restricted registries or slow pulls, override the image or timeout:
+
+```bash
+PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE=<internal-image-with-curl-or-wget> \
+PLATFORM_APP_HEALTH_SERVICE_CHECK_TIMEOUT=300 \
+make platform-app-health
+```
+
+To skip required StorageClass enforcement during a temporary non-Longhorn subset
+debug run:
+
+```bash
+PLATFORM_APP_HEALTH_STORAGE_CLASSES=skip make platform-app-health
+```
+
+To skip only HTTP-to-HTTPS redirect enforcement during a temporary debug run:
+
+```bash
+PLATFORM_APP_HEALTH_HTTP_REDIRECT=false make platform-app-health
+```
+
+For an intentional subset of the premium stack, override all three enforced
+lists together so app health, namespace readiness, and GUI route checks describe
+the same target state:
+
+```bash
+PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg forgejo woodpecker" \
+PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system forgejo woodpecker longhorn-system metallb-system traefik" \
+PLATFORM_APP_HEALTH_GUI_APPS="argocd forgejo woodpecker" \
+make platform-app-health
+```

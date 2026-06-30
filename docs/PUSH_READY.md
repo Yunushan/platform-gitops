@@ -1,6 +1,8 @@
 # Push-Ready Guide
 
 This repository includes CI definitions for common Git hosting systems.
+Each validation path runs the project structure check, production contract
+check, and secret safety scan.
 
 ## GitHub
 

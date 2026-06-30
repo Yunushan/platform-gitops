@@ -10,13 +10,13 @@ Use profile:
 profiles/premium-3node.yaml
 ```
 
-Bootstrap with:
+Bootstrap by selecting the profile at registration time:
 
-```text
-gitops/bootstrap/root-app-premium-3node.yaml
+```bash
+PLATFORM_PROFILE=premium-3node PLATFORM_APPLY_GITOPS=true PLATFORM_REPO_URL=<PRIVATE_REPO_URL> make platform-argocd
 ```
 
-This uses:
+This registers applications from:
 
 ```text
 gitops/clusters/rke2-main/premium-3node

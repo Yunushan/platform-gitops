@@ -57,7 +57,8 @@ RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
 3. Run `make rke2-preflight`.
 4. Install RKE2 with Cilium on three server nodes.
 5. Install Argo CD HA bootstrap.
-6. Apply `gitops/bootstrap/root-app.yaml` with your private repository URL substituted at runtime.
+6. Register the selected GitOps profile with `PLATFORM_REPO_URL=<PRIVATE_REPO_URL> PLATFORM_APPLY_GITOPS=true PLATFORM_PROFILE=premium-3node make platform-argocd`.
 7. Let Argo CD deploy Traefik and the platform components.
 8. Configure off-cluster backups.
-9. Run a restore drill.
+9. Run `make platform-production-check`.
+10. Run a restore drill.

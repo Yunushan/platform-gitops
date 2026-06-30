@@ -1,6 +1,6 @@
 SHELL := /usr/bin/env bash
 
-.PHONY: help init-local validate no-secrets bootstrap-plan platform-render-private-values platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -10,7 +10,8 @@ help:
 	@echo "  validate        Run repository validation"
 	@echo "  no-secrets      Scan repository for obvious secrets/private data"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
-	@echo "  platform-render-private-values  Render first-deploy private values for Forgejo/Longhorn from env or inventory"
+	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env or inventory"
+	@echo "  platform-profile-check  Verify selected GitOps profile has no unresolved placeholders"
 	@echo "  platform-bootstrap  Verify RKE2/API VIP, bootstrap Argo CD, configure app VIP when ready, and print access report"
 	@echo "  platform-first-deploy  First private GitOps deploy: bootstrap Argo CD, register repo credentials, publish ingress, and print status"
 	@echo "  platform-first-deploy-auto  Non-interactive first private deploy using private/first-deploy.env or exported variables"
@@ -25,7 +26,9 @@ help:
 	@echo "  platform-argocd-unexpose  Remove the bootstrap Argo CD NodePort exposure"
 	@echo "  platform-argocd-diagnose  Show Argo CD rollout, image, event, log, and registry diagnostics"
 	@echo "  platform-argocd-service-repair  Repair Argo CD internal repo-server/Redis service reachability"
-	@echo "  platform-app-secrets  Generate bootstrap Harbor secrets and Woodpecker Forgejo OAuth secret"
+	@echo "  platform-app-secrets  Generate bootstrap Harbor, Woodpecker, Loki, and Velero secrets"
+	@echo "  platform-app-health  Verify platform app sync, storage, pod readiness, ingress, and service paths"
+	@echo "  platform-production-check  Run read-only repo, RKE2, status, and platform app readiness gates"
 	@echo "  platform-longhorn-bootstrap  Bootstrap Longhorn storage, pre-pull images on nodes, and verify CSI/PVC readiness"
 	@echo "  platform-longhorn-crd-repair  Restore missing Longhorn CRDs and restart Longhorn manager"
 	@echo "  platform-forgejo-diagnose  Show Forgejo init, logs, PVC/PV, Longhorn volume, service, and ingress diagnostics"
@@ -59,6 +62,10 @@ init-local:
 
 validate:
 	@python3 scripts/validate_project.py
+	@python3 scripts/test_profile_checker.py
+	@python3 scripts/test_deployable_renderer.py
+	@python3 scripts/test_private_values_renderer.py
+	@python3 scripts/validate_platform_contract.py
 	@python3 scripts/validate_no_secrets.py
 
 no-secrets:
@@ -69,6 +76,9 @@ bootstrap-plan:
 
 platform-render-private-values:
 	@python3 scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
+
+platform-profile-check:
+	@python3 scripts/check_gitops_profile.py --repo-root . --profile "$${PLATFORM_PROFILE:-premium-3node}"
 
 platform-bootstrap: rke2-verify rke2-api-vip rke2-controller-hosts platform-argocd platform-ingress platform-status
 
@@ -130,6 +140,11 @@ platform-argocd-service-repair:
 
 platform-app-secrets:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/configure-platform-app-secrets.yml
+
+platform-app-health:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-app-health.yml
+
+platform-production-check: validate platform-profile-check rke2-verify platform-status platform-app-health
 
 platform-longhorn-bootstrap:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/bootstrap-longhorn.yml

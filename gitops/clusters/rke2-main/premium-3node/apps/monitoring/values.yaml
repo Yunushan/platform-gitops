@@ -1,22 +1,19 @@
-<<<<<<< HEAD
 crds:
   enabled: true
 
-=======
 # Monitoring bootstrap profile rendered by scripts/render_private_platform_values.py.
 # Uses persistent Grafana SQLite for first deployment. Switch Grafana to external
 # PostgreSQL for long-term HA.
->>>>>>> c06f7fb (Render platform app values and app secrets)
 prometheus:
   ingress:
     enabled: true
     ingressClassName: traefik
     hosts:
-      - prometheus-gitops-arge.isbak.com.tr
+      - prometheus.<PLATFORM_DOMAIN>
     tls:
       - secretName: prometheus-tls
         hosts:
-          - prometheus-gitops-arge.isbak.com.tr
+          - prometheus.<PLATFORM_DOMAIN>
   prometheusSpec:
     replicas: 2
     retention: 15d
@@ -60,11 +57,11 @@ grafana:
     enabled: true
     ingressClassName: traefik
     hosts:
-      - grafana-gitops-arge.isbak.com.tr
+      - grafana.<PLATFORM_DOMAIN>
     tls:
       - secretName: grafana-tls
         hosts:
-          - grafana-gitops-arge.isbak.com.tr
+          - grafana.<PLATFORM_DOMAIN>
 
 defaultRules:
   create: true

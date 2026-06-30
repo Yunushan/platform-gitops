@@ -12,6 +12,53 @@ make platform-status
 
 It prints API VIP readiness, Argo CD pods/services, registered Argo CD Applications, ingress state, expected GUI URLs, and the next command when the GUI layer is not deployed yet.
 
+Run the read-only production readiness gate after changes settle:
+
+```bash
+make platform-production-check
+```
+
+This chains repository validation, RKE2 verification, the platform status
+report, and `make platform-app-health`. If it fails, read the first failing
+section: app sync/health and pod readiness failures are GitOps/workload issues;
+StorageClass and PVC failures point to Longhorn/storage provisioning or stuck
+finalizers; GUI backend endpoint failures point to missing Ingress/IngressRoute
+objects or Services with no ready pods; controller/client app VIP and HTTP
+redirect failures usually point to MetalLB, Traefik, DNS, or client routing;
+Argo CD or Woodpecker ClusterIP failures point to CNI, kube-proxy, firewalld, or
+node-to-pod networking. The service-path section checks both the node host path
+and short-lived diagnostic pods pinned to each RKE2 node, so Woodpecker agent
+gRPC failures on only one or two nodes are reported directly.
+
+To require RKE2 node-originated app VIP self-probes as well:
+
+```bash
+PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT=true make platform-app-health
+```
+
+To skip required StorageClass enforcement during a temporary non-Longhorn subset
+debug run:
+
+```bash
+PLATFORM_APP_HEALTH_STORAGE_CLASSES=skip make platform-app-health
+```
+
+To skip only HTTP-to-HTTPS redirect enforcement during a temporary debug run:
+
+```bash
+PLATFORM_APP_HEALTH_HTTP_REDIRECT=false make platform-app-health
+```
+
+If a cluster intentionally deploys only part of the stack, override the app,
+namespace, and GUI route lists together. For example:
+
+```bash
+PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg forgejo woodpecker" \
+PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system forgejo woodpecker longhorn-system metallb-system traefik" \
+PLATFORM_APP_HEALTH_GUI_APPS="argocd forgejo woodpecker" \
+make platform-app-health
+```
+
 To bootstrap Argo CD without manually copying commands:
 
 ```bash
@@ -251,6 +298,23 @@ PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argoc
 ```
 
 The playbook checks the selected GitOps profile for unresolved placeholders before it registers applications. This prevents Argo CD from syncing incomplete domains, storage sizes, backup targets, or secret references.
+
+For the premium profile, the unattended renderer can clear most first-deploy
+placeholders automatically:
+
+```bash
+make platform-render-private-values
+make platform-app-secrets
+PLATFORM_PROFILE=premium-3node make platform-profile-check
+```
+
+Set object-storage values in ignored env files or your secret manager before
+running `platform-app-secrets`: `LOKI_S3_ACCESS_KEY_ID`,
+`LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`, or the shared
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
+For production verification, set
+`PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true`; `platform-app-secrets` will
+then fail immediately if the Loki or Velero credential secret is still missing.
 
 If Argo CD controller logs show timeouts to the Kubernetes API service IP or an
 Argo CD Redis ClusterIP, the pod-to-service path is unhealthy. First deployment

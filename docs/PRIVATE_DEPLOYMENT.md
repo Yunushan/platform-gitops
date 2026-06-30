@@ -111,8 +111,10 @@ The automated target:
 
 ```text
 Loads private/first-deploy.env
-Renders first-deploy private values for Forgejo and Longhorn when enabled
+Renders first-deploy private values for Forgejo, Argo CD, Woodpecker, Harbor,
+monitoring, Loki, Velero, Longhorn, and optional step-ca when enabled
 Validates the repository
+Validates the selected rendered GitOps profile
 Optionally commits current changes when PLATFORM_AUTO_COMMIT=true
 Pushes HEAD to PLATFORM_REPO_URL
 Registers private Git credentials in Argo CD when PLATFORM_REPO_TOKEN is set
@@ -134,10 +136,26 @@ repeated Redis or repo-server ClusterIP timeouts so fresh Argo CD pods can warm
 up normally.
 
 By default, `PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true` renders a bootstrap
-Forgejo profile and a Longhorn backup target value before validation and push.
+platform profile and a Longhorn backup target value before validation and push.
 Forgejo hostname is inferred from `platform_forgejo_host` or
 `platform_git_host` in `inventory/hosts.local.ini`; set
 `PLATFORM_FORGEJO_HOST=<GIT_FQDN>` to override it.
+`PLATFORM_RUN_PROFILE_CHECK=true` validates the selected GitOps registration
+mode before commit or push. With
+`PLATFORM_GITOPS_PLACEHOLDER_MODE=strict`, it runs the full selected profile
+through `scripts/check_gitops_profile.py`. With the default
+`skip-incomplete`, it renders and validates the deployable Application subset
+that Argo CD will receive, while still allowing optional unresolved apps to be
+skipped during first bootstrap. Disable it only for a temporary local debug run.
+
+Object-storage backed apps are rendered with bucket names, endpoints, regions,
+cache sizes, and Kubernetes secret names only. `make platform-app-secrets` can
+create the Loki and Velero secrets from ignored env values such as
+`LOKI_S3_ACCESS_KEY_ID`, `LOKI_S3_SECRET_ACCESS_KEY`,
+`VELERO_CLOUD_CREDENTIALS`, or `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`. Set
+`PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` for production so missing
+Loki or Velero object-storage credential secrets fail before app sync.
 
 The default `FORGEJO_DATABASE_MODE=sqlite` is a first-dashboard bootstrap mode:
 it avoids requiring an already-running external PostgreSQL and Redis service.

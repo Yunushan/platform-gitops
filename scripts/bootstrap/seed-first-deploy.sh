@@ -18,6 +18,7 @@ PLATFORM_AUTO_COMMIT="${PLATFORM_AUTO_COMMIT:-false}"
 PLATFORM_AUTO_COMMIT_MESSAGE="${PLATFORM_AUTO_COMMIT_MESSAGE:-Configure private platform deployment}"
 PLATFORM_VALIDATE_BEFORE_PUSH="${PLATFORM_VALIDATE_BEFORE_PUSH:-true}"
 PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS:-true}"
+PLATFORM_RUN_PROFILE_CHECK="${PLATFORM_RUN_PROFILE_CHECK:-true}"
 PLATFORM_SEED_GIT_ROOT="${PLATFORM_SEED_GIT_ROOT:-/opt/platform/seed-git}"
 PLATFORM_SEED_GIT_REPO_NAME="${PLATFORM_SEED_GIT_REPO_NAME:-platform-gitops.git}"
 PLATFORM_SEED_GIT_PORT="${PLATFORM_SEED_GIT_PORT:-9418}"
@@ -43,6 +44,13 @@ fi
 
 if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then
   python3 scripts/validate_project.py
+  if [[ "${PLATFORM_RUN_PROFILE_CHECK}" == "true" ]]; then
+    bash scripts/bootstrap/validate-gitops-selection.sh .
+  fi
+  python3 scripts/test_profile_checker.py
+  python3 scripts/test_deployable_renderer.py
+  python3 scripts/test_private_values_renderer.py
+  python3 scripts/validate_platform_contract.py
   if [[ "${PLATFORM_RUN_NO_SECRETS}" == "true" ]]; then
     python3 scripts/validate_no_secrets.py
   fi

@@ -31,6 +31,7 @@ PLATFORM_AUTO_PUSH="${PLATFORM_AUTO_PUSH:-true}"
 PLATFORM_PUSH_WITH_TOKEN="${PLATFORM_PUSH_WITH_TOKEN:-true}"
 PLATFORM_VALIDATE_BEFORE_PUSH="${PLATFORM_VALIDATE_BEFORE_PUSH:-true}"
 PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS:-true}"
+PLATFORM_RUN_PROFILE_CHECK="${PLATFORM_RUN_PROFILE_CHECK:-true}"
 
 export PLATFORM_PROFILE PLATFORM_GITOPS_PLACEHOLDER_MODE PLATFORM_FIRST_DEPLOY_DNS_REPAIR PLATFORM_REPO_URL
 export PLATFORM_AUTO_RENDER_PRIVATE_VALUES
@@ -41,6 +42,13 @@ fi
 
 if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then
   python3 scripts/validate_project.py
+  if [[ "${PLATFORM_RUN_PROFILE_CHECK}" == "true" ]]; then
+    bash scripts/bootstrap/validate-gitops-selection.sh .
+  fi
+  python3 scripts/test_profile_checker.py
+  python3 scripts/test_deployable_renderer.py
+  python3 scripts/test_private_values_renderer.py
+  python3 scripts/validate_platform_contract.py
   if [[ "${PLATFORM_RUN_NO_SECRETS}" == "true" ]]; then
     python3 scripts/validate_no_secrets.py
   fi

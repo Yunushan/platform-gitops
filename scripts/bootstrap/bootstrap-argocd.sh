@@ -2,13 +2,20 @@
 set -euo pipefail
 
 : "${PLATFORM_REPO_URL:?Set PLATFORM_REPO_URL to this repository URL.}"
-: "${KUBECONFIG:?Set KUBECONFIG to your private kubeconfig path.}"
+: "${PLATFORM_PROFILE:=premium-3node}"
+: "${PLATFORM_GITOPS_PLACEHOLDER_MODE:=skip-incomplete}"
 
-kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+export PLATFORM_REPO_URL
+export PLATFORM_PROFILE
+export PLATFORM_GITOPS_PLACEHOLDER_MODE
+export PLATFORM_APPLY_GITOPS=true
 
-# Install Argo CD with the upstream install manifest for initial bootstrap only.
-# After bootstrap, Argo CD should manage itself through gitops/clusters/rke2-main/apps/argocd-ha.
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/ha/install.yaml
+cat <<'EOF'
+scripts/bootstrap/bootstrap-argocd.sh is a compatibility wrapper.
 
-# Render root app without storing the private repo URL in git.
-sed "s#<THIS_REPO_URL>#${PLATFORM_REPO_URL}#g" gitops/bootstrap/root-app.yaml | kubectl apply -f -
+Use the maintained Ansible bootstrap path so Argo CD CRDs are applied with
+server-side apply, rollout repair/fallback is available, and GitOps
+Applications are registered through the selected profile checker.
+EOF
+
+make platform-argocd

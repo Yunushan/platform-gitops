@@ -10,6 +10,12 @@ from pathlib import Path
 
 
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
+APPLICATION_NAME_RE = re.compile(
+    r"""(?ms)^metadata:\s*\n(?:^\s+.*\n)*?^\s+name:\s*(?P<quote>['"]?)(?P<name>[^'"\s#]+)(?P=quote)\s*(?:#.*)?$"""
+)
+APPLICATION_PATH_RE = re.compile(
+    r"""(?m)^\s+path:\s*(?P<quote>['"]?)(?P<path>[^'"\s#]+)(?P=quote)\s*(?:#.*)?$"""
+)
 VENDORED_PATH_PARTS = {"charts", "crds"}
 
 
@@ -27,7 +33,7 @@ def display_path(path: Path, repo_root: Path) -> str:
 def scan_path(path: Path, repo_root: Path) -> list[str]:
     findings: list[str] = []
     if not path.exists():
-        return [f"{path}: missing application path"]
+        return [f"{display_path(path, repo_root)}: missing application path"]
 
     files = [path] if path.is_file() else sorted(path.rglob("*"))
     for file_path in files:
@@ -63,13 +69,13 @@ def render(args: argparse.Namespace) -> int:
     skipped: list[tuple[str, list[str]]] = []
 
     for doc in documents:
-        name_match = re.search(r"(?m)^  name:\s*([^\s]+)\s*$", doc)
-        path_match = re.search(r"(?m)^    path:\s*([^\s]+)\s*$", doc)
-        name = name_match.group(1) if name_match else "unknown"
+        name_match = APPLICATION_NAME_RE.search(doc)
+        path_match = APPLICATION_PATH_RE.search(doc)
+        name = name_match.group("name") if name_match else "unknown"
 
         doc_findings = unresolved_in_text(doc)
         if path_match:
-            path_findings = scan_path(repo_root / path_match.group(1), repo_root)
+            path_findings = scan_path(repo_root / path_match.group("path"), repo_root)
         else:
             path_findings = ["application source path was not found"]
 
@@ -94,8 +100,8 @@ def render(args: argparse.Namespace) -> int:
 
     print("Deployable GitOps applications:")
     for doc in kept:
-        name_match = re.search(r"(?m)^  name:\s*([^\s]+)\s*$", doc)
-        print(f"- {name_match.group(1) if name_match else 'unknown'}")
+        name_match = APPLICATION_NAME_RE.search(doc)
+        print(f"- {name_match.group('name') if name_match else 'unknown'}")
 
     if skipped:
         print()

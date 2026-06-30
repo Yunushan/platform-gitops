@@ -3,4 +3,8 @@ steps:
     image: python:3.12-slim
     commands:
       - python scripts/validate_project.py
+      - python scripts/test_profile_checker.py
+      - python scripts/test_deployable_renderer.py
+      - python scripts/test_private_values_renderer.py
+      - python scripts/validate_platform_contract.py
       - python scripts/validate_no_secrets.py

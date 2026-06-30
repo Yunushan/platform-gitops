@@ -1,0 +1,1139 @@
+---
+- name: Verify platform application ingress and service health
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    rke2_ingress_vip_effective: "{{ rke2_ingress_vip | default(ingress_vip | default('', true), true) }}"
+    platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    platform_app_health_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_CONNECT_TIMEOUT') }}"
+    platform_app_health_max_time_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_MAX_TIME') }}"
+    platform_app_health_required_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_REQUIRED_APPS') }}"
+    platform_app_health_namespaces_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NAMESPACES') }}"
+    platform_app_health_storage_classes_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_STORAGE_CLASSES') }}"
+    platform_app_health_gui_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_GUI_APPS') }}"
+    platform_app_health_http_redirect_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HTTP_REDIRECT') }}"
+    platform_app_health_node_ingress_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT') }}"
+    platform_app_health_service_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE') }}"
+    platform_app_health_service_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_TIMEOUT') }}"
+    platform_app_health_connect_timeout_effective: "{{ platform_app_health_connect_timeout | default(platform_app_health_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
+    platform_app_health_max_time_effective: "{{ platform_app_health_max_time | default(platform_app_health_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
+    platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca metallb traefik longhorn cloudnativepg argocd-ha forgejo woodpecker harbor monitoring loki velero', true) }}"
+    platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default('argocd cert-manager step-ca cnpg-system forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
+    platform_app_health_storage_classes_effective: "{{ platform_app_health_storage_classes | default(platform_app_health_storage_classes_from_env, true) | default('longhorn-standard longhorn-critical longhorn-cache', true) }}"
+    platform_app_health_gui_apps_effective: "{{ platform_app_health_gui_apps | default(platform_app_health_gui_apps_from_env, true) | default('argocd forgejo harbor woodpecker grafana prometheus', true) }}"
+    platform_app_health_http_redirect_effective: "{{ platform_app_health_http_redirect | default(platform_app_health_http_redirect_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_node_ingress_strict_effective: "{{ platform_app_health_node_ingress_strict | default(platform_app_health_node_ingress_strict_from_env, true) | default(false, true) | bool }}"
+    platform_app_health_service_check_image_effective: "{{ platform_app_health_service_check_image | default(platform_app_health_service_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
+    platform_app_health_service_check_timeout_effective: "{{ platform_app_health_service_check_timeout | default(platform_app_health_service_check_timeout_from_env, true) | default(120, true) | string | regex_replace('s$', '') | int }}"
+  vars_files:
+    - ../vars/platform-hostnames.yml
+
+  tasks:
+    - name: Require platform app health settings
+      ansible.builtin.assert:
+        that:
+          - rke2_ingress_vip_effective | length > 0
+          - not (rke2_ingress_vip_effective is match("^<.*>$"))
+          - platform_domain_effective | length > 0
+          - not (platform_domain_effective is match("^<.*>$"))
+          - platform_argocd_host_effective | length > 0
+          - platform_woodpecker_host_effective | length > 0
+          - platform_app_health_connect_timeout_effective | int > 0
+          - platform_app_health_max_time_effective | int > 0
+          - platform_app_health_required_apps_effective | length > 0
+          - platform_app_health_namespaces_effective | length > 0
+          - platform_app_health_storage_classes_effective | length > 0
+          - platform_app_health_gui_apps_effective | length > 0
+          - platform_app_health_service_check_image_effective | length > 0
+          - platform_app_health_service_check_timeout_effective | int > 0
+        fail_msg: "Set rke2_ingress_vip, platform_domain/rke2_platform_domain, platform_argocd_host, and platform_ci_host/platform_woodpecker_host."
+      run_once: true
+
+    - name: Verify Argo CD platform application health
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        existing_apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null || true)"
+        failed=0
+        seen=" "
+
+        if ! "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
+          echo "result=fail reason=argocd-application-crd-missing"
+          exit 1
+        fi
+
+        if [ -z "${existing_apps}${required_apps}" ]; then
+          echo "result=fail reason=no-applications"
+          exit 1
+        fi
+
+        for app in ${existing_apps} ${required_apps}; do
+          case "${seen}" in
+            *" ${app} "*) continue ;;
+          esac
+          seen="${seen}${app} "
+          echo "===== Argo CD application ${app} ====="
+          if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-application"
+            failed=1
+            continue
+          fi
+
+          status="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" -o jsonpath='{.status.sync.status}{"|"}{.status.health.status}{"|"}{.status.operationState.phase}{"|"}{.status.conditions[*].type}{"|"}{.status.conditions[*].message}{"\n"}' 2>/dev/null || true)"
+          sync_status="$(printf '%s' "${status}" | cut -d'|' -f1)"
+          health_status="$(printf '%s' "${status}" | cut -d'|' -f2)"
+          operation_phase="$(printf '%s' "${status}" | cut -d'|' -f3)"
+          condition_types="$(printf '%s' "${status}" | cut -d'|' -f4)"
+          condition_messages="$(printf '%s' "${status}" | cut -d'|' -f5-)"
+          echo "sync=${sync_status:-unknown} health=${health_status:-unknown} operation=${operation_phase:-none} conditions=${condition_types:-none}"
+          if [ -n "${condition_messages}" ]; then
+            printf '%s\n' "${condition_messages}" | sed 's/^/condition_message=/'
+          fi
+
+          operation_unhealthy=0
+          case "${operation_phase}" in
+            ""|Succeeded) ;;
+            Running|Terminating|Error|Failed)
+              operation_unhealthy=1
+              ;;
+            *)
+              operation_unhealthy=1
+              ;;
+          esac
+
+          if [ "${sync_status}" = "Synced" ] && [ "${health_status}" = "Healthy" ] && [ -z "${condition_types}" ] && [ "${operation_unhealthy}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            echo "result=fail"
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_argocd_app_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Argo CD application health results
+      ansible.builtin.debug:
+        var: platform_app_health_argocd_app_probe.stdout_lines
+      run_once: true
+
+    - name: Verify platform namespace pod readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        namespaces="{{ platform_app_health_namespaces_effective }}"
+        failed=0
+
+        for namespace in ${namespaces}; do
+          echo "===== namespace ${namespace} pods ====="
+          if ! "$K" --kubeconfig "$C" get "namespace/${namespace}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-namespace"
+            failed=1
+            continue
+          fi
+
+          pods="$("$K" --kubeconfig "$C" -n "${namespace}" get pods --no-headers 2>/dev/null || true)"
+          if [ -z "${pods}" ]; then
+            echo "result=fail reason=no-pods"
+            failed=1
+            continue
+          fi
+
+          namespace_failed=0
+          while read -r name ready status rest; do
+            [ -n "${name}" ] || continue
+            echo "pod=${name} ready=${ready} status=${status}"
+            case "${status}" in
+              Running)
+                ready_count="${ready%/*}"
+                desired_count="${ready#*/}"
+                if [ "${ready_count}" != "${desired_count}" ] || [ "${desired_count}" = "0" ]; then
+                  namespace_failed=1
+                fi
+                ;;
+              Succeeded|Completed)
+                ;;
+              *)
+                namespace_failed=1
+                ;;
+            esac
+          done <<< "${pods}"
+
+          if [ "${namespace_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            echo "result=fail"
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_pod_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print platform pod readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_pod_probe.stdout_lines
+      run_once: true
+
+    - name: Verify required platform StorageClasses
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        storage_classes="{{ platform_app_health_storage_classes_effective }}"
+        failed=0
+
+        storage_classes_lower="$(printf '%s' "${storage_classes}" | tr '[:upper:]' '[:lower:]')"
+        case " ${storage_classes_lower} " in
+          *" none "*|*" skip "*|*" disabled "*)
+            echo "result=skip reason=platform-app-health-storage-classes-disabled"
+            exit 0
+            ;;
+        esac
+
+        for storage_class in ${storage_classes}; do
+          echo "===== StorageClass ${storage_class} ====="
+          if ! "$K" --kubeconfig "$C" get "storageclass/${storage_class}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-storageclass"
+            failed=1
+            continue
+          fi
+
+          info="$("$K" --kubeconfig "$C" get "storageclass/${storage_class}" -o jsonpath='{.metadata.name}{"|"}{.provisioner}{"|"}{.reclaimPolicy}{"|"}{.volumeBindingMode}{"|"}{.allowVolumeExpansion}{"\n"}' 2>/dev/null || true)"
+          name="$(printf '%s' "${info}" | cut -d'|' -f1)"
+          provisioner="$(printf '%s' "${info}" | cut -d'|' -f2)"
+          reclaim_policy="$(printf '%s' "${info}" | cut -d'|' -f3)"
+          volume_binding_mode="$(printf '%s' "${info}" | cut -d'|' -f4)"
+          allow_volume_expansion="$(printf '%s' "${info}" | cut -d'|' -f5)"
+          echo "name=${name:-unknown} provisioner=${provisioner:-unknown} reclaimPolicy=${reclaim_policy:-unknown} volumeBindingMode=${volume_binding_mode:-unknown} allowVolumeExpansion=${allow_volume_expansion:-unknown}"
+
+          class_failed=0
+          case "${storage_class}" in
+            longhorn-*)
+              if [ "${provisioner}" != "driver.longhorn.io" ]; then
+                echo "result=fail reason=unexpected-longhorn-provisioner"
+                class_failed=1
+              fi
+              ;;
+          esac
+          if [ -z "${provisioner}" ] || [ -z "${volume_binding_mode}" ]; then
+            echo "result=fail reason=incomplete-storageclass"
+            class_failed=1
+          fi
+
+          if [ "${class_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_storage_class_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print platform StorageClass readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_storage_class_probe.stdout_lines
+      run_once: true
+
+    - name: Verify platform namespace PVC readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        namespaces="{{ platform_app_health_namespaces_effective }}"
+        failed=0
+
+        for namespace in ${namespaces}; do
+          echo "===== namespace ${namespace} PVCs ====="
+          if ! "$K" --kubeconfig "$C" get "namespace/${namespace}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-namespace"
+            failed=1
+            continue
+          fi
+
+          pvcs="$("$K" --kubeconfig "$C" -n "${namespace}" get pvc -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{.metadata.deletionTimestamp}{"|"}{.spec.storageClassName}{"\n"}{end}' 2>/dev/null || true)"
+          if [ -z "${pvcs}" ]; then
+            echo "result=ok reason=no-pvcs"
+            continue
+          fi
+
+          namespace_failed=0
+          while IFS='|' read -r name phase deletion_timestamp storage_class; do
+            [ -n "${name}" ] || continue
+            echo "pvc=${name} phase=${phase:-unknown} storageClass=${storage_class:-none} deletionTimestamp=${deletion_timestamp:-none}"
+            if [ "${phase}" != "Bound" ] || [ -n "${deletion_timestamp}" ]; then
+              namespace_failed=1
+            fi
+          done <<< "${pvcs}"
+
+          if [ "${namespace_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            echo "result=fail"
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_pvc_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print platform PVC readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_pvc_probe.stdout_lines
+      run_once: true
+
+    - name: Verify configured GUI ingress backend endpoints
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        GUI_APPS="{{ platform_app_health_gui_apps_effective }}"
+        failed=0
+        GUI_HOSTS_FILE="$(mktemp)"
+        cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
+        {% for entry in platform_gui_host_entries %}
+        {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
+        {% endfor %}
+        GUIHOSTS
+
+        service_has_ready_endpoint() {
+          namespace="$1"
+          service="$2"
+
+          if [ -z "${service}" ]; then
+            return 1
+          fi
+
+          if ! "$K" --kubeconfig "$C" -n "${namespace}" get "service/${service}" >/dev/null 2>&1; then
+            echo "service=${service} result=fail reason=service-missing"
+            return 1
+          fi
+
+          endpoint_lines="$("$K" --kubeconfig "$C" -n "${namespace}" get endpointslice \
+            -l "kubernetes.io/service-name=${service}" \
+            -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"|"}{.addresses[*]}{"\n"}{end}' 2>/dev/null || true)"
+          if printf '%s\n' "${endpoint_lines}" |
+            awk -F'|' 'NF >= 2 && $2 != "" && $1 != "false" { found=1 } END { exit(found ? 0 : 1) }'; then
+            echo "service=${service} result=ok reason=endpointslice-ready"
+            return 0
+          fi
+
+          endpoint_ips="$("$K" --kubeconfig "$C" -n "${namespace}" get "endpoints/${service}" \
+            -o jsonpath='{range .subsets[*].addresses[*]}{.ip}{"\n"}{end}' 2>/dev/null || true)"
+          if [ -n "${endpoint_ips}" ]; then
+            echo "service=${service} result=ok reason=endpoints-ready"
+            return 0
+          fi
+
+          echo "service=${service} result=fail reason=no-ready-endpoints"
+          return 1
+        }
+
+        check_backend_services() {
+          namespace="$1"
+          services="$2"
+          ready=1
+
+          for service_ref in $(printf '%s' "${services}" | tr ',' ' '); do
+            service="${service_ref%%:*}"
+            [ -n "${service}" ] || continue
+            if service_has_ready_endpoint "${namespace}" "${service}"; then
+              ready=0
+            fi
+          done
+
+          return "${ready}"
+        }
+
+        while IFS='|' read -r app namespace host; do
+          [ -n "${host}" ] || continue
+          case " ${GUI_APPS} " in
+            *" ${app} "*) ;;
+            *)
+              echo "===== ${app} ingress backend endpoints ====="
+              echo "result=skip reason=not-required-by-platform-app-health-gui-apps"
+              continue
+              ;;
+          esac
+
+          echo "===== ${app} ingress backend endpoints ====="
+          echo "namespace=${namespace} host=${host}"
+
+          if ! "$K" --kubeconfig "$C" get "namespace/${namespace}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-namespace"
+            failed=1
+            continue
+          fi
+
+          matched_route=0
+          backend_ready=1
+
+          ingress_rows="$("$K" --kubeconfig "$C" -n "${namespace}" get ingress \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .spec.rules[*]}{.host}{","}{end}{"|"}{range .spec.rules[*].http.paths[*]}{.backend.service.name}{":"}{.backend.service.port.number}{":"}{.backend.service.port.name}{","}{end}{"\n"}{end}' 2>/dev/null || true)"
+          while IFS='|' read -r route_name route_hosts services; do
+            [ -n "${route_name}" ] || continue
+            case ",${route_hosts}," in
+              *",${host},"*)
+                matched_route=1
+                echo "route=ingress/${route_name} services=${services:-none}"
+                if check_backend_services "${namespace}" "${services}"; then
+                  backend_ready=0
+                fi
+                ;;
+            esac
+          done <<< "${ingress_rows}"
+
+          for ingressroute_resource in ingressroutes.traefik.io ingressroutes.traefik.containo.us; do
+            ingressroute_rows="$("$K" --kubeconfig "$C" -n "${namespace}" get "${ingressroute_resource}" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .spec.routes[*]}{.match}{" "}{end}{"|"}{range .spec.routes[*].services[*]}{.name}{":"}{.port}{","}{end}{"\n"}{end}' 2>/dev/null || true)"
+            while IFS='|' read -r route_name route_matches services; do
+              [ -n "${route_name}" ] || continue
+              case "${route_matches}" in
+                *"${host}"*)
+                  matched_route=1
+                  echo "route=${ingressroute_resource}/${route_name} services=${services:-none}"
+                  if check_backend_services "${namespace}" "${services}"; then
+                    backend_ready=0
+                  fi
+                  ;;
+              esac
+            done <<< "${ingressroute_rows}"
+          done
+
+          if [ "${matched_route}" -eq 0 ]; then
+            echo "result=fail reason=no-ingress-or-ingressroute-for-host"
+            failed=1
+          elif [ "${backend_ready}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            echo "result=fail reason=no-ready-backend-endpoints"
+            failed=1
+          fi
+        done <"${GUI_HOSTS_FILE}"
+
+        rm -f "${GUI_HOSTS_FILE}"
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_ingress_backend_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print GUI ingress backend endpoint results
+      ansible.builtin.debug:
+        var: platform_app_health_ingress_backend_probe.stdout_lines
+      run_once: true
+
+    - name: Probe configured GUI app ingress from Ansible controller
+      ansible.builtin.shell: |
+        set -u
+        VIP="{{ rke2_ingress_vip_effective }}"
+        CONNECT_TIMEOUT={{ platform_app_health_connect_timeout_effective }}
+        MAX_TIME={{ platform_app_health_max_time_effective }}
+        GUI_APPS="{{ platform_app_health_gui_apps_effective }}"
+        failed=0
+        GUI_HOSTS_FILE="$(mktemp)"
+        cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
+        {% for entry in platform_gui_host_entries %}
+        {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
+        {% endfor %}
+        GUIHOSTS
+
+        probe_https() {
+          name="$1"
+          host="$2"
+          url="https://${host}/"
+
+          echo "===== ${name} ingress from Ansible controller ====="
+          echo "url=${url} vip=${VIP}"
+
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "result=fail reason=curl-not-installed"
+            failed=1
+            return
+          fi
+
+          code="$(curl --silent --show-error --insecure --output /dev/null \
+            --write-out '%{http_code}' \
+            --connect-timeout "${CONNECT_TIMEOUT}" \
+            --max-time "${MAX_TIME}" \
+            --resolve "${host}:443:${VIP}" \
+            "${url}" 2>/tmp/platform-app-health-controller-curl.err || true)"
+
+          stderr="$(cat /tmp/platform-app-health-controller-curl.err 2>/dev/null || true)"
+          rm -f /tmp/platform-app-health-controller-curl.err
+          echo "http_code=${code:-000}"
+          if [ -n "${stderr}" ]; then
+            printf '%s\n' "${stderr}" | sed 's/^/stderr=/'
+          fi
+
+          case "${code}" in
+            200|301|302|303|307|308|401|403)
+              echo "result=ok"
+              ;;
+            *)
+              echo "result=fail"
+              failed=1
+              ;;
+          esac
+        }
+
+        while IFS='|' read -r app namespace host; do
+          [ -n "${host}" ] || continue
+          case " ${GUI_APPS} " in
+            *" ${app} "*) ;;
+            *)
+              echo "===== ${app} ingress from Ansible controller ====="
+              echo "result=skip reason=not-required-by-platform-app-health-gui-apps"
+              continue
+              ;;
+          esac
+          probe_https "${app}" "${host}"
+        done <"${GUI_HOSTS_FILE}"
+        rm -f "${GUI_HOSTS_FILE}"
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_controller_ingress_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Print controller ingress probe results
+      ansible.builtin.debug:
+        var: platform_app_health_controller_ingress_probe.stdout_lines
+      run_once: true
+
+    - name: Probe configured GUI HTTP redirects from Ansible controller
+      ansible.builtin.shell: |
+        set -u
+        VIP="{{ rke2_ingress_vip_effective }}"
+        CONNECT_TIMEOUT={{ platform_app_health_connect_timeout_effective }}
+        MAX_TIME={{ platform_app_health_max_time_effective }}
+        GUI_APPS="{{ platform_app_health_gui_apps_effective }}"
+        REQUIRE_HTTP_REDIRECT="{{ platform_app_health_http_redirect_effective | ternary('true', 'false') }}"
+        failed=0
+        GUI_HOSTS_FILE="$(mktemp)"
+        cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
+        {% for entry in platform_gui_host_entries %}
+        {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
+        {% endfor %}
+        GUIHOSTS
+
+        if [ "${REQUIRE_HTTP_REDIRECT}" != "true" ]; then
+          echo "result=skip reason=http-redirect-check-disabled"
+          rm -f "${GUI_HOSTS_FILE}"
+          exit 0
+        fi
+
+        probe_http_redirect() {
+          name="$1"
+          host="$2"
+          url="http://${host}/"
+
+          echo "===== ${name} HTTP redirect from Ansible controller ====="
+          echo "url=${url} vip=${VIP}"
+
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "result=fail reason=curl-not-installed"
+            failed=1
+            return
+          fi
+
+          result="$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}|%{redirect_url}' \
+            --connect-timeout "${CONNECT_TIMEOUT}" \
+            --max-time "${MAX_TIME}" \
+            --resolve "${host}:80:${VIP}" \
+            "${url}" 2>/tmp/platform-app-health-http-redirect-curl.err || true)"
+
+          stderr="$(cat /tmp/platform-app-health-http-redirect-curl.err 2>/dev/null || true)"
+          rm -f /tmp/platform-app-health-http-redirect-curl.err
+          http_code="${result%%|*}"
+          redirect_url="${result#*|}"
+          echo "http_code=${http_code:-000}"
+          echo "redirect_url=${redirect_url}"
+          if [ -n "${stderr}" ]; then
+            printf '%s\n' "${stderr}" | sed 's/^/stderr=/'
+          fi
+
+          case "${http_code}" in
+            301|302|303|307|308) ;;
+            *)
+              echo "result=fail"
+              failed=1
+              return
+              ;;
+          esac
+
+          case "${redirect_url}" in
+            "https://${host}"|"https://${host}/"|"https://${host}/"*|"https://${host}:443"|"https://${host}:443/"*)
+              echo "result=ok"
+              ;;
+            *)
+              echo "result=fail"
+              failed=1
+              ;;
+          esac
+        }
+
+        while IFS='|' read -r app namespace host; do
+          [ -n "${host}" ] || continue
+          case " ${GUI_APPS} " in
+            *" ${app} "*) ;;
+            *)
+              echo "===== ${app} HTTP redirect from Ansible controller ====="
+              echo "result=skip reason=not-required-by-platform-app-health-gui-apps"
+              continue
+              ;;
+          esac
+          probe_http_redirect "${app}" "${host}"
+        done <"${GUI_HOSTS_FILE}"
+        rm -f "${GUI_HOSTS_FILE}"
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_http_redirect_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Print controller HTTP redirect probe results
+      ansible.builtin.debug:
+        var: platform_app_health_http_redirect_probe.stdout_lines
+      run_once: true
+
+    - name: Probe configured GUI app ingress from every RKE2 node
+      ansible.builtin.shell: |
+        set -u
+        VIP="{{ rke2_ingress_vip_effective }}"
+        CONNECT_TIMEOUT={{ platform_app_health_connect_timeout_effective }}
+        MAX_TIME={{ platform_app_health_max_time_effective }}
+        GUI_APPS="{{ platform_app_health_gui_apps_effective }}"
+        failed=0
+        GUI_HOSTS_FILE="$(mktemp)"
+        cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
+        {% for entry in platform_gui_host_entries %}
+        {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
+        {% endfor %}
+        GUIHOSTS
+
+        probe_https() {
+          name="$1"
+          host="$2"
+          url="https://${host}/"
+
+          echo "===== ${name} ingress from $(hostname -f 2>/dev/null || hostname) ====="
+          echo "url=${url} vip=${VIP}"
+
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "result=fail reason=curl-not-installed"
+            failed=1
+            return
+          fi
+
+          code="$(curl --silent --show-error --insecure --output /dev/null \
+            --write-out '%{http_code}' \
+            --connect-timeout "${CONNECT_TIMEOUT}" \
+            --max-time "${MAX_TIME}" \
+            --resolve "${host}:443:${VIP}" \
+            "${url}" 2>/tmp/platform-app-health-curl.err || true)"
+
+          stderr="$(cat /tmp/platform-app-health-curl.err 2>/dev/null || true)"
+          rm -f /tmp/platform-app-health-curl.err
+          echo "http_code=${code:-000}"
+          if [ -n "${stderr}" ]; then
+            printf '%s\n' "${stderr}" | sed 's/^/stderr=/'
+          fi
+
+          case "${code}" in
+            200|301|302|303|307|308|401|403)
+              echo "result=ok"
+              ;;
+            *)
+              echo "result=fail"
+              failed=1
+              ;;
+          esac
+        }
+
+        while IFS='|' read -r app namespace host; do
+          [ -n "${host}" ] || continue
+          case " ${GUI_APPS} " in
+            *" ${app} "*) ;;
+            *)
+              echo "===== ${app} ingress from $(hostname -f 2>/dev/null || hostname) ====="
+              echo "result=skip reason=not-required-by-platform-app-health-gui-apps"
+              continue
+              ;;
+          esac
+          probe_https "${app}" "${host}"
+        done <"${GUI_HOSTS_FILE}"
+        rm -f "${GUI_HOSTS_FILE}"
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_ingress_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Print per-node ingress probe results
+      ansible.builtin.debug:
+        msg:
+          - "Node-originated VIP ingress strict mode: {{ platform_app_health_node_ingress_strict_effective }}"
+          - "{{ platform_app_health_ingress_probe.stdout_lines }}"
+
+    - name: Probe Argo CD and Woodpecker ClusterIP service paths from every RKE2 node
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        CONNECT_TIMEOUT={{ platform_app_health_connect_timeout_effective }}
+        MAX_TIME={{ platform_app_health_max_time_effective }}
+        failed=0
+
+        tcp_probe() {
+          name="$1"
+          host="$2"
+          port="$3"
+
+          echo "===== ${name} tcp service path from $(hostname -f 2>/dev/null || hostname) ====="
+          echo "target=${host}:${port}"
+          if timeout "${CONNECT_TIMEOUT}" bash -c "cat < /dev/null > /dev/tcp/${host}/${port}" 2>/tmp/platform-app-health-tcp.err; then
+            echo "result=ok"
+          else
+            echo "result=fail"
+            if [ -s /tmp/platform-app-health-tcp.err ]; then
+              sed 's/^/stderr=/' /tmp/platform-app-health-tcp.err
+            fi
+            failed=1
+          fi
+          rm -f /tmp/platform-app-health-tcp.err
+        }
+
+        http_probe() {
+          name="$1"
+          host="$2"
+          port="$3"
+          path="$4"
+
+          echo "===== ${name} http service path from $(hostname -f 2>/dev/null || hostname) ====="
+          echo "target=http://${host}:${port}${path}"
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "result=skip reason=curl-not-installed"
+            return
+          fi
+
+          code="$(curl --silent --show-error --output /dev/null \
+            --write-out '%{http_code}' \
+            --connect-timeout "${CONNECT_TIMEOUT}" \
+            --max-time "${MAX_TIME}" \
+            "http://${host}:${port}${path}" 2>/tmp/platform-app-health-service-curl.err || true)"
+          stderr="$(cat /tmp/platform-app-health-service-curl.err 2>/dev/null || true)"
+          rm -f /tmp/platform-app-health-service-curl.err
+          echo "http_code=${code:-000}"
+          if [ -n "${stderr}" ]; then
+            printf '%s\n' "${stderr}" | sed 's/^/stderr=/'
+          fi
+
+          case "${code}" in
+            200|301|302|303|307|308|401|403|404)
+              echo "result=ok"
+              ;;
+            *)
+              echo "result=fail"
+              failed=1
+              ;;
+          esac
+        }
+
+        argocd_ip="$("$K" --kubeconfig "$C" -n argocd get service argocd-server -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+        woodpecker_ip="$("$K" --kubeconfig "$C" -n woodpecker get service woodpecker-server -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+
+        if [ -z "${argocd_ip}" ] || [ "${argocd_ip}" = "None" ]; then
+          echo "argocd service clusterIP missing"
+          failed=1
+        else
+          tcp_probe "argocd-server" "${argocd_ip}" 80
+          http_probe "argocd-server" "${argocd_ip}" 80 /
+        fi
+
+        if [ -z "${woodpecker_ip}" ] || [ "${woodpecker_ip}" = "None" ]; then
+          echo "woodpecker service clusterIP missing"
+          failed=1
+        else
+          tcp_probe "woodpecker-http" "${woodpecker_ip}" 80
+          http_probe "woodpecker-http" "${woodpecker_ip}" 80 /
+          tcp_probe "woodpecker-grpc" "${woodpecker_ip}" 9000
+        fi
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_service_probe
+      changed_when: false
+      failed_when: false
+
+    - name: Print per-node service path probe results
+      ansible.builtin.debug:
+        var: platform_app_health_service_probe.stdout_lines
+
+    - name: Probe Argo CD and Woodpecker ClusterIP service paths from pods pinned to every RKE2 node
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        NAMESPACE=kube-system
+        CHECK_NAME=platform-app-service-path-check
+        CHECK_ID="$(date +%s)-$$"
+        CHECK_IMAGE="{{ platform_app_health_service_check_image_effective }}"
+        CONNECT_TIMEOUT={{ platform_app_health_connect_timeout_effective }}
+        MAX_TIME={{ platform_app_health_max_time_effective }}
+        JOB_TIMEOUT={{ platform_app_health_service_check_timeout_effective }}
+        failed=0
+
+        safe_name() {
+          printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.-]+/-/g; s/^-+//; s/-+$//'
+        }
+
+        cleanup_previous() {
+          "$K" --kubeconfig "$C" -n "${NAMESPACE}" delete job \
+            -l "app.kubernetes.io/name=${CHECK_NAME}" \
+            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+        }
+
+        cleanup_previous
+        nodes="$("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        if [ -z "${nodes}" ]; then
+          echo "result=fail reason=no-kubernetes-nodes"
+          exit 1
+        fi
+
+        expected=0
+        for node in ${nodes}; do
+          expected=$((expected + 1))
+          node_safe="$(safe_name "${node}")"
+          job_name="platform-app-svc-${node_safe}-${CHECK_ID}"
+          cat <<YAML | "$K" --kubeconfig "$C" apply -f -
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: ${job_name}
+          namespace: ${NAMESPACE}
+          labels:
+            app.kubernetes.io/name: ${CHECK_NAME}
+            platform.gitops/check-id: ${CHECK_ID}
+            platform.gitops/node: ${node_safe}
+        spec:
+          backoffLimit: 0
+          activeDeadlineSeconds: ${JOB_TIMEOUT}
+          ttlSecondsAfterFinished: 300
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: ${CHECK_NAME}
+                platform.gitops/check-id: ${CHECK_ID}
+                platform.gitops/node: ${node_safe}
+            spec:
+              restartPolicy: Never
+              nodeName: "${node}"
+              tolerations:
+                - operator: Exists
+              containers:
+                - name: check
+                  image: "${CHECK_IMAGE}"
+                  imagePullPolicy: IfNotPresent
+                  env:
+                    - name: CONNECT_TIMEOUT
+                      value: "${CONNECT_TIMEOUT}"
+                    - name: MAX_TIME
+                      value: "${MAX_TIME}"
+                  command:
+                    - sh
+                    - -c
+                  args:
+                    - |
+                      set -u
+                      failed=0
+                      http_ok_code() {
+                        case "$1" in
+                          200|301|302|303|307|308|401|403|404) return 0 ;;
+                          *) return 1 ;;
+                        esac
+                      }
+                      probe_http() {
+                        name="\$1"
+                        host="\$2"
+                        port="\$3"
+                        path="\$4"
+                        echo "===== \${name} pod HTTP service path from \$(hostname) ====="
+                        echo "target=http://\${host}:\${port}\${path}"
+                        stderr=""
+                        if command -v curl >/dev/null 2>&1; then
+                          code="\$(curl --silent --show-error --output /dev/null \
+                            --write-out '%{http_code}' \
+                            --connect-timeout "\${CONNECT_TIMEOUT}" \
+                            --max-time "\${MAX_TIME}" \
+                            "http://\${host}:\${port}\${path}" 2>/tmp/platform-app-health-pod-http.err || true)"
+                          stderr="\$(cat /tmp/platform-app-health-pod-http.err 2>/dev/null || true)"
+                          rm -f /tmp/platform-app-health-pod-http.err
+                        elif command -v wget >/dev/null 2>&1; then
+                          wget -S --spider -T "\${MAX_TIME}" \
+                            "http://\${host}:\${port}\${path}" >/tmp/platform-app-health-pod-http.out 2>/tmp/platform-app-health-pod-http.err || true
+                          stderr="\$(cat /tmp/platform-app-health-pod-http.err 2>/dev/null || true)"
+                          code="\$(printf '%s\n' "\${stderr}" | sed -n 's/.*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' | tail -n 1)"
+                          rm -f /tmp/platform-app-health-pod-http.out /tmp/platform-app-health-pod-http.err
+                        else
+                          echo "result=fail reason=no-curl-or-wget"
+                          failed=1
+                          return
+                        fi
+                        echo "http_code=\${code:-000}"
+                        if [ -n "\${stderr}" ]; then
+                          printf '%s\n' "\${stderr}" | sed 's/^/stderr=/'
+                        fi
+                        if http_ok_code "\${code}"; then
+                          echo "result=ok"
+                        else
+                          echo "result=fail"
+                          failed=1
+                        fi
+                      }
+                      probe_tcp() {
+                        name="\$1"
+                        host="\$2"
+                        port="\$3"
+                        echo "===== \${name} pod TCP service path from \$(hostname) ====="
+                        echo "target=\${host}:\${port}"
+                        stderr=""
+                        if command -v curl >/dev/null 2>&1; then
+                          curl --silent --show-error --output /dev/null \
+                            --connect-timeout "\${CONNECT_TIMEOUT}" \
+                            --max-time "\${MAX_TIME}" \
+                            "http://\${host}:\${port}/" >/tmp/platform-app-health-pod-tcp.out 2>/tmp/platform-app-health-pod-tcp.err
+                          rc="\$?"
+                          stderr="\$(cat /tmp/platform-app-health-pod-tcp.err 2>/dev/null || true)"
+                          rm -f /tmp/platform-app-health-pod-tcp.out /tmp/platform-app-health-pod-tcp.err
+                          echo "curl_rc=\${rc}"
+                          case "\${rc}" in
+                            0|52|56)
+                              echo "result=ok"
+                              return
+                              ;;
+                          esac
+                        elif command -v nc >/dev/null 2>&1; then
+                          nc -z -w "\${CONNECT_TIMEOUT}" "\${host}" "\${port}" >/tmp/platform-app-health-pod-tcp.out 2>/tmp/platform-app-health-pod-tcp.err
+                          rc="\$?"
+                          stderr="\$(cat /tmp/platform-app-health-pod-tcp.err 2>/dev/null || true)"
+                          rm -f /tmp/platform-app-health-pod-tcp.out /tmp/platform-app-health-pod-tcp.err
+                          echo "nc_rc=\${rc}"
+                          if [ "\${rc}" -eq 0 ]; then
+                            echo "result=ok"
+                            return
+                          fi
+                        else
+                          echo "result=fail reason=no-curl-or-nc"
+                          failed=1
+                          return
+                        fi
+                        if [ -n "\${stderr}" ]; then
+                          printf '%s\n' "\${stderr}" | sed 's/^/stderr=/'
+                        fi
+                        echo "result=fail"
+                        failed=1
+                      }
+
+                      probe_http argocd-server argocd-server.argocd.svc.cluster.local 80 /
+                      probe_http woodpecker-http woodpecker-server.woodpecker.svc.cluster.local 80 /
+                      probe_tcp woodpecker-grpc woodpecker-server.woodpecker.svc.cluster.local 9000
+                      exit "\${failed}"
+        YAML
+        done
+
+        deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          succeeded="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
+            -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+            -o jsonpath='{range .items[*]}{.status.succeeded}{"\n"}{end}' 2>/dev/null |
+            awk '{ total += $1 + 0 } END { print total + 0 }')"
+          failed_jobs="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
+            -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+            -o jsonpath='{range .items[*]}{.status.failed}{"\n"}{end}' 2>/dev/null |
+            awk '{ total += $1 + 0 } END { print total + 0 }')"
+          if [ "$((succeeded + failed_jobs))" -ge "${expected}" ]; then
+            break
+          fi
+          sleep 3
+        done
+
+        pods="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get pods \
+          -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+          -o name 2>/dev/null || true)"
+        for pod in ${pods}; do
+          node="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "${pod}" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)"
+          phase="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "${pod}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          echo "===== ${pod} node=${node:-unknown} phase=${phase:-unknown} ====="
+          "$K" --kubeconfig "$C" -n "${NAMESPACE}" logs "${pod}" || true
+          if [ "${phase}" != "Succeeded" ]; then
+            failed=1
+          fi
+        done
+
+        pod_count="$(printf '%s\n' "${pods}" | awk 'NF { count++ } END { print count + 0 }')"
+        if [ "${pod_count}" -lt "${expected}" ]; then
+          echo "result=fail reason=missing-service-path-check-pods expected=${expected} actual=${pod_count}"
+          failed=1
+        fi
+
+        "$K" --kubeconfig "$C" -n "${NAMESPACE}" delete job \
+          -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+          --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_pod_service_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print pod-pinned service path probe results
+      ansible.builtin.debug:
+        var: platform_app_health_pod_service_probe.stdout_lines
+      run_once: true
+
+    - name: Record per-node app health verdict
+      ansible.builtin.set_fact:
+        platform_app_health_failed: >-
+          {{
+            (((hostvars[rke2_first_server].platform_app_health_argocd_app_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_pod_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_storage_class_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_pvc_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_ingress_backend_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_controller_ingress_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_http_redirect_probe | default({'rc': 1})).rc | int) != 0)
+            or ((platform_app_health_node_ingress_strict_effective | bool) and (((platform_app_health_ingress_probe | default({'rc': 1})).rc | int) != 0))
+            or (((platform_app_health_service_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_pod_service_probe | default({'rc': 1})).rc | int) != 0)
+          }}
+
+    - name: Collect app health diagnostics after failure
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        echo "===== Argo CD ====="
+        "$K" --kubeconfig "$C" -n argocd get pods,svc,endpoints,endpointslice,ingress -o wide || true
+        echo
+        echo "===== Woodpecker ====="
+        "$K" --kubeconfig "$C" -n woodpecker get pods,svc,endpoints,endpointslice,ingress -o wide || true
+        echo
+        echo "===== Traefik ====="
+        "$K" --kubeconfig "$C" -n traefik get pods,svc,endpoints,endpointslice -o wide || true
+        echo
+        echo "===== kube-proxy/cilium/coredns ====="
+        "$K" --kubeconfig "$C" -n kube-system get pods -o wide | grep -E 'NAME|kube-proxy|cilium|coredns' || true
+      args:
+        executable: /bin/bash
+      register: platform_app_health_failure_diagnostics
+      changed_when: false
+      failed_when: false
+      run_once: true
+      when: ansible_play_hosts | map('extract', hostvars, 'platform_app_health_failed') | map('bool') | select('equalto', true) | list | length > 0
+
+    - name: Print app health failure diagnostics
+      ansible.builtin.debug:
+        var: platform_app_health_failure_diagnostics.stdout_lines
+      run_once: true
+      when: platform_app_health_failure_diagnostics is defined and platform_app_health_failure_diagnostics.stdout_lines is defined
+
+    - name: Stop when platform app health checks fail
+      ansible.builtin.fail:
+        msg: |
+          Platform app health verification failed.
+
+          At least one required Argo CD Application, platform namespace,
+          StorageClass, app ingress backend, controller/client app VIP ingress
+          path, HTTP-to-HTTPS redirect, strict node-originated app VIP ingress
+          path, Kubernetes host ClusterIP service path, or Kubernetes
+          pod-to-ClusterIP service path failed.
+
+          Common causes are Traefik backend routing, kube-proxy/Cilium service
+          routing, host firewall forwarding, or node-to-pod networking drift.
+          The report above also fails when required Argo CD Applications are
+          OutOfSync/Progressing/Degraded, have active or failed Argo CD
+          operations, or when platform namespace pods are Pending,
+          CrashLoopBackOff, otherwise not Ready, required StorageClasses are
+          missing or misconfigured, or platform PVCs are Pending, Lost, or
+          stuck Terminating. It also fails when a configured GUI host has no
+          Ingress/IngressRoute or no ready backend endpoints, or when a pod
+          pinned to any RKE2 node cannot reach the Argo CD or Woodpecker
+          ClusterIP service.
+
+          Recommended repair sequence:
+          make platform-dns-repair
+          make platform-argocd-service-repair
+          make platform-ingress
+
+          Node-originated app VIP self-probes are advisory by default because
+          MetalLB L2 VIP self-access can differ from real client access. To
+          require them too:
+          PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT=true make platform-app-health
+
+          To skip required StorageClass enforcement for a temporary non-Longhorn
+          subset debug run:
+          PLATFORM_APP_HEALTH_STORAGE_CLASSES=skip make platform-app-health
+
+          To skip HTTP-to-HTTPS redirect enforcement for a temporary debug run:
+          PLATFORM_APP_HEALTH_HTTP_REDIRECT=false make platform-app-health
+
+          If this cluster intentionally runs only a subset of the premium stack,
+          override the enforced list for this check:
+          PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg forgejo woodpecker"
+          PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system forgejo woodpecker longhorn-system metallb-system traefik"
+          PLATFORM_APP_HEALTH_GUI_APPS="argocd forgejo woodpecker"
+          make platform-app-health
+      run_once: true
+      when: ansible_play_hosts | map('extract', hostvars, 'platform_app_health_failed') | map('bool') | select('equalto', true) | list | length > 0
+
+    - name: Show successful platform app health verification
+      ansible.builtin.debug:
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, platform pods are Ready, required StorageClasses exist, platform PVCs are Bound, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+      run_once: true

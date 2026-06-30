@@ -60,9 +60,12 @@ For a hardened private deployment, use the **premium 3-node profile**:
 
 ```text
 profiles/premium-3node.yaml
-gitops/bootstrap/root-app-premium-3node.yaml
 gitops/clusters/rke2-main/premium-3node
 ```
+
+Bootstrap it with `PLATFORM_PROFILE=premium-3node PLATFORM_APPLY_GITOPS=true
+PLATFORM_REPO_URL=<PRIVATE_REPO_URL> make platform-argocd` after rendering or
+skipping incomplete private values as documented in `docs/PRIVATE_DEPLOYMENT.md`.
 
 ## Privacy and secret-safety promise
 
@@ -91,6 +94,13 @@ Run this before pushing:
 ```bash
 make validate
 make no-secrets
+```
+
+Run this before calling a deployed cluster production-ready:
+
+```bash
+PLATFORM_PROFILE=premium-3node make platform-profile-check
+make platform-production-check
 ```
 
 ## Default architecture

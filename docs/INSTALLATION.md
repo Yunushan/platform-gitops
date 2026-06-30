@@ -279,13 +279,29 @@ values such as storage sizes, database DSNs, Redis endpoints, object storage
 buckets, backup targets, or TLS secret names.
 
 The unattended targets also default to
-`PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true`, which renders the private Forgejo
-and Longhorn bootstrap values before validation, commit, and push. Forgejo uses
-`platform_forgejo_host` or `platform_git_host` from `inventory/hosts.local.ini`
-unless `PLATFORM_FORGEJO_HOST` is set. The default
+`PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true`, which renders private bootstrap
+values before validation, commit, and push. The renderer covers Forgejo, Argo
+CD, Woodpecker, Harbor, Grafana, Prometheus, Loki, Velero, Longhorn, and
+optional step-ca. Forgejo uses `platform_forgejo_host` or `platform_git_host`
+from `inventory/hosts.local.ini` unless `PLATFORM_FORGEJO_HOST` is set. The default
 `FORGEJO_DATABASE_MODE=sqlite` is intended only to bring the first private
 Forgejo dashboard online; move to external PostgreSQL and Redis for the final
 premium production posture.
+The unattended targets also default to `PLATFORM_RUN_PROFILE_CHECK=true`, so
+the selected GitOps registration mode is validated before any commit, push, or
+seed mirror update. In `strict` mode the full rendered profile must be complete.
+In the default `skip-incomplete` mode, the bootstrap validates that the
+deployable Application subset can be rendered before Argo CD receives it.
+
+For object-storage backed apps, keep credentials in ignored env files or your
+secret manager. `make platform-app-secrets` can create the Kubernetes secrets
+for Loki and Velero from `LOKI_S3_ACCESS_KEY_ID` /
+`LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`, or
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; committed values only store
+bucket names, endpoints, regions, cache sizes, and secret names.
+For production runs, set `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` so
+the secret automation fails immediately if Loki or Velero object-storage
+credential secrets are still missing.
 
 First deployment also runs the cluster DNS/ClusterIP service-path repair before
 waiting on Argo CD. This protects against kube-proxy, Cilium, or firewalld
@@ -404,30 +420,121 @@ PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make p
 
 It then installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at the effective Argo CD hostname, verifies the route, and removes the temporary Argo CD NodePort exposure.
 
-`make platform-status` prints the effective GUI URLs, including explicit FQDN overrides such as `platform_git_host`, `platform_ci_host`, and `platform_registry_host` when configured. For browser access from Windows, create equivalent Windows hosts-file or internal DNS records pointing those names at `rke2_ingress_vip`.
+`make platform-status` prints the effective GUI URLs, Argo CD Application
+sync/health readiness summary, and explicit FQDN overrides such as
+`platform_git_host`, `platform_ci_host`, and `platform_registry_host` when
+configured. For browser access from Windows, create equivalent Windows
+hosts-file or internal DNS records pointing those names at `rke2_ingress_vip`.
 
-The legacy local-kubeconfig bootstrap script remains available:
+The legacy bootstrap script remains available as a compatibility wrapper around
+the maintained Ansible path. It no longer applies `gitops/bootstrap/root-app.yaml`
+directly; it exports `PLATFORM_APPLY_GITOPS=true` and calls `make
+platform-argocd` so the same server-side apply, rollout repair, repository
+credential, and profile-check behavior is used:
 
 ```bash
 export PLATFORM_REPO_URL=<THIS_REPO_URL>
-export KUBECONFIG=<PATH_TO_PRIVATE_KUBECONFIG>
+export PLATFORM_PROFILE=premium-3node
 scripts/bootstrap/bootstrap-argocd.sh
 ```
 
 ## Step 6: Let GitOps take over
 
-Argo CD reads:
+Argo CD registers the selected profile's Application list:
 
 ```text
-gitops/bootstrap/root-app.yaml
 gitops/clusters/rke2-main/platform-apps.yaml
 ```
 
 For the premium 3-node profile, use:
 
 ```text
-gitops/bootstrap/root-app-premium-3node.yaml
 gitops/clusters/rke2-main/premium-3node/platform-apps.yaml
 ```
 
-Review each platform application before enabling automatic sync in production.
+`PLATFORM_GITOPS_PLACEHOLDER_MODE=skip-incomplete` registers only deployable
+Applications during first bootstrap. `strict` fails before registration if any
+selected Application path still contains unresolved private placeholders.
+
+Before declaring the platform app layer ready, verify Argo CD Application
+sync/health, active or failed Argo CD operations, platform pod readiness,
+platform PVC readiness, GUI ingress, and required StorageClasses, GUI backend
+endpoints, plus the critical Argo CD / Woodpecker service paths from every RKE2
+node and from diagnostic pods pinned to every RKE2 node:
+
+```bash
+make platform-app-health
+```
+
+Before final production registration, also prove the selected GitOps profile is
+fully rendered and has no unresolved placeholders:
+
+```bash
+PLATFORM_PROFILE=premium-3node make platform-profile-check
+```
+
+If this fails, repair the service and ingress paths, then run it again:
+
+```bash
+make platform-dns-repair
+make platform-argocd-service-repair
+make platform-ingress
+make platform-app-health
+```
+
+For a final read-only readiness proof, run the combined production gate:
+
+```bash
+make platform-production-check
+```
+
+It runs repository validation, RKE2 verification, the platform status report,
+the selected GitOps profile placeholder check, and the platform app health gate
+in one command.
+
+`platform-app-health` requires the controller/client path through the app VIP,
+verifies that configured GUI HTTP routes redirect to HTTPS, checks that GUI
+hosts have an Ingress/IngressRoute with ready backend endpoints, verifies the
+premium Longhorn StorageClasses by default, and checks Argo CD / Woodpecker
+ClusterIP paths from every RKE2 node host and from diagnostic pods pinned to
+every RKE2 node. It also fails if platform PVCs are Pending, Lost, or stuck
+Terminating. RKE2 node-originated app VIP self-probes are advisory by default
+because MetalLB L2 self-access can differ from real client access. To enforce
+those too:
+
+```bash
+PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT=true make platform-app-health
+```
+
+The pod-pinned service-path probe uses `rancher/klipper-helm:v0.10.0-build20260513`
+by default because the bootstrap flow already pulls it for DNS diagnostics. For
+restricted registries or slow pulls, override the image or timeout:
+
+```bash
+PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE=<internal-image-with-curl-or-wget> \
+PLATFORM_APP_HEALTH_SERVICE_CHECK_TIMEOUT=300 \
+make platform-app-health
+```
+
+To skip required StorageClass enforcement during a temporary non-Longhorn subset
+debug run:
+
+```bash
+PLATFORM_APP_HEALTH_STORAGE_CLASSES=skip make platform-app-health
+```
+
+To skip only HTTP-to-HTTPS redirect enforcement during a temporary debug run:
+
+```bash
+PLATFORM_APP_HEALTH_HTTP_REDIRECT=false make platform-app-health
+```
+
+If you intentionally run a subset profile, keep the app, namespace, and GUI
+route lists aligned so the gate checks only the services that should exist:
+
+```bash
+PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg forgejo woodpecker" \
+PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system forgejo woodpecker longhorn-system metallb-system traefik" \
+PLATFORM_APP_HEALTH_GUI_APPS="argocd forgejo woodpecker" \
+make platform-app-health
+```

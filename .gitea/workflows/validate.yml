@@ -12,5 +12,13 @@ jobs:
           python-version: '3.x'
       - name: Validate project
         run: python scripts/validate_project.py
+      - name: Test profile checker
+        run: python scripts/test_profile_checker.py
+      - name: Test deployable application renderer
+        run: python scripts/test_deployable_renderer.py
+      - name: Test private values renderer
+        run: python scripts/test_private_values_renderer.py
+      - name: Validate production contract
+        run: python scripts/validate_platform_contract.py
       - name: Secret safety scan
         run: python scripts/validate_no_secrets.py

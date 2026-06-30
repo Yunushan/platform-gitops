@@ -15,11 +15,14 @@ Recommended bootstrap order
    the current API, service, ingress, and GUI URL report.
 6. Run make platform-status whenever you want the same read-only report again.
 7. To register GitOps applications, replace or privately render profile
-   placeholders, then run:
+   placeholders, verify them with:
+   PLATFORM_PROFILE=premium-3node make platform-profile-check
+   then run:
    PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd
 8. Use make platform-ingress to verify or repair pod DNS, then deploy or repair
    the MetalLB/Traefik/Argo CD ingress path separately.
 9. Let Argo CD deploy Forgejo, Woodpecker, Harbor, monitoring, logging, and backups.
 10. Configure off-cluster backups.
-11. Run restore test before production use.
+11. Run make platform-production-check before calling the platform production-ready.
+12. Run restore test before production use.
 EOF

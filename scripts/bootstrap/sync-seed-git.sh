@@ -10,6 +10,8 @@ if [[ -f "${env_file}" ]]; then
 fi
 
 PLATFORM_DEPLOY_BRANCH="${PLATFORM_DEPLOY_BRANCH:-main}"
+PLATFORM_PROFILE="${PLATFORM_PROFILE:-premium-3node}"
+PLATFORM_GITOPS_PLACEHOLDER_MODE="${PLATFORM_GITOPS_PLACEHOLDER_MODE:-skip-incomplete}"
 PLATFORM_SOURCE_REMOTE_NAME="${PLATFORM_SOURCE_REMOTE_NAME:-origin}"
 PLATFORM_SEED_GIT_REMOTE_NAME="${PLATFORM_SEED_GIT_REMOTE_NAME:-seed}"
 PLATFORM_SEED_GIT_ROOT="${PLATFORM_SEED_GIT_ROOT:-/opt/platform/seed-git}"
@@ -25,12 +27,15 @@ PLATFORM_AUTO_COMMIT="${PLATFORM_AUTO_COMMIT:-false}"
 PLATFORM_AUTO_COMMIT_MESSAGE="${PLATFORM_AUTO_COMMIT_MESSAGE:-Sync platform GitOps deployment}"
 PLATFORM_VALIDATE_BEFORE_PUSH="${PLATFORM_VALIDATE_BEFORE_PUSH:-true}"
 PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS:-true}"
+PLATFORM_RUN_PROFILE_CHECK="${PLATFORM_RUN_PROFILE_CHECK:-true}"
 
 export PLATFORM_SEED_GIT_ROOT
 export PLATFORM_SEED_GIT_REPO_NAME
 export PLATFORM_SEED_GIT_PORT
 export PLATFORM_SEED_GIT_OWNER
 export PLATFORM_SEED_GIT_WAIT_TIMEOUT
+export PLATFORM_PROFILE
+export PLATFORM_GITOPS_PLACEHOLDER_MODE
 
 git rev-parse --is-inside-work-tree >/dev/null
 
@@ -53,6 +58,13 @@ fi
 
 if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then
   python3 scripts/validate_project.py
+  if [[ "${PLATFORM_RUN_PROFILE_CHECK}" == "true" ]]; then
+    bash scripts/bootstrap/validate-gitops-selection.sh .
+  fi
+  python3 scripts/test_profile_checker.py
+  python3 scripts/test_deployable_renderer.py
+  python3 scripts/test_private_values_renderer.py
+  python3 scripts/validate_platform_contract.py
   if [[ "${PLATFORM_RUN_NO_SECRETS}" == "true" ]]; then
     python3 scripts/validate_no_secrets.py
   fi
