@@ -1,0 +1,5 @@
+steps:
+  validate:
+    image: alpine:3.20
+    commands:
+      - sh app.sh

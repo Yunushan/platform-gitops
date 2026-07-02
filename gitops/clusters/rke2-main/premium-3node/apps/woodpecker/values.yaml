@@ -1,19 +1,27 @@
-# Woodpecker bootstrap profile rendered by scripts/render_private_platform_values.py.
-# Uses single-server SQLite so CI can come online before external PostgreSQL is configured.
+# Woodpecker premium profile.
+# Uses PostgreSQL-backed state so multiple Woodpecker server replicas can run safely.
 # For Forgejo login, create the OAuth app in Forgejo and store its client/secret in
 # the woodpecker-forgejo-oauth Kubernetes secret before syncing this app.
+# Run make platform-app-secrets with WOODPECKER_DATABASE_DATASOURCE before syncing
+# so secret/woodpecker-database exists.
 server:
   enabled: true
   statefulSet:
-    replicaCount: 1
+    replicaCount: 2
+  image:
+    registry: docker.io
+    repository: woodpeckerci/woodpecker-server
+    tag: "3.16.0"
   env:
     WOODPECKER_ADMIN: "admin"
     WOODPECKER_HOST: https://woodpecker.<PLATFORM_DOMAIN>
     WOODPECKER_OPEN: "false"
     WOODPECKER_FORGEJO: "true"
     WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>
+    WOODPECKER_DATABASE_DRIVER: "postgres"
   extraSecretNamesForEnvFrom:
     - woodpecker-forgejo-oauth
+    - woodpecker-database
   createAgentSecret: true
   ingress:
     enabled: true
@@ -43,6 +51,10 @@ server:
 agent:
   enabled: true
   replicaCount: 3
+  image:
+    registry: docker.io
+    repository: woodpeckerci/woodpecker-agent
+    tag: "3.16.0"
   env:
     WOODPECKER_BACKEND: kubernetes
     WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker

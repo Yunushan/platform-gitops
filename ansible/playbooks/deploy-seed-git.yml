@@ -246,6 +246,7 @@
         enabled: false
         state: stopped
         daemon_reload: true
+      register: platform_seed_git_service_removed
       failed_when: false
       when:
         - inventory_hostname == rke2_first_server

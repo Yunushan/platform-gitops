@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: harbor
 helmCharts:
   - name: harbor
+    version: 1.19.1
     repo: https://helm.goharbor.io
     releaseName: harbor
     namespace: harbor

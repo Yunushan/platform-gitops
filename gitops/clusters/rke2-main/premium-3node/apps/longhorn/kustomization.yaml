@@ -5,6 +5,7 @@ resources:
   - storageclasses.yaml
 helmCharts:
   - name: longhorn
+    version: 1.12.0
     repo: https://charts.longhorn.io
     releaseName: longhorn
     namespace: longhorn-system

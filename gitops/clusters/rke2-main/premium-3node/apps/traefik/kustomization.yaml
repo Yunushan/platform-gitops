@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: traefik
 helmCharts:
   - name: traefik
+    version: 41.0.1
     repo: https://traefik.github.io/charts
     releaseName: platform-traefik
     namespace: traefik

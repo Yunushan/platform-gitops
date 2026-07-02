@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: gitlab
 helmCharts:
   - name: gitlab
+    version: 10.1.1
     repo: https://charts.gitlab.io/
     releaseName: gitlab
     namespace: gitlab

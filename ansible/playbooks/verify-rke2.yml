@@ -7,7 +7,13 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     rke2_first_server_ip: "{{ hostvars[rke2_first_server].ansible_host }}"
     rke2_verify_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERIFY_TIMEOUT') }}"
+    rke2_verify_api_vip_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERIFY_API_VIP') }}"
+    rke2_api_vip_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_VIP') }}"
+    rke2_api_dns_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_DNS') }}"
     rke2_verify_timeout_effective: "{{ rke2_verify_timeout | default(rke2_verify_timeout_from_env, true) | default(120, true) | int }}"
+    rke2_verify_api_vip_effective: "{{ rke2_verify_api_vip | default(rke2_verify_api_vip_from_env, true) | default(true, true) | bool }}"
+    rke2_api_vip_effective: "{{ rke2_api_vip | default(rke2_api_vip_from_env, true) | default('', true) }}"
+    rke2_api_dns_effective: "{{ rke2_api_dns | default(rke2_api_dns_from_env, true) | default('', true) }}"
     rke2_verify_poll_interval: 10
   tasks:
     - name: Require rke2-server service active on every node
@@ -35,6 +41,140 @@
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
+
+    - name: Verify configured API VIP and DNS path
+      when: rke2_verify_api_vip_effective | bool
+      block:
+        - name: Require API VIP settings for RKE2 verification
+          ansible.builtin.assert:
+            that:
+              - rke2_api_vip_effective | length > 0
+              - not (rke2_api_vip_effective is match("^<.*>$"))
+              - rke2_api_dns_effective | length > 0
+              - not (rke2_api_dns_effective is match("^<.*>$"))
+            fail_msg: "Set rke2_api_vip and rke2_api_dns in inventory/hosts.local.ini, or run with RKE2_VERIFY_API_VIP=false before the API VIP is deployed."
+          run_once: true
+
+        - name: Verify API VIP TCP/TLS readyz path from every node
+          ansible.builtin.shell: |
+            set -o pipefail
+            failed=0
+            for endpoint in "{{ rke2_api_vip_effective }}" "{{ rke2_api_dns_effective }}"; do
+              code="$(curl --silent --show-error --insecure --output /tmp/rke2-api-vip-readyz-body \
+                --write-out '%{http_code}' \
+                --connect-timeout 5 \
+                --max-time 15 \
+                "https://${endpoint}:6443/readyz" || true)"
+              echo "endpoint=${endpoint} http_code=${code}"
+              case "${code}" in
+                200|401) ;;
+                *) failed=1 ;;
+              esac
+            done
+            exit "${failed}"
+          args:
+            executable: /bin/bash
+          register: rke2_verify_api_vip_http
+          changed_when: false
+          retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ rke2_verify_poll_interval }}"
+          until: rke2_verify_api_vip_http.rc == 0
+
+        - name: Verify authenticated API readiness through VIP
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            --server=https://{{ rke2_api_vip_effective }}:6443 get --raw=/readyz
+          register: rke2_verify_api_vip_authenticated_readyz
+          changed_when: false
+          retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ rke2_verify_poll_interval }}"
+          until: rke2_verify_api_vip_authenticated_readyz.rc == 0 and 'ok' in rke2_verify_api_vip_authenticated_readyz.stdout
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Verify authenticated API readiness through API DNS
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+            --server=https://{{ rke2_api_dns_effective }}:6443 get --raw=/readyz
+          register: rke2_verify_api_dns_authenticated_readyz
+          changed_when: false
+          retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ rke2_verify_poll_interval }}"
+          until: rke2_verify_api_dns_authenticated_readyz.rc == 0 and 'ok' in rke2_verify_api_dns_authenticated_readyz.stdout
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Show API VIP provider state
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            if "$K" --kubeconfig "$C" -n kube-system get daemonset/kube-vip-ds >/dev/null 2>&1; then
+              echo "===== kube-vip daemonset ====="
+              "$K" --kubeconfig "$C" -n kube-system get daemonset/kube-vip-ds -o wide
+              echo "===== kube-vip pods ====="
+              "$K" --kubeconfig "$C" -n kube-system get pods -l app.kubernetes.io/name=kube-vip -o wide
+            else
+              echo "kube-vip daemonset is absent; API VIP is expected to be provided externally."
+            fi
+          args:
+            executable: /bin/bash
+          register: rke2_verify_api_vip_provider
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Print API VIP provider state
+          ansible.builtin.debug:
+            var: rke2_verify_api_vip_provider.stdout_lines
+          run_once: true
+
+      rescue:
+        - name: Collect API VIP verification diagnostics
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            API_VIP="{{ rke2_api_vip_effective }}"
+            API_DNS="{{ rke2_api_dns_effective }}"
+            echo "===== configured API endpoints ====="
+            echo "rke2_api_vip=${API_VIP}"
+            echo "rke2_api_dns=${API_DNS}"
+            echo "===== node resolver ====="
+            getent hosts "${API_DNS}" || true
+            echo "===== direct readyz probes ====="
+            for endpoint in "${API_VIP}" "${API_DNS}"; do
+              echo "--- ${endpoint} ---"
+              curl --silent --show-error --insecure --connect-timeout 5 --max-time 15 \
+                "https://${endpoint}:6443/readyz" || true
+              echo
+            done
+            echo "===== kube-vip state ====="
+            "$K" --kubeconfig "$C" -n kube-system get daemonset kube-vip-ds -o wide || true
+            "$K" --kubeconfig "$C" -n kube-system get pods -l app.kubernetes.io/name=kube-vip -o wide || true
+            "$K" --kubeconfig "$C" -n kube-system logs -l app.kubernetes.io/name=kube-vip --all-containers --tail=120 || true
+            echo "===== recent API VIP events ====="
+            "$K" --kubeconfig "$C" get events -A --sort-by=.lastTimestamp 2>/dev/null |
+              grep -E 'kube-vip|6443|readyz|Failed|BackOff|ErrImagePull|ImagePullBackOff|Unhealthy' |
+              tail -120 || true
+          args:
+            executable: /bin/bash
+          register: rke2_verify_api_vip_diagnostics
+          changed_when: false
+          failed_when: false
+
+        - name: Print API VIP verification diagnostics
+          ansible.builtin.debug:
+            var: rke2_verify_api_vip_diagnostics.stdout_lines
+
+        - name: Stop after API VIP verification failure
+          ansible.builtin.fail:
+            msg: >-
+              RKE2 API is locally ready, but the configured API VIP/DNS path did
+              not become ready within {{ rke2_verify_timeout_effective }} seconds.
+              Review kube-vip or external API VIP ownership, DNS, ARP/L2 reachability,
+              firewall rules, and TLS SAN configuration. To run a pre-VIP bootstrap
+              sanity check only, set RKE2_VERIFY_API_VIP=false.
 
     - name: Verify all expected nodes are Ready
       block:

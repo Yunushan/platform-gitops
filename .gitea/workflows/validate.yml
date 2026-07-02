@@ -12,20 +12,62 @@ jobs:
           python-version: '3.x'
       - name: Validate project
         run: python scripts/validate_project.py
+      - name: Test Python syntax
+        run: python scripts/test_python_syntax.py
+      - name: Test validation runner
+        run: python scripts/test_validation_runner.py
+      - name: Test line endings
+        run: python scripts/test_line_endings.py
       - name: Test profile checker
         run: python scripts/test_profile_checker.py
       - name: Test deployable application renderer
         run: python scripts/test_deployable_renderer.py
+      - name: Test GitOps selection helper
+        run: python scripts/test_gitops_selection_helper.py
       - name: Test private values renderer
         run: python scripts/test_private_values_renderer.py
+      - name: Test platform app secret contract
+        run: python scripts/test_platform_secret_contract.py
       - name: Test secret scanner
         run: python scripts/test_no_secrets.py
+      - name: Test private artifact boundary
+        run: python scripts/test_private_artifact_boundary.py
+      - name: Test CI reference pinning
+        run: python scripts/test_ci_reference_pinning.py
       - name: Test shell syntax
         run: python scripts/test_shell_syntax.py
+      - name: Test shell strict mode
+        run: python scripts/test_shell_strict_mode.py
+      - name: Test Ansible inline shell blocks
+        run: python scripts/test_ansible_shell_blocks.py
+      - name: Test Ansible curl timeout contract
+        run: python scripts/test_ansible_curl_timeout_contract.py
+      - name: Test Ansible until contract
+        run: python scripts/test_ansible_until_contract.py
+      - name: Test Ansible failed_when contract
+        run: python scripts/test_ansible_failed_when_contract.py
+      - name: Test Ansible no_log contract
+        run: python scripts/test_ansible_no_log_contract.py
       - name: Test documented make targets
         run: python scripts/test_docs_make_targets.py
+      - name: Test Markdown links
+        run: python scripts/test_markdown_links.py
+      - name: Test example templates
+        run: python scripts/test_example_templates.py
       - name: Test Ansible playbook references
         run: python scripts/test_ansible_playbook_references.py
+      - name: Test GitOps application contract
+        run: python scripts/test_gitops_application_contract.py
+      - name: Test Kustomization references
+        run: python scripts/test_kustomization_references.py
+      - name: Test GitOps Helm chart pinning
+        run: python scripts/test_gitops_helm_chart_pinning.py
+      - name: Test GitOps image pinning
+        run: python scripts/test_gitops_image_pinning.py
+      - name: Test Makefile help coverage
+        run: python scripts/test_makefile_help.py
+      - name: Test validation surface parity
+        run: python scripts/test_validation_surface_parity.py
       - name: Validate production contract
         run: python scripts/validate_platform_contract.py
       - name: Secret safety scan

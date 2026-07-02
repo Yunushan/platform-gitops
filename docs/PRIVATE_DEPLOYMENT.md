@@ -158,14 +158,37 @@ Set `PYTHON=/path/to/python` in the env file if the bootstrap workstation does
 not expose `python3`; `make platform-argocd`, validation, rendering, and
 selected GitOps profile checks use the same interpreter.
 
+The private values renderer pins both Woodpecker server and agent images with
+`WOODPECKER_IMAGE_TAG`, defaulting to `3.16.0`. Treat changes to that value as
+an intentional Woodpecker upgrade: render, validate, sync, then prove the
+Woodpecker server and agents are healthy.
+
 Object-storage backed apps are rendered with bucket names, endpoints, regions,
-cache sizes, and Kubernetes secret names only. `make platform-app-secrets` can
-create the Loki and Velero secrets from ignored env values such as
-`LOKI_S3_ACCESS_KEY_ID`, `LOKI_S3_SECRET_ACCESS_KEY`,
-`VELERO_CLOUD_CREDENTIALS`, or `AWS_ACCESS_KEY_ID` /
-`AWS_SECRET_ACCESS_KEY`. Set
+cache sizes, and Kubernetes secret names only. Runtime credentials stay outside
+Git. `make platform-app-secrets` can create Woodpecker's PostgreSQL datasource
+secret plus Loki and Velero object-storage secrets from ignored env values such
+as `WOODPECKER_DATABASE_DATASOURCE`, `WOODPECKER_DATABASE_HOST` plus
+`WOODPECKER_DATABASE_PASSWORD`, `LOKI_S3_ACCESS_KEY_ID`,
+`LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`, or
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Set
+`PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` before enabling
+Woodpecker HA so a missing datasource secret fails before rollout. Set
 `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` for production so missing
 Loki or Velero object-storage credential secrets fail before app sync.
+
+For production Woodpecker HA, either provide a full datasource:
+
+```bash
+WOODPECKER_DATABASE_DATASOURCE='postgres://woodpecker:<PASSWORD>@<POSTGRES_HOST>:5432/woodpecker?sslmode=disable' \
+WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
+PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true \
+make platform-app-secrets
+```
+
+or provide `WOODPECKER_DATABASE_HOST`, `WOODPECKER_DATABASE_NAME`,
+`WOODPECKER_DATABASE_USER`, and `WOODPECKER_DATABASE_PASSWORD` in
+`private/first-deploy.env` or your secret manager and use the same required
+flag.
 
 The default `FORGEJO_DATABASE_MODE=sqlite` is a first-dashboard bootstrap mode:
 it avoids requiring an already-running external PostgreSQL and Redis service.
@@ -239,6 +262,10 @@ seed repository is a temporary mirror of the current private deployment state.
 This lets repeat bootstrap runs update a stale seed branch without manual
 pull/merge work, while still refusing the push if the remote branch changes
 between the pre-push check and the update.
+`make platform-seed-git-sync` does not push back to the source remote by
+default. Leave `PLATFORM_SEED_SYNC_PUSH_ORIGIN=false` while `origin` points to
+the public template repo; set it to `true` only after `origin` is the intended
+private deployment repository.
 
 ```bash
 make platform-seed-git-remove

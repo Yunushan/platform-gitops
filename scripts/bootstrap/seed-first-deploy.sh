@@ -63,22 +63,12 @@ if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
 fi
 
 if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then
-  "${PYTHON_BIN}" scripts/validate_project.py
   if [[ "${PLATFORM_RUN_PROFILE_CHECK}" == "true" ]]; then
     PYTHON="${PYTHON_BIN}" bash scripts/bootstrap/validate-gitops-selection.sh .
   fi
-  "${PYTHON_BIN}" scripts/test_profile_checker.py
-  "${PYTHON_BIN}" scripts/test_deployable_renderer.py
-  "${PYTHON_BIN}" scripts/test_private_values_renderer.py
-  "${PYTHON_BIN}" scripts/test_no_secrets.py
-  "${PYTHON_BIN}" scripts/test_shell_syntax.py
-  "${PYTHON_BIN}" scripts/test_docs_make_targets.py
-  "${PYTHON_BIN}" scripts/test_ansible_playbook_references.py
-  "${PYTHON_BIN}" scripts/validate_platform_contract.py
-  if [[ "${PLATFORM_RUN_NO_SECRETS}" == "true" ]]; then
+  PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS}" \
     PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES}" \
-      "${PYTHON_BIN}" scripts/validate_no_secrets.py
-  fi
+    "${PYTHON_BIN}" scripts/run_validation.py
 fi
 
 git rev-parse --is-inside-work-tree >/dev/null

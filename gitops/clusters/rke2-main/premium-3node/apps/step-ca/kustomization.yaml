@@ -4,6 +4,7 @@ namespace: step-ca
 
 helmCharts:
   - name: step-certificates
+    version: 1.30.1
     repo: https://smallstep.github.io/helm-charts/
     releaseName: step-ca
     namespace: step-ca

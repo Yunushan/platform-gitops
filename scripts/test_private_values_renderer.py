@@ -76,6 +76,13 @@ def assert_contains(path: Path, *needles: str) -> None:
         raise AssertionError(f"{path} is missing expected text: {', '.join(missing)}")
 
 
+def assert_not_contains(path: Path, *needles: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    present = [needle for needle in needles if needle in text]
+    if present:
+        raise AssertionError(f"{path} contains unexpected text: {', '.join(present)}")
+
+
 def render_real_premium_profile(renderer, checker, env: dict[str, str]) -> None:
     with tempfile.TemporaryDirectory(prefix="platform-real-premium-render-") as tmp:
         repo = Path(tmp)
@@ -170,6 +177,11 @@ platform_step_ca_host=ca.example.test
             "WOODPECKER_STORAGE_CLASS": "longhorn-standard",
             "WOODPECKER_ADMIN_USERS": "platform-admin",
             "WOODPECKER_FORGEJO_OAUTH_SECRET_NAME": "woodpecker-oauth-test",
+            "WOODPECKER_IMAGE_TAG": "3.16.0",
+            "WOODPECKER_DATABASE_MODE": "postgres",
+            "WOODPECKER_DATABASE_SECRET_NAME": "woodpecker-db-test",
+            "WOODPECKER_SERVER_REPLICAS": "2",
+            "WOODPECKER_AGENT_REPLICAS": "3",
             "HARBOR_STORAGE_CLASS": "longhorn-critical",
             "HARBOR_REGISTRY_SIZE": "55Gi",
             "HARBOR_JOBLOG_SIZE": "6Gi",
@@ -227,6 +239,12 @@ platform_step_ca_host=ca.example.test
         assert_contains(
             paths["woodpecker"],
             'WOODPECKER_HOST: "https://ci.example.test"',
+            'WOODPECKER_DATABASE_DRIVER: "postgres"',
+            '"woodpecker-db-test"',
+            "replicaCount: 2",
+            "repository: woodpeckerci/woodpecker-server",
+            "repository: woodpeckerci/woodpecker-agent",
+            'tag: "3.16.0"',
             'WOODPECKER_BACKEND_K8S_STORAGE_CLASS: "longhorn-standard"',
         )
         assert_contains(paths["harbor"], "registry.example.test", "harbor-admin-test", "55Gi")
@@ -279,6 +297,52 @@ platform_step_ca_host=ca.example.test
         assert_contains(paths["step_ca"], "Platform Test CA", "ca.example.test", 'size: "9Gi"')
 
         render_real_premium_profile(renderer, checker, env)
+
+        sqlite_woodpecker_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/sqlite-values.yaml")
+        sqlite_env = {
+            "WOODPECKER_DATA_SIZE": "11Gi",
+            "WOODPECKER_STORAGE_CLASS": "longhorn-standard",
+            "WOODPECKER_ADMIN_USERS": "platform-admin",
+            "WOODPECKER_FORGEJO_OAUTH_SECRET_NAME": "woodpecker-oauth-test",
+            "WOODPECKER_IMAGE_TAG": "3.16.0",
+            "WOODPECKER_AGENT_REPLICAS": "3",
+        }
+        with patched_env(sqlite_env):
+            renderer.render_woodpecker(sqlite_woodpecker_path, inventory)
+        assert_contains(
+            sqlite_woodpecker_path,
+            'WOODPECKER_HOST: "https://ci.example.test"',
+            "replicaCount: 1",
+            "repository: woodpeckerci/woodpecker-server",
+            "repository: woodpeckerci/woodpecker-agent",
+            'tag: "3.16.0"',
+            '"woodpecker-oauth-test"',
+        )
+        assert_not_contains(
+            sqlite_woodpecker_path,
+            'WOODPECKER_DATABASE_DRIVER: "postgres"',
+            '"woodpecker-database"',
+        )
+
+        invalid_sqlite_env = dict(sqlite_env, WOODPECKER_DATABASE_MODE="sqlite", WOODPECKER_SERVER_REPLICAS="2")
+        with patched_env(invalid_sqlite_env):
+            try:
+                renderer.render_woodpecker(sqlite_woodpecker_path, inventory)
+            except SystemExit as exc:
+                if "WOODPECKER_SERVER_REPLICAS must be 1" not in str(exc):
+                    raise AssertionError(f"unexpected sqlite replica validation error: {exc}") from exc
+            else:
+                raise AssertionError("SQLite-backed Woodpecker accepted multiple server replicas")
+
+        invalid_image_env = dict(sqlite_env, WOODPECKER_IMAGE_TAG="next")
+        with patched_env(invalid_image_env):
+            try:
+                renderer.render_woodpecker(sqlite_woodpecker_path, inventory)
+            except SystemExit as exc:
+                if "WOODPECKER_IMAGE_TAG must be a stable release tag" not in str(exc):
+                    raise AssertionError(f"unexpected Woodpecker image tag validation error: {exc}") from exc
+            else:
+                raise AssertionError("Woodpecker renderer accepted a mutable image tag")
 
     print("Private platform values renderer self-test passed.")
     return 0

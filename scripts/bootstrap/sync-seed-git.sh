@@ -21,7 +21,7 @@ PLATFORM_SEED_GIT_OWNER="${PLATFORM_SEED_GIT_OWNER:-}"
 PLATFORM_SEED_GIT_WAIT_TIMEOUT="${PLATFORM_SEED_GIT_WAIT_TIMEOUT:-45}"
 PLATFORM_SEED_GIT_FORCE_WITH_LEASE="${PLATFORM_SEED_GIT_FORCE_WITH_LEASE:-true}"
 PLATFORM_SEED_SYNC_PULL="${PLATFORM_SEED_SYNC_PULL:-true}"
-PLATFORM_SEED_SYNC_PUSH_ORIGIN="${PLATFORM_SEED_SYNC_PUSH_ORIGIN:-true}"
+PLATFORM_SEED_SYNC_PUSH_ORIGIN="${PLATFORM_SEED_SYNC_PUSH_ORIGIN:-false}"
 PLATFORM_SEED_SYNC_ENSURE_SERVICE="${PLATFORM_SEED_SYNC_ENSURE_SERVICE:-true}"
 PLATFORM_AUTO_COMMIT="${PLATFORM_AUTO_COMMIT:-false}"
 PLATFORM_AUTO_COMMIT_MESSAGE="${PLATFORM_AUTO_COMMIT_MESSAGE:-Sync platform GitOps deployment}"
@@ -73,26 +73,20 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 if [[ "${PLATFORM_SEED_SYNC_PULL}" == "true" ]]; then
-  GIT_TERMINAL_PROMPT=0 git pull --rebase "${PLATFORM_SOURCE_REMOTE_NAME}" "${PLATFORM_DEPLOY_BRANCH}"
+  if git remote get-url "${PLATFORM_SOURCE_REMOTE_NAME}" >/dev/null 2>&1; then
+    GIT_TERMINAL_PROMPT=0 git pull --rebase "${PLATFORM_SOURCE_REMOTE_NAME}" "${PLATFORM_DEPLOY_BRANCH}"
+  else
+    echo "Source remote ${PLATFORM_SOURCE_REMOTE_NAME} does not exist; skipping source remote pull." >&2
+  fi
 fi
 
 if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then
-  "${PYTHON_BIN}" scripts/validate_project.py
   if [[ "${PLATFORM_RUN_PROFILE_CHECK}" == "true" ]]; then
     PYTHON="${PYTHON_BIN}" bash scripts/bootstrap/validate-gitops-selection.sh .
   fi
-  "${PYTHON_BIN}" scripts/test_profile_checker.py
-  "${PYTHON_BIN}" scripts/test_deployable_renderer.py
-  "${PYTHON_BIN}" scripts/test_private_values_renderer.py
-  "${PYTHON_BIN}" scripts/test_no_secrets.py
-  "${PYTHON_BIN}" scripts/test_shell_syntax.py
-  "${PYTHON_BIN}" scripts/test_docs_make_targets.py
-  "${PYTHON_BIN}" scripts/test_ansible_playbook_references.py
-  "${PYTHON_BIN}" scripts/validate_platform_contract.py
-  if [[ "${PLATFORM_RUN_NO_SECRETS}" == "true" ]]; then
+  PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS}" \
     PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES}" \
-      "${PYTHON_BIN}" scripts/validate_no_secrets.py
-  fi
+    "${PYTHON_BIN}" scripts/run_validation.py
 fi
 
 if [[ "${PLATFORM_SEED_SYNC_PUSH_ORIGIN}" == "true" ]]; then
@@ -109,6 +103,8 @@ if [[ "${PLATFORM_SEED_SYNC_PUSH_ORIGIN}" == "true" ]]; then
   else
     echo "Source remote ${PLATFORM_SOURCE_REMOTE_NAME} does not exist; skipping origin push." >&2
   fi
+else
+  echo "Skipping source remote push. Set PLATFORM_SEED_SYNC_PUSH_ORIGIN=true to push ${PLATFORM_SOURCE_REMOTE_NAME}/${PLATFORM_DEPLOY_BRANCH}."
 fi
 
 if [[ "${PLATFORM_SEED_SYNC_ENSURE_SERVICE}" == "true" ]]; then
@@ -186,7 +182,7 @@ cat <<EOF
 Platform GitOps repository synchronized.
 
 Source remote:
-- ${PLATFORM_SOURCE_REMOTE_NAME}/${PLATFORM_DEPLOY_BRANCH}
+- ${PLATFORM_SOURCE_REMOTE_NAME}/${PLATFORM_DEPLOY_BRANCH} (push enabled: ${PLATFORM_SEED_SYNC_PUSH_ORIGIN})
 
 Temporary seed Git:
 - write: ${seed_push_url}

@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: logging
 helmCharts:
   - name: loki
+    version: 7.0.0
     repo: https://grafana.github.io/helm-charts
     releaseName: loki
     namespace: logging

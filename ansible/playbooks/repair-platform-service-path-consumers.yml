@@ -8,8 +8,10 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_service_path_consumer_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SERVICE_PATH_CONSUMER_REPAIR_TIMEOUT') }}"
     platform_service_path_consumer_repair_woodpecker_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SERVICE_PATH_CONSUMER_REPAIR_WOODPECKER') }}"
+    platform_service_path_consumer_repair_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SERVICE_PATH_CONSUMER_REPAIR_CHECK_IMAGE') }}"
     platform_service_path_consumer_repair_timeout_effective: "{{ platform_service_path_consumer_repair_timeout | default(platform_service_path_consumer_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_service_path_consumer_repair_woodpecker_effective: "{{ platform_service_path_consumer_repair_woodpecker | default(platform_service_path_consumer_repair_woodpecker_from_env, true) | default(true, true) | bool }}"
+    platform_service_path_consumer_repair_check_image_effective: "{{ platform_service_path_consumer_repair_check_image | default(platform_service_path_consumer_repair_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
   tasks:
     - name: Detect Woodpecker service path consumer state
       ansible.builtin.shell: |
@@ -126,6 +128,7 @@
         executable: /bin/bash
       register: platform_woodpecker_agent_rollout
       changed_when: false
+      failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when:
@@ -159,6 +162,175 @@
         executable: /bin/bash
       register: platform_woodpecker_grpc_node_probe
       changed_when: false
+      failed_when: false
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+
+    - name: Verify Woodpecker gRPC ClusterIP service path from pods pinned to every RKE2 node after agent refresh
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        NAMESPACE=kube-system
+        CHECK_NAME=platform-woodpecker-grpc-check
+        CHECK_ID="$(date +%s)-$$"
+        CHECK_IMAGE="{{ platform_service_path_consumer_repair_check_image_effective }}"
+        CONNECT_TIMEOUT=5
+        JOB_TIMEOUT={{ platform_service_path_consumer_repair_timeout_effective }}
+        failed=0
+
+        if ! "$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server >/dev/null 2>&1; then
+          echo "woodpecker_server_service=absent"
+          exit 0
+        fi
+
+        safe_name() {
+          printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.-]+/-/g; s/^-+//; s/-+$//'
+        }
+
+        "$K" --kubeconfig "$C" -n "${NAMESPACE}" delete job \
+          -l "app.kubernetes.io/name=${CHECK_NAME}" \
+          --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+
+        nodes="$("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        if [ -z "${nodes}" ]; then
+          echo "result=fail reason=no-kubernetes-nodes"
+          exit 1
+        fi
+
+        expected=0
+        for node in ${nodes}; do
+          expected=$((expected + 1))
+          node_safe="$(safe_name "${node}")"
+          job_name="platform-wp-grpc-${node_safe}-${CHECK_ID}"
+          cat <<YAML | "$K" --kubeconfig "$C" apply -f -
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: ${job_name}
+          namespace: ${NAMESPACE}
+          labels:
+            app.kubernetes.io/name: ${CHECK_NAME}
+            platform.gitops/check-id: ${CHECK_ID}
+            platform.gitops/node: ${node_safe}
+        spec:
+          backoffLimit: 0
+          activeDeadlineSeconds: ${JOB_TIMEOUT}
+          ttlSecondsAfterFinished: 300
+          template:
+            metadata:
+              labels:
+                app.kubernetes.io/name: ${CHECK_NAME}
+                platform.gitops/check-id: ${CHECK_ID}
+                platform.gitops/node: ${node_safe}
+            spec:
+              restartPolicy: Never
+              nodeName: "${node}"
+              tolerations:
+                - operator: Exists
+              containers:
+                - name: check
+                  image: "${CHECK_IMAGE}"
+                  imagePullPolicy: IfNotPresent
+                  env:
+                    - name: CONNECT_TIMEOUT
+                      value: "${CONNECT_TIMEOUT}"
+                  command:
+                    - sh
+                    - -c
+                  args:
+                    - |
+                      set -u
+                      echo "target=woodpecker-server.woodpecker.svc.cluster.local:9000"
+                      if command -v curl >/dev/null 2>&1; then
+                        curl --silent --show-error --output /dev/null \
+                          --connect-timeout "\${CONNECT_TIMEOUT}" \
+                          --max-time "\${CONNECT_TIMEOUT}" \
+                          "http://woodpecker-server.woodpecker.svc.cluster.local:9000/" >/tmp/platform-wp-grpc.out 2>/tmp/platform-wp-grpc.err
+                        rc="\$?"
+                        echo "curl_rc=\${rc}"
+                        if [ -s /tmp/platform-wp-grpc.err ]; then
+                          sed 's/^/stderr=/' /tmp/platform-wp-grpc.err
+                        fi
+                        rm -f /tmp/platform-wp-grpc.out /tmp/platform-wp-grpc.err
+                        case "\${rc}" in
+                          0|52|56)
+                            echo "result=ok"
+                            exit 0
+                            ;;
+                        esac
+                        echo "result=fail"
+                        exit 1
+                      fi
+                      if command -v nc >/dev/null 2>&1; then
+                        nc -z -w "\${CONNECT_TIMEOUT}" woodpecker-server.woodpecker.svc.cluster.local 9000 >/tmp/platform-wp-grpc.out 2>/tmp/platform-wp-grpc.err
+                        rc="\$?"
+                        echo "nc_rc=\${rc}"
+                        if [ -s /tmp/platform-wp-grpc.err ]; then
+                          sed 's/^/stderr=/' /tmp/platform-wp-grpc.err
+                        fi
+                        rm -f /tmp/platform-wp-grpc.out /tmp/platform-wp-grpc.err
+                        if [ "\${rc}" -eq 0 ]; then
+                          echo "result=ok"
+                          exit 0
+                        fi
+                        echo "result=fail"
+                        exit 1
+                      fi
+                      echo "result=fail reason=no-curl-or-nc"
+                      exit 1
+        YAML
+        done
+
+        deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          succeeded="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
+            -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+            -o jsonpath='{range .items[*]}{.status.succeeded}{"\n"}{end}' 2>/dev/null |
+            awk '{ total += $1 + 0 } END { print total + 0 }')"
+          failed_jobs="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
+            -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+            -o jsonpath='{range .items[*]}{.status.failed}{"\n"}{end}' 2>/dev/null |
+            awk '{ total += $1 + 0 } END { print total + 0 }')"
+          if [ "$((succeeded + failed_jobs))" -ge "${expected}" ]; then
+            break
+          fi
+          sleep 3
+        done
+
+        pods="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get pods \
+          -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+          -o name 2>/dev/null || true)"
+        for pod in ${pods}; do
+          node="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "${pod}" -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)"
+          phase="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "${pod}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          echo "===== ${pod} node=${node:-unknown} phase=${phase:-unknown} ====="
+          "$K" --kubeconfig "$C" -n "${NAMESPACE}" logs "${pod}" || true
+          if [ "${phase}" != "Succeeded" ]; then
+            failed=1
+          fi
+        done
+
+        pod_count="$(printf '%s\n' "${pods}" | awk 'NF { count++ } END { print count + 0 }')"
+        if [ "${pod_count}" -lt "${expected}" ]; then
+          echo "result=fail reason=missing-woodpecker-grpc-check-pods expected=${expected} actual=${pod_count}"
+          failed=1
+        fi
+
+        "$K" --kubeconfig "$C" -n "${NAMESPACE}" delete job \
+          -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+          --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_grpc_pod_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
       when:
         - platform_service_path_consumer_repair_woodpecker_effective | bool
         - platform_woodpecker_consumer_state_before is defined
@@ -191,3 +363,52 @@
       when:
         - platform_service_path_consumer_repair_woodpecker_effective | bool
         - platform_woodpecker_consumer_state_after is defined
+
+    - name: Stop after Woodpecker gRPC node service-path failure
+      ansible.builtin.fail:
+        msg: |
+          Woodpecker gRPC ClusterIP service path is still failing from one or
+          more RKE2 nodes after consumer refresh.
+
+          This usually means CNI, kube-proxy, firewalld, reverse-path filtering,
+          or node-to-pod routing still blocks the Woodpecker server service on
+          port 9000. Review the diagnostics above before rerunning:
+
+          make platform-service-path-repair
+
+          Node probe stdout:
+          {{ (platform_woodpecker_grpc_node_probe | default({})).stdout | default('not run', true) }}
+
+          Node probe stderr:
+          {{ (platform_woodpecker_grpc_node_probe | default({})).stderr | default('not run', true) }}
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+        - (platform_woodpecker_grpc_node_probe | default({})).rc | default(0) | int != 0
+
+    - name: Stop after Woodpecker consumer refresh failure
+      ansible.builtin.fail:
+        msg: |
+          Woodpecker agents did not become Ready, or the pod-pinned Woodpecker
+          gRPC service-path check still failed after consumer refresh.
+
+          Agent rollout stdout:
+          {{ (platform_woodpecker_agent_rollout | default({})).stdout | default('not run', true) }}
+
+          Agent rollout stderr:
+          {{ (platform_woodpecker_agent_rollout | default({})).stderr | default('not run', true) }}
+
+          Pod-pinned gRPC probe stdout:
+          {{ (platform_woodpecker_grpc_pod_probe | default({})).stdout | default('not run', true) }}
+
+          Pod-pinned gRPC probe stderr:
+          {{ (platform_woodpecker_grpc_pod_probe | default({})).stderr | default('not run', true) }}
+      run_once: true
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+        - >
+          ((platform_woodpecker_agent_rollout | default({})).rc | default(0) | int != 0) or
+          ((platform_woodpecker_grpc_pod_probe | default({})).rc | default(0) | int != 0)

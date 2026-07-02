@@ -861,7 +861,7 @@
         /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
       args:
         executable: /bin/bash
-        stdin: "{{ lookup('ansible.builtin.file', platform_project_file) }}"
+        stdin: "{{ lookup('ansible.builtin.file', platform_project_file) | replace('<THIS_REPO_URL>', platform_repo_url_effective) }}"
       register: platform_project_apply
       changed_when: "'created' in platform_project_apply.stdout or 'configured' in platform_project_apply.stdout"
       delegate_to: "{{ rke2_first_server }}"

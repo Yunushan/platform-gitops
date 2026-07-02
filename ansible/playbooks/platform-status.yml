@@ -11,6 +11,12 @@
     platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
     platform_ip_redirect_target_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IP_REDIRECT_TARGET_HOST') }}"
     platform_ip_redirect_target_host_effective: "{{ platform_ip_redirect_target_host | default(platform_ip_redirect_target_host_from_env, true) | default(platform_argocd_host_effective, true) }}"
+    platform_status_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_STATUS_WOODPECKER_IMAGE_TAG') }}"
+    platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
+    platform_status_woodpecker_image_tag_effective: "{{ platform_status_woodpecker_image_tag | default(platform_status_woodpecker_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('3.16.0', true) }}"
+    platform_status_expected_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_STATUS_EXPECTED_REPO_URL') }}"
+    platform_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_URL') }}"
+    platform_status_expected_repo_url_effective: "{{ platform_status_expected_repo_url | default(platform_status_expected_repo_url_from_env, true) | default(platform_repo_url_from_env, true) | default('', true) }}"
     platform_argocd_bootstrap_service_name: argocd-server-bootstrap-nodeport
   vars_files:
     - ../vars/platform-hostnames.yml
@@ -91,6 +97,51 @@
         echo "===== Argo CD ====="
         if "$K" --kubeconfig "$C" get ns argocd >/dev/null 2>&1; then
           "$K" --kubeconfig "$C" -n argocd get pods,svc -o wide || true
+          "$K" --kubeconfig "$C" -n argocd get deploy,statefulset -o wide || true
+          echo "Argo CD runtime service readiness:"
+          service_name_from_hostport() {
+            value="$1"
+            value="${value%%,*}"
+            value="${value%%:*}"
+            value="${value%%.*}"
+            printf '%s' "${value}"
+          }
+          service_ready_endpoint_count() {
+            service="$1"
+            "$K" --kubeconfig "$C" -n argocd get endpointslice \
+              -l "kubernetes.io/service-name=${service}" \
+              -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+              awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }'
+          }
+          repo_server="$("$K" --kubeconfig "$C" -n argocd get configmap/argocd-cmd-params-cm -o jsonpath='{.data.repo\.server}' 2>/dev/null || true)"
+          redis_server="$("$K" --kubeconfig "$C" -n argocd get configmap/argocd-cmd-params-cm -o jsonpath='{.data.redis\.server}' 2>/dev/null || true)"
+          repo_server="${repo_server:-argocd-repo-server:8081}"
+          redis_server="${redis_server:-argocd-redis:6379}"
+          repo_service="$(service_name_from_hostport "${repo_server}")"
+          redis_service="$(service_name_from_hostport "${redis_server}")"
+          runtime_not_ready=0
+          echo "  configured repo-server: ${repo_server} -> service/${repo_service}"
+          echo "  configured Redis: ${redis_server} -> service/${redis_service}"
+          for service in argocd-server "${repo_service}" "${redis_service}"; do
+            if "$K" --kubeconfig "$C" -n argocd get "service/${service}" >/dev/null 2>&1; then
+              cluster_ip="$("$K" --kubeconfig "$C" -n argocd get "service/${service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+              endpoints="$(service_ready_endpoint_count "${service}")"
+              printf '  service/%-30s clusterIP=%-15s ready_endpoints=%s\n' \
+                "${service}" "${cluster_ip:-missing}" "${endpoints}"
+              if [ -z "${cluster_ip}" ] || [ "${cluster_ip}" = "None" ] || [ "${endpoints}" -lt 1 ]; then
+                runtime_not_ready=$((runtime_not_ready + 1))
+              fi
+            else
+              printf '  service/%-30s missing\n' "${service}"
+              runtime_not_ready=$((runtime_not_ready + 1))
+            fi
+          done
+          if [ "${runtime_not_ready}" -gt 0 ]; then
+            echo "Argo CD runtime readiness: NOT READY - ${runtime_not_ready} configured runtime service(s) are missing or have no ready endpoints."
+            echo "Run: make platform-argocd-service-repair"
+          else
+            echo "Argo CD runtime readiness: server, repo-server, and Redis service endpoints are present."
+          fi
           if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
             "$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o wide || true
           fi
@@ -108,6 +159,57 @@
           echo "Argo CD initial password command: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo"
         else
           echo "Argo CD is not installed yet. Run: make platform-argocd"
+        fi
+        echo
+
+        echo "===== Woodpecker runtime ====="
+        expected_woodpecker_tag="{{ platform_status_woodpecker_image_tag_effective }}"
+        if "$K" --kubeconfig "$C" get ns woodpecker >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n woodpecker get pods,svc,ingress,endpointslice,pvc -o wide || true
+          woodpecker_pods="$("$K" --kubeconfig "$C" -n woodpecker get pods -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.ready}{","}{.restartCount}{","}{.state.waiting.reason}{";"}{end}{"|"}{range .spec.containers[*]}{.image}{" "}{end}{"\n"}{end}' 2>/dev/null || true)"
+          woodpecker_not_ready=0
+          check_woodpecker_role() {
+            role="$1"
+            pattern="$2"
+            role_rows="$(printf '%s\n' "${woodpecker_pods}" | awk -F'|' -v pattern="${pattern}" '$1 ~ pattern { print }')"
+            if [ -z "${role_rows}" ]; then
+              echo "  ${role}: missing pod"
+              woodpecker_not_ready=$((woodpecker_not_ready + 1))
+              return
+            fi
+            while IFS='|' read -r pod phase statuses images; do
+              [ -n "${pod}" ] || continue
+              printf '  %-24s phase=%-10s status=%-24s images=%s\n' "${pod}" "${phase:-unknown}" "${statuses:-unknown}" "${images:-unknown}"
+              if [ "${phase}" != "Running" ]; then
+                woodpecker_not_ready=$((woodpecker_not_ready + 1))
+              fi
+              if ! printf '%s\n' "${statuses}" | grep -q '^true,'; then
+                woodpecker_not_ready=$((woodpecker_not_ready + 1))
+              fi
+              for image in ${images}; do
+                case "${image}" in
+                  *":${expected_woodpecker_tag}"|*"@sha256:"*) ;;
+                  *)
+                    echo "  woodpecker-status-image-tag-mismatch role=${role} pod=${pod} image=${image} expected_tag=${expected_woodpecker_tag}"
+                    woodpecker_not_ready=$((woodpecker_not_ready + 1))
+                    ;;
+                esac
+              done
+            done <<EOF
+        ${role_rows}
+        EOF
+          }
+          echo "Expected Woodpecker image tag: ${expected_woodpecker_tag}"
+          check_woodpecker_role server '^woodpecker-server'
+          check_woodpecker_role agent '^woodpecker-agent'
+          if [ "${woodpecker_not_ready}" -gt 0 ]; then
+            echo "Woodpecker runtime readiness: NOT READY - ${woodpecker_not_ready} server/agent pod, readiness, or image tag issue(s) found."
+            echo "Run: make platform-app-health"
+          else
+            echo "Woodpecker runtime readiness: server and agent pods are Running/Ready with the expected image tag."
+          fi
+        else
+          echo "Woodpecker is not installed yet."
         fi
         echo
 
@@ -155,8 +257,10 @@
         if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
           app_count="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io --no-headers 2>/dev/null | wc -l | tr -d ' ')"
         fi
+        expected_repo_url="{{ platform_status_expected_repo_url_effective }}"
         published_count=0
         missing_count=0
+        gui_http_failures=0
         while IFS='|' read -r app namespace fqdn; do
           [ -n "${fqdn}" ] || continue
           if "$K" --kubeconfig "$C" get ns "${namespace}" >/dev/null 2>&1; then
@@ -176,26 +280,117 @@
           printf '%-32s namespace=%-10s ingress=%-14s url=https://%s\n' \
             "${fqdn}" "${namespace_state}" "${ingress_state}" "${fqdn}"
         done <"${GUI_HOSTS_FILE}"
+
+        echo "GUI host HTTP reachability through app VIP:"
+        gui_http_checked=0
+        if command -v curl >/dev/null 2>&1; then
+          while IFS='|' read -r app namespace fqdn; do
+            [ -n "${fqdn}" ] || continue
+            if ! printf '%s\n' "${ingress_hosts}" | grep -Fw "${fqdn}" >/dev/null; then
+              printf '  %-32s http_code=%-3s result=skip reason=not-published\n' "${fqdn}" "-"
+              continue
+            fi
+            error_file="$(mktemp)"
+            code="$(curl --silent --show-error --insecure --output /dev/null \
+              --write-out '%{http_code}' \
+              --connect-timeout 3 \
+              --max-time 10 \
+              --resolve "${fqdn}:443:${INGRESS_VIP}" \
+              "https://${fqdn}/" 2>"${error_file}" || true)"
+            stderr="$(tr '\n' ' ' <"${error_file}" | sed 's/[[:space:]]\+$//')"
+            rm -f "${error_file}"
+            gui_http_checked=$((gui_http_checked + 1))
+            case "${code}" in
+              200|301|302|303|307|308|401|403)
+                result=ok
+                ;;
+              *)
+                result=not-ready
+                gui_http_failures=$((gui_http_failures + 1))
+                ;;
+            esac
+            printf '  %-32s http_code=%-3s result=%s' "${fqdn}" "${code:-000}" "${result}"
+            if [ -n "${stderr}" ]; then
+              printf ' stderr=%s' "${stderr}"
+            fi
+            printf '\n'
+          done <"${GUI_HOSTS_FILE}"
+          if [ "${gui_http_checked}" = "0" ]; then
+            echo "GUI HTTP readiness: no published GUI hosts were available to probe."
+          elif [ "${gui_http_failures}" -gt 0 ]; then
+            echo "GUI HTTP readiness: NOT READY - ${gui_http_failures} published GUI host(s) did not answer with an accepted HTTP status through ${INGRESS_VIP}."
+            echo "502/504 usually point to Traefik backend service, endpoint, or node-to-pod routing problems; 404 usually means no matching router for that hostname."
+            echo "Run: make platform-app-health"
+          else
+            echo "GUI HTTP readiness: published GUI hosts answered through ${INGRESS_VIP}."
+          fi
+        else
+          echo "GUI HTTP readiness: UNKNOWN - curl is not installed on the node used for this report."
+        fi
         echo "Argo CD Application count: ${app_count}"
         if [ "${app_count}" = "0" ]; then
           echo "No Argo CD Applications are registered yet. Non-Argo GUI hosts will return Traefik 404 until platform apps are registered and synced."
         elif "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
           not_ready_apps=0
-          app_rows="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.sync.status}{"|"}{.status.health.status}{"|"}{.status.conditions[*].type}{"\n"}{end}' 2>/dev/null || true)"
+          app_rows="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.sync.status}{"|"}{.status.health.status}{"|"}{.status.operationState.phase}{"|"}{.status.conditions[*].type}{"\n"}{end}' 2>/dev/null || true)"
           echo "Argo CD Application readiness:"
-          while IFS='|' read -r app sync_status health_status condition_types; do
+          while IFS='|' read -r app sync_status health_status operation_phase condition_types; do
             [ -n "${app}" ] || continue
-            printf '  %-18s sync=%-10s health=%-12s conditions=%s\n' \
-              "${app}" "${sync_status:-unknown}" "${health_status:-unknown}" "${condition_types:-none}"
-            if [ "${sync_status}" != "Synced" ] || [ "${health_status}" != "Healthy" ] || [ -n "${condition_types}" ]; then
+            operation_unhealthy=0
+            case "${operation_phase}" in
+              ""|Succeeded) ;;
+              *) operation_unhealthy=1 ;;
+            esac
+            printf '  %-18s sync=%-10s health=%-12s operation=%-12s conditions=%s\n' \
+              "${app}" "${sync_status:-unknown}" "${health_status:-unknown}" "${operation_phase:-none}" "${condition_types:-none}"
+            if [ "${sync_status}" != "Synced" ] || [ "${health_status}" != "Healthy" ] || [ -n "${condition_types}" ] || [ "${operation_unhealthy}" -ne 0 ]; then
               not_ready_apps=$((not_ready_apps + 1))
             fi
           done <<< "${app_rows}"
           if [ "${not_ready_apps}" -gt 0 ]; then
-            echo "Production readiness: NOT READY - ${not_ready_apps} Argo CD application(s) are not Synced/Healthy without conditions."
+            echo "Production readiness: NOT READY - ${not_ready_apps} Argo CD application(s) are not Synced/Healthy with clean operation state and no conditions."
             echo "Run: make platform-app-health"
           else
-            echo "Production readiness: Argo CD application sync/health is clean; run make platform-app-health for storage, ingress, and service-path proof."
+            echo "Production readiness: Argo CD application sync/health/operation state is clean; run make platform-app-health for storage, ingress, and service-path proof."
+          fi
+          source_not_ready=0
+          source_rows="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .spec.sources[*]}{.repoURL}{","}{end}{.spec.source.repoURL}{"\n"}{end}' 2>/dev/null || true)"
+          echo "Argo CD Application source repositories:"
+          if [ -n "${expected_repo_url}" ]; then
+            echo "Expected production repo URL: ${expected_repo_url}"
+          else
+            echo "Expected production repo URL: not set; set PLATFORM_STATUS_EXPECTED_REPO_URL or PLATFORM_REPO_URL for exact source proof."
+          fi
+          while IFS='|' read -r app repo_urls; do
+            [ -n "${app}" ] || continue
+            repo_urls_clean="$(printf '%s' "${repo_urls}" | sed 's/,$//' | sed 's/^,//')"
+            source_result=ok
+            source_reason=production-source
+            case "${repo_urls_clean}" in
+              *git://*)
+                source_result=not-ready
+                source_reason=temporary-or-insecure-git-protocol
+                ;;
+              *:9418*|*seed-git*)
+                source_result=not-ready
+                source_reason=temporary-seed-git-source
+                ;;
+            esac
+            if [ -n "${expected_repo_url}" ] && [ "${repo_urls_clean}" != "${expected_repo_url}" ]; then
+              source_result=not-ready
+              source_reason=unexpected-repo-url
+            fi
+            printf '  %-18s repo_url=%-45s result=%s reason=%s\n' \
+              "${app}" "${repo_urls_clean:-missing}" "${source_result}" "${source_reason}"
+            if [ "${source_result}" != "ok" ] || [ -z "${repo_urls_clean}" ]; then
+              source_not_ready=$((source_not_ready + 1))
+            fi
+          done <<< "${source_rows}"
+          if [ "${source_not_ready}" -gt 0 ]; then
+            echo "Production source readiness: NOT READY - ${source_not_ready} Argo CD application source(s) still use temporary seed Git, git://, missing repo URLs, or a repo URL different from the expected production source."
+            echo "Migrate the platform repo into the intended private Git service, update PLATFORM_REPO_URL, sync, then remove seed Git with: make platform-seed-git-remove"
+          else
+            echo "Production source readiness: Argo CD application repository URLs look production-safe."
           fi
         fi
         echo
@@ -220,11 +415,18 @@
           echo "GUI ingresses exist, but Traefik does not yet show the expected ingress VIP."
           echo "Run: make platform-ingress"
         elif [ "${missing_count}" -gt 0 ]; then
-          echo "Ingress foundation is ready on ${INGRESS_VIP}, and published hosts can be reached through Traefik."
+          echo "Ingress foundation is present on ${INGRESS_VIP}; use the HTTP reachability section above for published host readiness."
           echo "${missing_count} configured GUI host(s) are not published yet. A 404 is expected for those hostnames."
+          if [ "${gui_http_failures:-0}" -gt 0 ]; then
+            echo "${gui_http_failures} published GUI host(s) also failed the app VIP HTTP reachability check above."
+            echo "Run: make platform-app-health"
+          fi
           echo "Argo CD URL: https://${ARGOCD_HOST}"
           echo "Next automation path for Forgejo/Harbor/Woodpecker/Grafana/Prometheus:"
           echo "  PLATFORM_REPO_URL=<THIS_REPO_URL> PLATFORM_APPLY_GITOPS=true make platform-argocd"
+        elif [ "${gui_http_failures:-0}" -gt 0 ]; then
+          echo "All configured GUI hosts have ingress rules, but ${gui_http_failures} published host(s) did not answer cleanly through ${INGRESS_VIP}."
+          echo "Run: make platform-app-health"
         else
           echo "All configured GUI hosts have ingress rules on ${INGRESS_VIP}."
           while IFS='|' read -r app namespace fqdn; do
@@ -243,4 +445,76 @@
     - name: Print platform status report
       ansible.builtin.debug:
         var: platform_status_report.stdout_lines
+      run_once: true
+
+    - name: Probe GUI hosts from Ansible controller through app VIP
+      ansible.builtin.shell: |
+        set -u
+        INGRESS_VIP="{{ rke2_ingress_vip_effective }}"
+        GUI_HOSTS_FILE="$(mktemp)"
+        cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
+        {% for entry in platform_gui_host_entries %}
+        {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
+        {% endfor %}
+        GUIHOSTS
+
+        echo "===== Controller/client GUI HTTP reachability through app VIP ====="
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "Controller/client GUI HTTP readiness: UNKNOWN - curl is not installed on the Ansible controller."
+          rm -f "${GUI_HOSTS_FILE}"
+          exit 0
+        fi
+
+        checked=0
+        failures=0
+        while IFS='|' read -r app namespace fqdn; do
+          [ -n "${fqdn}" ] || continue
+          error_file="$(mktemp)"
+          code="$(curl --silent --show-error --insecure --output /dev/null \
+            --write-out '%{http_code}' \
+            --connect-timeout 3 \
+            --max-time 10 \
+            --resolve "${fqdn}:443:${INGRESS_VIP}" \
+            "https://${fqdn}/" 2>"${error_file}" || true)"
+          stderr="$(tr '\n' ' ' <"${error_file}" | sed 's/[[:space:]]\+$//')"
+          rm -f "${error_file}"
+          checked=$((checked + 1))
+          case "${code}" in
+            200|301|302|303|307|308|401|403)
+              result=ok
+              ;;
+            *)
+              result=not-ready
+              failures=$((failures + 1))
+              ;;
+          esac
+          printf '  %-32s http_code=%-3s result=%s' "${fqdn}" "${code:-000}" "${result}"
+          if [ -n "${stderr}" ]; then
+            printf ' stderr=%s' "${stderr}"
+          fi
+          printf '\n'
+        done <"${GUI_HOSTS_FILE}"
+        rm -f "${GUI_HOSTS_FILE}"
+
+        if [ "${checked}" = "0" ]; then
+          echo "Controller/client GUI HTTP readiness: no configured GUI hosts were available to probe."
+        elif [ "${failures}" -gt 0 ]; then
+          echo "Controller/client GUI HTTP readiness: NOT READY - ${failures} configured GUI host(s) did not answer with an accepted HTTP status through ${INGRESS_VIP}."
+          echo "502/504 usually point to Traefik backend service, endpoint, or node-to-pod routing problems; 404 usually means no matching router for that hostname; 000 usually means VIP routing, firewall, or client reachability."
+          echo "Run: make platform-app-health"
+        else
+          echo "Controller/client GUI HTTP readiness: configured GUI hosts answered through ${INGRESS_VIP} from the Ansible controller."
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_status_controller_gui_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Print controller/client GUI HTTP reachability
+      ansible.builtin.debug:
+        var: platform_status_controller_gui_probe.stdout_lines
       run_once: true

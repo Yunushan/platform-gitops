@@ -17,7 +17,12 @@ def shell_scripts() -> list[Path]:
     for path in root.rglob('*.sh'):
         if path.is_dir():
             continue
-        if any(part in exclude_dirs or part.startswith('.shell-syntax-') for part in path.parts):
+        if any(
+            part in exclude_dirs
+            or part.startswith('.shell-syntax-')
+            or part.startswith('.ansible-shell-syntax-')
+            for part in path.parts
+        ):
             continue
         scripts.append(path.relative_to(root))
     return sorted(scripts)

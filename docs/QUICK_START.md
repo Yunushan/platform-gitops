@@ -30,8 +30,9 @@ make validate
 make no-secrets
 ```
 
-This is a repository-only check. It needs Python 3 and Bash, and it does not contact a live cluster. The live cluster proof happens later with
-`make platform-production-check`.
+This is a repository-only check. It needs Python 3 and Bash, and it does not contact a live cluster. If `make` is not installed, run
+`python scripts/run_validation.py` instead. The live cluster proof happens later
+with `make platform-production-check`.
 
 ## 4. Bootstrap plan
 

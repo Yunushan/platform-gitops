@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: metallb-system
 helmCharts:
   - name: metallb
+    version: 0.16.1
     repo: https://metallb.github.io/metallb
     releaseName: platform-metallb
     namespace: metallb-system

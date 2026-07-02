@@ -55,6 +55,7 @@ Thumbs.db
 .venv/
 __pycache__/
 .shell-syntax-*/
+.ansible-shell-syntax-*/
 *.pyc
 dist/
 build/

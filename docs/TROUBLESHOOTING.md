@@ -10,7 +10,12 @@ Run the automated platform report:
 make platform-status
 ```
 
-It prints API VIP readiness, Argo CD pods/services, registered Argo CD Applications, ingress state, expected GUI URLs, and the next command when the GUI layer is not deployed yet.
+It prints API VIP readiness, Argo CD pods/services, configured Argo CD
+repo-server/Redis service endpoint readiness, Woodpecker server/agent runtime
+readiness and expected image tag, per-GUI HTTPS status through the app VIP from
+both the cluster side and the Ansible controller/client side, registered Argo CD
+Applications, ingress state, expected GUI URLs, and the next command when the
+GUI layer is not deployed yet.
 
 Run the read-only production readiness gate after changes settle:
 
@@ -21,19 +26,102 @@ make platform-production-check
 This chains repository validation, RKE2 verification, the platform status
 report, and `make platform-app-health`. If it fails, read the first failing
 section: app sync/health and pod readiness failures are GitOps/workload issues;
-StorageClass and PVC failures point to Longhorn/storage provisioning or stuck
-finalizers; GUI backend endpoint failures point to missing Ingress/IngressRoute
-objects or Services with no ready pods; controller/client app VIP and HTTP
+Argo CD source repository failures mean Applications still point to temporary
+seed Git, insecure `git://`, or a missing repo URL instead of the intended
+private Git source, or they point to a repo URL different from
+`PLATFORM_APP_HEALTH_EXPECTED_REPO_URL` / `PLATFORM_REPO_URL`;
+HA replica failures point to shrunken or unavailable Argo CD, Traefik, or
+Woodpecker control-plane replicas; StorageClass and PVC failures point to
+Longhorn/storage provisioning or stuck finalizers; Longhorn runtime failures
+point to missing Longhorn node objects, disabled scheduling, unhealthy Longhorn
+nodes, or degraded/faulted volumes; CloudNativePG cluster failures point to
+missing or unhealthy PostgreSQL clusters; GUI backend endpoint failures point to
+missing Ingress/IngressRoute objects or Services with no ready pods;
+controller/client app VIP and HTTP
 redirect failures usually point to MetalLB, Traefik, DNS, or client routing;
-Argo CD or Woodpecker ClusterIP failures point to CNI, kube-proxy, firewalld, or
-node-to-pod networking. The service-path section checks both the node host path
-and short-lived diagnostic pods pinned to each RKE2 node, so Woodpecker agent
-gRPC failures on only one or two nodes are reported directly.
+Harbor registry API failures point to a broken `/v2/` route, wrong Harbor
+service backend, TLS/host routing, or registry pod health; Grafana
+`/api/health` or Prometheus `/-/ready` failures point to monitoring service
+health, route selection, or app VIP reachability; Loki `/ready` failures point
+to logging service health or service routing; Velero `BackupStorageLocation`
+failures point to backup object storage credentials, bucket policy, endpoint
+reachability, or provider configuration; Velero backup schedule failures point
+to missing or paused scheduled backups; generated app secret contract failures
+point to missing Harbor, Woodpecker, Loki, or Velero Secrets or missing required
+keys; Argo CD or Woodpecker ClusterIP failures point to CNI, kube-proxy,
+firewalld, or node-to-pod networking. The service-path section checks both the
+node host path and short-lived diagnostic pods pinned to each RKE2 node, so
+Woodpecker agent gRPC failures on only one or two nodes are reported directly.
+
+If you only need to check the Argo CD runtime and Woodpecker CI path while
+debugging `502`, `504`, or Woodpecker agent `CrashLoopBackOff`, use:
+
+```bash
+make platform-ci-health
+```
+
+If Woodpecker server and agent pods report different or unexpected versions,
+confirm the rendered values pin the Woodpecker server and agent image
+repositories plus `WOODPECKER_IMAGE_TAG` (`3.16.0` by default), then sync the
+app again. The health gate also verifies the running Woodpecker server and agent images against
+`PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG`, which falls back to
+`WOODPECKER_IMAGE_TAG` and then `3.16.0`.
+
+For the common case where the Woodpecker Argo CD application is `Synced` but
+still `Progressing`, or agents are stuck on an old `next-*` image and
+`CrashLoopBackOff`, use the focused repair target:
+
+```bash
+make platform-woodpecker-repair
+```
+
+It refreshes service-path consumers first, hard-refreshes and syncs the
+Woodpecker application, waits for the server and agents, verifies the runtime
+server and agent image tags, refreshes service-path consumers again, and then
+runs `make platform-ci-health`.
+
+If `make platform-status` shows a published GUI host returning `502` or `504`
+through the app VIP from either the cluster-side probe or the controller/client
+probe, the DNS/VIP reached Traefik but Traefik could not complete the backend
+request. Check that app's pods, service endpoints, and node-to-pod service path
+with `make platform-app-health`. If the controller/client probe returns `000`
+while the cluster-side probe works, focus on client-to-VIP routing, firewall, or
+ARP/neighbor-cache state.
+
+If `make platform-status` reports `Production source readiness: NOT READY`,
+Argo CD is still using temporary seed Git, insecure `git://`, a missing repo
+URL, or a repo URL different from the expected private source. `make
+platform-status` prints `Expected production repo URL`; set
+`PLATFORM_STATUS_EXPECTED_REPO_URL=<PRIVATE_REPO_URL>` or
+`PLATFORM_REPO_URL=<PRIVATE_REPO_URL>` if you want that report to enforce an
+exact value. Migrate the platform repository into the intended private Git
+service, rerun `PLATFORM_REPO_URL=<PRIVATE_REPO_URL> PLATFORM_APPLY_GITOPS=true
+make platform-argocd`, then remove the seed service with
+`make platform-seed-git-remove`. For bootstrap-only troubleshooting, bypass just
+the seed/insecure-source check with
+`PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false make platform-app-health`.
+For final health proof with exact source matching, run:
+
+```bash
+PLATFORM_APP_HEALTH_EXPECTED_REPO_URL=<PRIVATE_REPO_URL> make platform-app-health
+```
+
+That target still checks Argo CD pods, configured repo-server/Redis service
+endpoints, Argo CD and Woodpecker GUI routing, Traefik, Woodpecker generated
+secrets, Woodpecker HA replica coverage, and Argo CD / Woodpecker ClusterIP
+service paths, but skips Harbor, monitoring, Loki, Velero, CloudNativePG,
+Longhorn runtime, and StorageClass gates. It also
+sets `PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS=false`, so unrelated existing
+Argo CD Applications do not block the focused repair check.
 
 For Argo CD repo-server/Redis timeouts, Woodpecker agent gRPC timeouts, or
 node-specific ClusterIP service failures, run the explicit service-path repair
 alias before rechecking health. The alias repairs CoreDNS/CNI service routing,
-then refreshes Woodpecker agents and verifies the Woodpecker gRPC ClusterIP from every RKE2 node so CrashLoopBackOff agents do not wait on exponential backoff:
+then refreshes Woodpecker agents and verifies the Woodpecker gRPC ClusterIP
+from every RKE2 node host and from diagnostic pods pinned to every RKE2 node so
+CrashLoopBackOff agents do not wait on exponential backoff. If the refreshed
+agents still do not become Ready, the repair prints the final Woodpecker
+pods/services plus node and pod-pinned gRPC probe output before failing:
 
 ```bash
 make platform-service-path-repair
@@ -54,10 +142,97 @@ debug run:
 PLATFORM_APP_HEALTH_STORAGE_CLASSES=skip make platform-app-health
 ```
 
+To skip only Longhorn runtime node/volume enforcement during a temporary storage
+repair run:
+
+```bash
+PLATFORM_APP_HEALTH_LONGHORN_RUNTIME=false make platform-app-health
+```
+
+To skip only Argo CD runtime component and configured repo-server/Redis service
+endpoint enforcement during a temporary control-plane repair run:
+
+```bash
+PLATFORM_APP_HEALTH_ARGOCD_RUNTIME=false make platform-app-health
+```
+
+To skip only critical HA replica enforcement during a temporary scale or repair
+run:
+
+```bash
+PLATFORM_APP_HEALTH_HA_REPLICAS=false make platform-app-health
+```
+
 To skip only HTTP-to-HTTPS redirect enforcement during a temporary debug run:
 
 ```bash
 PLATFORM_APP_HEALTH_HTTP_REDIRECT=false make platform-app-health
+```
+
+To skip only Harbor `/v2/` registry API enforcement during a temporary debug
+run. The health gate expects the Docker Distribution API header from that route,
+not just a reachable Harbor web UI:
+
+```bash
+PLATFORM_APP_HEALTH_REGISTRY_API=false make platform-app-health
+```
+
+To skip only Grafana `/api/health` and Prometheus `/-/ready` enforcement during
+a temporary debug run:
+
+```bash
+PLATFORM_APP_HEALTH_MONITORING_API=false make platform-app-health
+```
+
+To skip only Loki `/ready`, Velero `BackupStorageLocation`, or Velero backup
+schedule enforcement during a temporary debug run:
+
+```bash
+PLATFORM_APP_HEALTH_LOKI_API=false make platform-app-health
+PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE=false make platform-app-health
+PLATFORM_APP_HEALTH_VELERO_SCHEDULES=false make platform-app-health
+```
+
+When Harbor, Woodpecker, Loki, or Velero are required, `platform-app-health`
+also verifies the generated app secret contracts created by
+`make platform-app-secrets`. It checks the expected Secret names and keys,
+including Woodpecker OAuth and `WOODPECKER_DATABASE_DATASOURCE`, without
+printing secret values. To skip only that check during a temporary debug run:
+
+```bash
+PLATFORM_APP_HEALTH_APP_SECRETS=skip make platform-app-health
+```
+
+Certificate and trust checks default to `auto`, which verifies any existing
+cert-manager `Certificate` resources and trust-manager `Bundle` resources while
+permitting controller-only bootstrap installs. To require exact resources:
+
+```bash
+PLATFORM_APP_HEALTH_CERTIFICATES="argocd/argocd-server-tls" make platform-app-health
+PLATFORM_APP_HEALTH_TRUST_BUNDLES="platform-public-roots" make platform-app-health
+```
+
+To bypass only those checks during a temporary debug run:
+
+```bash
+PLATFORM_APP_HEALTH_CERTIFICATES=skip make platform-app-health
+PLATFORM_APP_HEALTH_TRUST_BUNDLES=skip make platform-app-health
+```
+
+When step-ca is required, `platform-app-health` also probes its in-cluster
+HTTPS `/health` endpoint through the ClusterIP service. To bypass only that
+probe during a temporary debug run:
+
+```bash
+PLATFORM_APP_HEALTH_STEP_CA_API=false make platform-app-health
+```
+
+CloudNativePG checks default to `auto`, which verifies any existing PostgreSQL
+clusters but permits an operator-only bootstrap install. To require a specific
+cluster:
+
+```bash
+PLATFORM_APP_HEALTH_CNPG_CLUSTERS="platform-databases/platform-postgres" make platform-app-health
 ```
 
 If a cluster intentionally deploys only part of the stack, override the app,
@@ -319,13 +494,17 @@ make platform-app-secrets
 PLATFORM_PROFILE=premium-3node make platform-profile-check
 ```
 
-Set object-storage values in ignored env files or your secret manager before
-running `platform-app-secrets`: `LOKI_S3_ACCESS_KEY_ID`,
+Set Woodpecker datasource and object-storage values in ignored env files or
+your secret manager before running `platform-app-secrets`:
+`WOODPECKER_DATABASE_DATASOURCE`, or `WOODPECKER_DATABASE_HOST` plus
+`WOODPECKER_DATABASE_PASSWORD`, plus `LOKI_S3_ACCESS_KEY_ID`,
 `LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`, or the shared
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
 For production verification, set
 `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true`; `platform-app-secrets` will
 then fail immediately if the Loki or Velero credential secret is still missing.
+Set `PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` when enabling
+Woodpecker HA so a missing PostgreSQL datasource secret fails before rollout.
 
 If Argo CD controller logs show timeouts to the Kubernetes API service IP or an
 Argo CD Redis ClusterIP, the pod-to-service path is unhealthy. First deployment
@@ -631,6 +810,15 @@ make rke2-controller-hosts
 ```
 
 Then retest the same `curl` commands. `make rke2-api-vip` deploys kube-vip as a control-plane DaemonSet in ARP mode. The default image is pulled from `ghcr.io`, so include that endpoint in registry/proxy/mirror rules.
+
+`make rke2-verify` enforces the API VIP and API DNS path by default. It probes
+`/readyz` from every RKE2 node and then performs authenticated readiness checks
+through both configured API endpoints. Use the pre-VIP mode only before the VIP
+provider exists:
+
+```bash
+RKE2_VERIFY_API_VIP=false make rke2-verify
+```
 
 If plain `curl` returns `401 Unauthorized`, the VIP is already reaching the Kubernetes API server. Use an authenticated kubeconfig check to verify readiness:
 

@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: rook-ceph
 helmCharts:
   - name: rook-ceph
+    version: v1.20.1
     repo: https://charts.rook.io/release
     releaseName: rook-ceph
     namespace: rook-ceph

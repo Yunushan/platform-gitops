@@ -81,9 +81,27 @@ spec:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
     path: "gitops/clusters/rke2-main/premium-3node/apps/quoted-app" # quoted and commented path
-  destination:
+    destination:
     server: https://kubernetes.default.svc
     namespace: quoted-app
+""",
+    )
+    write(
+        repo / "gitops/clusters/rke2-main/platform-apps.yaml",
+        """apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: default-app
+  namespace: argocd
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/apps/default-app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default-app
 """,
     )
     app_dir = repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo"
@@ -110,6 +128,16 @@ spec:
   replicas: 1
 """,
     )
+    write(
+        repo / "gitops/clusters/rke2-main/apps/default-app/deployment.yaml",
+        """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: default-app
+spec:
+  replicas: 1
+""",
+    )
 
 
 def main() -> int:
@@ -122,6 +150,10 @@ def main() -> int:
         if rc != 0:
             raise AssertionError(f"expected clean profile to pass, got rc={rc}\n{output}")
 
+        rc, output = run_check(checker, repo, "default")
+        if rc != 0:
+            raise AssertionError(f"expected clean default profile to pass, got rc={rc}\n{output}")
+
         write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/private-values.yaml",
             "storage: <FORGEJO_DATA_SIZE>\n",
@@ -131,6 +163,10 @@ def main() -> int:
             raise AssertionError("expected unresolved profile placeholder to fail")
         if "<FORGEJO_DATA_SIZE>" not in output:
             raise AssertionError(f"expected failure output to name the unresolved placeholder\n{output}")
+        if "Public template checkouts are expected to contain placeholders" not in output:
+            raise AssertionError(f"expected failure output to explain public template placeholders\n{output}")
+        if "do not use skip-incomplete output as production proof" not in output:
+            raise AssertionError(f"expected failure output to reject skip-incomplete as production proof\n{output}")
         if "IGNORED_CHART_PLACEHOLDER" in output or "IGNORED_CRD_PLACEHOLDER" in output:
             raise AssertionError(f"vendored chart/CRD placeholders should stay ignored\n{output}")
         if "IGNORED_EXAMPLE_PLACEHOLDER" in output:

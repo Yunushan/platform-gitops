@@ -2,7 +2,8 @@
 
 This repository includes CI definitions for common Git hosting systems.
 Each validation path runs the project structure check, production contract
-check, and secret safety scan.
+check, and secret safety scan. Locally, `make validate` and
+`python scripts/run_validation.py` run the same validation suite.
 
 ## GitHub
 

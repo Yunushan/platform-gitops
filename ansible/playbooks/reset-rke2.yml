@@ -38,6 +38,7 @@
       ansible.builtin.systemd:
         name: "{{ item }}"
         state: stopped
+      register: rke2_reset_stop_services
       loop:
         - rke2-server
         - rke2-agent
@@ -48,6 +49,7 @@
         /usr/local/bin/rke2-killall.sh || /usr/bin/rke2-killall.sh || true
       args:
         executable: /bin/bash
+      register: rke2_reset_killall
       changed_when: false
       failed_when: false
 
@@ -64,11 +66,13 @@
         fi
       args:
         executable: /bin/bash
+      register: rke2_reset_remaining_processes
       changed_when: false
       failed_when: false
 
     - name: Reset failed systemd state
       ansible.builtin.command: systemctl reset-failed rke2-server rke2-agent
+      register: rke2_reset_failed_systemd
       changed_when: false
       failed_when: false
 

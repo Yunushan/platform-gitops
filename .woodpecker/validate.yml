@@ -3,12 +3,33 @@ steps:
     image: python:3.12-slim
     commands:
       - python scripts/validate_project.py
+      - python scripts/test_python_syntax.py
+      - python scripts/test_validation_runner.py
+      - python scripts/test_line_endings.py
       - python scripts/test_profile_checker.py
       - python scripts/test_deployable_renderer.py
+      - python scripts/test_gitops_selection_helper.py
       - python scripts/test_private_values_renderer.py
+      - python scripts/test_platform_secret_contract.py
       - python scripts/test_no_secrets.py
+      - python scripts/test_private_artifact_boundary.py
+      - python scripts/test_ci_reference_pinning.py
       - python scripts/test_shell_syntax.py
+      - python scripts/test_shell_strict_mode.py
+      - python scripts/test_ansible_shell_blocks.py
+      - python scripts/test_ansible_curl_timeout_contract.py
+      - python scripts/test_ansible_until_contract.py
+      - python scripts/test_ansible_failed_when_contract.py
+      - python scripts/test_ansible_no_log_contract.py
       - python scripts/test_docs_make_targets.py
+      - python scripts/test_markdown_links.py
+      - python scripts/test_example_templates.py
       - python scripts/test_ansible_playbook_references.py
+      - python scripts/test_gitops_application_contract.py
+      - python scripts/test_kustomization_references.py
+      - python scripts/test_gitops_helm_chart_pinning.py
+      - python scripts/test_gitops_image_pinning.py
+      - python scripts/test_makefile_help.py
+      - python scripts/test_validation_surface_parity.py
       - python scripts/validate_platform_contract.py
       - python scripts/validate_no_secrets.py

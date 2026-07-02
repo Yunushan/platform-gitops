@@ -325,23 +325,51 @@ def woodpecker_bootstrap_values(
     storage_class: str,
     admin_users: str,
     oauth_secret_name: str,
+    image_tag: str,
+    server_replicas: str,
+    agent_replicas: str,
+    database_mode: str,
+    database_secret_name: str,
 ) -> str:
+    postgres_mode = database_mode in {"postgres", "postgresql", "external"}
+    replica_count = server_replicas if postgres_mode else "1"
+    database_comment = (
+        "Uses PostgreSQL-backed state so multiple Woodpecker server replicas can run safely."
+        if postgres_mode
+        else "Uses single-server SQLite so CI can come online before external PostgreSQL is configured."
+    )
+    database_env = ""
+    database_secret = ""
+    if postgres_mode:
+        database_env = """
+    WOODPECKER_DATABASE_DRIVER: "postgres"
+"""
+        database_secret = f"    - {yaml_string(database_secret_name)}\n"
+
     return f"""# Woodpecker bootstrap profile rendered by scripts/render_private_platform_values.py.
-# Uses single-server SQLite so CI can come online before external PostgreSQL is configured.
+# {database_comment}
 # For Forgejo login, create the OAuth app in Forgejo and store its client/secret in
 # the {oauth_secret_name} Kubernetes secret before syncing this app.
+# When WOODPECKER_DATABASE_MODE=postgres, run make platform-app-secrets with
+# WOODPECKER_DATABASE_DATASOURCE so secret/{database_secret_name} exists before syncing.
 server:
   enabled: true
   statefulSet:
-    replicaCount: 1
+    replicaCount: {replica_count}
+  image:
+    registry: docker.io
+    repository: woodpeckerci/woodpecker-server
+    tag: {yaml_string(image_tag)}
   env:
     WOODPECKER_ADMIN: {yaml_string(admin_users)}
     WOODPECKER_HOST: {yaml_string(f"https://{host}")}
     WOODPECKER_OPEN: "false"
     WOODPECKER_FORGEJO: "true"
     WOODPECKER_FORGEJO_URL: {yaml_string(forgejo_url)}
+{database_env.rstrip()}
   extraSecretNamesForEnvFrom:
     - {yaml_string(oauth_secret_name)}
+{database_secret.rstrip()}
   createAgentSecret: true
   ingress:
     enabled: true
@@ -370,7 +398,11 @@ server:
 
 agent:
   enabled: true
-  replicaCount: 3
+  replicaCount: {agent_replicas}
+  image:
+    registry: docker.io
+    repository: woodpeckerci/woodpecker-agent
+    tag: {yaml_string(image_tag)}
   env:
     WOODPECKER_BACKEND: kubernetes
     WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker
@@ -412,6 +444,26 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     storage_class = os.environ.get("WOODPECKER_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
     admin_users = os.environ.get("WOODPECKER_ADMIN_USERS", "admin").strip() or "admin"
     oauth_secret_name = os.environ.get("WOODPECKER_FORGEJO_OAUTH_SECRET_NAME", "woodpecker-forgejo-oauth").strip()
+    image_tag = os.environ.get("WOODPECKER_IMAGE_TAG", "3.16.0").strip() or "3.16.0"
+    database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "sqlite").strip().lower() or "sqlite"
+    database_secret_name = os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip() or "woodpecker-database"
+    default_server_replicas = "2" if database_mode in {"postgres", "postgresql", "external"} else "1"
+    server_replicas = os.environ.get("WOODPECKER_SERVER_REPLICAS", default_server_replicas).strip() or default_server_replicas
+    agent_replicas = os.environ.get("WOODPECKER_AGENT_REPLICAS", "3").strip() or "3"
+    if database_mode not in {"sqlite", "postgres", "postgresql", "external"}:
+        raise SystemExit("WOODPECKER_DATABASE_MODE must be sqlite, postgres, postgresql, or external")
+    for name, value in (
+        ("WOODPECKER_SERVER_REPLICAS", server_replicas),
+        ("WOODPECKER_AGENT_REPLICAS", agent_replicas),
+    ):
+        if not value.isdigit() or int(value) < 1:
+            raise SystemExit(f"{name} must be a positive integer")
+    if database_mode in {"postgres", "postgresql", "external"} and int(server_replicas) < 2:
+        raise SystemExit("WOODPECKER_SERVER_REPLICAS must be at least 2 when WOODPECKER_DATABASE_MODE=postgres")
+    if database_mode == "sqlite" and int(server_replicas) != 1:
+        raise SystemExit("WOODPECKER_SERVER_REPLICAS must be 1 when WOODPECKER_DATABASE_MODE=sqlite")
+    if image_tag.lower() in {"latest", "next", "nightly", "dev"}:
+        raise SystemExit("WOODPECKER_IMAGE_TAG must be a stable release tag, not latest/next/nightly/dev")
 
     rendered = woodpecker_bootstrap_values(
         host,
@@ -420,6 +472,11 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
         storage_class,
         admin_users,
         oauth_secret_name,
+        image_tag,
+        server_replicas,
+        agent_replicas,
+        database_mode,
+        database_secret_name,
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old

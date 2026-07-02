@@ -44,7 +44,12 @@ allow_fragments = [
 def should_scan(path: Path) -> bool:
     if path.is_dir():
         return False
-    if any(part in exclude_dirs or part.startswith('.shell-syntax-') for part in path.parts):
+    if any(
+        part in exclude_dirs
+        or part.startswith('.shell-syntax-')
+        or part.startswith('.ansible-shell-syntax-')
+        for part in path.parts
+    ):
         return False
     rel = path.relative_to(root)
     rel_posix = rel.as_posix()

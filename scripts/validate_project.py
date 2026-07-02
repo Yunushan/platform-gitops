@@ -10,7 +10,7 @@ exclude_dirs = {
     '__pycache__', 'build', 'charts', 'dist', 'private', 'rendered', 'secrets',
 }
 required = [
-    'README.md', 'LICENSE', 'Makefile',
+    'README.md', 'LICENSE', 'Makefile', '.gitattributes',
     'config/cluster.example.yaml',
     'inventory/hosts.example.ini',
     'docs/QUICK_START.md',
@@ -19,16 +19,39 @@ required = [
     'gitops/bootstrap/root-app.yaml',
     'ansible/playbooks/verify-platform-app-health.yml',
     'ansible/playbooks/repair-platform-service-path-consumers.yml',
+    'ansible/playbooks/repair-woodpecker.yml',
     'scripts/check_gitops_profile.py',
     'scripts/render_deployable_gitops_apps.py',
+    'scripts/run_validation.py',
     'scripts/bootstrap/validate-gitops-selection.sh',
+    'scripts/test_python_syntax.py',
+    'scripts/test_validation_runner.py',
+    'scripts/test_line_endings.py',
     'scripts/test_profile_checker.py',
     'scripts/test_deployable_renderer.py',
+    'scripts/test_gitops_selection_helper.py',
     'scripts/test_private_values_renderer.py',
+    'scripts/test_platform_secret_contract.py',
     'scripts/test_no_secrets.py',
+    'scripts/test_private_artifact_boundary.py',
+    'scripts/test_ci_reference_pinning.py',
     'scripts/test_shell_syntax.py',
+    'scripts/test_shell_strict_mode.py',
+    'scripts/test_ansible_shell_blocks.py',
+    'scripts/test_ansible_curl_timeout_contract.py',
+    'scripts/test_ansible_until_contract.py',
+    'scripts/test_ansible_failed_when_contract.py',
+    'scripts/test_ansible_no_log_contract.py',
     'scripts/test_docs_make_targets.py',
+    'scripts/test_markdown_links.py',
+    'scripts/test_example_templates.py',
     'scripts/test_ansible_playbook_references.py',
+    'scripts/test_gitops_application_contract.py',
+    'scripts/test_kustomization_references.py',
+    'scripts/test_gitops_helm_chart_pinning.py',
+    'scripts/test_gitops_image_pinning.py',
+    'scripts/test_makefile_help.py',
+    'scripts/test_validation_surface_parity.py',
     'scripts/validate_platform_contract.py',
 ]
 missing = [p for p in required if not (root / p).exists()]
@@ -38,8 +61,46 @@ if missing:
         print(f' - {item}')
     sys.exit(1)
 
+gitattributes_lines = {
+    line.strip()
+    for line in (root / '.gitattributes').read_text(encoding='utf-8').splitlines()
+    if line.strip() and not line.lstrip().startswith('#')
+}
+for required_attr in (
+    '.gitattributes text eol=lf',
+    '.gitignore text eol=lf',
+    '.helmignore text eol=lf',
+    '.gitkeep text eol=lf',
+    'LICENSE text eol=lf',
+    'Makefile text eol=lf',
+    'Dockerfile text eol=lf',
+    '*.env text eol=lf',
+    '*.env.example text eol=lf',
+    '*.json text eol=lf',
+    '*.lock text eol=lf',
+    '*.gotmpl text eol=lf',
+    '*.tpl text eol=lf',
+    '*.txt text eol=lf',
+    '*.sh text eol=lf',
+    '*.py text eol=lf',
+    '*.yml text eol=lf',
+    '*.yaml text eol=lf',
+    '*.ini text eol=lf',
+    '*.cfg text eol=lf',
+    '*.md text eol=lf',
+):
+    if required_attr not in gitattributes_lines:
+        print(f'Missing required git attribute: {required_attr}')
+        sys.exit(1)
+
+
 def should_skip(path: Path) -> bool:
-    return any(part in exclude_dirs or part.startswith('.shell-syntax-') for part in path.parts)
+    return any(
+        part in exclude_dirs
+        or part.startswith('.shell-syntax-')
+        or part.startswith('.ansible-shell-syntax-')
+        for part in path.parts
+    )
 
 
 conflicted = []

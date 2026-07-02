@@ -93,7 +93,7 @@ def check_profile(repo_root: Path, profile: str) -> int:
     findings: list[str] = []
 
     findings.extend(scan_path(applications_file, repo_root, allow_repo_url=True))
-    findings.extend(scan_path(projects_dir, repo_root))
+    findings.extend(scan_path(projects_dir, repo_root, allow_repo_url=True))
     for source_path in application_source_paths(applications_file, repo_root):
         findings.extend(scan_path(source_path, repo_root))
 
@@ -108,6 +108,14 @@ def check_profile(repo_root: Path, profile: str) -> int:
             print(f" - ... {len(findings) - 80} more", file=sys.stderr)
         print(
             "Render private values, commit safe non-secret deployment values, or use a private secret/config flow before production registration.",
+            file=sys.stderr,
+        )
+        print(
+            "Public template checkouts are expected to contain placeholders; do not use skip-incomplete output as production proof.",
+            file=sys.stderr,
+        )
+        print(
+            "Render deployment-specific values with platform-render-private-values or the first-deploy seed/private flow, then rerun platform-profile-check or platform-production-check.",
             file=sys.stderr,
         )
         return 1

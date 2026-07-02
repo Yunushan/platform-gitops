@@ -146,6 +146,7 @@
 
     - name: Load optional storage kernel modules
       ansible.builtin.command: "modprobe {{ item }}"
+      register: rke2_optional_kernel_module_load
       changed_when: false
       failed_when: false
       loop: "{{ rke2_optional_kernel_modules }}"
@@ -174,6 +175,7 @@
 
     - name: Reload NetworkManager configuration when available
       ansible.builtin.command: nmcli general reload
+      register: rke2_networkmanager_reload
       changed_when: rke2_networkmanager_cni_config.changed | default(false)
       failed_when: false
       when: rke2_networkmanager_cni_config.changed | default(false)
@@ -230,6 +232,7 @@
         name: "{{ rke2_iscsi_service_by_os_family.get(ansible_os_family, 'iscsid') }}"
         enabled: true
         state: started
+      register: rke2_iscsi_service_enable
       failed_when: false
 
     - name: Enable time synchronization service when available
@@ -237,6 +240,7 @@
         name: "{{ rke2_time_service_by_os_family.get(ansible_os_family, 'chronyd') }}"
         enabled: true
         state: started
+      register: rke2_time_service_enable
       failed_when: false
 
     - name: Check firewalld state

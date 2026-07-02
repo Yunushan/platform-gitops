@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: velero
 helmCharts:
   - name: velero
+    version: 12.1.0
     repo: https://vmware-tanzu.github.io/helm-charts
     releaseName: velero
     namespace: velero

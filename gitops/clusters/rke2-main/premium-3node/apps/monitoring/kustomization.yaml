@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: monitoring
 helmCharts:
   - name: kube-prometheus-stack
+    version: 87.4.0
     repo: https://prometheus-community.github.io/helm-charts
     releaseName: kube-prometheus-stack
     namespace: monitoring

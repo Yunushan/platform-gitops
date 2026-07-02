@@ -57,6 +57,8 @@ token: ${PLATFORM_TOKEN}
     assert_problem(f"password: {fake_secret}\n", "possible plaintext secret")
     if scanner.should_scan(root / ".shell-syntax-leftover" / "script.sh"):
         raise AssertionError("expected stale shell syntax temp directories to be skipped")
+    if scanner.should_scan(root / ".ansible-shell-syntax-leftover" / "block.sh"):
+        raise AssertionError("expected stale Ansible shell syntax temp directories to be skipped")
     if scanner.should_scan(root / "scripts" / "__pycache__" / "validate_no_secrets.pyc"):
         raise AssertionError("expected Python bytecode cache directories to be skipped")
     for local_dir in ("private", "rendered", "secrets"):

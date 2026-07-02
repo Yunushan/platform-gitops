@@ -1,0 +1,261 @@
+---
+- name: Repair Woodpecker CI rollout and runtime drift
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_woodpecker_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_TIMEOUT') }}"
+    platform_woodpecker_repair_expected_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_EXPECTED_IMAGE_TAG') }}"
+    platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
+    platform_woodpecker_repair_timeout_effective: "{{ platform_woodpecker_repair_timeout | default(platform_woodpecker_repair_timeout_from_env, true) | default(300, true) | int }}"
+    platform_woodpecker_repair_expected_image_tag_effective: "{{ platform_woodpecker_repair_expected_image_tag | default(platform_woodpecker_repair_expected_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('3.16.0', true) }}"
+  tasks:
+    - name: Show Woodpecker state before repair
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        echo "===== Argo CD Woodpecker application ====="
+        "$K" --kubeconfig "$C" -n argocd get application/woodpecker -o wide || true
+        echo "===== Woodpecker pods ====="
+        "$K" --kubeconfig "$C" -n woodpecker get pods -o wide || true
+        echo "===== Woodpecker services/endpoints ====="
+        "$K" --kubeconfig "$C" -n woodpecker get svc,endpoints,endpointslice,ingress,pvc -o wide || true
+        echo "===== Woodpecker pod images ====="
+        "$K" --kubeconfig "$C" -n woodpecker get pods \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .spec.containers[*]}{.image}{" "}{end}{"\n"}{end}' || true
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_repair_state_before
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Woodpecker state before repair
+      ansible.builtin.debug:
+        var: platform_woodpecker_repair_state_before.stdout_lines
+      run_once: true
+
+    - name: Refresh and sync Woodpecker Argo CD application
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if ! "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
+          echo "argocd_application_crd=absent"
+          exit 0
+        fi
+        if ! "$K" --kubeconfig "$C" -n argocd get application/woodpecker >/dev/null 2>&1; then
+          echo "argocd_application_woodpecker=absent"
+          exit 0
+        fi
+        "$K" --kubeconfig "$C" -n argocd annotate application/woodpecker \
+          argocd.argoproj.io/refresh=hard --overwrite
+        "$K" --kubeconfig "$C" -n argocd patch application/woodpecker --type merge \
+          -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' || true
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_argocd_refresh
+      changed_when: >-
+        'annotated' in platform_woodpecker_argocd_refresh.stdout or
+        'patched' in platform_woodpecker_argocd_refresh.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for Woodpecker Argo CD sync after repair
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
+        if ! "$K" --kubeconfig "$C" -n argocd get application/woodpecker >/dev/null 2>&1; then
+          echo "argocd_application_woodpecker=absent"
+          exit 0
+        fi
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          sync_status="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
+          health_status="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+          operation_phase="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
+          conditions="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{range .status.conditions[*]}{.type}{":"}{.message}{";"}{end}' 2>/dev/null || true)"
+          echo "woodpecker sync=${sync_status:-unknown} health=${health_status:-unknown} operation=${operation_phase:-none} conditions=${conditions:-none}"
+          case "${operation_phase}" in
+            Error|Failed)
+              exit 1
+              ;;
+          esac
+          if [ "${sync_status}" = "Synced" ] && [ "${operation_phase}" != "Running" ]; then
+            exit 0
+          fi
+          sleep 5
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_argocd_sync_wait
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for Woodpecker server and agents after repair
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
+        if ! "$K" --kubeconfig "$C" get namespace woodpecker >/dev/null 2>&1; then
+          echo "woodpecker_namespace=absent"
+          exit 1
+        fi
+        wait_controller() {
+          role="$1"
+          shift
+          found=false
+          for controller in "$@"; do
+            if "$K" --kubeconfig "$C" -n woodpecker get "${controller}" >/dev/null 2>&1; then
+              found=true
+              echo "waiting role=${role} controller=${controller}"
+              "$K" --kubeconfig "$C" -n woodpecker rollout status "${controller}" --timeout="${TIMEOUT}s"
+              return $?
+            fi
+          done
+          echo "result=fail reason=missing-woodpecker-${role}-controller"
+          return 1
+        }
+        wait_controller server statefulset/woodpecker-server deployment/woodpecker-server
+        wait_controller agent statefulset/woodpecker-agent deployment/woodpecker-agent
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_rollout_wait
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Verify Woodpecker runtime images and service endpoints after repair
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        EXPECTED_TAG="{{ platform_woodpecker_repair_expected_image_tag_effective }}"
+        failed=0
+        server_seen=0
+        agent_seen=0
+        if ! "$K" --kubeconfig "$C" get namespace woodpecker >/dev/null 2>&1; then
+          echo "result=fail reason=woodpecker-namespace-absent"
+          exit 1
+        fi
+        echo "expected_woodpecker_image_tag=${EXPECTED_TAG}"
+        pods="$("$K" --kubeconfig "$C" -n woodpecker get pods -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.ready}{","}{.restartCount}{","}{.state.waiting.reason}{";"}{end}{"|"}{range .spec.containers[*]}{.image}{" "}{end}{"\n"}{end}' 2>/dev/null || true)"
+        pods_file="$(mktemp)"
+        printf '%s\n' "${pods}" > "${pods_file}"
+        while IFS='|' read -r pod phase statuses images; do
+          [ -n "${pod}" ] || continue
+          role=unknown
+          expected_repo=
+          case "${pod}" in
+            woodpecker-server*)
+              role=server
+              expected_repo=woodpeckerci/woodpecker-server
+              server_seen=$((server_seen + 1))
+              ;;
+            woodpecker-agent*)
+              role=agent
+              expected_repo=woodpeckerci/woodpecker-agent
+              agent_seen=$((agent_seen + 1))
+              ;;
+            *)
+              continue
+              ;;
+          esac
+          echo "role=${role} pod=${pod} phase=${phase:-unknown} statuses=${statuses:-unknown} images=${images:-unknown}"
+          if [ "${phase}" != "Running" ]; then
+            echo "result=fail reason=woodpecker-pod-not-running role=${role} pod=${pod} phase=${phase:-unknown}"
+            failed=1
+          fi
+          if ! printf '%s\n' "${statuses}" | grep -q '^true,'; then
+            echo "result=fail reason=woodpecker-pod-not-ready role=${role} pod=${pod} statuses=${statuses:-unknown}"
+            failed=1
+          fi
+          for image in ${images}; do
+            case "${image}" in
+              *"${expected_repo}:${EXPECTED_TAG}") ;;
+              *)
+                echo "result=fail reason=woodpecker-image-tag-mismatch role=${role} pod=${pod} image=${image} expected_repo=${expected_repo} expected_tag=${EXPECTED_TAG}"
+                failed=1
+                ;;
+            esac
+          done
+        done < "${pods_file}"
+        rm -f "${pods_file}"
+        if [ "${server_seen}" -lt 1 ]; then
+          echo "result=fail reason=woodpecker-server-pods-missing"
+          failed=1
+        fi
+        if [ "${agent_seen}" -lt 1 ]; then
+          echo "result=fail reason=woodpecker-agent-pods-missing"
+          failed=1
+        fi
+        ready_endpoints="$("$K" --kubeconfig "$C" -n woodpecker get endpointslice \
+          -l kubernetes.io/service-name=woodpecker-server \
+          -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+          awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
+        echo "woodpecker_server_ready_endpoints=${ready_endpoints}"
+        if [ "${ready_endpoints}" -lt 1 ]; then
+          echo "result=fail reason=woodpecker-server-has-no-ready-endpoints"
+          failed=1
+        fi
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_runtime_verify
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Stop after Woodpecker repair failure
+      ansible.builtin.fail:
+        msg: |
+          Woodpecker did not become reconciled, rolled out, and image-aligned
+          within {{ platform_woodpecker_repair_timeout_effective }}s.
+
+          Argo CD sync wait:
+          rc={{ (platform_woodpecker_argocd_sync_wait | default({})).rc | default('not run', true) }}
+          stdout:
+          {{ (platform_woodpecker_argocd_sync_wait | default({})).stdout | default('not run', true) }}
+          stderr:
+          {{ (platform_woodpecker_argocd_sync_wait | default({})).stderr | default('not run', true) }}
+
+          Rollout wait:
+          rc={{ (platform_woodpecker_rollout_wait | default({})).rc | default('not run', true) }}
+          stdout:
+          {{ (platform_woodpecker_rollout_wait | default({})).stdout | default('not run', true) }}
+          stderr:
+          {{ (platform_woodpecker_rollout_wait | default({})).stderr | default('not run', true) }}
+
+          Runtime verification:
+          rc={{ (platform_woodpecker_runtime_verify | default({})).rc | default('not run', true) }}
+          stdout:
+          {{ (platform_woodpecker_runtime_verify | default({})).stdout | default('not run', true) }}
+          stderr:
+          {{ (platform_woodpecker_runtime_verify | default({})).stderr | default('not run', true) }}
+
+          If the runtime still shows an old `next-*` image, sync your private
+          GitOps repo into Argo CD and rerun:
+          make platform-woodpecker-repair
+      run_once: true
+      when: >
+        ((platform_woodpecker_argocd_sync_wait | default({})).rc | default(0) | int != 0) or
+        ((platform_woodpecker_rollout_wait | default({})).rc | default(0) | int != 0) or
+        ((platform_woodpecker_runtime_verify | default({})).rc | default(0) | int != 0)
+
+    - name: Show successful Woodpecker repair result
+      ansible.builtin.debug:
+        msg: |
+          Woodpecker Argo CD sync, server/agent rollout, runtime image tag, and
+          server service endpoint checks passed. Run `make platform-ci-health`
+          for the focused Argo CD/Woodpecker ingress and service-path gate.
+      run_once: true

@@ -1,9 +1,8 @@
 stages:
-  - test
-  - build
+  - validate
 
-test:
+validate:
+  stage: validate
   image: alpine:3.20
-  stage: test
   script:
-    - echo "run tests here"
+    - sh app.sh

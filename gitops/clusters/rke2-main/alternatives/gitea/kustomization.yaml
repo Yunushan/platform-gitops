@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: gitea
 helmCharts:
   - name: gitea
+    version: 12.6.0
     repo: https://dl.gitea.com/charts/
     releaseName: gitea
     namespace: gitea

@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: cert-manager
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   project: platform
   source:
@@ -25,6 +27,8 @@ kind: Application
 metadata:
   name: trust-manager
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   project: platform
   source:
@@ -47,6 +51,8 @@ kind: Application
 metadata:
   name: step-ca
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: platform
   source:
@@ -69,6 +75,8 @@ kind: Application
 metadata:
   name: metallb
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   project: platform
   source:
@@ -91,6 +99,8 @@ kind: Application
 metadata:
   name: traefik
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   project: platform
   source:
@@ -113,6 +123,8 @@ kind: Application
 metadata:
   name: longhorn
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   project: platform
   source:
@@ -135,6 +147,8 @@ kind: Application
 metadata:
   name: cloudnativepg
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: platform
   source:
@@ -158,6 +172,8 @@ kind: Application
 metadata:
   name: argocd-ha
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
 spec:
   project: platform
   source:
@@ -180,6 +196,8 @@ kind: Application
 metadata:
   name: forgejo
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   project: platform
   source:
@@ -202,6 +220,8 @@ kind: Application
 metadata:
   name: woodpecker
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
 spec:
   project: platform
   source:
@@ -224,6 +244,8 @@ kind: Application
 metadata:
   name: harbor
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
 spec:
   project: platform
   source:
@@ -246,6 +268,8 @@ kind: Application
 metadata:
   name: monitoring
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   project: platform
   source:
@@ -268,6 +292,8 @@ kind: Application
 metadata:
   name: loki
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
 spec:
   project: platform
   source:
@@ -290,6 +316,8 @@ kind: Application
 metadata:
   name: velero
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   project: platform
   source:

@@ -362,6 +362,7 @@
       ansible.builtin.systemd:
         name: rke2-server
         state: stopped
+      register: rke2_recovery_stop_server
       failed_when: false
 
     - name: Stop lingering RKE2 processes
@@ -369,6 +370,7 @@
         /usr/local/bin/rke2-killall.sh || /usr/bin/rke2-killall.sh || true
       args:
         executable: /bin/bash
+      register: rke2_recovery_killall
       changed_when: false
       failed_when: false
 
@@ -385,6 +387,7 @@
         fi
       args:
         executable: /bin/bash
+      register: rke2_recovery_stop_installers
       changed_when: false
       failed_when: false
 
@@ -414,6 +417,7 @@
 
     - name: Reset failed RKE2 service state
       ansible.builtin.command: systemctl reset-failed rke2-server
+      register: rke2_recovery_reset_failed_service
       changed_when: false
       failed_when: false
 
@@ -691,7 +695,7 @@
             echo "===== recent journal ====="
             journalctl -u rke2-server -n {{ rke2_recovery_diagnostic_lines }} --no-pager || true
             echo "===== supervisor endpoint test ====="
-            curl -sk --connect-timeout 5 https://{{ rke2_join_endpoint_effective }}:9345/cacerts >/dev/null && echo "supervisor=OK" || echo "supervisor=FAIL"
+            curl -sk --connect-timeout 5 --max-time 15 https://{{ rke2_join_endpoint_effective }}:9345/cacerts >/dev/null && echo "supervisor=OK" || echo "supervisor=FAIL"
           args:
             executable: /bin/bash
           register: rke2_joiner_recovery_diagnostics

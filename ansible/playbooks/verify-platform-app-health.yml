@@ -10,23 +10,71 @@
     platform_app_health_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_CONNECT_TIMEOUT') }}"
     platform_app_health_max_time_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_MAX_TIME') }}"
     platform_app_health_required_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_REQUIRED_APPS') }}"
+    platform_app_health_include_existing_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS') }}"
+    platform_app_health_forbid_temporary_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO') }}"
+    platform_app_health_expected_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REPO_URL') }}"
+    platform_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_URL') }}"
     platform_app_health_namespaces_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NAMESPACES') }}"
     platform_app_health_storage_classes_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_STORAGE_CLASSES') }}"
+    platform_app_health_certificates_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_CERTIFICATES') }}"
+    platform_app_health_trust_bundles_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_TRUST_BUNDLES') }}"
+    platform_app_health_cnpg_clusters_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_CNPG_CLUSTERS') }}"
     platform_app_health_gui_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_GUI_APPS') }}"
+    platform_app_health_registry_api_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_REGISTRY_API') }}"
+    platform_app_health_monitoring_api_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_MONITORING_API') }}"
+    platform_app_health_step_ca_api_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_STEP_CA_API') }}"
+    platform_app_health_loki_api_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_LOKI_API') }}"
+    platform_app_health_velero_backup_storage_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE') }}"
+    platform_app_health_velero_schedules_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_VELERO_SCHEDULES') }}"
+    platform_app_health_app_secrets_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_APP_SECRETS') }}"
+    platform_app_health_argocd_runtime_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_ARGOCD_RUNTIME') }}"
+    platform_app_health_longhorn_runtime_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_LONGHORN_RUNTIME') }}"
+    platform_app_health_ha_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HA_REPLICAS') }}"
     platform_app_health_http_redirect_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HTTP_REDIRECT') }}"
     platform_app_health_node_ingress_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT') }}"
     platform_app_health_service_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE') }}"
     platform_app_health_service_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_TIMEOUT') }}"
+    platform_app_health_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG') }}"
+    platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
+    platform_harbor_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_ADMIN_SECRET_NAME') }}"
+    platform_harbor_secret_key_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_SECRET_KEY_SECRET_NAME') }}"
+    platform_woodpecker_oauth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_FORGEJO_OAUTH_SECRET_NAME') }}"
+    platform_woodpecker_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_SECRET_NAME') }}"
+    platform_loki_object_storage_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'LOKI_OBJECT_STORAGE_SECRET_NAME') }}"
+    platform_velero_credentials_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'VELERO_CREDENTIALS_SECRET_NAME') }}"
     platform_app_health_connect_timeout_effective: "{{ platform_app_health_connect_timeout | default(platform_app_health_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_max_time_effective: "{{ platform_app_health_max_time | default(platform_app_health_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca metallb traefik longhorn cloudnativepg argocd-ha forgejo woodpecker harbor monitoring loki velero', true) }}"
+    platform_app_health_include_existing_apps_effective: "{{ platform_app_health_include_existing_apps | default(platform_app_health_include_existing_apps_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_forbid_temporary_repo_effective: "{{ platform_app_health_forbid_temporary_repo | default(platform_app_health_forbid_temporary_repo_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_expected_repo_url_effective: "{{ platform_app_health_expected_repo_url | default(platform_app_health_expected_repo_url_from_env, true) | default(platform_repo_url_from_env, true) | default('', true) }}"
     platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default('argocd cert-manager step-ca cnpg-system forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
     platform_app_health_storage_classes_effective: "{{ platform_app_health_storage_classes | default(platform_app_health_storage_classes_from_env, true) | default('longhorn-standard longhorn-critical longhorn-cache', true) }}"
+    platform_app_health_certificates_effective: "{{ platform_app_health_certificates | default(platform_app_health_certificates_from_env, true) | default('auto', true) }}"
+    platform_app_health_trust_bundles_effective: "{{ platform_app_health_trust_bundles | default(platform_app_health_trust_bundles_from_env, true) | default('auto', true) }}"
+    platform_app_health_cnpg_clusters_effective: "{{ platform_app_health_cnpg_clusters | default(platform_app_health_cnpg_clusters_from_env, true) | default('auto', true) }}"
     platform_app_health_gui_apps_effective: "{{ platform_app_health_gui_apps | default(platform_app_health_gui_apps_from_env, true) | default('argocd forgejo harbor woodpecker grafana prometheus', true) }}"
+    platform_app_health_registry_api_effective: "{{ platform_app_health_registry_api | default(platform_app_health_registry_api_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_monitoring_api_effective: "{{ platform_app_health_monitoring_api | default(platform_app_health_monitoring_api_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_step_ca_api_effective: "{{ platform_app_health_step_ca_api | default(platform_app_health_step_ca_api_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_loki_api_effective: "{{ platform_app_health_loki_api | default(platform_app_health_loki_api_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_velero_backup_storage_effective: "{{ platform_app_health_velero_backup_storage | default(platform_app_health_velero_backup_storage_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_velero_schedules_effective: "{{ platform_app_health_velero_schedules | default(platform_app_health_velero_schedules_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_app_secrets_effective: "{{ platform_app_health_app_secrets | default(platform_app_health_app_secrets_from_env, true) | default('auto', true) }}"
+    platform_app_health_argocd_runtime_effective: "{{ platform_app_health_argocd_runtime | default(platform_app_health_argocd_runtime_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_longhorn_runtime_effective: "{{ platform_app_health_longhorn_runtime | default(platform_app_health_longhorn_runtime_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_ha_replicas_effective: "{{ platform_app_health_ha_replicas | default(platform_app_health_ha_replicas_from_env, true) | default(true, true) | bool }}"
     platform_app_health_http_redirect_effective: "{{ platform_app_health_http_redirect | default(platform_app_health_http_redirect_from_env, true) | default(true, true) | bool }}"
     platform_app_health_node_ingress_strict_effective: "{{ platform_app_health_node_ingress_strict | default(platform_app_health_node_ingress_strict_from_env, true) | default(false, true) | bool }}"
     platform_app_health_service_check_image_effective: "{{ platform_app_health_service_check_image | default(platform_app_health_service_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_app_health_service_check_timeout_effective: "{{ platform_app_health_service_check_timeout | default(platform_app_health_service_check_timeout_from_env, true) | default(120, true) | string | regex_replace('s$', '') | int }}"
+    platform_app_health_woodpecker_image_tag_effective: "{{ platform_app_health_woodpecker_image_tag | default(platform_app_health_woodpecker_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('3.16.0', true) }}"
+    platform_harbor_admin_secret_name_effective: "{{ platform_harbor_admin_secret_name | default(platform_harbor_admin_secret_name_from_env, true) | default('harbor-admin', true) }}"
+    platform_harbor_secret_key_secret_name_effective: "{{ platform_harbor_secret_key_secret_name | default(platform_harbor_secret_key_secret_name_from_env, true) | default('harbor-secret-key', true) }}"
+    platform_woodpecker_oauth_secret_name_effective: "{{ platform_woodpecker_oauth_secret_name | default(platform_woodpecker_oauth_secret_name_from_env, true) | default('woodpecker-forgejo-oauth', true) }}"
+    platform_woodpecker_database_secret_name_effective: "{{ platform_woodpecker_database_secret_name | default(platform_woodpecker_database_secret_name_from_env, true) | default('woodpecker-database', true) }}"
+    platform_loki_object_storage_secret_name_effective: "{{ platform_loki_object_storage_secret_name | default(platform_loki_object_storage_secret_name_from_env, true) | default('loki-object-storage', true) }}"
+    platform_velero_credentials_secret_name_effective: "{{ platform_velero_credentials_secret_name | default(platform_velero_credentials_secret_name_from_env, true) | default('velero-credentials', true) }}"
   vars_files:
     - ../vars/platform-hostnames.yml
 
@@ -45,9 +93,20 @@
           - platform_app_health_required_apps_effective | length > 0
           - platform_app_health_namespaces_effective | length > 0
           - platform_app_health_storage_classes_effective | length > 0
+          - platform_app_health_certificates_effective | length > 0
+          - platform_app_health_trust_bundles_effective | length > 0
+          - platform_app_health_cnpg_clusters_effective | length > 0
+          - platform_app_health_app_secrets_effective | length > 0
           - platform_app_health_gui_apps_effective | length > 0
           - platform_app_health_service_check_image_effective | length > 0
           - platform_app_health_service_check_timeout_effective | int > 0
+          - platform_app_health_woodpecker_image_tag_effective | length > 0
+          - platform_harbor_admin_secret_name_effective | length > 0
+          - platform_harbor_secret_key_secret_name_effective | length > 0
+          - platform_woodpecker_oauth_secret_name_effective | length > 0
+          - platform_woodpecker_database_secret_name_effective | length > 0
+          - platform_loki_object_storage_secret_name_effective | length > 0
+          - platform_velero_credentials_secret_name_effective | length > 0
         fail_msg: "Set rke2_ingress_vip, platform_domain/rke2_platform_domain, platform_argocd_host, and platform_ci_host/platform_woodpecker_host."
       run_once: true
 
@@ -57,6 +116,7 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         required_apps="{{ platform_app_health_required_apps_effective }}"
+        include_existing_apps="{{ platform_app_health_include_existing_apps_effective | ternary('true', 'false') }}"
         existing_apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null || true)"
         failed=0
         seen=" "
@@ -66,12 +126,18 @@
           exit 1
         fi
 
-        if [ -z "${existing_apps}${required_apps}" ]; then
+        if [ "${include_existing_apps}" = "true" ]; then
+          app_check_list="${existing_apps} ${required_apps}"
+        else
+          app_check_list="${required_apps}"
+        fi
+
+        if [ -z "${app_check_list}" ]; then
           echo "result=fail reason=no-applications"
           exit 1
         fi
 
-        for app in ${existing_apps} ${required_apps}; do
+        for app in ${app_check_list}; do
           case "${seen}" in
             *" ${app} "*) continue ;;
           esac
@@ -125,6 +191,98 @@
     - name: Print Argo CD application health results
       ansible.builtin.debug:
         var: platform_app_health_argocd_app_probe.stdout_lines
+      run_once: true
+
+    - name: Verify Argo CD application source repositories are production-safe
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        include_existing_apps="{{ platform_app_health_include_existing_apps_effective | ternary('true', 'false') }}"
+        forbid_temporary_repo="{{ platform_app_health_forbid_temporary_repo_effective | ternary('true', 'false') }}"
+        expected_repo_url="{{ platform_app_health_expected_repo_url_effective }}"
+        existing_apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null || true)"
+        failed=0
+        seen=" "
+
+        echo "===== Argo CD application source repositories ====="
+        if [ -n "${expected_repo_url}" ]; then
+          echo "expected_repo_url=${expected_repo_url}"
+        else
+          echo "expected_repo_url=not-set"
+        fi
+        if [ "${forbid_temporary_repo}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-forbid-temporary-repo-disabled"
+          exit 0
+        fi
+
+        if [ "${include_existing_apps}" = "true" ]; then
+          app_check_list="${existing_apps} ${required_apps}"
+        else
+          app_check_list="${required_apps}"
+        fi
+
+        if [ -z "${app_check_list}" ]; then
+          echo "result=fail reason=no-applications"
+          exit 1
+        fi
+
+        for app in ${app_check_list}; do
+          case "${seen}" in
+            *" ${app} "*) continue ;;
+          esac
+          seen="${seen}${app} "
+          if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+            echo "app=${app} result=fail reason=missing-application"
+            failed=1
+            continue
+          fi
+          repo_urls="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" -o jsonpath='{range .spec.sources[*]}{.repoURL}{"\n"}{end}{.spec.source.repoURL}{"\n"}' 2>/dev/null | sed '/^$/d' | sort -u || true)"
+          if [ -z "${repo_urls}" ]; then
+            echo "app=${app} result=fail reason=missing-repo-url"
+            failed=1
+            continue
+          fi
+          while IFS= read -r repo_url; do
+            [ -n "${repo_url}" ] || continue
+            result=ok
+            reason=production-source
+            case "${repo_url}" in
+              git://*)
+                result=fail
+                reason=temporary-or-insecure-git-protocol
+                ;;
+              *:9418*|*seed-git*)
+                result=fail
+                reason=temporary-seed-git-source
+                ;;
+            esac
+            if [ -n "${expected_repo_url}" ] && [ "${repo_url}" != "${expected_repo_url}" ]; then
+              result=fail
+              reason=unexpected-repo-url
+            fi
+            echo "app=${app} repo_url=${repo_url} expected_repo_url=${expected_repo_url:-not-set} result=${result} reason=${reason}"
+            if [ "${result}" != "ok" ]; then
+              failed=1
+            fi
+          done <<EOF
+        ${repo_urls}
+        EOF
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_argocd_source_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Argo CD application source repository results
+      ansible.builtin.debug:
+        var: platform_app_health_argocd_source_probe.stdout_lines
       run_once: true
 
     - name: Verify platform namespace pod readiness
@@ -190,6 +348,1169 @@
     - name: Print platform pod readiness results
       ansible.builtin.debug:
         var: platform_app_health_pod_probe.stdout_lines
+      run_once: true
+
+    - name: Verify Argo CD runtime component coverage
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        CHECK_ARGOCD_RUNTIME="{{ platform_app_health_argocd_runtime_effective | ternary('true', 'false') }}"
+        failed=0
+
+        if [ "${CHECK_ARGOCD_RUNTIME}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-argocd-runtime-disabled"
+          exit 0
+        fi
+
+        echo "===== Argo CD runtime component coverage ====="
+        if ! "$K" --kubeconfig "$C" get namespace/argocd >/dev/null 2>&1; then
+          echo "result=fail reason=missing-namespace namespace=argocd"
+          exit 1
+        fi
+
+        sanitize_uint() {
+          case "${1:-}" in
+            ''|*[!0-9]*) printf '0' ;;
+            *) printf '%s' "$1" ;;
+          esac
+        }
+
+        check_workload_ready() {
+          workload="$1"
+          min_ready="$2"
+          if ! "$K" --kubeconfig "$C" -n argocd get "${workload}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-argocd-workload workload=${workload}"
+            failed=1
+            return
+          fi
+
+          kind="${workload%%/*}"
+          case "${kind}" in
+            deployment|deploy|deployments)
+              raw="$("$K" --kubeconfig "$C" -n argocd get "${workload}" -o jsonpath='{.spec.replicas}{"|"}{.status.readyReplicas}{"|"}{.status.availableReplicas}{"\n"}' 2>/dev/null || true)"
+              ;;
+            statefulset|sts|statefulsets)
+              raw="$("$K" --kubeconfig "$C" -n argocd get "${workload}" -o jsonpath='{.spec.replicas}{"|"}{.status.readyReplicas}{"|"}{.status.availableReplicas}{"\n"}' 2>/dev/null || true)"
+              ;;
+            *)
+              echo "result=fail reason=unsupported-argocd-workload-kind workload=${workload}"
+              failed=1
+              return
+              ;;
+          esac
+
+          IFS='|' read -r desired ready available <<< "${raw}"
+          desired="$(sanitize_uint "${desired:-0}")"
+          ready="$(sanitize_uint "${ready:-0}")"
+          available="$(sanitize_uint "${available:-${ready}}")"
+
+          echo "workload=${workload} desired=${desired} ready=${ready} available=${available} min_ready=${min_ready}"
+          if [ "${desired}" -lt 1 ] || [ "${ready}" -lt "${min_ready}" ] || [ "${available}" -lt "${min_ready}" ]; then
+            echo "result=fail reason=argocd-workload-not-ready workload=${workload}"
+            failed=1
+          fi
+        }
+
+        service_ready_endpoint_count() {
+          service="$1"
+          "$K" --kubeconfig "$C" -n argocd get endpointslice \
+            -l "kubernetes.io/service-name=${service}" \
+            -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+            awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }'
+        }
+
+        check_service_ready() {
+          service="$1"
+          port="$2"
+          if ! "$K" --kubeconfig "$C" -n argocd get "service/${service}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-argocd-service service=${service}"
+            failed=1
+            return
+          fi
+
+          cluster_ip="$("$K" --kubeconfig "$C" -n argocd get "service/${service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+          endpoints="$(service_ready_endpoint_count "${service}")"
+          echo "service=${service} port=${port} cluster_ip=${cluster_ip:-missing} ready_endpoints=${endpoints}"
+          if [ -z "${cluster_ip}" ] || [ "${cluster_ip}" = "None" ] || [ "${endpoints}" -lt 1 ]; then
+            echo "result=fail reason=argocd-service-has-no-ready-endpoints service=${service}"
+            failed=1
+          fi
+        }
+
+        service_name_from_hostport() {
+          value="$1"
+          value="${value%%,*}"
+          value="${value%%:*}"
+          value="${value%%.*}"
+          printf '%s' "${value}"
+        }
+
+        repo_server="$("$K" --kubeconfig "$C" -n argocd get configmap/argocd-cmd-params-cm -o jsonpath='{.data.repo\.server}' 2>/dev/null || true)"
+        redis_server="$("$K" --kubeconfig "$C" -n argocd get configmap/argocd-cmd-params-cm -o jsonpath='{.data.redis\.server}' 2>/dev/null || true)"
+        repo_server="${repo_server:-argocd-repo-server:8081}"
+        redis_server="${redis_server:-argocd-redis:6379}"
+        repo_service="$(service_name_from_hostport "${repo_server}")"
+        redis_service="$(service_name_from_hostport "${redis_server}")"
+
+        echo "configured_repo_server=${repo_server} repo_service=${repo_service}"
+        echo "configured_redis_server=${redis_server} redis_service=${redis_service}"
+
+        check_workload_ready deployment/argocd-server 1
+        check_workload_ready deployment/argocd-repo-server 1
+        check_workload_ready statefulset/argocd-application-controller 1
+        check_service_ready argocd-server 80
+        check_service_ready "${repo_service}" 8081
+        check_service_ready "${redis_service}" 6379
+
+        if [ "${failed}" -eq 0 ]; then
+          echo "result=ok"
+        fi
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_argocd_runtime_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Argo CD runtime component coverage results
+      ansible.builtin.debug:
+        var: platform_app_health_argocd_runtime_probe.stdout_lines
+      run_once: true
+
+    - name: Verify critical HA workload replica coverage
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps=" {{ platform_app_health_required_apps_effective }} "
+        REQUIRE_HA_REPLICAS="{{ platform_app_health_ha_replicas_effective | ternary('true', 'false') }}"
+        failed=0
+
+        if [ "${REQUIRE_HA_REPLICAS}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-ha-replicas-disabled"
+          exit 0
+        fi
+
+        required_app_present() {
+          case "${required_apps}" in
+            *" $1 "*) return 0 ;;
+            *) return 1 ;;
+          esac
+        }
+
+        sanitize_uint() {
+          case "${1:-}" in
+            ''|*[!0-9]*) printf '0' ;;
+            *) printf '%s' "$1" ;;
+          esac
+        }
+
+        check_workload() {
+          namespace="$1"
+          workload="$2"
+          min_desired="$3"
+          min_ready="$4"
+          label="$5"
+
+          echo "===== HA workload ${label} (${namespace}/${workload}) ====="
+          if ! "$K" --kubeconfig "$C" -n "${namespace}" get "${workload}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-ha-workload workload=${namespace}/${workload}"
+            failed=1
+            return
+          fi
+
+          kind="${workload%%/*}"
+          case "${kind}" in
+            deployment|deploy|deployments)
+              raw="$("$K" --kubeconfig "$C" -n "${namespace}" get "${workload}" -o jsonpath='{.spec.replicas}{"|"}{.status.updatedReplicas}{"|"}{.status.readyReplicas}{"|"}{.status.availableReplicas}{"\n"}' 2>/dev/null || true)"
+              ;;
+            statefulset|sts|statefulsets)
+              raw="$("$K" --kubeconfig "$C" -n "${namespace}" get "${workload}" -o jsonpath='{.spec.replicas}{"|"}{.status.updatedReplicas}{"|"}{.status.readyReplicas}{"|"}{.status.availableReplicas}{"\n"}' 2>/dev/null || true)"
+              ;;
+            daemonset|ds|daemonsets)
+              raw="$("$K" --kubeconfig "$C" -n "${namespace}" get "${workload}" -o jsonpath='{.status.desiredNumberScheduled}{"|"}{.status.updatedNumberScheduled}{"|"}{.status.numberReady}{"|"}{.status.numberAvailable}{"\n"}' 2>/dev/null || true)"
+              ;;
+            *)
+              echo "result=fail reason=unsupported-ha-workload-kind workload=${namespace}/${workload}"
+              failed=1
+              return
+              ;;
+          esac
+
+          IFS='|' read -r desired updated ready available <<< "${raw}"
+          desired="$(sanitize_uint "${desired:-0}")"
+          updated="$(sanitize_uint "${updated:-0}")"
+          ready="$(sanitize_uint "${ready:-0}")"
+          available="$(sanitize_uint "${available:-${ready}}")"
+          echo "desired=${desired} updated=${updated} ready=${ready} available=${available} min_desired=${min_desired} min_ready=${min_ready}"
+
+          if [ "${desired}" -lt "${min_desired}" ]; then
+            echo "result=fail reason=ha-workload-replicas-below-minimum"
+            failed=1
+            return
+          fi
+
+          if [ "${updated}" -lt "${min_ready}" ] || [ "${ready}" -lt "${min_ready}" ] || [ "${available}" -lt "${min_ready}" ]; then
+            echo "result=fail reason=ha-workload-ready-replicas-below-minimum"
+            failed=1
+            return
+          fi
+
+          echo "result=ok"
+        }
+
+        check_first_workload() {
+          namespace="$1"
+          min_desired="$2"
+          min_ready="$3"
+          label="$4"
+          shift 4
+
+          for workload in "$@"; do
+            if "$K" --kubeconfig "$C" -n "${namespace}" get "${workload}" >/dev/null 2>&1; then
+              check_workload "${namespace}" "${workload}" "${min_desired}" "${min_ready}" "${label}"
+              return
+            fi
+          done
+
+          echo "===== HA workload ${label} (${namespace}) ====="
+          echo "result=fail reason=missing-ha-workload candidates=$*"
+          failed=1
+        }
+
+        if required_app_present argocd-ha; then
+          check_workload argocd deployment/argocd-server 2 2 argocd-server
+          check_workload argocd deployment/argocd-repo-server 2 2 argocd-repo-server
+          check_workload argocd deployment/argocd-applicationset-controller 2 2 argocd-applicationset-controller
+          check_workload argocd statefulset/argocd-redis-ha-server 3 3 argocd-redis-ha-server
+        else
+          echo "result=skip reason=argocd-ha-not-required-by-platform-app-health-required-apps"
+        fi
+
+        if required_app_present traefik; then
+          check_first_workload traefik 3 3 traefik deployment/platform-traefik deployment/traefik
+        else
+          echo "result=skip reason=traefik-not-required-by-platform-app-health-required-apps"
+        fi
+
+        if required_app_present woodpecker; then
+          check_first_workload woodpecker 2 2 woodpecker-server statefulset/woodpecker-server deployment/woodpecker-server
+          check_first_workload woodpecker 3 3 woodpecker-agent statefulset/woodpecker-agent deployment/woodpecker-agent
+        else
+          echo "result=skip reason=woodpecker-not-required-by-platform-app-health-required-apps"
+        fi
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_ha_replica_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print HA workload replica coverage results
+      ansible.builtin.debug:
+        var: platform_app_health_ha_replica_probe.stdout_lines
+      run_once: true
+
+    - name: Verify Woodpecker runtime image tags
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps=" {{ platform_app_health_required_apps_effective }} "
+        expected_tag="{{ platform_app_health_woodpecker_image_tag_effective }}"
+        failed=0
+
+        case "${required_apps}" in
+          *" woodpecker "*) ;;
+          *)
+            echo "result=skip reason=woodpecker-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        echo "===== Woodpecker runtime image tags ====="
+        echo "expected_tag=${expected_tag}"
+        if ! "$K" --kubeconfig "$C" get namespace/woodpecker >/dev/null 2>&1; then
+          echo "result=fail reason=missing-namespace namespace=woodpecker"
+          exit 1
+        fi
+
+        pods="$("$K" --kubeconfig "$C" -n woodpecker get pods -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .spec.containers[*]}{.image}{" "}{end}{"\n"}{end}' 2>/dev/null || true)"
+        if [ -z "${pods}" ]; then
+          echo "result=fail reason=no-woodpecker-pods"
+          exit 1
+        fi
+
+        check_role() {
+          role="$1"
+          prefix="$2"
+          role_pods="$(printf '%s\n' "${pods}" | awk -F'|' -v prefix="${prefix}" '$1 ~ prefix { print }')"
+          count="$(printf '%s\n' "${role_pods}" | awk 'NF { count++ } END { print count + 0 }')"
+          if [ "${count}" -eq 0 ]; then
+            echo "result=fail reason=missing-woodpecker-role role=${role}"
+            failed=1
+            return
+          fi
+
+          while IFS='|' read -r pod images; do
+            [ -n "${pod}" ] || continue
+            for image in ${images}; do
+              [ -n "${image}" ] || continue
+              echo "role=${role} pod=${pod} image=${image}"
+              case "${image}" in
+                *":${expected_tag}")
+                  ;;
+                *)
+                  echo "result=fail reason=woodpecker-image-tag-mismatch role=${role} pod=${pod} image=${image} expected_tag=${expected_tag}"
+                  failed=1
+                  ;;
+              esac
+            done
+          done <<< "${role_pods}"
+        }
+
+        check_role server '^woodpecker-server'
+        check_role agent '^woodpecker-agent'
+
+        if [ "${failed}" -eq 0 ]; then
+          echo "result=ok"
+        fi
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_woodpecker_image_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Woodpecker runtime image tag results
+      ansible.builtin.debug:
+        var: platform_app_health_woodpecker_image_probe.stdout_lines
+      run_once: true
+
+    - name: Verify cert-manager Certificate readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        requested_certificates="{{ platform_app_health_certificates_effective }}"
+        requested_certificates_normalized="$(printf '%s' "${requested_certificates}" | tr ',\n\t' '    ' | xargs || true)"
+        requested_certificates_lower="$(printf '%s' "${requested_certificates_normalized}" | tr '[:upper:]' '[:lower:]')"
+        failed=0
+
+        echo "===== cert-manager Certificate readiness ====="
+
+        case " ${requested_certificates_lower} " in
+          *" none "*|*" skip "*|*" disabled "*)
+            echo "result=skip reason=platform-app-health-certificates-disabled"
+            exit 0
+            ;;
+        esac
+
+        case " ${required_apps} " in
+          *" cert-manager "*) ;;
+          *)
+            echo "result=skip reason=cert-manager-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! "$K" --kubeconfig "$C" get crd certificates.cert-manager.io >/dev/null 2>&1; then
+          echo "result=fail reason=cert-manager-certificate-crd-missing"
+          exit 1
+        fi
+
+        if [ "${requested_certificates_lower}" = "auto" ]; then
+          certificate_refs="$("$K" --kubeconfig "$C" get certificates.cert-manager.io -A \
+            -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        else
+          certificate_refs="${requested_certificates_normalized}"
+        fi
+
+        if [ -z "${certificate_refs}" ]; then
+          echo "result=ok reason=no-cert-manager-certificates"
+          exit 0
+        fi
+
+        for certificate_ref in ${certificate_refs}; do
+          echo "===== Certificate ${certificate_ref} ====="
+          case "${certificate_ref}" in
+            */*) ;;
+            *)
+              echo "result=fail reason=invalid-cert-manager-certificate-ref expected=namespace/name"
+              failed=1
+              continue
+              ;;
+          esac
+          namespace="${certificate_ref%%/*}"
+          name="${certificate_ref#*/}"
+          if ! "$K" --kubeconfig "$C" -n "${namespace}" get "certificates.cert-manager.io/${name}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-cert-manager-certificate namespace=${namespace} name=${name}"
+            failed=1
+            continue
+          fi
+
+          info="$("$K" --kubeconfig "$C" -n "${namespace}" get "certificates.cert-manager.io/${name}" \
+            -o jsonpath='{.metadata.name}{"|"}{.spec.secretName}{"|"}{.status.conditions[?(@.type=="Ready")].status}{"|"}{.status.notAfter}{"|"}{.status.renewalTime}{"\n"}' 2>/dev/null || true)"
+          certificate_name="$(printf '%s' "${info}" | cut -d'|' -f1)"
+          secret_name="$(printf '%s' "${info}" | cut -d'|' -f2)"
+          ready_condition="$(printf '%s' "${info}" | cut -d'|' -f3)"
+          not_after="$(printf '%s' "${info}" | cut -d'|' -f4)"
+          renewal_time="$(printf '%s' "${info}" | cut -d'|' -f5)"
+          echo "name=${certificate_name:-unknown} secret=${secret_name:-none} readyCondition=${ready_condition:-unknown} notAfter=${not_after:-unknown} renewalTime=${renewal_time:-unknown}"
+
+          certificate_failed=0
+          if [ "${ready_condition}" != "True" ]; then
+            echo "result=fail reason=cert-manager-certificate-not-ready"
+            certificate_failed=1
+          fi
+          if [ -z "${secret_name}" ]; then
+            echo "result=fail reason=cert-manager-certificate-secret-name-missing"
+            certificate_failed=1
+          elif ! "$K" --kubeconfig "$C" -n "${namespace}" get "secret/${secret_name}" >/dev/null 2>&1; then
+            echo "result=fail reason=cert-manager-certificate-secret-missing namespace=${namespace} secret=${secret_name}"
+            certificate_failed=1
+          fi
+
+          if [ "${certificate_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_certificate_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print cert-manager Certificate readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_certificate_probe.stdout_lines
+      run_once: true
+
+    - name: Verify trust-manager Bundle readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        requested_bundles="{{ platform_app_health_trust_bundles_effective }}"
+        requested_bundles_normalized="$(printf '%s' "${requested_bundles}" | tr ',\n\t' '    ' | xargs || true)"
+        requested_bundles_lower="$(printf '%s' "${requested_bundles_normalized}" | tr '[:upper:]' '[:lower:]')"
+        failed=0
+
+        echo "===== trust-manager Bundle readiness ====="
+
+        case " ${requested_bundles_lower} " in
+          *" none "*|*" skip "*|*" disabled "*)
+            echo "result=skip reason=platform-app-health-trust-bundles-disabled"
+            exit 0
+            ;;
+        esac
+
+        case " ${required_apps} " in
+          *" trust-manager "*) ;;
+          *)
+            echo "result=skip reason=trust-manager-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! "$K" --kubeconfig "$C" get crd bundles.trust.cert-manager.io >/dev/null 2>&1; then
+          echo "result=fail reason=trust-manager-bundle-crd-missing"
+          exit 1
+        fi
+
+        if [ "${requested_bundles_lower}" = "auto" ]; then
+          bundle_refs="$("$K" --kubeconfig "$C" get bundles.trust.cert-manager.io \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        else
+          bundle_refs="${requested_bundles_normalized}"
+        fi
+
+        if [ -z "${bundle_refs}" ]; then
+          echo "result=ok reason=no-trust-manager-bundles"
+          exit 0
+        fi
+
+        for bundle_ref in ${bundle_refs}; do
+          echo "===== Bundle ${bundle_ref} ====="
+          case "${bundle_ref}" in
+            */*)
+              echo "result=fail reason=invalid-trust-manager-bundle-ref expected=name"
+              failed=1
+              continue
+              ;;
+          esac
+          if ! "$K" --kubeconfig "$C" get "bundles.trust.cert-manager.io/${bundle_ref}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-trust-manager-bundle name=${bundle_ref}"
+            failed=1
+            continue
+          fi
+
+          info="$("$K" --kubeconfig "$C" get "bundles.trust.cert-manager.io/${bundle_ref}" \
+            -o jsonpath='{.metadata.name}{"|"}{.status.conditions[?(@.type=="Ready")].status}{"|"}{.status.conditions[?(@.type=="Synced")].status}{"|"}{.status.defaultCAVersion}{"\n"}' 2>/dev/null || true)"
+          bundle_name="$(printf '%s' "${info}" | cut -d'|' -f1)"
+          ready_condition="$(printf '%s' "${info}" | cut -d'|' -f2)"
+          synced_condition="$(printf '%s' "${info}" | cut -d'|' -f3)"
+          default_ca_version="$(printf '%s' "${info}" | cut -d'|' -f4)"
+          echo "name=${bundle_name:-unknown} readyCondition=${ready_condition:-unknown} syncedCondition=${synced_condition:-unknown} defaultCAVersion=${default_ca_version:-unknown}"
+
+          if [ "${ready_condition}" = "True" ] || [ "${synced_condition}" = "True" ]; then
+            echo "result=ok"
+          else
+            echo "result=fail reason=trust-bundle-not-ready"
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_trust_bundle_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print trust-manager Bundle readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_trust_bundle_probe.stdout_lines
+      run_once: true
+
+    - name: Verify step-ca API readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        REQUIRE_STEP_CA_API="{{ platform_app_health_step_ca_api_effective | ternary('true', 'false') }}"
+        NAMESPACE=step-ca
+        failed=0
+
+        echo "===== step-ca API readiness ====="
+
+        if [ "${REQUIRE_STEP_CA_API}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-step-ca-api-disabled"
+          exit 0
+        fi
+
+        case " ${required_apps} " in
+          *" step-ca "*) ;;
+          *)
+            echo "result=skip reason=step-ca-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "result=fail reason=curl-not-installed"
+          exit 1
+        fi
+
+        if ! "$K" --kubeconfig "$C" get "namespace/${NAMESPACE}" >/dev/null 2>&1; then
+          echo "result=fail reason=missing-step-ca-namespace namespace=${NAMESPACE}"
+          exit 1
+        fi
+
+        probe_step_ca_service() {
+          service="$1"
+          if ! "$K" --kubeconfig "$C" -n "${NAMESPACE}" get "service/${service}" >/dev/null 2>&1; then
+            echo "service=${service} result=skip reason=service-missing"
+            return 2
+          fi
+          cluster_ip="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "service/${service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+          if [ -z "${cluster_ip}" ] || [ "${cluster_ip}" = "None" ]; then
+            echo "service=${service} result=skip reason=headless-or-missing-cluster-ip"
+            return 2
+          fi
+          ports="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "service/${service}" \
+            -o jsonpath='{range .spec.ports[*]}{.port}{"\n"}{end}' 2>/dev/null || true)"
+          port=443
+          if ! printf '%s\n' "${ports}" | grep -qx '443'; then
+            port="$(printf '%s\n' "${ports}" | awk 'NF { print; exit }')"
+          fi
+          if [ -z "${port}" ]; then
+            echo "service=${service} result=fail reason=no-service-port"
+            return 1
+          fi
+          url="https://${cluster_ip}:${port}/health"
+          body_file="$(mktemp)"
+          error_file="$(mktemp)"
+          code="$(curl --silent --show-error --insecure --output "${body_file}" \
+            --write-out '%{http_code}' \
+            --connect-timeout {{ platform_app_health_connect_timeout_effective }} \
+            --max-time {{ platform_app_health_max_time_effective }} \
+            "${url}" 2>"${error_file}" || true)"
+          body="$(cat "${body_file}" 2>/dev/null || true)"
+          stderr="$(cat "${error_file}" 2>/dev/null || true)"
+          rm -f "${body_file}" "${error_file}"
+          echo "service=${service} url=${url} http_code=${code:-000}"
+          if [ -n "${stderr}" ]; then
+            printf '%s\n' "${stderr}" | sed "s/^/service=${service} stderr=/"
+          fi
+          if [ -n "${body}" ]; then
+            printf '%s\n' "${body}" | head -c 240 | sed "s/^/service=${service} body=/"
+            printf '\n'
+          fi
+          if [ "${code}" = "200" ]; then
+            echo "service=${service} result=ok"
+            return 0
+          fi
+          echo "service=${service} result=fail reason=unexpected-step-ca-health-http-code"
+          return 1
+        }
+
+        found=0
+        for service in step-ca step-certificates step-ca-step-certificates; do
+          if "$K" --kubeconfig "$C" -n "${NAMESPACE}" get "service/${service}" >/dev/null 2>&1; then
+            found=1
+            if probe_step_ca_service "${service}"; then
+              exit 0
+            fi
+            failed=1
+          fi
+        done
+
+        if [ "${found}" -eq 0 ]; then
+          echo "result=fail reason=no-known-step-ca-service"
+          exit 1
+        fi
+        echo "result=fail reason=no-step-ca-service-ready"
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_step_ca_api_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print step-ca API readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_step_ca_api_probe.stdout_lines
+      run_once: true
+
+    - name: Verify CloudNativePG cluster readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        requested_clusters="{{ platform_app_health_cnpg_clusters_effective }}"
+        requested_clusters_normalized="$(printf '%s' "${requested_clusters}" | tr ',\n\t' '    ' | xargs || true)"
+        requested_clusters_lower="$(printf '%s' "${requested_clusters_normalized}" | tr '[:upper:]' '[:lower:]')"
+        failed=0
+
+        case " ${requested_clusters_lower} " in
+          *" none "*|*" skip "*|*" disabled "*)
+            echo "result=skip reason=platform-app-health-cnpg-clusters-disabled"
+            exit 0
+            ;;
+        esac
+
+        if ! "$K" --kubeconfig "$C" get crd clusters.postgresql.cnpg.io >/dev/null 2>&1; then
+          if [ "${requested_clusters_lower}" = "auto" ]; then
+            echo "result=ok reason=no-cloudnativepg-cluster-crd"
+            exit 0
+          fi
+          echo "result=fail reason=cloudnativepg-cluster-crd-missing"
+          exit 1
+        fi
+
+        if [ "${requested_clusters_lower}" = "auto" ]; then
+          cluster_refs="$("$K" --kubeconfig "$C" get clusters.postgresql.cnpg.io -A \
+            -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        else
+          cluster_refs="${requested_clusters_normalized}"
+        fi
+
+        if [ -z "${cluster_refs}" ]; then
+          echo "result=ok reason=no-cloudnativepg-clusters"
+          exit 0
+        fi
+
+        for cluster_ref in ${cluster_refs}; do
+          echo "===== CloudNativePG cluster ${cluster_ref} ====="
+          case "${cluster_ref}" in
+            */*) ;;
+            *)
+              echo "result=fail reason=invalid-cnpg-cluster-ref expected=namespace/name"
+              failed=1
+              continue
+              ;;
+          esac
+          namespace="${cluster_ref%%/*}"
+          name="${cluster_ref#*/}"
+          if ! "$K" --kubeconfig "$C" -n "${namespace}" get "clusters.postgresql.cnpg.io/${name}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-cnpg-cluster namespace=${namespace} name=${name}"
+            failed=1
+            continue
+          fi
+
+          info="$("$K" --kubeconfig "$C" -n "${namespace}" get "clusters.postgresql.cnpg.io/${name}" \
+            -o jsonpath='{.metadata.name}{"|"}{.spec.instances}{"|"}{.status.instances}{"|"}{.status.readyInstances}{"|"}{.status.currentPrimary}{"|"}{.status.phase}{"|"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}' 2>/dev/null || true)"
+          cluster_name="$(printf '%s' "${info}" | cut -d'|' -f1)"
+          desired_instances="$(printf '%s' "${info}" | cut -d'|' -f2)"
+          observed_instances="$(printf '%s' "${info}" | cut -d'|' -f3)"
+          ready_instances="$(printf '%s' "${info}" | cut -d'|' -f4)"
+          current_primary="$(printf '%s' "${info}" | cut -d'|' -f5)"
+          phase="$(printf '%s' "${info}" | cut -d'|' -f6)"
+          ready_condition="$(printf '%s' "${info}" | cut -d'|' -f7)"
+          echo "name=${cluster_name:-unknown} desired=${desired_instances:-unknown} observed=${observed_instances:-unknown} ready=${ready_instances:-unknown} primary=${current_primary:-none} phase=${phase:-unknown} readyCondition=${ready_condition:-unknown}"
+
+          cluster_failed=0
+          if [ "${ready_condition}" != "True" ]; then
+            echo "result=fail reason=cnpg-cluster-not-ready"
+            cluster_failed=1
+          fi
+          if printf '%s' "${desired_instances}" | grep -Eq '^[0-9]+$' &&
+            printf '%s' "${ready_instances}" | grep -Eq '^[0-9]+$' &&
+            [ "${ready_instances}" -lt "${desired_instances}" ]; then
+            echo "result=fail reason=cnpg-ready-instances-below-desired"
+            cluster_failed=1
+          fi
+          if [ -z "${current_primary}" ]; then
+            echo "result=fail reason=cnpg-current-primary-missing"
+            cluster_failed=1
+          fi
+
+          if [ "${cluster_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_cnpg_cluster_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print CloudNativePG cluster readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_cnpg_cluster_probe.stdout_lines
+      run_once: true
+
+    - name: Verify Loki API readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        REQUIRE_LOKI_API="{{ platform_app_health_loki_api_effective | ternary('true', 'false') }}"
+        NAMESPACE=logging
+        failed=0
+
+        echo "===== Loki API readiness ====="
+
+        if [ "${REQUIRE_LOKI_API}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-loki-api-disabled"
+          exit 0
+        fi
+
+        case " ${required_apps} " in
+          *" loki "*) ;;
+          *)
+            echo "result=skip reason=loki-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "result=fail reason=curl-not-installed"
+          exit 1
+        fi
+
+        if ! "$K" --kubeconfig "$C" get "namespace/${NAMESPACE}" >/dev/null 2>&1; then
+          echo "result=fail reason=missing-loki-namespace namespace=${NAMESPACE}"
+          exit 1
+        fi
+
+        probe_loki_service() {
+          service="$1"
+          port="$2"
+          path="$3"
+          if ! "$K" --kubeconfig "$C" -n "${NAMESPACE}" get "service/${service}" >/dev/null 2>&1; then
+            return 2
+          fi
+          cluster_ip="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "service/${service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+          if [ -z "${cluster_ip}" ] || [ "${cluster_ip}" = "None" ]; then
+            echo "service=${service} result=skip reason=headless-or-missing-cluster-ip"
+            return 2
+          fi
+          body_file="$(mktemp)"
+          error_file="$(mktemp)"
+          url="http://${cluster_ip}:${port}${path}"
+          echo "service=${service} url=${url}"
+          code="$(curl --silent --show-error --output "${body_file}" \
+            --write-out '%{http_code}' \
+            --connect-timeout 5 \
+            --max-time 15 \
+            "${url}" 2>"${error_file}" || true)"
+          stderr="$(cat "${error_file}" 2>/dev/null || true)"
+          echo "service=${service} http_code=${code:-000}"
+          if [ -n "${stderr}" ]; then
+            printf '%s\n' "${stderr}" | sed "s/^/service=${service} stderr=/"
+          fi
+          if [ "${code}" = "200" ] && grep -Eiq 'ready|Ready' "${body_file}"; then
+            echo "service=${service} result=ok"
+            rm -f "${body_file}" "${error_file}"
+            return 0
+          fi
+          echo "service=${service} result=fail"
+          rm -f "${body_file}" "${error_file}"
+          return 1
+        }
+
+        found_candidate=0
+        for candidate in \
+          loki-gateway:80:/ready \
+          loki-read:3100:/ready \
+          loki:3100:/ready \
+          loki-query-frontend:3100:/ready; do
+          service="${candidate%%:*}"
+          rest="${candidate#*:}"
+          port="${rest%%:*}"
+          path="${rest#*:}"
+          if "$K" --kubeconfig "$C" -n "${NAMESPACE}" get "service/${service}" >/dev/null 2>&1; then
+            found_candidate=1
+            if probe_loki_service "${service}" "${port}" "${path}"; then
+              exit 0
+            fi
+          fi
+        done
+
+        if [ "${found_candidate}" -eq 0 ]; then
+          echo "result=fail reason=no-known-loki-service"
+        else
+          echo "result=fail reason=no-loki-service-ready"
+        fi
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_app_health_loki_api_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Loki API readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_loki_api_probe.stdout_lines
+      run_once: true
+
+    - name: Verify Velero BackupStorageLocation readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        REQUIRE_VELERO_BSL="{{ platform_app_health_velero_backup_storage_effective | ternary('true', 'false') }}"
+        failed=0
+
+        echo "===== Velero BackupStorageLocation readiness ====="
+
+        if [ "${REQUIRE_VELERO_BSL}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-velero-backup-storage-disabled"
+          exit 0
+        fi
+
+        case " ${required_apps} " in
+          *" velero "*) ;;
+          *)
+            echo "result=skip reason=velero-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! "$K" --kubeconfig "$C" get crd backupstoragelocations.velero.io >/dev/null 2>&1; then
+          echo "result=fail reason=velero-backupstoragelocation-crd-missing"
+          exit 1
+        fi
+
+        locations="$("$K" --kubeconfig "$C" get backupstoragelocations.velero.io -A \
+          -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        if [ -z "${locations}" ]; then
+          echo "result=fail reason=no-velero-backupstoragelocations"
+          exit 1
+        fi
+
+        for location_ref in ${locations}; do
+          namespace="${location_ref%%/*}"
+          name="${location_ref#*/}"
+          echo "===== Velero BackupStorageLocation ${location_ref} ====="
+          info="$("$K" --kubeconfig "$C" -n "${namespace}" get "backupstoragelocations.velero.io/${name}" \
+            -o jsonpath='{.metadata.name}{"|"}{.spec.provider}{"|"}{.spec.objectStorage.bucket}{"|"}{.status.phase}{"|"}{.status.lastValidationTime}{"|"}{.status.message}{"\n"}' 2>/dev/null || true)"
+          bsl_name="$(printf '%s' "${info}" | cut -d'|' -f1)"
+          provider="$(printf '%s' "${info}" | cut -d'|' -f2)"
+          bucket="$(printf '%s' "${info}" | cut -d'|' -f3)"
+          phase="$(printf '%s' "${info}" | cut -d'|' -f4)"
+          last_validation="$(printf '%s' "${info}" | cut -d'|' -f5)"
+          message="$(printf '%s' "${info}" | cut -d'|' -f6-)"
+          echo "name=${bsl_name:-unknown} provider=${provider:-unknown} bucket=${bucket:-unknown} phase=${phase:-unknown} lastValidationTime=${last_validation:-unknown}"
+          if [ -n "${message}" ]; then
+            printf '%s\n' "${message}" | sed 's/^/message=/'
+          fi
+          if [ "${phase}" = "Available" ]; then
+            echo "result=ok"
+          else
+            echo "result=fail reason=velero-backupstoragelocation-not-available"
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_velero_backup_storage_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Velero BackupStorageLocation readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_velero_backup_storage_probe.stdout_lines
+      run_once: true
+
+    - name: Verify Velero backup schedule readiness
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        REQUIRE_VELERO_SCHEDULES="{{ platform_app_health_velero_schedules_effective | ternary('true', 'false') }}"
+        failed=0
+
+        echo "===== Velero backup schedule readiness ====="
+
+        if [ "${REQUIRE_VELERO_SCHEDULES}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-velero-schedules-disabled"
+          exit 0
+        fi
+
+        case " ${required_apps} " in
+          *" velero "*) ;;
+          *)
+            echo "result=skip reason=velero-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! "$K" --kubeconfig "$C" get crd schedules.velero.io >/dev/null 2>&1; then
+          echo "result=fail reason=velero-schedule-crd-missing"
+          exit 1
+        fi
+
+        schedules="$("$K" --kubeconfig "$C" get schedules.velero.io -A \
+          -o jsonpath='{range .items[*]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        if [ -z "${schedules}" ]; then
+          echo "result=fail reason=no-velero-backup-schedules"
+          exit 1
+        fi
+
+        for schedule_ref in ${schedules}; do
+          namespace="${schedule_ref%%/*}"
+          name="${schedule_ref#*/}"
+          echo "===== Velero Schedule ${schedule_ref} ====="
+          info="$("$K" --kubeconfig "$C" -n "${namespace}" get "schedules.velero.io/${name}" \
+            -o jsonpath='{.metadata.name}{"|"}{.spec.schedule}{"|"}{.spec.paused}{"|"}{.status.phase}{"|"}{.status.lastBackup}{"\n"}' 2>/dev/null || true)"
+          schedule_name="$(printf '%s' "${info}" | cut -d'|' -f1)"
+          cron="$(printf '%s' "${info}" | cut -d'|' -f2)"
+          paused="$(printf '%s' "${info}" | cut -d'|' -f3)"
+          phase="$(printf '%s' "${info}" | cut -d'|' -f4)"
+          last_backup="$(printf '%s' "${info}" | cut -d'|' -f5)"
+          echo "name=${schedule_name:-unknown} schedule=${cron:-none} paused=${paused:-false} phase=${phase:-unknown} lastBackup=${last_backup:-none}"
+
+          schedule_failed=0
+          if [ -z "${cron}" ]; then
+            echo "result=fail reason=velero-schedule-cron-missing"
+            schedule_failed=1
+          fi
+          if [ "${paused}" = "true" ] || [ "${paused}" = "True" ]; then
+            echo "result=fail reason=velero-schedule-paused"
+            schedule_failed=1
+          fi
+          if [ -n "${phase}" ] && [ "${phase}" != "Enabled" ] && [ "${phase}" != "New" ]; then
+            echo "result=fail reason=velero-schedule-not-enabled"
+            schedule_failed=1
+          fi
+
+          if [ "${schedule_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_velero_schedule_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Velero backup schedule readiness results
+      ansible.builtin.debug:
+        var: platform_app_health_velero_schedule_probe.stdout_lines
+      run_once: true
+
+    - name: Verify generated platform app secret contracts
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        requested_secrets="{{ platform_app_health_app_secrets_effective }}"
+        requested_secrets_normalized="$(printf '%s' "${requested_secrets}" | tr '\n\t' '  ' | xargs || true)"
+        requested_secrets_lower="$(printf '%s' "${requested_secrets_normalized}" | tr '[:upper:]' '[:lower:]')"
+        failed=0
+
+        echo "===== generated platform app secret contracts ====="
+
+        case " ${requested_secrets_lower} " in
+          *" none "*|*" skip "*|*" disabled "*)
+            echo "result=skip reason=platform-app-health-app-secrets-disabled"
+            exit 0
+            ;;
+        esac
+
+        check_secret_contract() {
+          namespace="$1"
+          secret_name="$2"
+          shift 2
+          keys="$*"
+
+          echo "===== secret ${namespace}/${secret_name} ====="
+          if ! "$K" --kubeconfig "$C" get "namespace/${namespace}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-platform-app-secret-namespace namespace=${namespace}"
+            failed=1
+            return
+          fi
+          if ! "$K" --kubeconfig "$C" -n "${namespace}" get "secret/${secret_name}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-platform-app-secret namespace=${namespace} name=${secret_name}"
+            failed=1
+            return
+          fi
+
+          secret_failed=0
+          for key in ${keys}; do
+            encoded="$("$K" --kubeconfig "$C" -n "${namespace}" get "secret/${secret_name}" \
+              -o "jsonpath={.data.${key}}" 2>/dev/null || true)"
+            if [ -z "${encoded}" ]; then
+              echo "result=fail reason=missing-platform-app-secret-key namespace=${namespace} name=${secret_name} key=${key}"
+              secret_failed=1
+              continue
+            fi
+            if ! printf '%s' "${encoded}" | base64 -d >/dev/null 2>&1; then
+              echo "result=fail reason=invalid-platform-app-secret-key-encoding namespace=${namespace} name=${secret_name} key=${key}"
+              secret_failed=1
+              continue
+            fi
+            echo "key=${key} state=present"
+          done
+
+          if [ "${secret_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            failed=1
+          fi
+        }
+
+        if [ "${requested_secrets_lower}" = "auto" ]; then
+          case " ${required_apps} " in
+            *" harbor "*)
+              check_secret_contract harbor "{{ platform_harbor_admin_secret_name_effective }}" HARBOR_ADMIN_PASSWORD
+              check_secret_contract harbor "{{ platform_harbor_secret_key_secret_name_effective }}" secretKey
+              ;;
+            *)
+              echo "result=skip reason=harbor-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
+            *" woodpecker "*)
+              check_secret_contract woodpecker "{{ platform_woodpecker_oauth_secret_name_effective }}" WOODPECKER_FORGEJO_CLIENT WOODPECKER_FORGEJO_SECRET
+              check_secret_contract woodpecker "{{ platform_woodpecker_database_secret_name_effective }}" WOODPECKER_DATABASE_DATASOURCE
+              ;;
+            *)
+              echo "result=skip reason=woodpecker-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
+            *" loki "*)
+              check_secret_contract logging "{{ platform_loki_object_storage_secret_name_effective }}" LOKI_S3_ACCESS_KEY_ID LOKI_S3_SECRET_ACCESS_KEY
+              ;;
+            *)
+              echo "result=skip reason=loki-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
+            *" velero "*)
+              check_secret_contract velero "{{ platform_velero_credentials_secret_name_effective }}" cloud
+              ;;
+            *)
+              echo "result=skip reason=velero-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+          exit "${failed}"
+        fi
+
+        for secret_contract in ${requested_secrets_normalized}; do
+          case "${secret_contract}" in
+            */*:*) ;;
+            *)
+              echo "result=fail reason=invalid-platform-app-secret-contract expected=namespace/name:key[,key] contract=${secret_contract}"
+              failed=1
+              continue
+              ;;
+          esac
+          namespace="${secret_contract%%/*}"
+          rest="${secret_contract#*/}"
+          secret_name="${rest%%:*}"
+          key_list="${rest#*:}"
+          keys="$(printf '%s' "${key_list}" | tr ',' ' ' | xargs || true)"
+          if [ -z "${namespace}" ] || [ -z "${secret_name}" ] || [ -z "${keys}" ]; then
+            echo "result=fail reason=invalid-platform-app-secret-contract expected=namespace/name:key[,key] contract=${secret_contract}"
+            failed=1
+            continue
+          fi
+          check_secret_contract "${namespace}" "${secret_name}" ${keys}
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_app_secret_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print generated platform app secret contract results
+      ansible.builtin.debug:
+        var: platform_app_health_app_secret_probe.stdout_lines
       run_once: true
 
     - name: Verify required platform StorageClasses
@@ -310,6 +1631,141 @@
     - name: Print platform PVC readiness results
       ansible.builtin.debug:
         var: platform_app_health_pvc_probe.stdout_lines
+      run_once: true
+
+    - name: Verify Longhorn node and volume runtime health
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        REQUIRE_LONGHORN_RUNTIME="{{ platform_app_health_longhorn_runtime_effective | ternary('true', 'false') }}"
+        NAMESPACE=longhorn-system
+        expected_nodes="{{ groups['rke2_servers'] | join(' ') }}"
+        failed=0
+
+        echo "===== Longhorn runtime health ====="
+
+        if [ "${REQUIRE_LONGHORN_RUNTIME}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-longhorn-runtime-disabled"
+          exit 0
+        fi
+
+        case " ${required_apps} " in
+          *" longhorn "*) ;;
+          *)
+            echo "result=skip reason=longhorn-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! "$K" --kubeconfig "$C" get "namespace/${NAMESPACE}" >/dev/null 2>&1; then
+          echo "result=fail reason=missing-longhorn-namespace namespace=${NAMESPACE}"
+          exit 1
+        fi
+
+        for crd in nodes.longhorn.io volumes.longhorn.io; do
+          if ! "$K" --kubeconfig "$C" get "crd/${crd}" >/dev/null 2>&1; then
+            echo "result=fail reason=longhorn-crd-missing crd=${crd}"
+            failed=1
+          fi
+        done
+        if [ "${failed}" -ne 0 ]; then
+          exit "${failed}"
+        fi
+
+        longhorn_nodes="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get nodes.longhorn.io \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        if [ -z "${longhorn_nodes}" ]; then
+          echo "result=fail reason=no-longhorn-nodes"
+          exit 1
+        fi
+
+        for expected_node in ${expected_nodes}; do
+          echo "===== Longhorn node ${expected_node} ====="
+          if ! "$K" --kubeconfig "$C" -n "${NAMESPACE}" get "nodes.longhorn.io/${expected_node}" >/dev/null 2>&1; then
+            echo "result=fail reason=missing-longhorn-node node=${expected_node}"
+            failed=1
+            continue
+          fi
+          info="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "nodes.longhorn.io/${expected_node}" \
+            -o jsonpath='{.metadata.name}{"|"}{.spec.allowScheduling}{"|"}{.status.conditions[?(@.type=="Ready")].status}{"|"}{.status.conditions[?(@.type=="Schedulable")].status}{"\n"}' 2>/dev/null || true)"
+          node_name="$(printf '%s' "${info}" | cut -d'|' -f1)"
+          allow_scheduling="$(printf '%s' "${info}" | cut -d'|' -f2)"
+          ready_condition="$(printf '%s' "${info}" | cut -d'|' -f3)"
+          schedulable_condition="$(printf '%s' "${info}" | cut -d'|' -f4)"
+          echo "node=${node_name:-unknown} allowScheduling=${allow_scheduling:-unknown} readyCondition=${ready_condition:-unknown} schedulableCondition=${schedulable_condition:-unknown}"
+          node_failed=0
+          if [ "${allow_scheduling}" = "false" ] || [ "${allow_scheduling}" = "False" ]; then
+            echo "result=fail reason=longhorn-node-scheduling-disabled"
+            node_failed=1
+          fi
+          if [ "${ready_condition}" != "True" ]; then
+            echo "result=fail reason=longhorn-node-not-ready"
+            node_failed=1
+          fi
+          if [ -n "${schedulable_condition}" ] && [ "${schedulable_condition}" != "True" ]; then
+            echo "result=fail reason=longhorn-node-not-schedulable"
+            node_failed=1
+          fi
+          if [ "${node_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            failed=1
+          fi
+        done
+
+        volumes="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get volumes.longhorn.io \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        if [ -z "${volumes}" ]; then
+          echo "result=ok reason=no-longhorn-volumes"
+          exit "${failed}"
+        fi
+
+        for volume in ${volumes}; do
+          echo "===== Longhorn volume ${volume} ====="
+          info="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "volumes.longhorn.io/${volume}" \
+            -o jsonpath='{.metadata.name}{"|"}{.status.state}{"|"}{.status.robustness}{"|"}{.status.ownerID}{"|"}{.status.conditions[?(@.type=="Scheduled")].status}{"\n"}' 2>/dev/null || true)"
+          volume_name="$(printf '%s' "${info}" | cut -d'|' -f1)"
+          state="$(printf '%s' "${info}" | cut -d'|' -f2)"
+          robustness="$(printf '%s' "${info}" | cut -d'|' -f3)"
+          owner_id="$(printf '%s' "${info}" | cut -d'|' -f4)"
+          scheduled_condition="$(printf '%s' "${info}" | cut -d'|' -f5)"
+          echo "volume=${volume_name:-unknown} state=${state:-unknown} robustness=${robustness:-unknown} ownerID=${owner_id:-none} scheduledCondition=${scheduled_condition:-unknown}"
+          volume_failed=0
+          case "${robustness}" in
+            degraded|faulted)
+              echo "result=fail reason=longhorn-volume-${robustness}"
+              volume_failed=1
+              ;;
+          esac
+          if [ "${state}" = "attached" ] && [ "${robustness}" != "healthy" ]; then
+            echo "result=fail reason=longhorn-attached-volume-not-healthy"
+            volume_failed=1
+          fi
+          if [ "${scheduled_condition}" = "False" ] || [ "${scheduled_condition}" = "false" ]; then
+            echo "result=fail reason=longhorn-volume-not-scheduled"
+            volume_failed=1
+          fi
+          if [ "${volume_failed}" -eq 0 ]; then
+            echo "result=ok"
+          else
+            failed=1
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_longhorn_runtime_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Longhorn runtime health results
+      ansible.builtin.debug:
+        var: platform_app_health_longhorn_runtime_probe.stdout_lines
       run_once: true
 
     - name: Verify configured GUI ingress backend endpoints
@@ -536,6 +1992,187 @@
     - name: Print controller ingress probe results
       ansible.builtin.debug:
         var: platform_app_health_controller_ingress_probe.stdout_lines
+      run_once: true
+
+    - name: Probe Harbor registry API from Ansible controller
+      ansible.builtin.shell: |
+        set -u
+        VIP="{{ rke2_ingress_vip_effective }}"
+        HOST="{{ platform_harbor_host_effective }}"
+        CONNECT_TIMEOUT={{ platform_app_health_connect_timeout_effective }}
+        MAX_TIME={{ platform_app_health_max_time_effective }}
+        GUI_APPS="{{ platform_app_health_gui_apps_effective }}"
+        REQUIRE_REGISTRY_API="{{ platform_app_health_registry_api_effective | ternary('true', 'false') }}"
+        failed=0
+
+        echo "===== harbor registry API from Ansible controller ====="
+
+        if [ "${REQUIRE_REGISTRY_API}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-registry-api-disabled"
+          exit 0
+        fi
+
+        case " ${GUI_APPS} " in
+          *" harbor "*) ;;
+          *)
+            echo "result=skip reason=not-required-by-platform-app-health-gui-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "result=fail reason=curl-not-installed"
+          exit 1
+        fi
+
+        headers_file="$(mktemp)"
+        error_file="$(mktemp)"
+        trap 'rm -f "${headers_file}" "${error_file}"' EXIT
+        url="https://${HOST}/v2/"
+        echo "url=${url} vip=${VIP}"
+
+        code="$(curl --silent --show-error --insecure --output /dev/null \
+          --dump-header "${headers_file}" \
+          --write-out '%{http_code}' \
+          --connect-timeout "${CONNECT_TIMEOUT}" \
+          --max-time "${MAX_TIME}" \
+          --resolve "${HOST}:443:${VIP}" \
+          "${url}" 2>"${error_file}" || true)"
+
+        stderr="$(cat "${error_file}" 2>/dev/null || true)"
+        echo "http_code=${code:-000}"
+        if [ -n "${stderr}" ]; then
+          printf '%s\n' "${stderr}" | sed 's/^/stderr=/'
+        fi
+
+        if grep -Eiq '^Docker-Distribution-Api-Version:[[:space:]]*registry/2\.0' "${headers_file}"; then
+          echo "docker_distribution_api_version=registry/2.0"
+        else
+          echo "docker_distribution_api_version=missing"
+          failed=1
+        fi
+
+        case "${code}" in
+          200|401)
+            ;;
+          *)
+            echo "result=fail reason=unexpected-registry-api-http-code"
+            failed=1
+            ;;
+        esac
+
+        if [ "${failed}" -eq 0 ]; then
+          echo "result=ok"
+        fi
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_registry_api_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Print Harbor registry API probe results
+      ansible.builtin.debug:
+        var: platform_app_health_registry_api_probe.stdout_lines
+      run_once: true
+
+    - name: Probe monitoring APIs from Ansible controller
+      ansible.builtin.shell: |
+        set -u
+        VIP="{{ rke2_ingress_vip_effective }}"
+        GRAFANA_HOST="{{ platform_grafana_host_effective }}"
+        PROMETHEUS_HOST="{{ platform_prometheus_host_effective }}"
+        CONNECT_TIMEOUT={{ platform_app_health_connect_timeout_effective }}
+        MAX_TIME={{ platform_app_health_max_time_effective }}
+        GUI_APPS="{{ platform_app_health_gui_apps_effective }}"
+        REQUIRE_MONITORING_API="{{ platform_app_health_monitoring_api_effective | ternary('true', 'false') }}"
+        failed=0
+
+        echo "===== monitoring APIs from Ansible controller ====="
+
+        if [ "${REQUIRE_MONITORING_API}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-monitoring-api-disabled"
+          exit 0
+        fi
+
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "result=fail reason=curl-not-installed"
+          exit 1
+        fi
+
+        probe_api() {
+          app="$1"
+          host="$2"
+          path="$3"
+          expected_body_pattern="$4"
+          case " ${GUI_APPS} " in
+            *" ${app} "*) ;;
+            *)
+              echo "===== ${app} monitoring API from Ansible controller ====="
+              echo "result=skip reason=not-required-by-platform-app-health-gui-apps"
+              return
+              ;;
+          esac
+
+          body_file="$(mktemp)"
+          error_file="$(mktemp)"
+          url="https://${host}${path}"
+          echo "===== ${app} monitoring API from Ansible controller ====="
+          echo "url=${url} vip=${VIP}"
+
+          code="$(curl --silent --show-error --insecure --output "${body_file}" \
+            --write-out '%{http_code}' \
+            --connect-timeout "${CONNECT_TIMEOUT}" \
+            --max-time "${MAX_TIME}" \
+            --resolve "${host}:443:${VIP}" \
+            "${url}" 2>"${error_file}" || true)"
+
+          stderr="$(cat "${error_file}" 2>/dev/null || true)"
+          echo "http_code=${code:-000}"
+          if [ -n "${stderr}" ]; then
+            printf '%s\n' "${stderr}" | sed 's/^/stderr=/'
+          fi
+
+          case "${code}" in
+            200) ;;
+            *)
+              echo "result=fail reason=unexpected-monitoring-api-http-code"
+              failed=1
+              rm -f "${body_file}" "${error_file}"
+              return
+              ;;
+          esac
+
+          if grep -Eiq "${expected_body_pattern}" "${body_file}"; then
+            echo "body_match=ok"
+            echo "result=ok"
+          else
+            echo "body_match=missing"
+            echo "result=fail reason=unexpected-monitoring-api-body"
+            failed=1
+          fi
+          rm -f "${body_file}" "${error_file}"
+        }
+
+        probe_api grafana "${GRAFANA_HOST}" /api/health '"database"[[:space:]]*:[[:space:]]*"ok"'
+        probe_api prometheus "${PROMETHEUS_HOST}" /-/ready 'ready|Ready'
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_monitoring_api_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Print monitoring API probe results
+      ansible.builtin.debug:
+        var: platform_app_health_monitoring_api_probe.stdout_lines
       run_once: true
 
     - name: Probe configured GUI HTTP redirects from Ansible controller
@@ -1044,11 +2681,26 @@
         platform_app_health_failed: >-
           {{
             (((hostvars[rke2_first_server].platform_app_health_argocd_app_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_argocd_source_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_pod_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_argocd_runtime_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_ha_replica_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_woodpecker_image_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_certificate_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_trust_bundle_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_step_ca_api_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_cnpg_cluster_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_loki_api_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_velero_backup_storage_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_velero_schedule_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_app_secret_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_storage_class_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_pvc_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_longhorn_runtime_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_ingress_backend_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_controller_ingress_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_registry_api_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_monitoring_api_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_http_redirect_probe | default({'rc': 1})).rc | int) != 0)
             or ((platform_app_health_node_ingress_strict_effective | bool) and (((platform_app_health_ingress_probe | default({'rc': 1})).rc | int) != 0))
             or (((platform_app_health_service_probe | default({'rc': 1})).rc | int) != 0)
@@ -1061,12 +2713,44 @@
         C=/etc/rancher/rke2/rke2.yaml
         echo "===== Argo CD ====="
         "$K" --kubeconfig "$C" -n argocd get pods,svc,endpoints,endpointslice,ingress -o wide || true
+        "$K" --kubeconfig "$C" -n argocd get deploy,statefulset -o wide || true
         echo
         echo "===== Woodpecker ====="
         "$K" --kubeconfig "$C" -n woodpecker get pods,svc,endpoints,endpointslice,ingress -o wide || true
+        "$K" --kubeconfig "$C" -n woodpecker get deploy,statefulset -o wide || true
+        echo
+        echo "===== cert-manager Certificates and issuers ====="
+        "$K" --kubeconfig "$C" get certificates.cert-manager.io -A -o wide || true
+        "$K" --kubeconfig "$C" get issuers.cert-manager.io -A -o wide || true
+        "$K" --kubeconfig "$C" get clusterissuers.cert-manager.io -o wide || true
+        echo
+        echo "===== trust-manager Bundles ====="
+        "$K" --kubeconfig "$C" get bundles.trust.cert-manager.io -o wide || true
+        echo
+        echo "===== step-ca ====="
+        "$K" --kubeconfig "$C" -n step-ca get pods,svc,endpoints,endpointslice,ingress,pvc -o wide || true
+        echo
+        echo "===== CloudNativePG clusters ====="
+        "$K" --kubeconfig "$C" get clusters.postgresql.cnpg.io -A -o wide || true
+        echo
+        echo "===== Loki ====="
+        "$K" --kubeconfig "$C" -n logging get pods,svc,endpoints,endpointslice,ingress -o wide || true
+        echo
+        echo "===== Velero backup storage ====="
+        "$K" --kubeconfig "$C" -n velero get pods,backupstoragelocations.velero.io,volumesnapshotlocations.velero.io,schedules.velero.io -o wide || true
+        echo
+        echo "===== Generated app secrets ====="
+        "$K" --kubeconfig "$C" -n harbor get "secret/{{ platform_harbor_admin_secret_name_effective }}" "secret/{{ platform_harbor_secret_key_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n woodpecker get "secret/{{ platform_woodpecker_oauth_secret_name_effective }}" "secret/{{ platform_woodpecker_database_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n logging get "secret/{{ platform_loki_object_storage_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n velero get "secret/{{ platform_velero_credentials_secret_name_effective }}" -o wide || true
+        echo
+        echo "===== Longhorn runtime ====="
+        "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io,volumes.longhorn.io,instancemanagers.longhorn.io,engineimages.longhorn.io -o wide || true
         echo
         echo "===== Traefik ====="
         "$K" --kubeconfig "$C" -n traefik get pods,svc,endpoints,endpointslice -o wide || true
+        "$K" --kubeconfig "$C" -n traefik get deploy,statefulset -o wide || true
         echo
         echo "===== kube-proxy/cilium/coredns ====="
         "$K" --kubeconfig "$C" -n kube-system get pods -o wide | grep -E 'NAME|kube-proxy|cilium|coredns' || true
@@ -1090,21 +2774,46 @@
           Platform app health verification failed.
 
           At least one required Argo CD Application, platform namespace,
-          StorageClass, app ingress backend, controller/client app VIP ingress
-          path, HTTP-to-HTTPS redirect, strict node-originated app VIP ingress
-          path, Kubernetes host ClusterIP service path, or Kubernetes
-          pod-to-ClusterIP service path failed.
+          Argo CD source repository, Argo CD runtime component/service endpoint, critical HA workload replica contract,
+          Woodpecker runtime image tag, cert-manager Certificate,
+          trust-manager Bundle, step-ca API,
+          CloudNativePG cluster, Loki API, Velero backup storage, Velero backup
+          schedule, generated app secret contract, StorageClass, PVC, Longhorn
+          runtime storage, app ingress backend, controller/client app VIP ingress
+          path, Harbor registry API path, Grafana/Prometheus monitoring API path,
+          HTTP-to-HTTPS redirect, strict node-originated app VIP ingress path,
+          Kubernetes host ClusterIP service path, or Kubernetes pod-to-ClusterIP
+          service path failed.
 
           Common causes are Traefik backend routing, kube-proxy/Cilium service
           routing, host firewall forwarding, or node-to-pod networking drift.
           The report above also fails when required Argo CD Applications are
           OutOfSync/Progressing/Degraded, have active or failed Argo CD
-          operations, or when platform namespace pods are Pending,
-          CrashLoopBackOff, otherwise not Ready, required StorageClasses are
-          missing or misconfigured, or platform PVCs are Pending, Lost, or
-          stuck Terminating. It also fails when a configured GUI host has no
-          Ingress/IngressRoute or no ready backend endpoints, or when a pod
-          pinned to any RKE2 node cannot reach the Argo CD or Woodpecker
+          operations, still use temporary seed Git or insecure git:// sources,
+          differ from PLATFORM_APP_HEALTH_EXPECTED_REPO_URL / PLATFORM_REPO_URL
+          when one is set,
+          or when platform namespace pods are Pending,
+          CrashLoopBackOff, otherwise not Ready, when the Argo CD server,
+          repo-server, application-controller, configured repo-server service,
+          or configured Redis service is missing or has no ready endpoint, when critical HA workloads do
+          not have the expected minimum desired and ready replicas, when
+          Woodpecker server or agent pods are not running the expected pinned
+          image tag, cert-manager
+          Certificates are missing or not Ready, trust-manager Bundles are missing or not synced,
+          step-ca does not answer `/health` on its ClusterIP service, required
+          CloudNativePG clusters are missing or not Ready, required StorageClasses
+          are missing or misconfigured, or platform PVCs are Pending, Lost, or
+          stuck Terminating, or when Longhorn node objects are not Ready or
+          attached Longhorn volumes are degraded/faulted/not healthy, or when
+          generated Harbor, Woodpecker, Loki, or Velero secrets are missing or
+          lack required keys. It also fails when a configured GUI host has no
+          Ingress/IngressRoute or no ready backend endpoints, when the Harbor
+          `/v2/` registry API does not answer with the Docker Distribution API
+          header, when Grafana `/api/health` or Prometheus `/-/ready` does not
+          return healthy content through the app VIP, when Loki does not answer
+          a known `/ready` endpoint, when Velero BackupStorageLocations are not
+          Available, when no enabled Velero backup schedule exists, or when a
+          pod pinned to any RKE2 node cannot reach the Argo CD or Woodpecker
           ClusterIP service.
 
           Recommended repair sequence:
@@ -1121,8 +2830,49 @@
           subset debug run:
           PLATFORM_APP_HEALTH_STORAGE_CLASSES=skip make platform-app-health
 
+          To skip Longhorn runtime node/volume enforcement temporarily:
+          PLATFORM_APP_HEALTH_LONGHORN_RUNTIME=false make platform-app-health
+
+          To skip Argo CD runtime component/service enforcement temporarily:
+          PLATFORM_APP_HEALTH_ARGOCD_RUNTIME=false make platform-app-health
+
+          To skip critical HA replica enforcement temporarily:
+          PLATFORM_APP_HEALTH_HA_REPLICAS=false make platform-app-health
+
+          To set the expected Woodpecker image tag after an intentional upgrade:
+          PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG=3.16.0 make platform-app-health
+
           To skip HTTP-to-HTTPS redirect enforcement for a temporary debug run:
           PLATFORM_APP_HEALTH_HTTP_REDIRECT=false make platform-app-health
+
+          To skip Harbor registry API enforcement for a temporary debug run:
+          PLATFORM_APP_HEALTH_REGISTRY_API=false make platform-app-health
+
+          To skip Grafana/Prometheus API enforcement for a temporary debug run:
+          PLATFORM_APP_HEALTH_MONITORING_API=false make platform-app-health
+
+          To skip Loki API or Velero object storage enforcement temporarily:
+          PLATFORM_APP_HEALTH_LOKI_API=false make platform-app-health
+          PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE=false make platform-app-health
+
+          To skip Velero backup schedule enforcement temporarily:
+          PLATFORM_APP_HEALTH_VELERO_SCHEDULES=false make platform-app-health
+
+          To skip generated app secret contract enforcement temporarily:
+          PLATFORM_APP_HEALTH_APP_SECRETS=skip make platform-app-health
+
+          To allow temporary seed Git or git:// sources during bootstrap only:
+          PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false make platform-app-health
+
+          To require the exact intended production Git source:
+          PLATFORM_APP_HEALTH_EXPECTED_REPO_URL=<PRIVATE_REPO_URL> make platform-app-health
+
+          To skip certificate or trust bundle resource enforcement temporarily:
+          PLATFORM_APP_HEALTH_CERTIFICATES=skip make platform-app-health
+          PLATFORM_APP_HEALTH_TRUST_BUNDLES=skip make platform-app-health
+
+          To skip step-ca API enforcement for a temporary debug run:
+          PLATFORM_APP_HEALTH_STEP_CA_API=false make platform-app-health
 
           If this cluster intentionally runs only a subset of the premium stack,
           override the enforced list for this check:
@@ -1130,10 +2880,17 @@
           PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system forgejo woodpecker longhorn-system metallb-system traefik"
           PLATFORM_APP_HEALTH_GUI_APPS="argocd forgejo woodpecker"
           make platform-app-health
+
+          To require specific CloudNativePG PostgreSQL clusters:
+          PLATFORM_APP_HEALTH_CNPG_CLUSTERS="platform-databases/platform-postgres" make platform-app-health
+
+          To require specific cert-manager Certificates or trust-manager Bundles:
+          PLATFORM_APP_HEALTH_CERTIFICATES="argocd/argocd-server-tls" make platform-app-health
+          PLATFORM_APP_HEALTH_TRUST_BUNDLES="platform-public-roots" make platform-app-health
       run_once: true
       when: ansible_play_hosts | map('extract', hostvars, 'platform_app_health_failed') | map('bool') | select('equalto', true) | list | length > 0
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, platform pods are Ready, required StorageClasses exist, platform PVCs are Bound, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set, platform pods are Ready, Argo CD runtime components and configured repo-server/Redis service endpoints are present, critical HA workloads meet minimum desired and ready replica coverage, Woodpecker server and agent pods run the expected pinned image tag, cert-manager Certificates are Ready when present or explicitly required, trust-manager Bundles are synced when present or explicitly required, step-ca answers /health on its ClusterIP service when required, CloudNativePG clusters are Ready when present or explicitly required, Loki answers a known /ready endpoint when required, Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required, generated Harbor/Woodpecker/Loki/Velero app secrets exist with required keys, required StorageClasses exist, platform PVCs are Bound, Longhorn nodes are Ready/schedulable and attached Longhorn volumes are healthy, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required, Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
       run_once: true
