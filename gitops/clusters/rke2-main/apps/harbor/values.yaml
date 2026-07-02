@@ -2,6 +2,9 @@
 
 expose:
   type: ingress
+  tls:
+    enabled: true
+    certSource: auto
   ingress:
     className: traefik
     hosts:
@@ -9,7 +12,117 @@ expose:
 
 externalURL: https://harbor.<PLATFORM_DOMAIN>
 
+portal:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+core:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+jobservice:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+registry:
+  replicas: 1
+  registry:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  controller:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+trivy:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+exporter:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+updateStrategy:
+  type: Recreate
+
 persistence:
   enabled: true
+  persistentVolumeClaim:
+    registry:
+      storageClass: <HARBOR_STORAGE_CLASS>
+      size: <HARBOR_REGISTRY_SIZE>
+    jobservice:
+      jobLog:
+        storageClass: <HARBOR_STORAGE_CLASS>
+        size: <HARBOR_JOBLOG_SIZE>
+    database:
+      storageClass: <HARBOR_STORAGE_CLASS>
+      size: <HARBOR_DATABASE_SIZE>
+    redis:
+      storageClass: <HARBOR_STORAGE_CLASS>
+      size: <HARBOR_REDIS_SIZE>
+    trivy:
+      storageClass: <HARBOR_STORAGE_CLASS>
+      size: <HARBOR_TRIVY_SIZE>
+  imageChartStorage:
+    type: filesystem
+    filesystem:
+      rootdirectory: /storage
+
+database:
+  type: internal
+  internal:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+
+redis:
+  type: internal
+  internal:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
+existingSecretAdminPassword: harbor-admin
+existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD
+existingSecretSecretKey: harbor-secret-key
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
 
 # Use robot accounts for CI and store credentials outside git.

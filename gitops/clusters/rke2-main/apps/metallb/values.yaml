@@ -1,2 +1,19 @@
 # MetalLB chart values.
 # Address pools are configured by manifests below using placeholders.
+controller:
+  logLevel: info
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+speaker:
+  logLevel: info
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

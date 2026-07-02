@@ -4,15 +4,25 @@
 kind: StatefulSet
 replicaCount: 1
 
+service:
+  type: ClusterIP
+  port: 443
+  targetPort: 9000
+
 ca:
   name: <STEP_CA_NAME>
+  address: :9000
   dns: <STEP_CA_DNS_NAMES>
   url: <STEP_CA_URL>
   db:
     enabled: true
     persistent: true
     storageClass: <STEP_CA_STORAGE_CLASS>
+    accessModes:
+      - ReadWriteOnce
     size: <STEP_CA_DB_SIZE>
+  ssh:
+    enabled: false
 
 bootstrap:
   enabled: true
@@ -24,3 +34,13 @@ existingSecrets:
 
 ingress:
   enabled: false
+
+autocert:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

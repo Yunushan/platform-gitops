@@ -21,11 +21,23 @@
 <p align="center">
   <a href="docs/QUICK_START.md">Quick Start</a> •
   <a href="docs/ARCHITECTURE.md">Architecture</a> •
+  <a href="docs/ARCHITECTURE_DECISIONS.md">ADRs</a> •
+  <a href="docs/BACKUP_RESTORE.md">Backup and Restore</a> •
+  <a href="docs/BUSINESS_CONTINUITY.md">Business Continuity</a> •
+  <a href="docs/OPERATIONS.md">Operations</a> •
+  <a href="docs/PRODUCTION_READINESS.md">Production Readiness</a> •
+  <a href="docs/PLATFORM_SUPPORT.md">Platform Support</a> •
+  <a href="docs/SERVICE_CATALOG.md">Service Catalog</a> •
+  <a href="docs/CAPACITY_PLANNING.md">Capacity</a> •
+  <a href="docs/COMPLIANCE_AUDIT.md">Audit Evidence</a> •
+  <a href="docs/RELEASE_PROMOTION.md">Promotion</a> •
+  <a href="docs/ALERTING.md">Alerting</a> •
   <a href="docs/INSTALLATION.md">Launch</a> •
   <a href="docs/PREMIUM_3NODE.md">Premium 3-Node</a> •
   <a href="docs/PRIVATE_DEPLOYMENT.md">Private Deployment</a> •
   <a href="docs/COMPONENT_SWITCHING.md">Change Components</a> •
   <a href="docs/SECRETS_AND_PRIVACY.md">Secrets & Privacy</a> •
+  <a href="SECURITY.md">Security</a> •
   <a href="docs/USER_GUIDE.md">User Guide</a> •
   <a href="docs/RELEASE_GUIDE.md">Release Guide</a> •
   <a href="LICENSE">License</a>
@@ -112,6 +124,42 @@ PLATFORM_PROFILE=premium-3node make platform-profile-check
 make platform-production-check
 ```
 
+Use [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) as the
+go/no-go checklist for live gates, evidence, exceptions, launch decision, and
+post-launch validation.
+Before production use, also complete the restore drill in
+[`docs/BACKUP_RESTORE.md`](docs/BACKUP_RESTORE.md) and keep the evidence in
+your private deployment record.
+Use [`docs/BUSINESS_CONTINUITY.md`](docs/BUSINESS_CONTINUITY.md) to define the
+minimum viable platform, dependency recovery order, RPO/RTO continuity model,
+failover/failback expectations, and continuity exercise evidence.
+Use [`docs/SERVICE_CATALOG.md`](docs/SERVICE_CATALOG.md) to keep service
+ownership, criticality, dependencies, SLO/SLA expectations, access model, and
+recovery expectations reviewable in private records.
+Use [`docs/ARCHITECTURE_DECISIONS.md`](docs/ARCHITECTURE_DECISIONS.md) to
+record significant platform choices, alternatives, consequences, validation,
+and rollback or exit plans.
+Use [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for day-2 ownership, change
+management, incident, access, rotation, and maintenance-window practices.
+Use [`docs/INCIDENT_RESPONSE.md`](docs/INCIDENT_RESPONSE.md) for severity
+declaration, incident roles, communications, recovery validation, and
+post-incident review.
+Use [`docs/ACCESS_CONTROL.md`](docs/ACCESS_CONTROL.md) for identity, RBAC,
+robot accounts, branch protection, break-glass access, and access reviews.
+Use [`docs/CAPACITY_PLANNING.md`](docs/CAPACITY_PLANNING.md) to define
+capacity domains, saturation signals, load tests, scaling decisions, and
+private evidence.
+Use [`docs/COMPLIANCE_AUDIT.md`](docs/COMPLIANCE_AUDIT.md) to map controls,
+evidence records, audit logging, exceptions, and private review cadence.
+Use [`docs/RELEASE_PROMOTION.md`](docs/RELEASE_PROMOTION.md) to define
+environment promotion gates, rollback, hotfix, freeze, and release evidence.
+Use [`docs/ALERTING.md`](docs/ALERTING.md) to define severity, receivers,
+SLOs, routing tests, silences, and alert review evidence.
+Use [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) to review assets, trust
+boundaries, high-risk changes, and private-deployment security evidence.
+Use [`docs/DATA_CLASSIFICATION.md`](docs/DATA_CLASSIFICATION.md) to classify
+component data, retention decisions, disposal, and private evidence.
+
 ## Default architecture
 
 ```text
@@ -168,6 +216,11 @@ docs/ARCHITECTURE.md
 
 ## Supported systems
 
+Use [`docs/PLATFORM_SUPPORT.md`](docs/PLATFORM_SUPPORT.md) for support tiers,
+lifecycle rules, upgrade/deprecation policy, compatibility gates, and private
+support evidence. Use [`docs/NODE_OS_SUPPORT.md`](docs/NODE_OS_SUPPORT.md) for
+the cluster-node operating system matrix.
+
 | Area | Supported target |
 |---|---|
 | Admin workstation | Windows, Windows Server, macOS, Linux, BSD-family systems, Solaris-family systems |
@@ -190,6 +243,7 @@ BSD and Solaris are supported as **operator/client workstations** for Git, SSH, 
 ├── inventory/                  # Example 3-node inventory, local files ignored
 ├── policies/                   # Optional guardrails for secret protection and safety
 ├── profiles/                   # Easy component-switching profiles
+├── renovate.json               # Dependency dashboard, Helm grouping, image digest pinning
 ├── scripts/                    # Bootstrap, validation, and safety scripts
 ├── secrets/                    # README only; real secrets must never be committed
 ├── .github/                    # GitHub Actions validation
@@ -237,6 +291,15 @@ gitops/apps-stage            # staging desired state
 gitops/apps-prod             # production desired state
 apps/<service-name>          # each app source repository
 ```
+
+The supply-chain helper surface includes `renovate.json` for dependency
+dashboards, grouped Helm updates, and Docker digest pinning, plus
+`policies/kyverno/verify-signed-images.example.yaml` for an opt-in Cosign image
+signature verification policy after your CI signs and publishes images.
+
+For Git-stored private values, `config/sops.age.example.yaml` provides a
+copyable SOPS + age starter policy. Replace the placeholder age recipient in a
+private deployment repository and keep age private keys outside Git.
 
 ## International starter documentation
 

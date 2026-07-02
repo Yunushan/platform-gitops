@@ -4,6 +4,7 @@
 
 - Three Linux nodes for RKE2 server mode.
 - A node operating system from `docs/NODE_OS_SUPPORT.md`.
+- Support tier and lifecycle acceptance from `docs/PLATFORM_SUPPORT.md`.
 - A virtual IP or DNS name for the Kubernetes API endpoint.
 - SSH access from an admin workstation.
 - Git, kubectl, Helm, and basic shell tools.
@@ -297,6 +298,30 @@ from `inventory/hosts.local.ini` unless `PLATFORM_FORGEJO_HOST` is set. The defa
 Forgejo dashboard online; move to external PostgreSQL and Redis for the final
 premium production posture.
 
+For production Forgejo, create the external dependency secrets first, then
+render values that reference only Secret names and non-secret endpoints:
+
+```bash
+FORGEJO_DATABASE_PASSWORD='<PASSWORD>' \
+FORGEJO_REDIS_URL='redis://:<PASSWORD>@<REDIS_HOST>:6379/0' \
+PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true \
+PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true \
+make platform-app-secrets
+
+FORGEJO_DATABASE_MODE=external \
+FORGEJO_DATABASE_HOST=<POSTGRES_HOST>:5432 \
+FORGEJO_DATABASE_NAME=forgejo \
+FORGEJO_DATABASE_USER=forgejo \
+FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
+FORGEJO_DATABASE_SSL_MODE=disable \
+FORGEJO_REDIS_SECRET_NAME=forgejo-redis \
+make platform-render-private-values
+```
+
+If you do not want to provide a full `FORGEJO_REDIS_URL`, provide
+`FORGEJO_REDIS_HOST` plus `FORGEJO_REDIS_PASSWORD` and optional
+`FORGEJO_REDIS_PORT`, `FORGEJO_REDIS_DB`, and `FORGEJO_REDIS_TLS`.
+
 Woodpecker also defaults to single-server SQLite for the first private CI
 dashboard. Keep `WOODPECKER_SERVER_REPLICAS=1` while
 `WOODPECKER_DATABASE_MODE=sqlite`. The renderer pins both Woodpecker server and
@@ -320,6 +345,56 @@ WOODPECKER_AGENT_REPLICAS=3 \
 make platform-render-private-values
 ```
 
+Harbor defaults to internal PostgreSQL, internal Redis, and filesystem registry
+storage so a first private registry can come online without pre-existing
+services. For the premium production posture, create the dependency secrets
+from ignored env values and render Harbor with external PostgreSQL, external
+Redis, and S3-compatible registry storage:
+
+```bash
+HARBOR_DATABASE_PASSWORD='<PASSWORD>' \
+HARBOR_REDIS_PASSWORD='<PASSWORD>' \
+HARBOR_S3_ACCESS_KEY_ID='<ACCESS_KEY>' \
+HARBOR_S3_SECRET_ACCESS_KEY='<SECRET_KEY>' \
+PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true \
+PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true \
+PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=true \
+make platform-app-secrets
+
+HARBOR_DATABASE_MODE=external \
+HARBOR_DATABASE_HOST=<POSTGRES_HOST> \
+HARBOR_DATABASE_NAME=registry \
+HARBOR_DATABASE_USER=harbor \
+HARBOR_DATABASE_SECRET_NAME=harbor-database \
+HARBOR_REDIS_MODE=external \
+HARBOR_REDIS_ADDR=<REDIS_HOST>:6379 \
+HARBOR_REDIS_SECRET_NAME=harbor-redis \
+HARBOR_STORAGE_MODE=s3 \
+HARBOR_S3_BUCKET=<HARBOR_REGISTRY_BUCKET> \
+HARBOR_S3_SECRET_NAME=harbor-registry-s3 \
+OBJECT_STORAGE_ENDPOINT=<S3_ENDPOINT> \
+OBJECT_STORAGE_REGION=<S3_REGION> \
+make platform-render-private-values
+```
+
+Grafana defaults to persistent SQLite so monitoring can come online during the
+first bootstrap. For production monitoring, create a database password secret
+and render Grafana with external PostgreSQL:
+
+```bash
+GRAFANA_DATABASE_PASSWORD='<PASSWORD>' \
+PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true \
+make platform-app-secrets
+
+GRAFANA_DATABASE_MODE=postgres \
+GRAFANA_DATABASE_HOST=<POSTGRES_HOST> \
+GRAFANA_DATABASE_NAME=grafana \
+GRAFANA_DATABASE_USER=grafana \
+GRAFANA_DATABASE_SECRET_NAME=grafana-database \
+GRAFANA_DATABASE_SSL_MODE=disable \
+make platform-render-private-values
+```
+
 The unattended targets also default to `PLATFORM_RUN_PROFILE_CHECK=true`, so
 the selected GitOps registration mode is validated before any commit, push, or
 seed mirror update. In `strict` mode the full rendered profile must be complete.
@@ -335,20 +410,43 @@ Set `PYTHON=/path/to/python` if the bootstrap workstation does not provide
 `python3` on `PATH`; `make validate`, `make platform-argocd`, first deploy, and
 seed sync all honor the same override.
 
-For object-storage backed apps, keep credentials in ignored env files or your
-secret manager. `make platform-app-secrets` can create the Kubernetes secrets
-for Woodpecker's PostgreSQL datasource, Loki, and Velero from
+For object-storage backed apps and external app databases, keep credentials in
+ignored env files or your secret manager. `make platform-app-secrets` can create
+the Kubernetes secrets for Grafana admin credentials, Grafana's external
+PostgreSQL password, Forgejo's external PostgreSQL password and Redis URI,
+Woodpecker's PostgreSQL datasource, Harbor's external
+database/Redis/S3 credentials, Loki, Velero, and CloudNativePG from
+`FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
 `WOODPECKER_DATABASE_DATASOURCE`, `WOODPECKER_DATABASE_HOST` /
-`WOODPECKER_DATABASE_PASSWORD`, `LOKI_S3_ACCESS_KEY_ID` /
-`LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`, or
+`WOODPECKER_DATABASE_PASSWORD`, `HARBOR_DATABASE_PASSWORD`,
+`HARBOR_REDIS_PASSWORD`, `HARBOR_S3_ACCESS_KEY_ID` /
+`HARBOR_S3_SECRET_ACCESS_KEY`, `GRAFANA_DATABASE_PASSWORD`,
+`LOKI_S3_ACCESS_KEY_ID` /
+`LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`,
+`CNPG_S3_ACCESS_KEY_ID` / `CNPG_S3_SECRET_ACCESS_KEY`, or
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`; committed values only store
 bucket names, endpoints, regions, cache sizes, and secret names.
 For production runs, set `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` so
-the secret automation fails immediately if Loki or Velero object-storage
+the secret automation fails immediately if Loki, Velero, or CloudNativePG object-storage
 credential secrets are still missing.
+Set `PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=true` when you only want to
+enforce the CloudNativePG backup credential secret without enforcing the rest of
+the object-storage stack.
+Set `CNPG_RENDER_POSTGRES_CLUSTER=true` when you want
+`make platform-render-private-values` to materialize the premium CloudNativePG
+PostgreSQL cluster example with real storage and backup values.
 Set `PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` before enabling
 Woodpecker HA values so a missing PostgreSQL datasource secret fails before
 Argo CD rolls Woodpecker.
+Set `PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true`,
+`PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true`, and
+`PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=true` before enabling
+Harbor external PostgreSQL, Redis, and S3 registry storage.
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` and
+`PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true` before enabling
+`FORGEJO_DATABASE_MODE=external`.
+Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
+`GRAFANA_DATABASE_MODE=postgres`.
 
 First deployment also runs the cluster DNS/ClusterIP service-path repair before
 waiting on Argo CD. This protects against kube-proxy, Cilium, or firewalld
@@ -594,6 +692,9 @@ the selected GitOps profile placeholder check, and the platform app health gate
 in one command. Repository validation also rejects mutable explicit image or
 chart tags such as `latest`, `next`, `nightly`, `dev`, or branch-style tags in
 curated GitOps app manifests.
+Use `docs/PRODUCTION_READINESS.md` as the final go/no-go checklist that ties
+this live gate to restore proof, access review, exceptions, release evidence,
+and post-launch validation.
 
 To prove the cluster is using the intended private source repository, run the
 production gate with the same repository URL used to register the Argo CD
@@ -664,7 +765,7 @@ For logging and backups, the health gate verifies a known Loki `/ready` service
 endpoint when Loki is required, and requires Velero `BackupStorageLocation`
 objects to be `Available` plus at least one enabled Velero backup schedule when
 Velero is required. It also verifies the generated app secret contracts for
-Harbor, Woodpecker, Loki, and Velero when those apps are required, checking that
+Harbor, Forgejo, Woodpecker, Grafana, Loki, Velero, and CloudNativePG when those apps are required, checking that
 the expected Secret objects exist with the required keys. Temporary bypasses:
 
 ```bash
@@ -674,16 +775,46 @@ PLATFORM_APP_HEALTH_VELERO_SCHEDULES=false make platform-app-health
 PLATFORM_APP_HEALTH_APP_SECRETS=skip make platform-app-health
 ```
 
+For production Harbor, also enforce the external PostgreSQL, Redis, and
+registry S3 credential secrets:
+
+```bash
+PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true make platform-app-health
+```
+
+For production Forgejo, also enforce the external PostgreSQL and Redis
+credential secrets:
+
+```bash
+PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true make platform-app-health
+```
+
+For production Grafana with external PostgreSQL, also enforce the database
+password secret:
+
+```bash
+PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET=true make platform-app-health
+```
+
 For custom secret names, set the same names used by `platform-app-secrets` and
 the private values renderer:
 
 ```bash
 HARBOR_ADMIN_SECRET_NAME=harbor-admin \
 HARBOR_SECRET_KEY_SECRET_NAME=harbor-secret-key \
+HARBOR_DATABASE_SECRET_NAME=harbor-database \
+HARBOR_REDIS_SECRET_NAME=harbor-redis \
+HARBOR_S3_SECRET_NAME=harbor-registry-s3 \
+FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
+FORGEJO_REDIS_SECRET_NAME=forgejo-redis \
 WOODPECKER_FORGEJO_OAUTH_SECRET_NAME=woodpecker-forgejo-oauth \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
+GRAFANA_ADMIN_SECRET_NAME=grafana-admin \
+GRAFANA_DATABASE_SECRET_NAME=grafana-database \
 LOKI_OBJECT_STORAGE_SECRET_NAME=loki-object-storage \
 VELERO_CREDENTIALS_SECRET_NAME=velero-credentials \
+CNPG_OBJECT_STORE_SECRET_NAME=cnpg-object-store \
+PLATFORM_APP_HEALTH_CNPG_OBJECT_STORAGE_SECRET=true \
 make platform-app-health
 ```
 

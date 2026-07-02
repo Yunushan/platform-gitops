@@ -6,8 +6,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.x'
       - name: Validate project
@@ -28,6 +28,48 @@ jobs:
         run: python scripts/test_private_values_renderer.py
       - name: Test platform app secret contract
         run: python scripts/test_platform_secret_contract.py
+      - name: Test policy examples
+        run: python scripts/test_policy_examples.py
+      - name: Test SOPS age policy
+        run: python scripts/test_sops_age_policy.py
+      - name: Test supply-chain helpers
+        run: python scripts/test_supply_chain_helpers.py
+      - name: Test backup and restore runbook
+        run: python scripts/test_backup_restore_runbook.py
+      - name: Test business continuity runbook
+        run: python scripts/test_business_continuity.py
+      - name: Test service catalog
+        run: python scripts/test_service_catalog.py
+      - name: Test architecture decision records
+        run: python scripts/test_architecture_decisions.py
+      - name: Test operations runbook
+        run: python scripts/test_operations_runbook.py
+      - name: Test production readiness checklist
+        run: python scripts/test_production_readiness_checklist.py
+      - name: Test platform support policy
+        run: python scripts/test_platform_support.py
+      - name: Test incident response runbook
+        run: python scripts/test_incident_response_runbook.py
+      - name: Test access control runbook
+        run: python scripts/test_access_control_runbook.py
+      - name: Test capacity planning runbook
+        run: python scripts/test_capacity_planning_runbook.py
+      - name: Test compliance and audit evidence guide
+        run: python scripts/test_compliance_audit_runbook.py
+      - name: Test release promotion runbook
+        run: python scripts/test_release_promotion_runbook.py
+      - name: Test alerting runbook
+        run: python scripts/test_alerting_runbook.py
+      - name: Test data classification runbook
+        run: python scripts/test_data_classification.py
+      - name: Test security policy
+        run: python scripts/test_security_policy.py
+      - name: Test threat model
+        run: python scripts/test_threat_model.py
+      - name: Test repository governance templates
+        run: python scripts/test_repository_governance.py
+      - name: Test CODEOWNERS starter
+        run: python scripts/test_codeowners_starter.py
       - name: Test secret scanner
         run: python scripts/test_no_secrets.py
       - name: Test private artifact boundary

@@ -1,2 +1,24 @@
 # Values are intentionally minimal and safe.
 # Replace placeholders through private overlays, encrypted secrets, or Argo CD parameterization.
+controller:
+  replicaCount: 3
+  minAvailable: 2
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  service:
+    externalTrafficPolicy: Local
+  config:
+    ssl-redirect: "true"
+    force-ssl-redirect: "true"
+    use-forwarded-headers: "true"
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: false

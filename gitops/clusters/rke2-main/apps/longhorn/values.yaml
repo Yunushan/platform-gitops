@@ -1,2 +1,26 @@
 # Values are intentionally minimal and safe.
 # Replace placeholders through private overlays, encrypted secrets, or Argo CD parameterization.
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 2
+  reclaimPolicy: Retain
+  defaultDataLocality: best-effort
+  defaultFsType: ext4
+
+defaultSettings:
+  defaultDataPath: /var/lib/longhorn
+  defaultReplicaCount: 2
+  defaultDataLocality: best-effort
+  replicaAutoBalance: best-effort
+  storageOverProvisioningPercentage: 100
+  storageMinimalAvailablePercentage: 10
+  orphanAutoDeletion: true
+  concurrentAutomaticEngineUpgradePerNodeLimit: 1
+
+longhornManager:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi

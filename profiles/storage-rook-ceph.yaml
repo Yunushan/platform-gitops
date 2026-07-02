@@ -1,8 +1,9 @@
 profile: storage-rook-ceph
 summary: Use Rook/Ceph instead of Longhorn.
+inherits: default-forgejo-woodpecker-argocd
 components:
   storage: rook-ceph
 remove:
   - gitops/clusters/rke2-main/apps/longhorn
-include:
+includes:
   - gitops/clusters/rke2-main/alternatives/rook-ceph

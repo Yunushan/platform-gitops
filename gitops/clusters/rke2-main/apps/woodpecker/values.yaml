@@ -29,6 +29,12 @@ server:
   persistentVolume:
     enabled: true
     size: <WOODPECKER_DATA_SIZE>
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
 
 agent:
   enabled: true
@@ -40,3 +46,9 @@ agent:
   env:
     WOODPECKER_BACKEND: kubernetes
     WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi

@@ -25,4 +25,11 @@ persistence:
   enabled: true
   size: <FORGEJO_DATA_SIZE>
 
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi
+
 # Database credentials must be supplied through private secret management.

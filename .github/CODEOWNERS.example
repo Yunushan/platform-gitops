@@ -1,0 +1,34 @@
+# Copy this file to .github/CODEOWNERS in a private deployment repository.
+# Replace @org/... placeholders with real users or teams before enabling
+# branch protection and required reviews.
+# Keep real owner names, team names, and escalation details out of this public
+# template.
+
+* @org/platform-maintainers
+
+/SECURITY.md @org/security-maintainers
+/CONTRIBUTING.md @org/platform-maintainers
+/.github/ @org/platform-maintainers @org/security-maintainers
+
+/ansible/ @org/platform-automation-maintainers
+/scripts/ @org/platform-automation-maintainers @org/security-maintainers
+/config/ @org/platform-maintainers @org/security-maintainers
+/inventory/ @org/platform-maintainers
+/profiles/ @org/platform-maintainers
+
+/gitops/ @org/gitops-maintainers @org/security-maintainers
+/policies/ @org/security-maintainers
+/renovate.json @org/supply-chain-maintainers
+
+/docs/BACKUP_RESTORE.md @org/platform-operations @org/backup-owners
+/docs/BUSINESS_CONTINUITY.md @org/platform-operations @org/backup-owners @org/security-maintainers
+/docs/SERVICE_CATALOG.md @org/platform-operations @org/security-maintainers
+/docs/ARCHITECTURE_DECISIONS.md @org/platform-maintainers @org/security-maintainers
+/docs/adr/ @org/platform-maintainers @org/security-maintainers
+/docs/OPERATIONS.md @org/platform-operations
+/docs/PRODUCTION_READINESS.md @org/platform-operations @org/security-maintainers
+/docs/PLATFORM_SUPPORT.md @org/platform-maintainers @org/platform-operations
+/docs/NODE_OS_SUPPORT.md @org/platform-maintainers @org/platform-operations
+/docs/ALERTING.md @org/platform-operations @org/observability-owners
+/docs/SECRETS_AND_PRIVACY.md @org/security-maintainers
+/docs/PRIVATE_DEPLOYMENT.md @org/platform-maintainers @org/security-maintainers

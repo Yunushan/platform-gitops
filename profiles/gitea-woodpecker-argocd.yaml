@@ -10,9 +10,20 @@ components:
   storage: longhorn
   cni: cilium
   ingress: traefik
+remove:
+  - gitops/clusters/rke2-main/apps/forgejo
 includes:
+  - gitops/clusters/rke2-main/apps/cert-manager
+  - gitops/clusters/rke2-main/apps/trust-manager
+  - gitops/clusters/rke2-main/apps/step-ca
+  - gitops/clusters/rke2-main/apps/metallb
   - gitops/clusters/rke2-main/apps/traefik
+  - gitops/clusters/rke2-main/apps/longhorn
+  - gitops/clusters/rke2-main/apps/cloudnativepg
+  - gitops/clusters/rke2-main/apps/argocd-ha
   - gitops/clusters/rke2-main/alternatives/gitea
   - gitops/clusters/rke2-main/apps/woodpecker
-  - gitops/clusters/rke2-main/apps/argocd-ha
   - gitops/clusters/rke2-main/apps/harbor
+  - gitops/clusters/rke2-main/apps/monitoring
+  - gitops/clusters/rke2-main/apps/loki
+  - gitops/clusters/rke2-main/apps/velero

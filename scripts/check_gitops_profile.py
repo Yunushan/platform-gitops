@@ -14,6 +14,10 @@ APPLICATION_PATH_RE = re.compile(
 )
 VENDORED_PATH_PARTS = {"charts", "crds"}
 EXAMPLE_SUFFIXES = (".example.yaml", ".example.yml")
+PROFILE_APP_FILES = {
+    "default": "gitops/clusters/rke2-main/platform-apps.yaml",
+    "premium-3node": "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml",
+}
 
 
 def fail(message: str) -> int:
@@ -71,6 +75,40 @@ def scan_path(path: Path, repo_root: Path, allow_repo_url: bool = False) -> list
     return findings
 
 
+def parse_simple_profile(path: Path) -> tuple[dict[str, str], dict[str, list[str]]]:
+    scalars: dict[str, str] = {}
+    lists: dict[str, list[str]] = {}
+    current_list = ""
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        scalar_match = re.match(r"^([A-Za-z0-9_-]+):\s*(.*?)\s*$", stripped)
+        if scalar_match:
+            key, value = scalar_match.groups()
+            current_list = ""
+            if value:
+                scalars[key] = value
+            else:
+                lists.setdefault(key, [])
+                current_list = key
+            continue
+        list_match = re.match(r"^-\s+(.+?)\s*$", stripped)
+        if list_match and current_list:
+            lists[current_list].append(list_match.group(1))
+
+    return scalars, lists
+
+
+def append_unique(values: list[str], additions: list[str]) -> list[str]:
+    result = list(values)
+    for item in additions:
+        if item not in result:
+            result.append(item)
+    return result
+
+
 def application_source_paths(applications_file: Path, repo_root: Path) -> list[Path]:
     text = applications_file.read_text(encoding="utf-8")
     paths: list[Path] = []
@@ -79,22 +117,98 @@ def application_source_paths(applications_file: Path, repo_root: Path) -> list[P
     return paths
 
 
-def profile_applications_file(repo_root: Path, profile: str) -> Path:
-    if profile == "default":
-        return repo_root / "gitops/clusters/rke2-main/platform-apps.yaml"
-    if profile == "premium-3node":
-        return repo_root / "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
-    raise ValueError(f"unsupported profile {profile!r}")
+def resolve_profile_entries(repo_root: Path, profile: str, seen: set[str] | None = None) -> tuple[list[str], list[str]]:
+    if profile in PROFILE_APP_FILES:
+        app_file = repo_root / PROFILE_APP_FILES[profile]
+        return [str(path.relative_to(repo_root)).replace("\\", "/") for path in application_source_paths(app_file, repo_root)], []
+
+    seen = seen or set()
+    if profile in seen:
+        raise ValueError(f"profile {profile!r} has an inheritance cycle")
+    seen.add(profile)
+
+    profile_file = repo_root / "profiles" / f"{profile}.yaml"
+    if not profile_file.exists():
+        raise ValueError(f"unsupported profile {profile!r}")
+
+    scalars, lists = parse_simple_profile(profile_file)
+    includes: list[str] = []
+    removes: list[str] = []
+    inherited = scalars.get("inherits", "")
+    if inherited:
+        includes, removes = resolve_profile_entries(repo_root, inherited, seen)
+
+    local_includes = lists.get("includes", [])
+    local_removes = lists.get("remove", [])
+    missing_entries = [
+        entry
+        for entry in local_includes + local_removes
+        if not (repo_root / entry).exists()
+    ]
+    if missing_entries:
+        raise ValueError(
+            f"profile {profile!r} references missing path(s): {', '.join(sorted(missing_entries))}"
+        )
+
+    includes = append_unique(includes, local_includes)
+    removes = append_unique(removes, local_removes)
+    includes = [entry for entry in includes if entry not in set(removes)]
+    return includes, removes
+
+
+def profile_dependency_files(repo_root: Path, profile: str, seen: set[str] | None = None) -> list[Path]:
+    if profile in PROFILE_APP_FILES:
+        return [repo_root / PROFILE_APP_FILES[profile]]
+
+    seen = seen or set()
+    if profile in seen:
+        raise ValueError(f"profile {profile!r} has an inheritance cycle")
+    seen.add(profile)
+
+    profile_file = repo_root / "profiles" / f"{profile}.yaml"
+    if not profile_file.exists():
+        raise ValueError(f"unsupported profile {profile!r}")
+
+    scalars, _ = parse_simple_profile(profile_file)
+    inherited = scalars.get("inherits", "")
+    files = profile_dependency_files(repo_root, inherited, seen) if inherited else []
+    files.append(profile_file)
+    return files
+
+
+def is_application_source(path: Path) -> bool:
+    kustomization = path / "kustomization.yaml"
+    if not kustomization.exists():
+        return False
+    text = kustomization.read_text(encoding="utf-8")
+    return "helmCharts:" in text
+
+
+def profile_source_paths(repo_root: Path, profile: str) -> list[Path]:
+    includes, _ = resolve_profile_entries(repo_root, profile)
+    return [repo_root / entry for entry in includes if is_application_source(repo_root / entry)]
 
 
 def check_profile(repo_root: Path, profile: str) -> int:
-    applications_file = profile_applications_file(repo_root, profile)
     projects_dir = repo_root / "gitops/clusters/rke2-main/projects"
     findings: list[str] = []
 
-    findings.extend(scan_path(applications_file, repo_root, allow_repo_url=True))
+    if profile in PROFILE_APP_FILES:
+        applications_file = repo_root / PROFILE_APP_FILES[profile]
+        findings.extend(scan_path(applications_file, repo_root, allow_repo_url=True))
+        source_paths = application_source_paths(applications_file, repo_root)
+    else:
+        try:
+            for profile_file in profile_dependency_files(repo_root, profile):
+                findings.extend(scan_path(profile_file, repo_root))
+            source_paths = profile_source_paths(repo_root, profile)
+        except ValueError as exc:
+            return fail(str(exc))
+        if not source_paths:
+            return fail(f"profile {profile!r} does not include any deployable GitOps application sources")
+
     findings.extend(scan_path(projects_dir, repo_root, allow_repo_url=True))
-    for source_path in application_source_paths(applications_file, repo_root):
+    for source_path in source_paths:
         findings.extend(scan_path(source_path, repo_root))
 
     if findings:
@@ -129,9 +243,8 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument(
         "--profile",
-        choices=("default", "premium-3node"),
         default="premium-3node",
-        help="GitOps profile to check. Defaults to premium-3node.",
+        help="GitOps profile to check. Supports default, premium-3node, and catalog profiles in profiles/.",
     )
     args = parser.parse_args()
 

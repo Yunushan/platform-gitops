@@ -37,3 +37,16 @@ spec:
           spec:
             securityContext:
               runAsNonRoot: true
+    - name: require-no-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: Containers should explicitly disable privilege escalation where supported.
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false

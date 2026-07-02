@@ -21,6 +21,21 @@ credentials:
 
 deployNodeAgent: true
 
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+nodeAgent:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
 snapshotsEnabled: true
 
 schedules:

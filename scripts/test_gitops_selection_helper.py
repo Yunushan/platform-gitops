@@ -87,7 +87,7 @@ def main() -> int:
         "strict failure",
     )
 
-    for profile in ("default", "premium-3node"):
+    for profile in ("default", "premium-3node", "gitea-woodpecker-argocd"):
         result = run_helper(profile, "skip-incomplete")
         rendered_output = assert_rc(result, 0, f"{profile} skip-incomplete selection")
         assert_contains(rendered_output, "Deployable GitOps applications:", f"{profile} selection")
@@ -95,7 +95,7 @@ def main() -> int:
 
     bad_profile = run_helper("unknown-profile", "skip-incomplete")
     bad_profile_output = assert_rc(bad_profile, 1, "unsupported profile")
-    assert_contains(bad_profile_output, "Unsupported PLATFORM_PROFILE=unknown-profile", "bad profile")
+    assert_contains(bad_profile_output, "unsupported profile 'unknown-profile'", "bad profile")
 
     bad_mode = run_helper("premium-3node", "surprise")
     bad_mode_output = assert_rc(bad_mode, 1, "unsupported placeholder mode")

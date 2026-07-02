@@ -2,3 +2,96 @@
 # Replace placeholders through private overlays, encrypted secrets, or Argo CD parameterization.
 crds:
   enabled: true
+
+prometheus:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - prometheus.<PLATFORM_DOMAIN>
+    tls:
+      - secretName: prometheus-tls
+        hosts:
+          - prometheus.<PLATFORM_DOMAIN>
+  prometheusSpec:
+    replicas: 1
+    retention: 7d
+    retentionSize: 10GB
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 20Gi
+
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+
+grafana:
+  replicas: 1
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: longhorn
+    accessModes:
+      - ReadWriteOnce
+    size: 5Gi
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - grafana.<PLATFORM_DOMAIN>
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.<PLATFORM_DOMAIN>
+
+defaultRules:
+  create: true
+
+kubeEtcd:
+  enabled: true
+
+kubeScheduler:
+  enabled: true
+
+kubeControllerManager:
+  enabled: true

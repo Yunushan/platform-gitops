@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "dependencyDashboard": true,
+  "labels": [
+    "dependencies",
+    "supply-chain"
+  ],
+  "timezone": "Etc/UTC",
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "rangeStrategy": "pin",
+  "automerge": false,
+  "packageRules": [
+    {
+      "description": "Pin container image digests and review runtime changes explicitly.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "pinDigests": true,
+      "groupName": "container images"
+    },
+    {
+      "description": "Group GitOps Helm chart updates for platform review.",
+      "matchDatasources": [
+        "helm"
+      ],
+      "groupName": "gitops helm charts"
+    },
+    {
+      "description": "Require dashboard approval for major platform updates.",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Keep CI and validation dependency updates separate from runtime platform updates.",
+      "matchFileNames": [
+        ".github/**",
+        ".gitea/**",
+        ".forgejo/**",
+        ".gitlab-ci.yml",
+        ".woodpecker/**"
+      ],
+      "groupName": "ci validation dependencies"
+    }
+  ]
+}

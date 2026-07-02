@@ -9,6 +9,9 @@ Thank you for improving Platform GitOps Workspace.
 3. Run `make validate` and `make no-secrets` before opening a pull request. If `make` is not installed, run `python scripts/run_validation.py`.
 4. Keep defaults zero-subscription and self-hostable.
 5. Document every operational change in `docs/`.
+6. Report suspected vulnerabilities through `SECURITY.md`; do not include private exploit details or real deployment data in public issues.
+7. Use the pull request and issue templates under `.github/` so production impact, rollback, validation, and public-safety checks are visible during review.
+8. For private deployments, copy `.github/CODEOWNERS.example` to `.github/CODEOWNERS`, replace the `@org/...` placeholders with real owners, and enable branch protection with required reviews.
 
 ## Pull request checklist
 
@@ -17,3 +20,5 @@ Thank you for improving Platform GitOps Workspace.
 - [ ] README or docs updated.
 - [ ] Profiles updated when component defaults change.
 - [ ] Validation passes.
+- [ ] Production impact and rollback notes are filled in when behavior changes.
+- [ ] Required reviewers from the private `.github/CODEOWNERS` file have approved sensitive areas.

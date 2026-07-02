@@ -33,8 +33,9 @@ def write(path: Path, text: str) -> None:
 def render(
     renderer,
     repo: Path,
-    applications_file: Path,
     output: Path,
+    applications_file: Path | None = None,
+    profile: str | None = None,
     required_paths: list[Path] | None = None,
 ) -> tuple[int, str]:
     stdout = io.StringIO()
@@ -42,6 +43,7 @@ def render(
     args = SimpleNamespace(
         repo_root=repo,
         applications_file=applications_file,
+        profile=profile,
         repo_url="git://seed.example/platform-gitops.git",
         output=output,
         required_path=required_paths or [],
@@ -120,14 +122,67 @@ spec:
         "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: forgejo\n",
     )
     write(
+        repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/kustomization.yaml",
+        """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: forgejo
+helmCharts:
+  - name: forgejo
+    namespace: forgejo
+""",
+    )
+    write(
         repo / "gitops/clusters/rke2-main/premium-3node/apps/quoted-app/deployment.yaml",
         "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: quoted-app\n",
+    )
+    write(
+        repo / "gitops/clusters/rke2-main/premium-3node/apps/quoted-app/kustomization.yaml",
+        """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: quoted-app
+helmCharts:
+  - name: quoted-app
+    namespace: quoted-app
+""",
     )
     incomplete_dir = repo / "gitops/clusters/rke2-main/premium-3node/apps/incomplete-app"
     write(incomplete_dir / "values.yaml", "domain: <PLATFORM_DOMAIN>\n")
     write(incomplete_dir / "charts/upstream.yaml", "ignored: <IGNORED_CHART_PLACEHOLDER>\n")
     write(incomplete_dir / "crds/upstream.yaml", "ignored: <IGNORED_CRD_PLACEHOLDER>\n")
     write(incomplete_dir / "values.example.yaml", "ignored: <IGNORED_EXAMPLE_PLACEHOLDER>\n")
+    write(
+        repo / "profiles/default-forgejo-woodpecker-argocd.yaml",
+        """profile: default-forgejo-woodpecker-argocd
+includes:
+  - gitops/clusters/rke2-main/premium-3node/apps/forgejo
+  - gitops/clusters/rke2-main/premium-3node/apps/quoted-app
+""",
+    )
+    write(
+        repo / "profiles/gitea-woodpecker-argocd.yaml",
+        """profile: gitea-woodpecker-argocd
+inherits: default-forgejo-woodpecker-argocd
+remove:
+  - gitops/clusters/rke2-main/premium-3node/apps/forgejo
+includes:
+  - gitops/clusters/rke2-main/alternatives/gitea
+""",
+    )
+    write(
+        repo / "gitops/clusters/rke2-main/alternatives/gitea/kustomization.yaml",
+        """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gitea
+helmCharts:
+  - name: gitea
+    version: 12.6.0
+    repo: https://dl.gitea.com/charts/
+    releaseName: gitea
+    namespace: gitea
+    valuesFile: values.yaml
+""",
+    )
+    write(repo / "gitops/clusters/rke2-main/alternatives/gitea/values.yaml", "replicaCount: 1\n")
     return applications_file
 
 
@@ -138,7 +193,7 @@ def main() -> int:
         applications_file = create_fixture(repo)
         output = repo / "rendered.yaml"
 
-        rc, logs = render(renderer, repo, applications_file, output)
+        rc, logs = render(renderer, repo, output, applications_file=applications_file)
         if rc != 0:
             raise AssertionError(f"expected deployable subset to render, got rc={rc}\n{logs}")
 
@@ -165,7 +220,7 @@ def main() -> int:
                 path.unlink()
             elif path.is_dir():
                 path.rmdir()
-        rc, logs = render(renderer, repo, applications_file, repo / "rendered.yaml")
+        rc, logs = render(renderer, repo, repo / "rendered.yaml", applications_file=applications_file)
         if rc != 2:
             raise AssertionError(f"expected no-deployable-apps failure rc=2, got rc={rc}\n{logs}")
         if "No deployable GitOps applications remain" not in logs:
@@ -181,8 +236,8 @@ def main() -> int:
         rc, logs = render(
             renderer,
             repo,
-            applications_file,
             repo / "rendered.yaml",
+            applications_file=applications_file,
             required_paths=[Path("gitops/clusters/rke2-main/projects")],
         )
         if rc != 1:
@@ -191,6 +246,66 @@ def main() -> int:
             raise AssertionError(f"expected required path failure message\n{logs}")
         if "<PROJECT_REPO_URL>" not in logs:
             raise AssertionError(f"expected required path placeholder in output\n{logs}")
+
+    with tempfile.TemporaryDirectory(prefix="deployable-renderer-profile-") as tmp:
+        repo = Path(tmp)
+        create_fixture(repo)
+        output = repo / "rendered-profile.yaml"
+        rc, logs = render(renderer, repo, output, profile="gitea-woodpecker-argocd")
+        if rc != 0:
+            raise AssertionError(f"expected profile-catalog render to pass, got rc={rc}\n{logs}")
+        rendered = output.read_text(encoding="utf-8")
+        if "name: forgejo" in rendered:
+            raise AssertionError(f"expected removed Forgejo app to be absent\n{rendered}")
+        if "name: quoted-app" not in rendered:
+            raise AssertionError(f"expected inherited known app doc to remain\n{rendered}")
+        if "name: gitea" not in rendered or "namespace: gitea" not in rendered:
+            raise AssertionError(f"expected generated Gitea Application from profile include\n{rendered}")
+        if "git://seed.example/platform-gitops.git" not in rendered:
+            raise AssertionError(f"expected repo URL replacement in profile render\n{rendered}")
+
+    with tempfile.TemporaryDirectory(prefix="deployable-renderer-inherited-placeholder-") as tmp:
+        repo = Path(tmp)
+        create_fixture(repo)
+        write(
+            repo / "profiles/parent-profile.yaml",
+            """profile: parent-profile
+summary: <PROFILE_SUMMARY>
+includes:
+  - gitops/clusters/rke2-main/premium-3node/apps/forgejo
+""",
+        )
+        write(
+            repo / "profiles/child-profile.yaml",
+            """profile: child-profile
+inherits: parent-profile
+includes:
+  - gitops/clusters/rke2-main/premium-3node/apps/quoted-app
+""",
+        )
+        rc, logs = render(renderer, repo, repo / "rendered-profile.yaml", profile="child-profile")
+        if rc != 1:
+            raise AssertionError(f"expected inherited profile placeholder failure rc=1, got rc={rc}\n{logs}")
+        if "metadata is incomplete and cannot be skipped" not in logs:
+            raise AssertionError(f"expected profile metadata failure message\n{logs}")
+        if "<PROFILE_SUMMARY>" not in logs:
+            raise AssertionError(f"expected inherited profile placeholder in output\n{logs}")
+
+    with tempfile.TemporaryDirectory(prefix="deployable-renderer-missing-include-") as tmp:
+        repo = Path(tmp)
+        create_fixture(repo)
+        write(
+            repo / "profiles/broken-profile.yaml",
+            """profile: broken-profile
+includes:
+  - gitops/clusters/rke2-main/apps/does-not-exist
+""",
+        )
+        rc, logs = render(renderer, repo, repo / "rendered-profile.yaml", profile="broken-profile")
+        if rc != 1:
+            raise AssertionError(f"expected missing profile include failure rc=1, got rc={rc}\n{logs}")
+        if "references missing path(s): gitops/clusters/rke2-main/apps/does-not-exist" not in logs:
+            raise AssertionError(f"expected missing profile include path in output\n{logs}")
 
     print("Deployable GitOps application renderer self-test passed.")
     return 0

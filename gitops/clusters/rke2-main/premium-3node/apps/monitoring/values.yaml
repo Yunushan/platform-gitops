@@ -20,6 +20,12 @@ prometheus:
     retentionSize: 20GB
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        memory: 4Gi
     storageSpec:
       volumeClaimTemplate:
         spec:
@@ -34,6 +40,12 @@ alertmanager:
   enabled: true
   alertmanagerSpec:
     replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
     storage:
       volumeClaimTemplate:
         spec:
@@ -46,6 +58,16 @@ alertmanager:
 
 grafana:
   replicas: 1
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
   persistence:
     enabled: true
     type: pvc

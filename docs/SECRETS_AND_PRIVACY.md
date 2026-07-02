@@ -39,6 +39,27 @@ Choose one:
 4. Vault or another private secret manager.
 5. Manual secrets for small lab use only.
 
+## SOPS with age starter
+
+Use `config/sops.age.example.yaml` as the safe starter policy for private
+deployment repositories:
+
+```bash
+age-keygen -o ~/.config/sops/age/keys.txt
+cp config/sops.age.example.yaml .sops.yaml
+```
+
+Then replace `age1REPLACE_WITH_PUBLIC_AGE_RECIPIENT` with the public recipient
+printed by `age-keygen`. The public recipient can live in `.sops.yaml`; the
+private age key must stay outside Git in a password manager, CI secret store, or
+operator workstation key store. Keep real `.sops.yaml` files private when they
+encode internal repository layout or recipient policy.
+
+The example encrypts common secret-bearing keys under private/rendered secret
+paths, ignored local config, and GitOps files whose names indicate secrets,
+credentials, or datasources. Review the rules with your security team before
+using them for production.
+
 ## Local files
 
 Only local ignored files should contain real values:
@@ -71,3 +92,6 @@ PYTHON=/path/to/python make platform-argocd
 ```
 
 This scanner is intentionally conservative. Use a professional scanner in production pipelines too.
+
+For component-level data classes, retention decisions, disposal, and private
+evidence expectations, use `docs/DATA_CLASSIFICATION.md`.

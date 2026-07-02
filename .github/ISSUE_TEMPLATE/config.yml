@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability or secret exposure
+    url: https://github.com/
+    about: Use your Git host private vulnerability reporting flow and follow SECURITY.md. Do not open a public issue with private details.
+  - name: Private deployment support
+    url: https://github.com/
+    about: Use your internal operations or vendor support process for organization-specific hostnames, IPs, credentials, and logs.

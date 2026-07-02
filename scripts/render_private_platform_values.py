@@ -62,6 +62,13 @@ def yaml_list(items: list[str], indent: int) -> str:
     return "\n".join(f"{prefix}- {yaml_string(item)}" for item in items)
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in {"0", "false", "no", "off"}
+
+
 def platform_domain(inventory: dict[str, str]) -> str:
     domain = env_or_inventory(
         "PLATFORM_DOMAIN",
@@ -176,8 +183,9 @@ def forgejo_external_values(
     database_host: str,
     database_name: str,
     database_user: str,
-    redis_host: str,
-    redis_url: str,
+    database_secret_name: str,
+    database_ssl_mode: str,
+    redis_secret_name: str,
 ) -> str:
     return f"""# Forgejo external database profile rendered by scripts/render_private_platform_values.py.
 replicaCount: 1
@@ -213,6 +221,22 @@ persistence:
   storageClass: {yaml_string(storage_class)}
 
 gitea:
+  additionalConfigFromEnvs:
+    - name: GITEA__database__PASSWD
+      valueFrom:
+        secretKeyRef:
+          name: {yaml_string(database_secret_name)}
+          key: password
+    - name: GITEA__cache__HOST
+      valueFrom:
+        secretKeyRef:
+          name: {yaml_string(redis_secret_name)}
+          key: uri
+    - name: GITEA__queue__CONN_STR
+      valueFrom:
+        secretKeyRef:
+          name: {yaml_string(redis_secret_name)}
+          key: uri
   config:
     server:
       DOMAIN: {yaml_string(host)}
@@ -229,14 +253,13 @@ gitea:
       HOST: {yaml_string(database_host)}
       NAME: {yaml_string(database_name)}
       USER: {yaml_string(database_user)}
+      SSL_MODE: {yaml_string(database_ssl_mode)}
     session:
       PROVIDER: db
     cache:
       ADAPTER: redis
-      HOST: {yaml_string(redis_host)}
     queue:
       TYPE: redis
-      CONN_STR: {yaml_string(redis_url)}
 
 resources:
   requests:
@@ -273,12 +296,15 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
 
     if database_mode == "sqlite":
         rendered = forgejo_bootstrap_values(host, data_size, storage_class)
-    elif database_mode == "external":
+    elif database_mode in ("external", "postgres", "postgresql"):
         database_host = require("FORGEJO_DATABASE_HOST", os.environ.get("FORGEJO_DATABASE_HOST", "").strip())
         database_name = os.environ.get("FORGEJO_DATABASE_NAME", "forgejo").strip() or "forgejo"
         database_user = os.environ.get("FORGEJO_DATABASE_USER", "forgejo").strip() or "forgejo"
-        redis_host = require("FORGEJO_REDIS_HOST", os.environ.get("FORGEJO_REDIS_HOST", "").strip())
-        redis_url = require("FORGEJO_REDIS_URL", os.environ.get("FORGEJO_REDIS_URL", "").strip())
+        database_secret_name = os.environ.get("FORGEJO_DATABASE_SECRET_NAME", "forgejo-database").strip()
+        database_secret_name = database_secret_name or "forgejo-database"
+        database_ssl_mode = os.environ.get("FORGEJO_DATABASE_SSL_MODE", "disable").strip() or "disable"
+        redis_secret_name = os.environ.get("FORGEJO_REDIS_SECRET_NAME", "forgejo-redis").strip()
+        redis_secret_name = redis_secret_name or "forgejo-redis"
         rendered = forgejo_external_values(
             host,
             data_size,
@@ -286,11 +312,12 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
             database_host,
             database_name,
             database_user,
-            redis_host,
-            redis_url,
+            database_secret_name,
+            database_ssl_mode,
+            redis_secret_name,
         )
     else:
-        raise SystemExit("FORGEJO_DATABASE_MODE must be sqlite or external")
+        raise SystemExit("FORGEJO_DATABASE_MODE must be sqlite, external, postgres, or postgresql")
 
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -495,9 +522,13 @@ def harbor_bootstrap_values(
     storage_class: str,
     admin_secret_name: str,
     secret_key_secret_name: str,
+    registry_storage_block: str,
+    database_block: str,
+    redis_block: str,
+    dependency_note: str,
 ) -> str:
     return f"""# Harbor bootstrap profile rendered by scripts/render_private_platform_values.py.
-# Uses internal PostgreSQL, Redis, and filesystem registry storage for first deployment.
+# {dependency_note}
 # Store HARBOR_ADMIN_PASSWORD in secret/{admin_secret_name} and secretKey in
 # secret/{secret_key_secret_name} before syncing this app.
 expose:
@@ -514,15 +545,60 @@ externalURL: {yaml_string(f"https://{host}")}
 
 portal:
   replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
 core:
   replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
 jobservice:
   replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
 registry:
   replicas: 1
+  registry:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  controller:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
 trivy:
   enabled: true
   replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+exporter:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
 
 updateStrategy:
   type: Recreate
@@ -546,16 +622,11 @@ persistence:
     trivy:
       storageClass: {yaml_string(storage_class)}
       size: {yaml_string(trivy_size)}
-  imageChartStorage:
-    type: filesystem
-    filesystem:
-      rootdirectory: /storage
+{registry_storage_block}
 
-database:
-  type: internal
+{database_block}
 
-redis:
-  type: internal
+{redis_block}
 
 existingSecretAdminPassword: {yaml_string(admin_secret_name)}
 existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD
@@ -566,6 +637,186 @@ metrics:
   serviceMonitor:
     enabled: true
 """
+
+
+def harbor_filesystem_storage_block() -> str:
+    return """  imageChartStorage:
+    type: filesystem
+    filesystem:
+      rootdirectory: /storage"""
+
+
+def harbor_s3_storage_block(
+    endpoint: str,
+    region: str,
+    bucket: str,
+    secret_name: str,
+    secure: bool,
+    skipverify: bool,
+    disableredirect: bool,
+) -> str:
+    return f"""  imageChartStorage:
+    disableredirect: {str(disableredirect).lower()}
+    type: s3
+    s3:
+      region: {yaml_string(region)}
+      bucket: {yaml_string(bucket)}
+      regionendpoint: {yaml_string(endpoint)}
+      secure: {str(secure).lower()}
+      skipverify: {str(skipverify).lower()}
+      v4auth: true
+      existingSecret: {yaml_string(secret_name)}"""
+
+
+def harbor_internal_database_block() -> str:
+    return """database:
+  type: internal
+  internal:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi"""
+
+
+def harbor_external_database_block(
+    host: str,
+    port: str,
+    database_name: str,
+    username: str,
+    secret_name: str,
+    sslmode: str,
+) -> str:
+    return f"""database:
+  type: external
+  external:
+    host: {yaml_string(host)}
+    port: {yaml_string(port)}
+    username: {yaml_string(username)}
+    coreDatabase: {yaml_string(database_name)}
+    existingSecret: {yaml_string(secret_name)}
+    sslmode: {yaml_string(sslmode)}
+    maxIdleConns: 100
+    maxOpenConns: 900"""
+
+
+def harbor_internal_redis_block() -> str:
+    return """redis:
+  type: internal
+  internal:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi"""
+
+
+def harbor_external_redis_block(addr: str, username: str, secret_name: str, tls_enabled: bool) -> str:
+    return f"""redis:
+  type: external
+  jobserviceDatabaseIndex: "1"
+  registryDatabaseIndex: "2"
+  trivyAdapterIndex: "5"
+  external:
+    addr: {yaml_string(addr)}
+    sentinelMasterSet: ""
+    tlsOptions:
+      enable: {str(tls_enabled).lower()}
+    coreDatabaseIndex: "0"
+    jobserviceDatabaseIndex: "1"
+    registryDatabaseIndex: "2"
+    trivyAdapterIndex: "5"
+    username: {yaml_string(username)}
+    existingSecret: {yaml_string(secret_name)}"""
+
+
+def harbor_registry_storage_settings() -> tuple[str, str, str]:
+    storage_mode = os.environ.get("HARBOR_STORAGE_MODE", "filesystem").strip().lower() or "filesystem"
+    if storage_mode in {"filesystem", "local", "pvc"}:
+        return (
+            harbor_filesystem_storage_block(),
+            "filesystem registry storage for first deployment",
+            storage_mode,
+        )
+    if storage_mode not in {"s3", "object", "object-storage", "object_storage"}:
+        raise SystemExit("HARBOR_STORAGE_MODE must be filesystem or s3")
+
+    endpoint = first_value(
+        os.environ.get("HARBOR_S3_ENDPOINT", "").strip(),
+        os.environ.get("OBJECT_STORAGE_ENDPOINT", "https://s3.amazonaws.com").strip(),
+    )
+    region = first_value(
+        os.environ.get("HARBOR_S3_REGION", "").strip(),
+        os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip(),
+    ) or "us-east-1"
+    bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
+    bucket = os.environ.get("HARBOR_S3_BUCKET", f"{bucket_prefix}-harbor-registry").strip()
+    secret_name = os.environ.get("HARBOR_S3_SECRET_NAME", "harbor-registry-s3").strip() or "harbor-registry-s3"
+    secure_default = not endpoint.lower().startswith("http://")
+    skipverify_default = env_bool("OBJECT_STORAGE_INSECURE", False)
+    disableredirect_default = "amazonaws.com" not in endpoint.lower()
+    return (
+        harbor_s3_storage_block(
+            endpoint=endpoint,
+            region=region,
+            bucket=bucket,
+            secret_name=secret_name,
+            secure=env_bool("HARBOR_S3_SECURE", secure_default),
+            skipverify=env_bool("HARBOR_S3_SKIPVERIFY", skipverify_default),
+            disableredirect=env_bool("HARBOR_S3_DISABLE_REDIRECT", disableredirect_default),
+        ),
+        f"S3-compatible registry storage in secret/{secret_name}",
+        "s3",
+    )
+
+
+def harbor_database_settings() -> tuple[str, str, str]:
+    database_mode = os.environ.get("HARBOR_DATABASE_MODE", "internal").strip().lower() or "internal"
+    if database_mode in {"internal", "local"}:
+        return (harbor_internal_database_block(), "internal PostgreSQL", database_mode)
+    if database_mode not in {"external", "postgres", "postgresql"}:
+        raise SystemExit("HARBOR_DATABASE_MODE must be internal or external")
+
+    host = require("HARBOR_DATABASE_HOST", os.environ.get("HARBOR_DATABASE_HOST", "").strip())
+    return (
+        harbor_external_database_block(
+            host=host,
+            port=os.environ.get("HARBOR_DATABASE_PORT", "5432").strip() or "5432",
+            database_name=os.environ.get("HARBOR_DATABASE_NAME", "registry").strip() or "registry",
+            username=os.environ.get("HARBOR_DATABASE_USER", "harbor").strip() or "harbor",
+            secret_name=os.environ.get("HARBOR_DATABASE_SECRET_NAME", "harbor-database").strip()
+            or "harbor-database",
+            sslmode=os.environ.get("HARBOR_DATABASE_SSLMODE", "disable").strip() or "disable",
+        ),
+        "external PostgreSQL",
+        "external",
+    )
+
+
+def harbor_redis_settings() -> tuple[str, str, str]:
+    redis_mode = os.environ.get("HARBOR_REDIS_MODE", "internal").strip().lower() or "internal"
+    if redis_mode in {"internal", "local"}:
+        return (harbor_internal_redis_block(), "internal Redis", redis_mode)
+    if redis_mode not in {"external", "redis"}:
+        raise SystemExit("HARBOR_REDIS_MODE must be internal or external")
+
+    addr = os.environ.get("HARBOR_REDIS_ADDR", "").strip()
+    if not addr:
+        host = require("HARBOR_REDIS_HOST or HARBOR_REDIS_ADDR", os.environ.get("HARBOR_REDIS_HOST", "").strip())
+        port = os.environ.get("HARBOR_REDIS_PORT", "6379").strip() or "6379"
+        addr = f"{host}:{port}"
+    return (
+        harbor_external_redis_block(
+            addr=addr,
+            username=os.environ.get("HARBOR_REDIS_USERNAME", "").strip(),
+            secret_name=os.environ.get("HARBOR_REDIS_SECRET_NAME", "harbor-redis").strip() or "harbor-redis",
+            tls_enabled=env_bool("HARBOR_REDIS_TLS", False),
+        ),
+        "external Redis",
+        "external",
+    )
 
 
 def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
@@ -579,6 +830,9 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
         ),
     )
     storage_class = os.environ.get("HARBOR_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical"
+    registry_storage_block, registry_note, _registry_mode = harbor_registry_storage_settings()
+    database_block, database_note, _database_mode = harbor_database_settings()
+    redis_block, redis_note, _redis_mode = harbor_redis_settings()
     rendered = harbor_bootstrap_values(
         host,
         os.environ.get("HARBOR_REGISTRY_SIZE", "50Gi").strip() or "50Gi",
@@ -589,6 +843,10 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
         storage_class,
         os.environ.get("HARBOR_ADMIN_SECRET_NAME", "harbor-admin").strip() or "harbor-admin",
         os.environ.get("HARBOR_SECRET_KEY_SECRET_NAME", "harbor-secret-key").strip() or "harbor-secret-key",
+        registry_storage_block,
+        database_block,
+        redis_block,
+        f"Uses {database_note}, {redis_note}, and {registry_note}.",
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -605,10 +863,12 @@ def monitoring_bootstrap_values(
     alertmanager_size: str,
     grafana_size: str,
     storage_class: str,
+    grafana_admin_secret_name: str,
+    grafana_database_block: str,
+    grafana_database_note: str,
 ) -> str:
     return f"""# Monitoring bootstrap profile rendered by scripts/render_private_platform_values.py.
-# Uses persistent Grafana SQLite for first deployment. Switch Grafana to external
-# PostgreSQL for long-term HA.
+# {grafana_database_note}
 crds:
   enabled: true
 
@@ -628,6 +888,12 @@ prometheus:
     retentionSize: {yaml_string(retention_size)}
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        memory: 4Gi
     storageSpec:
       volumeClaimTemplate:
         spec:
@@ -642,6 +908,12 @@ alertmanager:
   enabled: true
   alertmanagerSpec:
     replicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 512Mi
     storage:
       volumeClaimTemplate:
         spec:
@@ -654,6 +926,17 @@ alertmanager:
 
 grafana:
   replicas: 1
+  admin:
+    existingSecret: {yaml_string(grafana_admin_secret_name)}
+    userKey: admin-user
+    passwordKey: admin-password
+{grafana_database_block}
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
   persistence:
     enabled: true
     type: pvc
@@ -685,6 +968,43 @@ kubeControllerManager:
 """
 
 
+def grafana_database_settings() -> tuple[str, str]:
+    database_mode = os.environ.get("GRAFANA_DATABASE_MODE", "sqlite").strip().lower() or "sqlite"
+    if database_mode in {"sqlite", "internal", "local"}:
+        return (
+            "",
+            "Uses persistent Grafana SQLite for first deployment. Set GRAFANA_DATABASE_MODE=postgres for long-term HA.",
+        )
+    if database_mode not in {"postgres", "postgresql", "external"}:
+        raise SystemExit("GRAFANA_DATABASE_MODE must be sqlite, postgres, postgresql, or external")
+
+    host = require("GRAFANA_DATABASE_HOST", os.environ.get("GRAFANA_DATABASE_HOST", "").strip())
+    port = os.environ.get("GRAFANA_DATABASE_PORT", "5432").strip() or "5432"
+    database_host = host if ":" in host else f"{host}:{port}"
+    database_name = os.environ.get("GRAFANA_DATABASE_NAME", "grafana").strip() or "grafana"
+    database_user = os.environ.get("GRAFANA_DATABASE_USER", "grafana").strip() or "grafana"
+    secret_name = os.environ.get("GRAFANA_DATABASE_SECRET_NAME", "grafana-database").strip() or "grafana-database"
+    ssl_mode = os.environ.get("GRAFANA_DATABASE_SSL_MODE", "disable").strip() or "disable"
+    block = f"""  envValueFrom:
+    GF_DATABASE_PASSWORD:
+      secretKeyRef:
+        name: {yaml_string(secret_name)}
+        key: password
+  grafana.ini:
+    database:
+      type: postgres
+      host: {yaml_string(database_host)}
+      name: {yaml_string(database_name)}
+      user: {yaml_string(database_user)}
+      password: {yaml_string("$__env{GF_DATABASE_PASSWORD}")}
+      ssl_mode: {yaml_string(ssl_mode)}
+"""
+    return (
+        block,
+        f"Uses external PostgreSQL for Grafana state. Store the password in secret/{secret_name} key password.",
+    )
+
+
 def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
     prometheus_host = require(
         "PLATFORM_PROMETHEUS_HOST or platform_prometheus_host",
@@ -705,6 +1025,7 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
         ),
     )
     storage_class = os.environ.get("MONITORING_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
+    grafana_database_block, grafana_database_note = grafana_database_settings()
     rendered = monitoring_bootstrap_values(
         prometheus_host,
         grafana_host,
@@ -713,6 +1034,9 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
         os.environ.get("ALERTMANAGER_DATA_SIZE", "10Gi").strip() or "10Gi",
         os.environ.get("GRAFANA_DATA_SIZE", "10Gi").strip() or "10Gi",
         storage_class,
+        os.environ.get("GRAFANA_ADMIN_SECRET_NAME", "grafana-admin").strip() or "grafana-admin",
+        grafana_database_block,
+        grafana_database_note,
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -776,21 +1100,45 @@ loki:
 
 write:
   replicas: 3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
   persistence:
     storageClass: {yaml_string(storage_class)}
     size: {yaml_string(write_cache_size)}
 
 read:
   replicas: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
 
 backend:
   replicas: 3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
   persistence:
     storageClass: {yaml_string(storage_class)}
     size: {yaml_string(backend_cache_size)}
 
 gateway:
   enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
   ingress:
     enabled: true
     ingressClassName: traefik
@@ -893,6 +1241,21 @@ credentials:
 
 deployNodeAgent: true
 
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+nodeAgent:
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
 snapshotsEnabled: true
 
 schedules:
@@ -938,6 +1301,96 @@ def render_velero(path: Path) -> bool:
         schedule=os.environ.get("VELERO_DAILY_BACKUP_CRON", "0 1 * * *").strip() or "0 1 * * *",
         force_path_style=force_path_style,
         plugin_image=os.environ.get("VELERO_AWS_PLUGIN_IMAGE", "velero/velero-plugin-for-aws:v1.13.1").strip(),
+    )
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    changed = rendered != old
+    if changed:
+        path.write_text(rendered, encoding="utf-8")
+    return changed
+
+
+def cnpg_postgres_cluster_manifest(
+    namespace: str,
+    name: str,
+    instances: str,
+    data_size: str,
+    storage_class: str,
+    backup_destination: str,
+    endpoint: str,
+    secret_name: str,
+    retention_policy: str,
+    schedule: str,
+) -> str:
+    return f"""apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {yaml_string(name)}
+  namespace: {yaml_string(namespace)}
+spec:
+  instances: {instances}
+  primaryUpdateStrategy: unsupervised
+  storage:
+    size: {yaml_string(data_size)}
+    storageClass: {yaml_string(storage_class)}
+  monitoring:
+    enablePodMonitor: true
+  backup:
+    retentionPolicy: {yaml_string(retention_policy)}
+    barmanObjectStore:
+      destinationPath: {yaml_string(backup_destination)}
+      endpointURL: {yaml_string(endpoint)}
+      s3Credentials:
+        accessKeyId:
+          name: {yaml_string(secret_name)}
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: {yaml_string(secret_name)}
+          key: SECRET_ACCESS_KEY
+      wal:
+        compression: gzip
+        maxParallel: 4
+      data:
+        compression: gzip
+        jobs: 2
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: {yaml_string(name + "-daily")}
+  namespace: {yaml_string(namespace)}
+spec:
+  schedule: {yaml_string(schedule)}
+  backupOwnerReference: self
+  cluster:
+    name: {yaml_string(name)}
+  method: barmanObjectStore
+"""
+
+
+def render_cnpg_postgres_cluster(path: Path) -> bool:
+    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", "https://s3.amazonaws.com").strip()
+    bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
+    namespace = os.environ.get("CNPG_CLUSTER_NAMESPACE", "platform-databases").strip() or "platform-databases"
+    name = os.environ.get("CNPG_CLUSTER_NAME", "platform-postgres").strip() or "platform-postgres"
+    instances = os.environ.get("CNPG_INSTANCES", "3").strip() or "3"
+    if int(instances) < 1:
+        raise SystemExit("CNPG_INSTANCES must be at least 1")
+    backup_destination = os.environ.get(
+        "CNPG_BACKUP_DESTINATION",
+        f"s3://{bucket_prefix}-cnpg-backups/{name}",
+    ).strip()
+    rendered = cnpg_postgres_cluster_manifest(
+        namespace=namespace,
+        name=name,
+        instances=instances,
+        data_size=os.environ.get("POSTGRES_DATA_SIZE", "50Gi").strip() or "50Gi",
+        storage_class=os.environ.get("CNPG_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical",
+        backup_destination=backup_destination,
+        endpoint=endpoint,
+        secret_name=os.environ.get("CNPG_OBJECT_STORE_SECRET_NAME", "cnpg-object-store").strip()
+        or "cnpg-object-store",
+        retention_policy=os.environ.get("CNPG_RETENTION_POLICY", "30d").strip() or "30d",
+        schedule=os.environ.get("CNPG_BACKUP_SCHEDULE", "0 2 * * *").strip() or "0 2 * * *",
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -1101,6 +1554,11 @@ def main() -> int:
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/velero/values.yaml"),
     )
     parser.add_argument(
+        "--cnpg-postgres-cluster",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/postgres-cluster.premium.example.yaml"),
+    )
+    parser.add_argument(
         "--step-ca-values",
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"),
@@ -1112,6 +1570,7 @@ def main() -> int:
     parser.add_argument("--skip-monitoring", action="store_true")
     parser.add_argument("--skip-loki", action="store_true")
     parser.add_argument("--skip-velero", action="store_true")
+    parser.add_argument("--skip-cnpg-postgres-cluster", action="store_true")
     parser.add_argument("--skip-step-ca", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -1200,6 +1659,18 @@ def main() -> int:
         print(f"BACKUP_PROVIDER={os.environ.get('BACKUP_PROVIDER', 'aws')}")
         print(f"BACKUP_BUCKET={os.environ.get('BACKUP_BUCKET', os.environ.get('OBJECT_STORAGE_BUCKET_PREFIX', 'platform') + '-velero-backups')}")
         print(f"VELERO_CREDENTIALS_SECRET_NAME={os.environ.get('VELERO_CREDENTIALS_SECRET_NAME', 'velero-credentials')}")
+        print(f"CNPG_RENDER_POSTGRES_CLUSTER={os.environ.get('CNPG_RENDER_POSTGRES_CLUSTER', 'false')}")
+        print(f"CNPG_OBJECT_STORE_SECRET_NAME={os.environ.get('CNPG_OBJECT_STORE_SECRET_NAME', 'cnpg-object-store')}")
+        print(
+            "CNPG_BACKUP_DESTINATION="
+            + os.environ.get(
+                "CNPG_BACKUP_DESTINATION",
+                "s3://"
+                + os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform")
+                + "-cnpg-backups/"
+                + os.environ.get("CNPG_CLUSTER_NAME", "platform-postgres"),
+            )
+        )
         print(f"STEP_CA_MODE={os.environ.get('STEP_CA_MODE', 'disabled')}")
         print(
             "STEP_CA_HOST="
@@ -1245,6 +1716,15 @@ def main() -> int:
 
     if not args.skip_velero and args.velero_values.exists() and render_velero(args.velero_values):
         changed.append(str(args.velero_values))
+
+    cnpg_render_mode = os.environ.get("CNPG_RENDER_POSTGRES_CLUSTER", "").strip().lower()
+    if (
+        not args.skip_cnpg_postgres_cluster
+        and args.cnpg_postgres_cluster.exists()
+        and cnpg_render_mode in {"1", "true", "yes", "bootstrap"}
+        and render_cnpg_postgres_cluster(args.cnpg_postgres_cluster)
+    ):
+        changed.append(str(args.cnpg_postgres_cluster))
 
     if not args.skip_step_ca and render_step_ca(args.step_ca_values, inventory):
         changed.append(str(args.step_ca_values))

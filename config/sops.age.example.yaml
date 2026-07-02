@@ -1,0 +1,14 @@
+# Copy this file to .sops.yaml in a private deployment repository and replace
+# the placeholder recipient with an age public recipient from `age-keygen`.
+# Never commit age private keys; they belong in a password manager, CI secret
+# store, or operator workstation key store.
+creation_rules:
+  - path_regex: ^(private|secrets|rendered)/.*\.(yaml|yml|json|env)$
+    encrypted_regex: "^(data|stringData|password|passwd|token|secret|secretKey|accessKey|secretAccessKey|clientSecret|client_id|client_secret|credentials|datasource|url|uri)$"
+    age: age1REPLACE_WITH_PUBLIC_AGE_RECIPIENT
+  - path_regex: ^(config|inventory)/.*\.(local|private|rendered)\.(yaml|yml|ini)$
+    encrypted_regex: "^(password|passwd|token|secret|secretKey|accessKey|secretAccessKey|clientSecret|credentials|datasource|url|uri)$"
+    age: age1REPLACE_WITH_PUBLIC_AGE_RECIPIENT
+  - path_regex: ^gitops/.*/.*(secret|credential|datasource).*\.(yaml|yml)$
+    encrypted_regex: "^(data|stringData|password|passwd|token|secret|secretKey|accessKey|secretAccessKey|clientSecret|credentials|datasource|url|uri)$"
+    age: age1REPLACE_WITH_PUBLIC_AGE_RECIPIENT

@@ -65,4 +65,5 @@ RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
 7. Let Argo CD deploy Traefik and the platform components.
 8. Configure off-cluster backups.
 9. Run `make platform-production-check`.
-10. Run a restore drill.
+10. Complete the go/no-go checklist in `docs/PRODUCTION_READINESS.md`.
+11. Run a restore drill using `docs/BACKUP_RESTORE.md`.

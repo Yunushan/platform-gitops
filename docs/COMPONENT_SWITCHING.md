@@ -1,6 +1,14 @@
 # Component Switching
 
 This project is designed to be changed without restructuring the repository.
+Replacement profiles keep the shared platform services, such as cert-manager,
+MetalLB, storage, database operator, registry, monitoring, logging, and
+backups, unless the profile explicitly lists a component under `remove`.
+Use the profile name without the `.yaml` suffix when bootstrapping:
+
+```bash
+PLATFORM_PROFILE=<profile-name> PLATFORM_APPLY_GITOPS=true PLATFORM_REPO_URL=<PRIVATE_REPO_URL> make platform-argocd
+```
 
 ## Use the premium 3-node profile
 

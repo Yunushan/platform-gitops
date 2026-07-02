@@ -163,18 +163,36 @@ The private values renderer pins both Woodpecker server and agent images with
 an intentional Woodpecker upgrade: render, validate, sync, then prove the
 Woodpecker server and agents are healthy.
 
-Object-storage backed apps are rendered with bucket names, endpoints, regions,
-cache sizes, and Kubernetes secret names only. Runtime credentials stay outside
-Git. `make platform-app-secrets` can create Woodpecker's PostgreSQL datasource
-secret plus Loki and Velero object-storage secrets from ignored env values such
-as `WOODPECKER_DATABASE_DATASOURCE`, `WOODPECKER_DATABASE_HOST` plus
-`WOODPECKER_DATABASE_PASSWORD`, `LOKI_S3_ACCESS_KEY_ID`,
-`LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`, or
+Object-storage backed apps and external app databases are rendered with bucket
+names, endpoints, regions, cache sizes, database hosts, and Kubernetes secret
+names only. Runtime credentials stay outside Git. `make platform-app-secrets`
+can create Grafana admin credentials, Grafana's external PostgreSQL password,
+Forgejo's external PostgreSQL password and Redis URI, Woodpecker's PostgreSQL datasource secret, Harbor's external database/Redis/S3
+secrets, plus Loki, Velero, and CloudNativePG
+object-storage secrets from ignored env values such
+as `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
+`WOODPECKER_DATABASE_DATASOURCE`, `WOODPECKER_DATABASE_HOST` plus
+`WOODPECKER_DATABASE_PASSWORD`, `HARBOR_DATABASE_PASSWORD`,
+`HARBOR_REDIS_PASSWORD`, `HARBOR_S3_ACCESS_KEY_ID`,
+`HARBOR_S3_SECRET_ACCESS_KEY`, `GRAFANA_DATABASE_PASSWORD`, `LOKI_S3_ACCESS_KEY_ID`,
+`LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`,
+`CNPG_S3_ACCESS_KEY_ID`, `CNPG_S3_SECRET_ACCESS_KEY`, or
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Set
 `PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` before enabling
 Woodpecker HA so a missing datasource secret fails before rollout. Set
 `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` for production so missing
-Loki or Velero object-storage credential secrets fail before app sync.
+Loki, Velero, or CloudNativePG object-storage credential secrets fail before app sync.
+Set `PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=true` when only the
+CloudNativePG backup credential secret should be mandatory.
+Set `PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true`,
+`PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true`, and
+`PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=true` before enabling
+Harbor external PostgreSQL, Redis, and S3 registry storage.
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` and
+`PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true` before enabling
+`FORGEJO_DATABASE_MODE=external`.
+Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
+`GRAFANA_DATABASE_MODE=postgres`.
 
 For production Woodpecker HA, either provide a full datasource:
 
@@ -185,17 +203,92 @@ PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true \
 make platform-app-secrets
 ```
 
+The Grafana admin password is generated into
+`monitoring/grafana-admin` by default. To use another Secret name, set
+`GRAFANA_ADMIN_SECRET_NAME` before running `platform-render-private-values` and
+`platform-app-secrets`.
+
+For production Grafana, create the database password Secret and render values
+that point Grafana at external PostgreSQL:
+
+```bash
+GRAFANA_DATABASE_PASSWORD='<PASSWORD>' \
+PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true \
+make platform-app-secrets
+
+GRAFANA_DATABASE_MODE=postgres \
+GRAFANA_DATABASE_HOST=<POSTGRES_HOST> \
+GRAFANA_DATABASE_NAME=grafana \
+GRAFANA_DATABASE_USER=grafana \
+GRAFANA_DATABASE_SECRET_NAME=grafana-database \
+GRAFANA_DATABASE_SSL_MODE=disable \
+make platform-render-private-values
+```
+
 or provide `WOODPECKER_DATABASE_HOST`, `WOODPECKER_DATABASE_NAME`,
 `WOODPECKER_DATABASE_USER`, and `WOODPECKER_DATABASE_PASSWORD` in
 `private/first-deploy.env` or your secret manager and use the same required
 flag.
 
+For production Harbor, provide dependency credentials first:
+
+```bash
+HARBOR_DATABASE_PASSWORD='<PASSWORD>' \
+HARBOR_REDIS_PASSWORD='<PASSWORD>' \
+HARBOR_S3_ACCESS_KEY_ID='<ACCESS_KEY>' \
+HARBOR_S3_SECRET_ACCESS_KEY='<SECRET_KEY>' \
+PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true \
+PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true \
+PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=true \
+make platform-app-secrets
+```
+
+Then render Harbor values with external services:
+
+```bash
+HARBOR_DATABASE_MODE=external \
+HARBOR_DATABASE_HOST=<POSTGRES_HOST> \
+HARBOR_DATABASE_NAME=registry \
+HARBOR_DATABASE_USER=harbor \
+HARBOR_DATABASE_SECRET_NAME=harbor-database \
+HARBOR_REDIS_MODE=external \
+HARBOR_REDIS_ADDR=<REDIS_HOST>:6379 \
+HARBOR_REDIS_SECRET_NAME=harbor-redis \
+HARBOR_STORAGE_MODE=s3 \
+HARBOR_S3_BUCKET=<HARBOR_REGISTRY_BUCKET> \
+HARBOR_S3_SECRET_NAME=harbor-registry-s3 \
+OBJECT_STORAGE_ENDPOINT=<S3_ENDPOINT> \
+OBJECT_STORAGE_REGION=<S3_REGION> \
+make platform-render-private-values
+```
+
 The default `FORGEJO_DATABASE_MODE=sqlite` is a first-dashboard bootstrap mode:
 it avoids requiring an already-running external PostgreSQL and Redis service.
 For long-term premium production, switch the private deployment to
-`FORGEJO_DATABASE_MODE=external` and provide `FORGEJO_DATABASE_HOST`,
-`FORGEJO_DATABASE_NAME`, `FORGEJO_DATABASE_USER`, `FORGEJO_REDIS_HOST`, and
-`FORGEJO_REDIS_URL` through the private env file or another private value flow.
+`FORGEJO_DATABASE_MODE=external`. Create the runtime credentials as Kubernetes
+Secrets, then render only endpoints and Secret names:
+
+```bash
+FORGEJO_DATABASE_PASSWORD='<PASSWORD>' \
+FORGEJO_REDIS_URL='redis://:<PASSWORD>@<REDIS_HOST>:6379/0' \
+PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true \
+PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true \
+make platform-app-secrets
+
+FORGEJO_DATABASE_MODE=external \
+FORGEJO_DATABASE_HOST=<POSTGRES_HOST>:5432 \
+FORGEJO_DATABASE_NAME=forgejo \
+FORGEJO_DATABASE_USER=forgejo \
+FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
+FORGEJO_DATABASE_SSL_MODE=disable \
+FORGEJO_REDIS_SECRET_NAME=forgejo-redis \
+make platform-render-private-values
+```
+
+If the secret manager stores Redis parts instead of a full URL, provide
+`FORGEJO_REDIS_HOST`, `FORGEJO_REDIS_PASSWORD`, and optional
+`FORGEJO_REDIS_PORT`, `FORGEJO_REDIS_DB`, and `FORGEJO_REDIS_TLS` before
+`make platform-app-secrets`.
 
 ## Optional Internal PKI
 
@@ -321,6 +414,18 @@ Real storage classes and backup targets
 Real Argo CD Application sources
 SOPS-encrypted or sealed secret manifests
 Organization-specific policy overlays
+restore drill evidence from docs/BACKUP_RESTORE.md
+business continuity evidence from docs/BUSINESS_CONTINUITY.md
+service catalog evidence from docs/SERVICE_CATALOG.md
+architecture decision records from docs/ARCHITECTURE_DECISIONS.md
+operations evidence from docs/OPERATIONS.md
+production readiness evidence from docs/PRODUCTION_READINESS.md
+incident response evidence from docs/INCIDENT_RESPONSE.md
+access control evidence from docs/ACCESS_CONTROL.md
+capacity planning evidence from docs/CAPACITY_PLANNING.md
+compliance and audit evidence from docs/COMPLIANCE_AUDIT.md
+release and environment promotion evidence from docs/RELEASE_PROMOTION.md
+alert routing and SLO evidence from docs/ALERTING.md
 ```
 
 Plaintext secrets should still not be committed, even to a private repository.

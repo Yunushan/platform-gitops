@@ -11,6 +11,27 @@ steps:
       - python scripts/test_gitops_selection_helper.py
       - python scripts/test_private_values_renderer.py
       - python scripts/test_platform_secret_contract.py
+      - python scripts/test_policy_examples.py
+      - python scripts/test_sops_age_policy.py
+      - python scripts/test_supply_chain_helpers.py
+      - python scripts/test_backup_restore_runbook.py
+      - python scripts/test_business_continuity.py
+      - python scripts/test_service_catalog.py
+      - python scripts/test_architecture_decisions.py
+      - python scripts/test_operations_runbook.py
+      - python scripts/test_production_readiness_checklist.py
+      - python scripts/test_platform_support.py
+      - python scripts/test_incident_response_runbook.py
+      - python scripts/test_access_control_runbook.py
+      - python scripts/test_capacity_planning_runbook.py
+      - python scripts/test_compliance_audit_runbook.py
+      - python scripts/test_release_promotion_runbook.py
+      - python scripts/test_alerting_runbook.py
+      - python scripts/test_data_classification.py
+      - python scripts/test_security_policy.py
+      - python scripts/test_threat_model.py
+      - python scripts/test_repository_governance.py
+      - python scripts/test_codeowners_starter.py
       - python scripts/test_no_secrets.py
       - python scripts/test_private_artifact_boundary.py
       - python scripts/test_ci_reference_pinning.py

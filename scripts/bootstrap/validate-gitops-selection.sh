@@ -20,19 +20,6 @@ if [[ -z "${python_bin}" ]]; then
   fi
 fi
 
-case "${profile}" in
-  default)
-    applications_file="gitops/clusters/rke2-main/platform-apps.yaml"
-    ;;
-  premium-3node)
-    applications_file="gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
-    ;;
-  *)
-    echo "Unsupported PLATFORM_PROFILE=${profile}; expected default or premium-3node." >&2
-    exit 1
-    ;;
-esac
-
 case "${mode}" in
   strict)
     "${python_bin}" scripts/check_gitops_profile.py --repo-root . --profile "${profile}"
@@ -42,7 +29,7 @@ case "${mode}" in
     trap 'rm -f "${rendered_file}"' EXIT
     "${python_bin}" scripts/render_deployable_gitops_apps.py \
       --repo-root . \
-      --applications-file "${applications_file}" \
+      --profile "${profile}" \
       --repo-url "${repo_url}" \
       --output "${rendered_file}" \
       --required-path gitops/clusters/rke2-main/projects

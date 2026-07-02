@@ -1,8 +1,9 @@
 profile: ingress-traefik
 summary: Compatibility profile for older branches where ingress-nginx was the default. Traefik is now the default recommendation.
+inherits: default-forgejo-woodpecker-argocd
 components:
   ingress: traefik
 remove:
   - gitops/clusters/rke2-main/apps/ingress-nginx
-include:
-  - gitops/clusters/rke2-main/alternatives/traefik
+includes:
+  - gitops/clusters/rke2-main/apps/traefik

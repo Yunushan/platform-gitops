@@ -1,2 +1,39 @@
 # Alternative component: gitlab-runner
 # Configure real values through private overlays, encrypted secrets, or Argo CD parameters.
+gitlabUrl: https://gitlab.<PLATFORM_DOMAIN>
+
+rbac:
+  create: true
+
+concurrent: 10
+checkInterval: 30
+
+runners:
+  locked: false
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = "gitlab-runner"
+        image = "alpine:3.22"
+        privileged = false
+        cpu_request = "250m"
+        memory_request = "256Mi"
+        memory_limit = "1Gi"
+        service_cpu_request = "100m"
+        service_memory_request = "128Mi"
+        service_memory_limit = "512Mi"
+        helper_cpu_request = "100m"
+        helper_memory_request = "128Mi"
+        helper_memory_limit = "512Mi"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: false

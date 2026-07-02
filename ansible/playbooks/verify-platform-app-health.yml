@@ -27,6 +27,10 @@
     platform_app_health_velero_backup_storage_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE') }}"
     platform_app_health_velero_schedules_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_VELERO_SCHEDULES') }}"
     platform_app_health_app_secrets_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_APP_SECRETS') }}"
+    platform_app_health_harbor_production_secrets_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS') }}"
+    platform_app_health_forgejo_production_secrets_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS') }}"
+    platform_app_health_grafana_database_secret_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET') }}"
+    platform_app_health_cnpg_object_storage_secret_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_CNPG_OBJECT_STORAGE_SECRET') }}"
     platform_app_health_argocd_runtime_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_ARGOCD_RUNTIME') }}"
     platform_app_health_longhorn_runtime_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_LONGHORN_RUNTIME') }}"
     platform_app_health_ha_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HA_REPLICAS') }}"
@@ -38,10 +42,18 @@
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_harbor_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_ADMIN_SECRET_NAME') }}"
     platform_harbor_secret_key_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_SECRET_KEY_SECRET_NAME') }}"
+    platform_harbor_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_DATABASE_SECRET_NAME') }}"
+    platform_harbor_redis_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_REDIS_SECRET_NAME') }}"
+    platform_harbor_s3_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_S3_SECRET_NAME') }}"
+    platform_forgejo_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_DATABASE_SECRET_NAME') }}"
+    platform_forgejo_redis_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_SECRET_NAME') }}"
     platform_woodpecker_oauth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_FORGEJO_OAUTH_SECRET_NAME') }}"
     platform_woodpecker_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_SECRET_NAME') }}"
+    platform_grafana_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'GRAFANA_ADMIN_SECRET_NAME') }}"
+    platform_grafana_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'GRAFANA_DATABASE_SECRET_NAME') }}"
     platform_loki_object_storage_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'LOKI_OBJECT_STORAGE_SECRET_NAME') }}"
     platform_velero_credentials_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'VELERO_CREDENTIALS_SECRET_NAME') }}"
+    platform_cnpg_object_store_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'CNPG_OBJECT_STORE_SECRET_NAME') }}"
     platform_app_health_connect_timeout_effective: "{{ platform_app_health_connect_timeout | default(platform_app_health_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_max_time_effective: "{{ platform_app_health_max_time | default(platform_app_health_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca metallb traefik longhorn cloudnativepg argocd-ha forgejo woodpecker harbor monitoring loki velero', true) }}"
@@ -61,6 +73,10 @@
     platform_app_health_velero_backup_storage_effective: "{{ platform_app_health_velero_backup_storage | default(platform_app_health_velero_backup_storage_from_env, true) | default(true, true) | bool }}"
     platform_app_health_velero_schedules_effective: "{{ platform_app_health_velero_schedules | default(platform_app_health_velero_schedules_from_env, true) | default(true, true) | bool }}"
     platform_app_health_app_secrets_effective: "{{ platform_app_health_app_secrets | default(platform_app_health_app_secrets_from_env, true) | default('auto', true) }}"
+    platform_app_health_harbor_production_secrets_effective: "{{ platform_app_health_harbor_production_secrets | default(platform_app_health_harbor_production_secrets_from_env, true) | default(false, true) | bool }}"
+    platform_app_health_forgejo_production_secrets_effective: "{{ platform_app_health_forgejo_production_secrets | default(platform_app_health_forgejo_production_secrets_from_env, true) | default(false, true) | bool }}"
+    platform_app_health_grafana_database_secret_effective: "{{ platform_app_health_grafana_database_secret | default(platform_app_health_grafana_database_secret_from_env, true) | default(false, true) | bool }}"
+    platform_app_health_cnpg_object_storage_secret_effective: "{{ platform_app_health_cnpg_object_storage_secret | default(platform_app_health_cnpg_object_storage_secret_from_env, true) | default(false, true) | bool }}"
     platform_app_health_argocd_runtime_effective: "{{ platform_app_health_argocd_runtime | default(platform_app_health_argocd_runtime_from_env, true) | default(true, true) | bool }}"
     platform_app_health_longhorn_runtime_effective: "{{ platform_app_health_longhorn_runtime | default(platform_app_health_longhorn_runtime_from_env, true) | default(true, true) | bool }}"
     platform_app_health_ha_replicas_effective: "{{ platform_app_health_ha_replicas | default(platform_app_health_ha_replicas_from_env, true) | default(true, true) | bool }}"
@@ -71,10 +87,18 @@
     platform_app_health_woodpecker_image_tag_effective: "{{ platform_app_health_woodpecker_image_tag | default(platform_app_health_woodpecker_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('3.16.0', true) }}"
     platform_harbor_admin_secret_name_effective: "{{ platform_harbor_admin_secret_name | default(platform_harbor_admin_secret_name_from_env, true) | default('harbor-admin', true) }}"
     platform_harbor_secret_key_secret_name_effective: "{{ platform_harbor_secret_key_secret_name | default(platform_harbor_secret_key_secret_name_from_env, true) | default('harbor-secret-key', true) }}"
+    platform_harbor_database_secret_name_effective: "{{ platform_harbor_database_secret_name | default(platform_harbor_database_secret_name_from_env, true) | default('harbor-database', true) }}"
+    platform_harbor_redis_secret_name_effective: "{{ platform_harbor_redis_secret_name | default(platform_harbor_redis_secret_name_from_env, true) | default('harbor-redis', true) }}"
+    platform_harbor_s3_secret_name_effective: "{{ platform_harbor_s3_secret_name | default(platform_harbor_s3_secret_name_from_env, true) | default('harbor-registry-s3', true) }}"
+    platform_forgejo_database_secret_name_effective: "{{ platform_forgejo_database_secret_name | default(platform_forgejo_database_secret_name_from_env, true) | default('forgejo-database', true) }}"
+    platform_forgejo_redis_secret_name_effective: "{{ platform_forgejo_redis_secret_name | default(platform_forgejo_redis_secret_name_from_env, true) | default('forgejo-redis', true) }}"
     platform_woodpecker_oauth_secret_name_effective: "{{ platform_woodpecker_oauth_secret_name | default(platform_woodpecker_oauth_secret_name_from_env, true) | default('woodpecker-forgejo-oauth', true) }}"
     platform_woodpecker_database_secret_name_effective: "{{ platform_woodpecker_database_secret_name | default(platform_woodpecker_database_secret_name_from_env, true) | default('woodpecker-database', true) }}"
+    platform_grafana_admin_secret_name_effective: "{{ platform_grafana_admin_secret_name | default(platform_grafana_admin_secret_name_from_env, true) | default('grafana-admin', true) }}"
+    platform_grafana_database_secret_name_effective: "{{ platform_grafana_database_secret_name | default(platform_grafana_database_secret_name_from_env, true) | default('grafana-database', true) }}"
     platform_loki_object_storage_secret_name_effective: "{{ platform_loki_object_storage_secret_name | default(platform_loki_object_storage_secret_name_from_env, true) | default('loki-object-storage', true) }}"
     platform_velero_credentials_secret_name_effective: "{{ platform_velero_credentials_secret_name | default(platform_velero_credentials_secret_name_from_env, true) | default('velero-credentials', true) }}"
+    platform_cnpg_object_store_secret_name_effective: "{{ platform_cnpg_object_store_secret_name | default(platform_cnpg_object_store_secret_name_from_env, true) | default('cnpg-object-store', true) }}"
   vars_files:
     - ../vars/platform-hostnames.yml
 
@@ -103,10 +127,18 @@
           - platform_app_health_woodpecker_image_tag_effective | length > 0
           - platform_harbor_admin_secret_name_effective | length > 0
           - platform_harbor_secret_key_secret_name_effective | length > 0
+          - platform_harbor_database_secret_name_effective | length > 0
+          - platform_harbor_redis_secret_name_effective | length > 0
+          - platform_harbor_s3_secret_name_effective | length > 0
+          - platform_forgejo_database_secret_name_effective | length > 0
+          - platform_forgejo_redis_secret_name_effective | length > 0
           - platform_woodpecker_oauth_secret_name_effective | length > 0
           - platform_woodpecker_database_secret_name_effective | length > 0
+          - platform_grafana_admin_secret_name_effective | length > 0
+          - platform_grafana_database_secret_name_effective | length > 0
           - platform_loki_object_storage_secret_name_effective | length > 0
           - platform_velero_credentials_secret_name_effective | length > 0
+          - platform_cnpg_object_store_secret_name_effective | length > 0
         fail_msg: "Set rke2_ingress_vip, platform_domain/rke2_platform_domain, platform_argocd_host, and platform_ci_host/platform_woodpecker_host."
       run_once: true
 
@@ -1415,7 +1447,7 @@
           secret_failed=0
           for key in ${keys}; do
             encoded="$("$K" --kubeconfig "$C" -n "${namespace}" get "secret/${secret_name}" \
-              -o "jsonpath={.data.${key}}" 2>/dev/null || true)"
+              -o "go-template={{ '{{' }} index .data \"${key}\" {{ '}}' }}" 2>/dev/null || true)"
             if [ -z "${encoded}" ]; then
               echo "result=fail reason=missing-platform-app-secret-key namespace=${namespace} name=${secret_name} key=${key}"
               secret_failed=1
@@ -1441,9 +1473,43 @@
             *" harbor "*)
               check_secret_contract harbor "{{ platform_harbor_admin_secret_name_effective }}" HARBOR_ADMIN_PASSWORD
               check_secret_contract harbor "{{ platform_harbor_secret_key_secret_name_effective }}" secretKey
+              if [ "{{ platform_app_health_harbor_production_secrets_effective | ternary('true', 'false') }}" = "true" ]; then
+                check_secret_contract harbor "{{ platform_harbor_database_secret_name_effective }}" password
+                check_secret_contract harbor "{{ platform_harbor_redis_secret_name_effective }}" REDIS_PASSWORD
+                check_secret_contract harbor "{{ platform_harbor_s3_secret_name_effective }}" REGISTRY_STORAGE_S3_ACCESSKEY REGISTRY_STORAGE_S3_SECRETKEY
+              else
+                echo "result=skip reason=harbor-production-secret-contracts-disabled"
+              fi
               ;;
             *)
               echo "result=skip reason=harbor-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
+            *" cloudnativepg "*)
+              if [ "{{ platform_app_health_cnpg_object_storage_secret_effective | ternary('true', 'false') }}" = "true" ]; then
+                check_secret_contract platform-databases "{{ platform_cnpg_object_store_secret_name_effective }}" ACCESS_KEY_ID SECRET_ACCESS_KEY
+              else
+                echo "result=skip reason=cnpg-object-storage-secret-contract-disabled"
+              fi
+              ;;
+            *)
+              echo "result=skip reason=cloudnativepg-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
+            *" forgejo "*)
+              if [ "{{ platform_app_health_forgejo_production_secrets_effective | ternary('true', 'false') }}" = "true" ]; then
+                check_secret_contract forgejo "{{ platform_forgejo_database_secret_name_effective }}" password
+                check_secret_contract forgejo "{{ platform_forgejo_redis_secret_name_effective }}" uri
+              else
+                echo "result=skip reason=forgejo-production-secret-contracts-disabled"
+              fi
+              ;;
+            *)
+              echo "result=skip reason=forgejo-not-required-by-platform-app-health-required-apps"
               ;;
           esac
 
@@ -1454,6 +1520,20 @@
               ;;
             *)
               echo "result=skip reason=woodpecker-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
+            *" monitoring "*)
+              check_secret_contract monitoring "{{ platform_grafana_admin_secret_name_effective }}" admin-user admin-password
+              if [ "{{ platform_app_health_grafana_database_secret_effective | ternary('true', 'false') }}" = "true" ]; then
+                check_secret_contract monitoring "{{ platform_grafana_database_secret_name_effective }}" password
+              else
+                echo "result=skip reason=grafana-database-secret-contract-disabled"
+              fi
+              ;;
+            *)
+              echo "result=skip reason=monitoring-not-required-by-platform-app-health-required-apps"
               ;;
           esac
 
@@ -2741,9 +2821,13 @@
         echo
         echo "===== Generated app secrets ====="
         "$K" --kubeconfig "$C" -n harbor get "secret/{{ platform_harbor_admin_secret_name_effective }}" "secret/{{ platform_harbor_secret_key_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n harbor get "secret/{{ platform_harbor_database_secret_name_effective }}" "secret/{{ platform_harbor_redis_secret_name_effective }}" "secret/{{ platform_harbor_s3_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n forgejo get "secret/{{ platform_forgejo_database_secret_name_effective }}" "secret/{{ platform_forgejo_redis_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n woodpecker get "secret/{{ platform_woodpecker_oauth_secret_name_effective }}" "secret/{{ platform_woodpecker_database_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n monitoring get "secret/{{ platform_grafana_admin_secret_name_effective }}" "secret/{{ platform_grafana_database_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n logging get "secret/{{ platform_loki_object_storage_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n velero get "secret/{{ platform_velero_credentials_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n platform-databases get "secret/{{ platform_cnpg_object_store_secret_name_effective }}" -o wide || true
         echo
         echo "===== Longhorn runtime ====="
         "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io,volumes.longhorn.io,instancemanagers.longhorn.io,engineimages.longhorn.io -o wide || true
@@ -2805,8 +2889,14 @@
           are missing or misconfigured, or platform PVCs are Pending, Lost, or
           stuck Terminating, or when Longhorn node objects are not Ready or
           attached Longhorn volumes are degraded/faulted/not healthy, or when
-          generated Harbor, Woodpecker, Loki, or Velero secrets are missing or
-          lack required keys. It also fails when a configured GUI host has no
+          generated Harbor, Forgejo, Woodpecker, Grafana, Loki, or Velero secrets are missing or
+          lack required keys, including Harbor external PostgreSQL, Redis, and
+          registry S3 secret keys when PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true,
+          Forgejo external PostgreSQL and Redis secret keys when
+          PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true,
+          or the Grafana external PostgreSQL password secret when
+          PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET=true.
+          It also fails when a configured GUI host has no
           Ingress/IngressRoute or no ready backend endpoints, when the Harbor
           `/v2/` registry API does not answer with the Docker Distribution API
           header, when Grafana `/api/health` or Prometheus `/-/ready` does not
@@ -2861,6 +2951,18 @@
           To skip generated app secret contract enforcement temporarily:
           PLATFORM_APP_HEALTH_APP_SECRETS=skip make platform-app-health
 
+          To enforce Harbor external PostgreSQL, Redis, and registry S3
+          credential secrets during production checks:
+          PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true make platform-app-health
+
+          To enforce Forgejo external PostgreSQL and Redis credential secrets
+          during production checks:
+          PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true make platform-app-health
+
+          To enforce the Grafana external PostgreSQL password secret during
+          production checks:
+          PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET=true make platform-app-health
+
           To allow temporary seed Git or git:// sources during bootstrap only:
           PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false make platform-app-health
 
@@ -2892,5 +2994,5 @@
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set, platform pods are Ready, Argo CD runtime components and configured repo-server/Redis service endpoints are present, critical HA workloads meet minimum desired and ready replica coverage, Woodpecker server and agent pods run the expected pinned image tag, cert-manager Certificates are Ready when present or explicitly required, trust-manager Bundles are synced when present or explicitly required, step-ca answers /health on its ClusterIP service when required, CloudNativePG clusters are Ready when present or explicitly required, Loki answers a known /ready endpoint when required, Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required, generated Harbor/Woodpecker/Loki/Velero app secrets exist with required keys, required StorageClasses exist, platform PVCs are Bound, Longhorn nodes are Ready/schedulable and attached Longhorn volumes are healthy, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required, Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set, platform pods are Ready, Argo CD runtime components and configured repo-server/Redis service endpoints are present, critical HA workloads meet minimum desired and ready replica coverage, Woodpecker server and agent pods run the expected pinned image tag, cert-manager Certificates are Ready when present or explicitly required, trust-manager Bundles are synced when present or explicitly required, step-ca answers /health on its ClusterIP service when required, CloudNativePG clusters are Ready when present or explicitly required, CloudNativePG object-storage credentials are present when enforced, Loki answers a known /ready endpoint when required, Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required, generated Harbor/Forgejo/Woodpecker/Grafana/Loki/Velero/CloudNativePG app secrets exist with required keys, Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced, required StorageClasses exist, platform PVCs are Bound, Longhorn nodes are Ready/schedulable and attached Longhorn volumes are healthy, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required, Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
       run_once: true

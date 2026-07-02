@@ -1,4 +1,25 @@
 # Values are intentionally minimal and safe.
 # Replace placeholders through private overlays, encrypted secrets, or Argo CD parameterization.
+replicaCount: 1
+
+image:
+  tag: "1.29.1"
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
 crds:
   create: false
+
+monitoring:
+  podMonitorEnabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi

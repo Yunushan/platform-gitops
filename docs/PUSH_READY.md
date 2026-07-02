@@ -5,6 +5,11 @@ Each validation path runs the project structure check, production contract
 check, and secret safety scan. Locally, `make validate` and
 `python scripts/run_validation.py` run the same validation suite.
 
+Actions-style workflows pin third-party actions to full commit SHAs, with the
+human-readable upstream tag kept as a comment. When updating an action, resolve
+the new upstream tag to its commit SHA first, update the comment, then rerun
+`make validate`.
+
 ## GitHub
 
 ```bash

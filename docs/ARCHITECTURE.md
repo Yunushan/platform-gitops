@@ -74,7 +74,42 @@ Argo CD uses the HA profile. The premium profile runs multiple `argocd-server`, 
 - Real environment data exists only in ignored local files or external secret systems.
 - Production deployment is driven by Argo CD from GitOps repositories.
 - CI builds artifacts and updates desired state; it does not directly deploy production.
+- Renovate tracks dependency update drift through `renovate.json`, with Docker
+  digest pinning and dashboard approval for major changes.
+- Cosign image signature verification is provided as an opt-in Kyverno example;
+  enable it only after CI signs images and registry credentials/key material are
+  available in the target namespaces.
+- Production threat modeling is documented in `docs/THREAT_MODEL.md`, including
+  assets, trust boundaries, high-risk changes, and private evidence.
 
 ## Failure model
 
-A 3-node cluster is designed for one-node failure. It is not a replacement for multi-site disaster recovery. Off-cluster backups are mandatory.
+A 3-node cluster is designed for one-node failure. It is not a replacement for
+multi-site disaster recovery. Off-cluster backups, restore drill evidence, and
+business continuity planning are mandatory; use `docs/BACKUP_RESTORE.md` and
+`docs/BUSINESS_CONTINUITY.md` as production acceptance runbooks.
+
+## Operations Model
+
+Day-2 operations are governed by `docs/OPERATIONS.md`: ownership, change
+management, maintenance windows, break-glass access, incident response, drift
+management, credential rotation, capacity tracking, and production evidence.
+Service ownership, criticality, dependencies, SLO/SLA expectations, data
+classification, and recovery metadata are governed by
+`docs/SERVICE_CATALOG.md`.
+Significant platform architecture choices and their consequences should be
+recorded with `docs/ARCHITECTURE_DECISIONS.md`.
+Final launch acceptance, go/no-go evidence, exceptions, and post-launch
+validation are governed by `docs/PRODUCTION_READINESS.md`.
+Detailed incident declaration, roles, communications, recovery validation, and
+post-incident review are governed by `docs/INCIDENT_RESPONSE.md`.
+Identity, RBAC, admin roles, robot accounts, branch protection, break-glass
+access, and access-review evidence are governed by `docs/ACCESS_CONTROL.md`.
+Capacity domains, saturation signals, load tests, scaling decisions, and
+private capacity evidence are governed by `docs/CAPACITY_PLANNING.md`.
+Control domains, audit evidence, exception handling, and compliance review
+cadence are governed by `docs/COMPLIANCE_AUDIT.md`.
+Release and environment promotion gates, rollback, hotfixes, freezes, and
+release evidence are governed by `docs/RELEASE_PROMOTION.md`.
+Alert severity, routing, SLO/error budget, silence, and receiver-test
+expectations are governed by `docs/ALERTING.md`.

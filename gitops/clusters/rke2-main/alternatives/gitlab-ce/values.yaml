@@ -1,2 +1,105 @@
 # Alternative component: gitlab-ce
 # Configure real values through private overlays, encrypted secrets, or Argo CD parameters.
+global:
+  edition: ce
+  hosts:
+    domain: <PLATFORM_DOMAIN>
+    https: true
+    gitlab:
+      name: gitlab.<PLATFORM_DOMAIN>
+    registry:
+      name: registry-gitlab.<PLATFORM_DOMAIN>
+  ingress:
+    class: traefik
+    configureCertmanager: false
+    tls:
+      enabled: true
+  shell:
+    port: 22
+
+certmanager:
+  install: false
+
+nginx-ingress:
+  enabled: false
+
+prometheus:
+  install: false
+
+gitlab-runner:
+  install: false
+
+gitlab:
+  webservice:
+    minReplicas: 1
+    maxReplicas: 2
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+  sidekiq:
+    minReplicas: 1
+    maxReplicas: 2
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+  gitlab-shell:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+  gitaly:
+    persistence:
+      storageClass: <GITLAB_STORAGE_CLASS>
+      size: <GITLAB_GITALY_SIZE>
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+
+registry:
+  enabled: true
+  hpa:
+    minReplicas: 1
+    maxReplicas: 2
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+postgresql:
+  install: true
+  primary:
+    persistence:
+      storageClass: <GITLAB_STORAGE_CLASS>
+      size: <GITLAB_POSTGRES_SIZE>
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 2Gi
+
+redis:
+  install: true
+  master:
+    persistence:
+      storageClass: <GITLAB_STORAGE_CLASS>
+      size: <GITLAB_REDIS_SIZE>
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        memory: 1Gi

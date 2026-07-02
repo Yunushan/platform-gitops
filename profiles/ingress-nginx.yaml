@@ -1,8 +1,9 @@
 profile: ingress-nginx
 summary: Use ingress-nginx instead of the default Traefik ingress controller.
+inherits: default-forgejo-woodpecker-argocd
 components:
   ingress: ingress-nginx
 remove:
   - gitops/clusters/rke2-main/apps/traefik
-include:
+includes:
   - gitops/clusters/rke2-main/apps/ingress-nginx

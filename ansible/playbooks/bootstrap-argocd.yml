@@ -73,21 +73,21 @@
       - argocd-application-controller
     platform_argocd_core_manifest_url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
     platform_project_file: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects/platform-project.yaml"
-    platform_applications_file: >-
-      {{
-        (platform_profile_effective == 'premium-3node')
-        | ternary(
-            playbook_dir + '/../../gitops/clusters/rke2-main/premium-3node/platform-apps.yaml',
-            playbook_dir + '/../../gitops/clusters/rke2-main/platform-apps.yaml'
-          )
-      }}
     platform_rendered_applications_file: "/tmp/platform-gitops-{{ platform_profile_effective }}-applications.rendered.yaml"
   tasks:
+    - name: Check selected platform profile catalog file
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../profiles/{{ platform_profile_effective }}.yaml"
+      register: platform_profile_catalog_file
+      become: false
+      delegate_to: localhost
+      run_once: true
+
     - name: Require a supported platform profile
       ansible.builtin.assert:
         that:
-          - platform_profile_effective in ['default', 'premium-3node']
-        fail_msg: "PLATFORM_PROFILE must be default or premium-3node."
+          - platform_profile_effective in ['default', 'premium-3node'] or platform_profile_catalog_file.stat.exists
+        fail_msg: "PLATFORM_PROFILE must be default, premium-3node, or a profile file in profiles/."
       run_once: true
 
     - name: Require a supported Argo CD bootstrap mode
@@ -757,7 +757,7 @@
         - platform_placeholder_scan.rc | int != 0
       run_once: true
 
-    - name: Render deployable GitOps applications and skip incomplete apps
+    - name: Render selected GitOps applications
       ansible.builtin.shell: |
         set -euo pipefail
         python_bin={{ platform_python_effective | quote }}
@@ -773,7 +773,7 @@
         fi
         "${python_bin}" scripts/render_deployable_gitops_apps.py \
           --repo-root "$PWD" \
-          --applications-file "{{ platform_applications_file }}" \
+          --profile {{ platform_profile_effective | quote }} \
           --repo-url "{{ platform_repo_url_effective }}" \
           --output "{{ platform_rendered_applications_file }}" \
           --required-path gitops/clusters/rke2-main/projects
@@ -784,10 +784,7 @@
       changed_when: true
       become: false
       delegate_to: localhost
-      when:
-        - platform_apply_gitops_effective
-        - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
-        - platform_placeholder_scan.rc | int != 0
+      when: platform_apply_gitops_effective
       run_once: true
 
     - name: Show deployable and skipped GitOps applications
@@ -796,24 +793,12 @@
       when:
         - platform_apply_gitops_effective
         - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
-        - platform_placeholder_scan.rc | int != 0
       run_once: true
 
-    - name: Use rendered deployable GitOps application list
+    - name: Use rendered GitOps application list
       ansible.builtin.set_fact:
         platform_applications_manifest_effective: "{{ lookup('ansible.builtin.file', platform_rendered_applications_file) }}"
-      when:
-        - platform_apply_gitops_effective
-        - platform_gitops_placeholder_mode_effective == 'skip-incomplete'
-        - platform_placeholder_scan.rc | int != 0
-      run_once: true
-
-    - name: Use complete GitOps application list
-      ansible.builtin.set_fact:
-        platform_applications_manifest_effective: "{{ lookup('ansible.builtin.file', platform_applications_file) | replace('<THIS_REPO_URL>', platform_repo_url_effective) }}"
-      when:
-        - platform_apply_gitops_effective
-        - platform_applications_manifest_effective is not defined
+      when: platform_apply_gitops_effective
       run_once: true
 
     - name: Register private Git repository credentials when provided

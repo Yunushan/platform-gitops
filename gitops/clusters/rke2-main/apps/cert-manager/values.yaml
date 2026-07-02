@@ -8,9 +8,29 @@ replicaCount: 1
 webhook:
   replicaCount: 1
   timeoutSeconds: 10
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
 
 cainjector:
   replicaCount: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+startupapicheck:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
 
 prometheus:
   enabled: false

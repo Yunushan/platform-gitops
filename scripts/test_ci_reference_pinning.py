@@ -37,6 +37,7 @@ MUTABLE_REFS = {
     "unstable",
 }
 MUTABLE_PREFIXES = tuple(f"{ref}-" for ref in MUTABLE_REFS)
+ACTION_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 USES_RE = re.compile(r"^\s*-\s+uses:\s*(?P<ref>\S+)\s*(?:#.*)?$")
 IMAGE_RE = re.compile(r"^\s*image:\s*(?P<image>\S+)\s*(?:#.*)?$")
 FROM_RE = re.compile(r"^\s*FROM\s+(?P<image>\S+)(?:\s+AS\s+\S+)?\s*(?:#.*)?$", re.I)
@@ -76,6 +77,8 @@ def check_action_ref(path: Path, line_number: int, value: str) -> list[str]:
         problems.append(f"{rel_path(path)}:{line_number}: action reference has an empty @ref: {value}")
     elif is_mutable(ref):
         problems.append(f"{rel_path(path)}:{line_number}: action reference uses floating ref {ref}: {value}")
+    elif not ACTION_SHA_RE.fullmatch(ref):
+        problems.append(f"{rel_path(path)}:{line_number}: action reference must pin a full commit SHA, not a tag or branch: {value}")
     return problems
 
 

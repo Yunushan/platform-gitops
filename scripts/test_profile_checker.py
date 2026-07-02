@@ -119,6 +119,16 @@ spec:
     write(app_dir / "crds/upstream-template.yaml", "value: <IGNORED_CRD_PLACEHOLDER>\n")
     write(app_dir / "values.example.yaml", "value: <IGNORED_EXAMPLE_PLACEHOLDER>\n")
     write(
+        app_dir / "kustomization.yaml",
+        """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: forgejo
+helmCharts:
+  - name: forgejo
+    namespace: forgejo
+""",
+    )
+    write(
         repo / "gitops/clusters/rke2-main/premium-3node/apps/quoted-app/deployment.yaml",
         """apiVersion: apps/v1
 kind: Deployment
@@ -126,6 +136,16 @@ metadata:
   name: quoted-app
 spec:
   replicas: 1
+""",
+    )
+    write(
+        repo / "gitops/clusters/rke2-main/premium-3node/apps/quoted-app/kustomization.yaml",
+        """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: quoted-app
+helmCharts:
+  - name: quoted-app
+    namespace: quoted-app
 """,
     )
     write(
@@ -185,6 +205,49 @@ def main() -> int:
             raise AssertionError("expected missing Application source path to fail")
         if "quoted-app: missing path" not in output:
             raise AssertionError(f"expected failure output to name the missing source path\n{output}")
+
+    with tempfile.TemporaryDirectory(prefix="platform-profile-check-missing-include-") as tmp:
+        repo = Path(tmp)
+        create_fixture(repo)
+        write(
+            repo / "profiles/broken-profile.yaml",
+            """profile: broken-profile
+includes:
+  - gitops/clusters/rke2-main/apps/does-not-exist
+""",
+        )
+
+        rc, output = run_check(checker, repo, "broken-profile")
+        if rc == 0:
+            raise AssertionError("expected missing profile include path to fail")
+        if "references missing path(s): gitops/clusters/rke2-main/apps/does-not-exist" not in output:
+            raise AssertionError(f"expected failure output to name the missing profile include path\n{output}")
+
+    with tempfile.TemporaryDirectory(prefix="platform-profile-check-inherited-placeholder-") as tmp:
+        repo = Path(tmp)
+        create_fixture(repo)
+        write(
+            repo / "profiles/parent-profile.yaml",
+            """profile: parent-profile
+summary: <PROFILE_SUMMARY>
+includes:
+  - gitops/clusters/rke2-main/premium-3node/apps/forgejo
+""",
+        )
+        write(
+            repo / "profiles/child-profile.yaml",
+            """profile: child-profile
+inherits: parent-profile
+includes:
+  - gitops/clusters/rke2-main/premium-3node/apps/quoted-app
+""",
+        )
+
+        rc, output = run_check(checker, repo, "child-profile")
+        if rc == 0:
+            raise AssertionError("expected inherited profile placeholder to fail")
+        if "<PROFILE_SUMMARY>" not in output:
+            raise AssertionError(f"expected failure output to name inherited profile placeholder\n{output}")
 
     print("GitOps profile checker self-test passed.")
     return 0

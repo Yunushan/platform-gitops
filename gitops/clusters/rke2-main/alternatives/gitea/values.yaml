@@ -1,2 +1,61 @@
 # Alternative component: gitea
 # Configure real values through private overlays, encrypted secrets, or Argo CD parameters.
+replicaCount: 1
+
+strategy:
+  type: Recreate
+
+image:
+  rootless: true
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: gitea.<PLATFORM_DOMAIN>
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: gitea-tls
+      hosts:
+        - gitea.<PLATFORM_DOMAIN>
+
+postgresql:
+  enabled: false
+
+redis-cluster:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: <GITEA_DATA_SIZE>
+  storageClass: <GITEA_STORAGE_CLASS>
+
+gitea:
+  config:
+    server:
+      DOMAIN: gitea.<PLATFORM_DOMAIN>
+      ROOT_URL: https://gitea.<PLATFORM_DOMAIN>/
+      SSH_DOMAIN: gitea.<PLATFORM_DOMAIN>
+      START_SSH_SERVER: true
+    service:
+      DISABLE_REGISTRATION: true
+      REQUIRE_SIGNIN_VIEW: true
+    repository:
+      DEFAULT_BRANCH: main
+    database:
+      DB_TYPE: sqlite3
+    session:
+      PROVIDER: file
+    cache:
+      ADAPTER: memory
+    queue:
+      TYPE: level
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi

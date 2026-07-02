@@ -2,6 +2,9 @@
 
 This project supports a broad Linux estate, but node operating systems are tiered because RKE2, Longhorn, and enterprise support contracts are tiered upstream.
 
+Use this matrix with [Platform Support](PLATFORM_SUPPORT.md) when deciding
+whether a node operating system is acceptable for a private production cluster.
+
 ## Support meaning
 
 | Level | Meaning |
@@ -85,6 +88,32 @@ For the premium 3-node profile, prefer one of:
 Use the same distribution, major version, minor version, kernel track, and patch level across all three nodes.
 
 Run `make rke2-install` from the controller to apply the project preparation automatically before installation. The preparation disables swap, persists and loads required kernel modules, applies Kubernetes/CNI sysctls, disables active-interface reverse-path filtering, opens RKE2 and Cilium overlay firewalld ports, trusts the RKE2 pod CIDR, RKE2 node IPs, and Cilium interfaces in firewalld, installs direct pod/CNI ACCEPT rules, and configures NetworkManager to ignore Kubernetes CNI interfaces.
+
+## Production acceptance
+
+Before accepting a node operating system for production:
+
+- Confirm the OS family and version are still supported by the vendor or
+  internal platform standard.
+- Confirm the selected RKE2 and Longhorn versions support the OS, kernel, and
+  required storage/networking prerequisites.
+- Confirm all nodes use the same distribution, major version, minor version,
+  kernel track, and patch level unless an approved rolling-upgrade window is in
+  progress.
+- Run `make rke2-verify` and `make platform-production-check` after node
+  preparation and before production launch.
+- Record the decision, owner, support tier, exception status, and validation
+  output in the private support evidence described in
+  [Platform Support](PLATFORM_SUPPORT.md).
+
+## Lifecycle review
+
+Review node operating system lifecycle at least quarterly and before every RKE2,
+kernel, Longhorn, storage, or CNI upgrade. Treat an end-of-life OS, unsupported
+kernel, missing package prerequisite, disabled time sync, enabled swap, or
+inconsistent node patch level as a production blocker unless a private exception
+has an owner, expiration date, compensating control, and rollback or migration
+plan.
 
 ## Validation sources
 

@@ -1,2 +1,86 @@
 # Values are intentionally minimal and safe.
 # Replace placeholders through private overlays, encrypted secrets, or Argo CD parameterization.
+deploymentMode: SimpleScalable
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: s3
+    bucketNames:
+      chunks: <LOKI_CHUNKS_BUCKET>
+      ruler: <LOKI_RULER_BUCKET>
+      admin: <LOKI_ADMIN_BUCKET>
+    s3:
+      endpoint: <OBJECT_STORAGE_ENDPOINT>
+      region: <OBJECT_STORAGE_REGION>
+      s3ForcePathStyle: true
+      insecure: false
+  schemaConfig:
+    configs:
+      - from: "2026-01-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+write:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  persistence:
+    storageClass: <LOKI_STORAGE_CLASS>
+    size: <LOKI_WRITE_CACHE_SIZE>
+
+read:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+backend:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  persistence:
+    storageClass: <LOKI_STORAGE_CLASS>
+    size: <LOKI_BACKEND_CACHE_SIZE>
+
+gateway:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    hosts:
+      - host: loki.<PLATFORM_DOMAIN>
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: loki-tls
+        hosts:
+          - loki.<PLATFORM_DOMAIN>
+
+monitoring:
+  serviceMonitor:
+    enabled: true

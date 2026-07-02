@@ -165,6 +165,9 @@ platform_step_ca_host=ca.example.test
             "monitoring": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/monitoring/values.yaml"),
             "loki": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/loki/values.yaml"),
             "velero": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/velero/values.yaml"),
+            "cnpg": write(
+                repo / "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/postgres-cluster.yaml"
+            ),
             "step_ca": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"),
         }
 
@@ -195,6 +198,7 @@ platform_step_ca_host=ca.example.test
             "PROMETHEUS_DATA_SIZE": "60Gi",
             "ALERTMANAGER_DATA_SIZE": "12Gi",
             "GRAFANA_DATA_SIZE": "14Gi",
+            "GRAFANA_ADMIN_SECRET_NAME": "grafana-admin-test",
             "OBJECT_STORAGE_ENDPOINT": "https://object.example.test",
             "OBJECT_STORAGE_REGION": "eu-test-1",
             "OBJECT_STORAGE_BUCKET_PREFIX": "platform-test",
@@ -211,6 +215,11 @@ platform_step_ca_host=ca.example.test
             "BACKUP_BUCKET": "platform-test-velero",
             "VELERO_CREDENTIALS_SECRET_NAME": "velero-cloud-test",
             "VELERO_DAILY_BACKUP_CRON": "15 2 * * *",
+            "CNPG_OBJECT_STORE_SECRET_NAME": "cnpg-object-test",
+            "CNPG_BACKUP_DESTINATION": "s3://platform-test-cnpg/platform-postgres",
+            "CNPG_BACKUP_SCHEDULE": "20 2 * * *",
+            "CNPG_STORAGE_CLASS": "longhorn-critical",
+            "POSTGRES_DATA_SIZE": "80Gi",
             "STEP_CA_MODE": "bootstrap",
             "STEP_CA_NAME": "Platform Test CA",
             "STEP_CA_DNS_NAMES": "ca.example.test,step-ca.step-ca.svc.cluster.local",
@@ -228,13 +237,57 @@ platform_step_ca_host=ca.example.test
             renderer.render_monitoring(paths["monitoring"], inventory)
             renderer.render_loki(paths["loki"], inventory)
             renderer.render_velero(paths["velero"])
+            renderer.render_cnpg_postgres_cluster(paths["cnpg"])
             renderer.render_step_ca(paths["step_ca"], inventory)
 
         rendered_paths = list(paths.values())
         assert_no_placeholders(rendered_paths)
         assert_contains(paths["argocd"], "argocd.example.test")
         assert_contains(paths["forgejo"], "git.example.test", "21Gi", "sqlite3")
+
+        external_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/external-values.yaml")
+        external_forgejo_env = dict(env)
+        external_forgejo_env.update(
+            {
+                "FORGEJO_DATABASE_MODE": "external",
+                "FORGEJO_DATABASE_HOST": "forgejo-postgres.example.test:5432",
+                "FORGEJO_DATABASE_NAME": "forgejo",
+                "FORGEJO_DATABASE_USER": "forgejo",
+                "FORGEJO_DATABASE_SECRET_NAME": "forgejo-db-test",
+                "FORGEJO_DATABASE_SSL_MODE": "require",
+                "FORGEJO_REDIS_SECRET_NAME": "forgejo-redis-test",
+            }
+        )
+        with patched_env(external_forgejo_env):
+            renderer.render_forgejo(external_forgejo_path, inventory)
+        assert_contains(
+            external_forgejo_path,
+            "additionalConfigFromEnvs:",
+            "GITEA__database__PASSWD",
+            'name: "forgejo-db-test"',
+            "key: password",
+            "GITEA__cache__HOST",
+            "GITEA__queue__CONN_STR",
+            'name: "forgejo-redis-test"',
+            "key: uri",
+            "DB_TYPE: postgres",
+            'HOST: "forgejo-postgres.example.test:5432"',
+            'SSL_MODE: "require"',
+        )
+        assert_not_contains(external_forgejo_path, "FORGEJO_REDIS_URL", "redis://")
         assert_contains(paths["longhorn"], "s3://platform-test-longhorn@eu-test-1/")
+        assert_contains(
+            paths["cnpg"],
+            'namespace: "platform-databases"',
+            'size: "80Gi"',
+            'storageClass: "longhorn-critical"',
+            'destinationPath: "s3://platform-test-cnpg/platform-postgres"',
+            'endpointURL: "https://object.example.test"',
+            'name: "cnpg-object-test"',
+            "key: ACCESS_KEY_ID",
+            "key: SECRET_ACCESS_KEY",
+            'schedule: "20 2 * * *"',
+        )
         assert_contains(paths["woodpecker"], "ci.example.test", "woodpecker-oauth-test")
         assert_contains(
             paths["woodpecker"],
@@ -253,6 +306,57 @@ platform_step_ca_host=ca.example.test
             'externalURL: "https://registry.example.test"',
             'storageClass: "longhorn-critical"',
             'size: "55Gi"',
+            "portal:\n  replicas: 1\n  resources:",
+            "core:\n  replicas: 1\n  resources:",
+            "jobservice:\n  replicas: 1\n  resources:",
+            "registry:\n  replicas: 1\n  registry:\n    resources:",
+            "trivy:\n  enabled: true\n  replicas: 1\n  resources:",
+            "exporter:\n  resources:",
+            "database:\n  type: internal\n  internal:\n    resources:",
+            "redis:\n  type: internal\n  internal:\n    resources:",
+        )
+
+        external_harbor_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/harbor/external-values.yaml")
+        external_harbor_env = {
+            "HARBOR_STORAGE_CLASS": "longhorn-critical",
+            "HARBOR_DATABASE_MODE": "external",
+            "HARBOR_DATABASE_HOST": "harbor-postgres.example.test",
+            "HARBOR_DATABASE_PORT": "5432",
+            "HARBOR_DATABASE_NAME": "registry",
+            "HARBOR_DATABASE_USER": "harbor",
+            "HARBOR_DATABASE_SECRET_NAME": "harbor-db-test",
+            "HARBOR_REDIS_MODE": "external",
+            "HARBOR_REDIS_ADDR": "harbor-redis.example.test:6379",
+            "HARBOR_REDIS_USERNAME": "harbor",
+            "HARBOR_REDIS_SECRET_NAME": "harbor-redis-test",
+            "HARBOR_STORAGE_MODE": "s3",
+            "HARBOR_S3_BUCKET": "platform-test-harbor-registry",
+            "HARBOR_S3_SECRET_NAME": "harbor-s3-test",
+            "OBJECT_STORAGE_ENDPOINT": "https://object.example.test",
+            "OBJECT_STORAGE_REGION": "eu-test-1",
+        }
+        with patched_env(external_harbor_env):
+            renderer.render_harbor(external_harbor_path, inventory)
+        assert_contains(
+            external_harbor_path,
+            "Uses external PostgreSQL, external Redis, and S3-compatible registry storage",
+            "imageChartStorage:\n    disableredirect: true\n    type: s3",
+            'bucket: "platform-test-harbor-registry"',
+            'regionendpoint: "https://object.example.test"',
+            'existingSecret: "harbor-s3-test"',
+            "database:\n  type: external",
+            'host: "harbor-postgres.example.test"',
+            'existingSecret: "harbor-db-test"',
+            "redis:\n  type: external",
+            'addr: "harbor-redis.example.test:6379"',
+            'username: "harbor"',
+            'existingSecret: "harbor-redis-test"',
+        )
+        assert_not_contains(
+            external_harbor_path,
+            "database:\n  type: internal",
+            "redis:\n  type: internal",
+            "type: filesystem",
         )
         assert_contains(
             paths["monitoring"],
@@ -260,12 +364,46 @@ platform_step_ca_host=ca.example.test
             "grafana.example.test",
             "prometheus.example.test",
             "60Gi",
+            "prometheusSpec:\n    replicas: 2\n    retention: 15d",
+            "    resources:\n      requests:\n        cpu: 500m\n        memory: 2Gi",
         )
         assert_contains(
             paths["monitoring"],
             'storageClassName: "longhorn-standard"',
             'storage: "60Gi"',
             'size: "14Gi"',
+            "alertmanagerSpec:\n    replicas: 3\n    resources:",
+            "grafana:\n  replicas: 1\n  admin:",
+            'existingSecret: "grafana-admin-test"',
+            "userKey: admin-user",
+            "passwordKey: admin-password",
+        )
+
+        external_monitoring_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/monitoring/external-values.yaml")
+        external_monitoring_env = {
+            "MONITORING_STORAGE_CLASS": "longhorn-standard",
+            "GRAFANA_ADMIN_SECRET_NAME": "grafana-admin-test",
+            "GRAFANA_DATABASE_MODE": "postgres",
+            "GRAFANA_DATABASE_HOST": "grafana-postgres.example.test",
+            "GRAFANA_DATABASE_PORT": "5432",
+            "GRAFANA_DATABASE_NAME": "grafana",
+            "GRAFANA_DATABASE_USER": "grafana",
+            "GRAFANA_DATABASE_SECRET_NAME": "grafana-db-test",
+            "GRAFANA_DATABASE_SSL_MODE": "require",
+        }
+        with patched_env(external_monitoring_env):
+            renderer.render_monitoring(external_monitoring_path, inventory)
+        assert_contains(
+            external_monitoring_path,
+            "Uses external PostgreSQL for Grafana state",
+            "envValueFrom:\n    GF_DATABASE_PASSWORD:",
+            'name: "grafana-db-test"',
+            "grafana.ini:\n    database:\n      type: postgres",
+            'host: "grafana-postgres.example.test:5432"',
+            'name: "grafana"',
+            'user: "grafana"',
+            'password: "$__env{GF_DATABASE_PASSWORD}"',
+            'ssl_mode: "require"',
         )
         assert_contains(
             paths["loki"],
@@ -280,6 +418,11 @@ platform_step_ca_host=ca.example.test
             'endpoint: "https://object.example.test"',
             'chunks: "platform-test-loki-chunks"',
             'storageClass: "longhorn-standard"',
+            "write:\n  replicas: 3\n  resources:",
+            "read:\n  replicas: 3\n  resources:",
+            "backend:\n  replicas: 3\n  resources:",
+            "gateway:\n  enabled: true\n  resources:",
+            "      cpu: 500m\n      memory: 1Gi",
         )
         assert_contains(
             paths["velero"],
@@ -293,8 +436,22 @@ platform_step_ca_host=ca.example.test
             'provider: "aws"',
             'bucket: "platform-test-velero"',
             'existingSecret: "velero-cloud-test"',
+            "deployNodeAgent: true\n\nresources:",
+            "nodeAgent:\n  resources:",
+            "      cpu: 250m\n      memory: 256Mi",
         )
-        assert_contains(paths["step_ca"], "Platform Test CA", "ca.example.test", 'size: "9Gi"')
+        assert_contains(
+            paths["step_ca"],
+            "Platform Test CA",
+            "ca.example.test",
+            'size: "9Gi"',
+            "service:\n  type: ClusterIP\n  port: 443\n  targetPort: 9000",
+            "address: :9000",
+            "accessModes:\n      - ReadWriteOnce",
+            "ssh:\n    enabled: false",
+            "autocert:\n  enabled: false",
+            "resources:\n  requests:\n    cpu: 100m\n    memory: 256Mi",
+        )
 
         render_real_premium_profile(renderer, checker, env)
 

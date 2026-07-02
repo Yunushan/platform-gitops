@@ -24,6 +24,10 @@ remove:
   - gitops/clusters/rke2-main/apps/ingress-nginx
 includes:
   - gitops/clusters/rke2-main/premium-3node
+  - gitops/clusters/rke2-main/premium-3node/apps/cert-manager
+  - gitops/clusters/rke2-main/premium-3node/apps/trust-manager
+  - gitops/clusters/rke2-main/premium-3node/apps/step-ca
+  - gitops/clusters/rke2-main/apps/metallb
   - gitops/clusters/rke2-main/premium-3node/apps/traefik
   - gitops/clusters/rke2-main/premium-3node/apps/argocd-ha
   - gitops/clusters/rke2-main/premium-3node/apps/forgejo

@@ -1,2 +1,24 @@
 # Alternative component: rook-ceph
 # Configure real values through private overlays, encrypted secrets, or Argo CD parameters.
+crds:
+  enabled: true
+
+logLevel: INFO
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi
+
+csi:
+  enableRbdDriver: true
+  enableCephfsDriver: true
+  provisionerReplicas: 2
+  pluginPriorityClassName: system-node-critical
+  provisionerPriorityClassName: system-cluster-critical
+
+monitoring:
+  enabled: true
+  createPrometheusRules: true
