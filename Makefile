@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -10,6 +10,8 @@ help:
 	@echo "  init-local      Create ignored local config files from examples"
 	@echo "  validate        Run repository validation"
 	@echo "  no-secrets      Scan repository for obvious secrets/private data"
+	@echo "  security-scan   Run Trivy, Gitleaks, and Semgrep security scanners"
+	@echo "  supply-chain-posture  Generate SBOM and optional Scorecard/Cosign evidence"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env or inventory"
 	@echo "  platform-profile-check  Verify selected GitOps profile has no unresolved placeholders"
@@ -70,6 +72,12 @@ validate:
 
 no-secrets:
 	@$(PYTHON) scripts/validate_no_secrets.py
+
+security-scan:
+	@bash scripts/security-scan.sh
+
+supply-chain-posture:
+	@bash scripts/supply-chain-posture.sh
 
 bootstrap-plan:
 	@bash scripts/bootstrap-plan.sh

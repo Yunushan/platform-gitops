@@ -15,6 +15,7 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 | Git forge | Forgejo |
 | CI | Woodpecker CI with HA server replicas and distributed Kubernetes agents |
 | CD | Argo CD HA |
+| Identity | Keycloak SSO for central identity and RBAC integration |
 | Registry | Harbor |
 | Database | CloudNativePG PostgreSQL |
 | Storage | Longhorn default, Rook/Ceph alternative |
@@ -24,9 +25,10 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 | Monitoring | Prometheus + Grafana |
 | Logs | Loki |
 | Backups | Velero plus database and off-cluster backups |
-| Secrets | SOPS + age default, External Secrets/OpenBao option |
-| Policy | Kyverno examples |
-| Supply chain | Cosign and Renovate helpers |
+| Secrets | SOPS + age, External Secrets Operator, and internal OpenBao-ready backend |
+| Policy | Kyverno audit baseline and examples |
+| Runtime security | Tetragon eBPF observability |
+| Supply chain | Trivy, Gitleaks, Semgrep, Cosign, and Renovate helpers |
 
 ## Network model
 
@@ -72,10 +74,26 @@ Argo CD uses the HA profile. The premium profile runs multiple `argocd-server`, 
 
 - No production secret is committed to git.
 - Real environment data exists only in ignored local files or external secret systems.
+- The premium profile includes Keycloak as the central FOSS SSO plane so
+  Forgejo, Woodpecker, Argo CD, Harbor, Grafana, and future apps can move away
+  from local-only credentials when OAuth/OIDC integration is enabled.
+- The premium profile installs External Secrets Operator and an internal
+  OpenBao HA Raft backend so private deployments can move generated bootstrap
+  Kubernetes Secrets toward a managed secret-store flow without leaving the
+  FOSS stack.
 - Production deployment is driven by Argo CD from GitOps repositories.
 - CI builds artifacts and updates desired state; it does not directly deploy production.
 - Renovate tracks dependency update drift through `renovate.json`, with Docker
   digest pinning and dashboard approval for major changes.
+- Trivy, Gitleaks, and Semgrep are exposed through `make security-scan` for
+  deeper repository and supply-chain checks outside the fast validation suite.
+  Semgrep defaults to the checked-in `.semgrep.yml` baseline for reproducible
+  offline/private scans; connected runners can override `SEMGREP_CONFIG` to use
+  Semgrep registry packs.
+- Tetragon is included in the premium profile for eBPF process, file, network,
+  credential, namespace, and policy-filter observability on the RKE2 nodes.
+- Syft SBOM generation, optional OpenSSF Scorecard output, and optional Cosign
+  verification are exposed through `make supply-chain-posture`.
 - Cosign image signature verification is provided as an opt-in Kyverno example;
   enable it only after CI signs images and registry credentials/key material are
   available in the target namespaces.

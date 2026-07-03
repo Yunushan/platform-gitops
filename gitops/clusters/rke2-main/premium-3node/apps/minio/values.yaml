@@ -1,0 +1,48 @@
+# In-cluster S3-compatible object storage for lab/staging and controlled internal
+# targets. Keep production disaster-recovery backups replicated off-cluster.
+global:
+  defaultStorageClass: longhorn-critical
+
+mode: distributed
+
+auth:
+  existingSecret: minio-root
+  rootUserSecretKey: root-user
+  rootPasswordSecretKey: root-password
+  forcePassword: true
+
+statefulset:
+  podManagementPolicy: Parallel
+  replicaCount: 4
+  zones: 1
+  drivesPerNode: 1
+
+persistence:
+  enabled: true
+  storageClass: longhorn-critical
+  size: 50Gi
+
+networkPolicy:
+  enabled: true
+  allowExternal: true
+  allowExternalEgress: true
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi
+
+metrics:
+  enabled: true
+  prometheusAuthType: public
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    labels:
+      release: monitoring
+
+provisioning:
+  enabled: false
+

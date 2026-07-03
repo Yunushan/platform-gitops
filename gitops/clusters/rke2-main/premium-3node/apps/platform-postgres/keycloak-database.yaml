@@ -1,0 +1,12 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: platform-postgres-keycloak
+  namespace: platform-databases
+spec:
+  name: keycloak
+  owner: keycloak
+  cluster:
+    name: platform-postgres
+  databaseReclaimPolicy: retain
+

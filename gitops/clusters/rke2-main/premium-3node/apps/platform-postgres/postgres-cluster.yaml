@@ -1,0 +1,27 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-postgres
+  namespace: platform-databases
+spec:
+  instances: 3
+  primaryUpdateStrategy: unsupervised
+  bootstrap:
+    initdb:
+      database: forgejo
+      owner: forgejo
+      secret:
+        name: forgejo-database
+  storage:
+    size: 50Gi
+    storageClass: longhorn-critical
+  monitoring:
+    enablePodMonitor: true
+  managed:
+    roles:
+      - name: keycloak
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: keycloak-database

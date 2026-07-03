@@ -1,0 +1,19 @@
+title = "platform-gitops public repository leak guard"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public placeholders and documentation examples"
+regexes = [
+  '''<[^>]+>''',
+  '''EXAMPLE_[A-Z0-9_]+''',
+  '''CHANGE_ME_[A-Z0-9_]+''',
+  '''REPLACE_ME_[A-Z0-9_]+'''
+]
+
+paths = [
+  '''docs/i18n/.*''',
+  '''.*\.example(\.yaml|\.yml|\.ini|\.env)?$'''
+]
+

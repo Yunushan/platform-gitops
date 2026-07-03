@@ -1,0 +1,97 @@
+# OpenBao is installed as an internal HA secret-management backend.
+# Initialization, unseal, auth methods, and policies remain an operational
+# ceremony and should be backed by an external KMS/HSM process before production.
+global:
+  tlsDisable: true
+
+injector:
+  enabled: true
+  replicas: 2
+  metrics:
+    enabled: true
+  webhook:
+    failurePolicy: Fail
+  podDisruptionBudget:
+    minAvailable: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+server:
+  enabled: true
+  logLevel: info
+  logFormat: standard
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  dataStorage:
+    enabled: true
+    size: 20Gi
+    storageClass: longhorn-critical
+    accessMode: ReadWriteOnce
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
+  auditStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: longhorn-critical
+    accessMode: ReadWriteOnce
+  standalone:
+    enabled: false
+  ha:
+    enabled: true
+    replicas: 3
+    raft:
+      enabled: true
+      setNodeId: true
+      config: |
+        ui = true
+
+        listener "tcp" {
+          tls_disable = 1
+          address = "[::]:8200"
+          cluster_address = "[::]:8201"
+          telemetry {
+            unauthenticated_metrics_access = "true"
+          }
+        }
+
+        storage "raft" {
+          path = "/openbao/data"
+        }
+
+        service_registration "kubernetes" {}
+
+        telemetry {
+          prometheus_retention_time = "30s"
+          disable_hostname = true
+        }
+  disruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+  service:
+    enabled: true
+    type: ClusterIP
+  ui:
+    enabled: true
+    serviceType: ClusterIP
+
+serverTelemetry:
+  serviceMonitor:
+    enabled: true
+    selectors:
+      release: monitoring
+  prometheusRules:
+    enabled: false
+  grafanaDashboard:
+    enabled: true
+    namespace: monitoring
+    extraLabel:
+      release: monitoring

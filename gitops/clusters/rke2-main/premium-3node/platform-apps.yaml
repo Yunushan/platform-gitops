@@ -70,6 +70,122 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
+  name: kyverno
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/kyverno
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/platform-policies
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tetragon
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/tetragon
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tetragon
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-secrets
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/external-secrets
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: external-secrets
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: openbao
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/openbao
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openbao
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
   name: metallb
   namespace: argocd
   annotations:
@@ -163,6 +279,99 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
+  name: platform-postgres
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/platform-postgres
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform-databases
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-valkey
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/platform-valkey
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: platform-cache
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: minio
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/minio
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: object-storage
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keycloak
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/keycloak
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keycloak
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
   name: argocd-ha
   namespace: argocd
   annotations:
@@ -189,7 +398,7 @@ metadata:
   name: forgejo
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   project: platform
   source:
@@ -212,7 +421,7 @@ metadata:
   name: woodpecker
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-wave: "6"
 spec:
   project: platform
   source:
@@ -235,7 +444,7 @@ metadata:
   name: harbor
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "4"
+    argocd.argoproj.io/sync-wave: "5"
 spec:
   project: platform
   source:

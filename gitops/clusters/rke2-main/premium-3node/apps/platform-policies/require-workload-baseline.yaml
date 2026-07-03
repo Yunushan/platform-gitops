@@ -1,0 +1,67 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-workload-baseline
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-resource-requests
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+                - DaemonSet
+      validate:
+        message: Workloads should set CPU and memory requests.
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - resources:
+                      requests:
+                        memory: "?*"
+                        cpu: "?*"
+    - name: require-non-root
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - longhorn-system
+                - metallb-system
+      validate:
+        message: Pods should opt into non-root execution where supported.
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+    - name: require-no-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - longhorn-system
+                - metallb-system
+      validate:
+        message: Containers should explicitly disable privilege escalation where supported.
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  allowPrivilegeEscalation: false
+

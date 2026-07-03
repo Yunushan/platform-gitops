@@ -293,34 +293,48 @@ The unattended targets also default to
 values before validation, commit, and push. The renderer covers Forgejo, Argo
 CD, Woodpecker, Harbor, Grafana, Prometheus, Loki, Velero, Longhorn, and
 optional step-ca. Forgejo uses `platform_forgejo_host` or `platform_git_host`
-from `inventory/hosts.local.ini` unless `PLATFORM_FORGEJO_HOST` is set. The default
-`FORGEJO_DATABASE_MODE=sqlite` is intended only to bring the first private
-Forgejo dashboard online; move to external PostgreSQL and Redis for the final
-premium production posture.
+from `inventory/hosts.local.ini` unless `PLATFORM_FORGEJO_HOST` is set. The
+default `FORGEJO_DATABASE_MODE=postgres` points Forgejo at the CloudNativePG
+service `platform-postgres-rw.platform-databases.svc.cluster.local:5432`.
+Set `FORGEJO_DATABASE_MODE=sqlite` for a dependency-light lab bootstrap, or
+`FORGEJO_DATABASE_MODE=mysql` / `FORGEJO_DATABASE_MODE=mariadb` with
+`FORGEJO_DATABASE_HOST=<HOST>:3306` when that database family is the company
+standard.
 
-For production Forgejo, create the external dependency secrets first, then
-render values that reference only Secret names and non-secret endpoints:
+For Forgejo SQL backends, create the runtime password secret first, then render
+values that reference only Secret names and non-secret endpoints:
 
 ```bash
 FORGEJO_DATABASE_PASSWORD='<PASSWORD>' \
-FORGEJO_REDIS_URL='redis://:<PASSWORD>@<REDIS_HOST>:6379/0' \
 PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true \
-PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true \
 make platform-app-secrets
 
-FORGEJO_DATABASE_MODE=external \
+FORGEJO_DATABASE_MODE=postgres \
 FORGEJO_DATABASE_HOST=<POSTGRES_HOST>:5432 \
 FORGEJO_DATABASE_NAME=forgejo \
 FORGEJO_DATABASE_USER=forgejo \
 FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
 FORGEJO_DATABASE_SSL_MODE=disable \
-FORGEJO_REDIS_SECRET_NAME=forgejo-redis \
 make platform-render-private-values
 ```
 
-If you do not want to provide a full `FORGEJO_REDIS_URL`, provide
-`FORGEJO_REDIS_HOST` plus `FORGEJO_REDIS_PASSWORD` and optional
-`FORGEJO_REDIS_PORT`, `FORGEJO_REDIS_DB`, and `FORGEJO_REDIS_TLS`.
+Set `FORGEJO_DATABASE_MODE=sqlite` to switch back to SQLite. For MySQL or
+MariaDB, set `FORGEJO_DATABASE_MODE=mysql` or `FORGEJO_DATABASE_MODE=mariadb`,
+`FORGEJO_DATABASE_HOST=<HOST>:3306`, and keep the same secret-name pattern.
+For enterprise Redis-backed cache and queue, the premium profile uses the
+shared `platform-valkey` HA service by default with `FORGEJO_REDIS_MODE=redis`.
+`platform-app-secrets` generates `platform-cache/platform-valkey-auth`, then
+creates the `forgejo/forgejo-redis` URI secret from it. To use a different
+cache, provide a full `FORGEJO_REDIS_URL`, or provide `FORGEJO_REDIS_HOST` plus
+`FORGEJO_REDIS_PASSWORD` and optional `FORGEJO_REDIS_PORT`,
+`FORGEJO_REDIS_DB`, and `FORGEJO_REDIS_TLS`. Set
+`FORGEJO_REDIS_MODE=memory` only for a minimal local cache.
+
+The premium profile also renders Keycloak at `sso.<PLATFORM_DOMAIN>` by
+default. `platform-app-secrets` generates `keycloak/keycloak-admin`,
+`keycloak/keycloak-database`, and the matching
+`platform-databases/keycloak-database` CloudNativePG role password secret unless
+you provide `KEYCLOAK_ADMIN_PASSWORD` or `KEYCLOAK_DATABASE_PASSWORD`.
 
 Woodpecker also defaults to single-server SQLite for the first private CI
 dashboard. Keep `WOODPECKER_SERVER_REPLICAS=1` while
@@ -345,11 +359,15 @@ WOODPECKER_AGENT_REPLICAS=3 \
 make platform-render-private-values
 ```
 
-Harbor defaults to internal PostgreSQL, internal Redis, and filesystem registry
-storage so a first private registry can come online without pre-existing
+Harbor defaults to internal PostgreSQL, the shared external
+`platform-valkey` service, and filesystem registry storage so a first private
+registry can come online without pre-existing database or object storage
 services. For the premium production posture, create the dependency secrets
 from ignored env values and render Harbor with external PostgreSQL, external
-Redis, and S3-compatible registry storage:
+Redis, and S3-compatible registry storage. If you keep the shared Valkey
+default, `platform-app-secrets` can derive `harbor/harbor-redis` from
+`platform-cache/platform-valkey-auth`; set `HARBOR_REDIS_PASSWORD` and
+`HARBOR_REDIS_ADDR` only when using a separate Redis or Valkey endpoint:
 
 ```bash
 HARBOR_DATABASE_PASSWORD='<PASSWORD>' \
@@ -367,7 +385,7 @@ HARBOR_DATABASE_NAME=registry \
 HARBOR_DATABASE_USER=harbor \
 HARBOR_DATABASE_SECRET_NAME=harbor-database \
 HARBOR_REDIS_MODE=external \
-HARBOR_REDIS_ADDR=<REDIS_HOST>:6379 \
+HARBOR_REDIS_ADDR=platform-valkey-primary.platform-cache.svc.cluster.local:6379 \
 HARBOR_REDIS_SECRET_NAME=harbor-redis \
 HARBOR_STORAGE_MODE=s3 \
 HARBOR_S3_BUCKET=<HARBOR_REGISTRY_BUCKET> \
@@ -412,15 +430,17 @@ seed sync all honor the same override.
 
 For object-storage backed apps and external app databases, keep credentials in
 ignored env files or your secret manager. `make platform-app-secrets` can create
-the Kubernetes secrets for Grafana admin credentials, Grafana's external
-PostgreSQL password, Forgejo's external PostgreSQL password and Redis URI,
-Woodpecker's PostgreSQL datasource, Harbor's external
-database/Redis/S3 credentials, Loki, Velero, and CloudNativePG from
+the Kubernetes secrets for shared platform Valkey auth, Grafana admin
+credentials, Grafana's external PostgreSQL password, Forgejo's external
+PostgreSQL password and Redis URI, Woodpecker's PostgreSQL datasource,
+Harbor's external database/Redis/S3 credentials, Loki, Velero, and
+CloudNativePG from
 `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
 `WOODPECKER_DATABASE_DATASOURCE`, `WOODPECKER_DATABASE_HOST` /
 `WOODPECKER_DATABASE_PASSWORD`, `HARBOR_DATABASE_PASSWORD`,
 `HARBOR_REDIS_PASSWORD`, `HARBOR_S3_ACCESS_KEY_ID` /
-`HARBOR_S3_SECRET_ACCESS_KEY`, `GRAFANA_DATABASE_PASSWORD`,
+`HARBOR_S3_SECRET_ACCESS_KEY`, `KEYCLOAK_ADMIN_PASSWORD`,
+`KEYCLOAK_DATABASE_PASSWORD`, `GRAFANA_DATABASE_PASSWORD`,
 `LOKI_S3_ACCESS_KEY_ID` /
 `LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`,
 `CNPG_S3_ACCESS_KEY_ID` / `CNPG_S3_SECRET_ACCESS_KEY`, or
@@ -432,9 +452,12 @@ credential secrets are still missing.
 Set `PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=true` when you only want to
 enforce the CloudNativePG backup credential secret without enforcing the rest of
 the object-storage stack.
-Set `CNPG_RENDER_POSTGRES_CLUSTER=true` when you want
-`make platform-render-private-values` to materialize the premium CloudNativePG
-PostgreSQL cluster example with real storage and backup values.
+`CNPG_RENDER_POSTGRES_CLUSTER=true` is the default so
+`make platform-render-private-values` materializes the premium CloudNativePG
+PostgreSQL cluster used by Forgejo. Set `CNPG_RENDER_POSTGRES_CLUSTER=false`
+only when you provide PostgreSQL outside this profile. Set
+`CNPG_BACKUP_ENABLED=true` with CloudNativePG object-storage credentials when
+you want the rendered cluster to include WAL/archive backups.
 Set `PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` before enabling
 Woodpecker HA values so a missing PostgreSQL datasource secret fails before
 Argo CD rolls Woodpecker.
@@ -442,9 +465,9 @@ Set `PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true`,
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true`, and
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=true` before enabling
 Harbor external PostgreSQL, Redis, and S3 registry storage.
-Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` and
-`PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true` before enabling
-`FORGEJO_DATABASE_MODE=external`.
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` before enabling an
+external Forgejo SQL backend. Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true`
+only when `FORGEJO_REDIS_MODE=redis`.
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
 `GRAFANA_DATABASE_MODE=postgres`.
 
@@ -736,6 +759,39 @@ PLATFORM_APP_HEALTH_CERTIFICATES="argocd/argocd-server-tls" make platform-app-he
 PLATFORM_APP_HEALTH_TRUST_BUNDLES="platform-public-roots" make platform-app-health
 ```
 
+To deploy a pre-issued wildcard certificate, create the same TLS certificate in
+each application namespace using the secret name expected by that ingress. Keep
+the certificate and private key in an ignored local path, not Git:
+
+```bash
+CERT=/secure/path/wildcard.crt
+KEY=/secure/path/wildcard.key
+K=/var/lib/rancher/rke2/bin/kubectl
+C=/etc/rancher/rke2/rke2.yaml
+
+for item in \
+  argocd/argocd-server-tls \
+  forgejo/forgejo-tls \
+  woodpecker/woodpecker-tls \
+  monitoring/grafana-tls \
+  monitoring/prometheus-tls \
+  logging/loki-tls
+do
+  ns="${item%/*}"
+  secret="${item#*/}"
+  "$K" --kubeconfig "$C" create namespace "$ns" --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -
+  "$K" --kubeconfig "$C" -n "$ns" create secret tls "$secret" \
+    --cert="$CERT" \
+    --key="$KEY" \
+    --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -
+done
+```
+
+For Harbor, set `HARBOR_TLS_CERT_SOURCE=secret` and
+`HARBOR_TLS_SECRET_NAME=harbor-tls` before rendering Harbor values, then create
+`secret/harbor-tls` in the `harbor` namespace with the same `kubectl create
+secret tls` pattern.
+
 When step-ca is required, the health gate probes its in-cluster HTTPS
 `/health` endpoint through the ClusterIP service. To skip that during a
 temporary debug run:
@@ -765,7 +821,7 @@ For logging and backups, the health gate verifies a known Loki `/ready` service
 endpoint when Loki is required, and requires Velero `BackupStorageLocation`
 objects to be `Available` plus at least one enabled Velero backup schedule when
 Velero is required. It also verifies the generated app secret contracts for
-Harbor, Forgejo, Woodpecker, Grafana, Loki, Velero, and CloudNativePG when those apps are required, checking that
+Harbor, Forgejo, Woodpecker, Keycloak, Grafana, Loki, Velero, and CloudNativePG when those apps are required, checking that
 the expected Secret objects exist with the required keys. Temporary bypasses:
 
 ```bash
@@ -782,8 +838,8 @@ registry S3 credential secrets:
 PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true make platform-app-health
 ```
 
-For production Forgejo, also enforce the external PostgreSQL and Redis
-credential secrets:
+For production Forgejo, also enforce the SQL password secret and, when
+`FORGEJO_REDIS_MODE=redis`, the Redis URI secret:
 
 ```bash
 PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true make platform-app-health
@@ -898,8 +954,8 @@ If you intentionally run a subset profile, keep the app, namespace, and GUI
 route lists aligned so the gate checks only the services that should exist:
 
 ```bash
-PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg forgejo woodpecker" \
-PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system forgejo woodpecker longhorn-system metallb-system traefik" \
+PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg platform-postgres platform-valkey forgejo woodpecker" \
+PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system platform-databases platform-cache forgejo woodpecker longhorn-system metallb-system traefik" \
 PLATFORM_APP_HEALTH_GUI_APPS="argocd forgejo woodpecker" \
 make platform-app-health
 ```

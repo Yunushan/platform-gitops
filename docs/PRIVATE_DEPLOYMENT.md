@@ -111,8 +111,8 @@ The automated target:
 
 ```text
 Loads private/first-deploy.env
-Renders first-deploy private values for Forgejo, Argo CD, Woodpecker, Harbor,
-monitoring, Loki, Velero, Longhorn, and optional step-ca when enabled
+Renders first-deploy private values for Forgejo, Argo CD, Woodpecker, Keycloak,
+Harbor, monitoring, Loki, Velero, Longhorn, and optional step-ca when enabled
 Validates the repository
 Validates the selected rendered GitOps profile
 Optionally commits current changes when PLATFORM_AUTO_COMMIT=true
@@ -166,15 +166,18 @@ Woodpecker server and agents are healthy.
 Object-storage backed apps and external app databases are rendered with bucket
 names, endpoints, regions, cache sizes, database hosts, and Kubernetes secret
 names only. Runtime credentials stay outside Git. `make platform-app-secrets`
-can create Grafana admin credentials, Grafana's external PostgreSQL password,
-Forgejo's external PostgreSQL password and Redis URI, Woodpecker's PostgreSQL datasource secret, Harbor's external database/Redis/S3
-secrets, plus Loki, Velero, and CloudNativePG
+can create shared platform Valkey auth, Grafana admin credentials, Grafana's
+external PostgreSQL password, Forgejo's external PostgreSQL password and Redis
+URI, Woodpecker's PostgreSQL datasource secret, Keycloak admin/database
+secrets, Harbor's external
+database/Redis/S3 secrets, plus Loki, Velero, and CloudNativePG
 object-storage secrets from ignored env values such
 as `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
 `WOODPECKER_DATABASE_DATASOURCE`, `WOODPECKER_DATABASE_HOST` plus
 `WOODPECKER_DATABASE_PASSWORD`, `HARBOR_DATABASE_PASSWORD`,
 `HARBOR_REDIS_PASSWORD`, `HARBOR_S3_ACCESS_KEY_ID`,
-`HARBOR_S3_SECRET_ACCESS_KEY`, `GRAFANA_DATABASE_PASSWORD`, `LOKI_S3_ACCESS_KEY_ID`,
+`HARBOR_S3_SECRET_ACCESS_KEY`, `KEYCLOAK_ADMIN_PASSWORD`,
+`KEYCLOAK_DATABASE_PASSWORD`, `GRAFANA_DATABASE_PASSWORD`, `LOKI_S3_ACCESS_KEY_ID`,
 `LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`,
 `CNPG_S3_ACCESS_KEY_ID`, `CNPG_S3_SECRET_ACCESS_KEY`, or
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Set
@@ -188,11 +191,16 @@ Set `PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true`,
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true`, and
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=true` before enabling
 Harbor external PostgreSQL, Redis, and S3 registry storage.
-Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` and
-`PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true` before enabling
-`FORGEJO_DATABASE_MODE=external`.
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` before enabling an
+external Forgejo SQL backend. Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true`
+only when `FORGEJO_REDIS_MODE=redis`; the premium default uses shared
+`platform-valkey` and can generate the `forgejo-redis` URI secret
+automatically.
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
 `GRAFANA_DATABASE_MODE=postgres`.
+Set `PLATFORM_APP_SECRET_REQUIRE_KEYCLOAK_DATABASE=true` when you want a
+predefined Keycloak database password instead of generated first-deploy
+credentials.
 
 For production Woodpecker HA, either provide a full datasource:
 
@@ -252,7 +260,7 @@ HARBOR_DATABASE_NAME=registry \
 HARBOR_DATABASE_USER=harbor \
 HARBOR_DATABASE_SECRET_NAME=harbor-database \
 HARBOR_REDIS_MODE=external \
-HARBOR_REDIS_ADDR=<REDIS_HOST>:6379 \
+HARBOR_REDIS_ADDR=platform-valkey-primary.platform-cache.svc.cluster.local:6379 \
 HARBOR_REDIS_SECRET_NAME=harbor-redis \
 HARBOR_STORAGE_MODE=s3 \
 HARBOR_S3_BUCKET=<HARBOR_REGISTRY_BUCKET> \
@@ -262,33 +270,34 @@ OBJECT_STORAGE_REGION=<S3_REGION> \
 make platform-render-private-values
 ```
 
-The default `FORGEJO_DATABASE_MODE=sqlite` is a first-dashboard bootstrap mode:
-it avoids requiring an already-running external PostgreSQL and Redis service.
-For long-term premium production, switch the private deployment to
-`FORGEJO_DATABASE_MODE=external`. Create the runtime credentials as Kubernetes
-Secrets, then render only endpoints and Secret names:
+The default `FORGEJO_DATABASE_MODE=postgres` uses the CloudNativePG service
+`platform-postgres-rw.platform-databases.svc.cluster.local:5432`. Set
+`FORGEJO_DATABASE_MODE=sqlite` for a lab bootstrap, or
+`FORGEJO_DATABASE_MODE=mysql` / `FORGEJO_DATABASE_MODE=mariadb` with
+`FORGEJO_DATABASE_HOST=<HOST>:3306` when those databases are the company
+standard. Create the runtime credentials as Kubernetes Secrets, then render
+only endpoints and Secret names:
 
 ```bash
 FORGEJO_DATABASE_PASSWORD='<PASSWORD>' \
-FORGEJO_REDIS_URL='redis://:<PASSWORD>@<REDIS_HOST>:6379/0' \
 PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true \
-PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true \
 make platform-app-secrets
 
-FORGEJO_DATABASE_MODE=external \
+FORGEJO_DATABASE_MODE=postgres \
 FORGEJO_DATABASE_HOST=<POSTGRES_HOST>:5432 \
 FORGEJO_DATABASE_NAME=forgejo \
 FORGEJO_DATABASE_USER=forgejo \
 FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
 FORGEJO_DATABASE_SSL_MODE=disable \
-FORGEJO_REDIS_SECRET_NAME=forgejo-redis \
 make platform-render-private-values
 ```
 
-If the secret manager stores Redis parts instead of a full URL, provide
-`FORGEJO_REDIS_HOST`, `FORGEJO_REDIS_PASSWORD`, and optional
-`FORGEJO_REDIS_PORT`, `FORGEJO_REDIS_DB`, and `FORGEJO_REDIS_TLS` before
-`make platform-app-secrets`.
+For Redis-backed cache and queue, the premium default is
+`FORGEJO_REDIS_MODE=redis` using shared `platform-valkey`. Provide a full
+`FORGEJO_REDIS_URL`, or provide `FORGEJO_REDIS_HOST`,
+`FORGEJO_REDIS_PASSWORD`, and optional `FORGEJO_REDIS_PORT`,
+`FORGEJO_REDIS_DB`, and `FORGEJO_REDIS_TLS` before
+`make platform-app-secrets` only when overriding the shared cache.
 
 ## Optional Internal PKI
 
@@ -385,6 +394,7 @@ The matching private deployment values should replace:
 argocd.<PLATFORM_DOMAIN>      -> Argo CD hostname
 forgejo.<PLATFORM_DOMAIN>     -> Forgejo hostname
 woodpecker.<PLATFORM_DOMAIN>  -> Woodpecker hostname
+sso.<PLATFORM_DOMAIN>         -> Keycloak SSO hostname
 harbor.<PLATFORM_DOMAIN>      -> Harbor hostname
 grafana.<PLATFORM_DOMAIN>     -> Grafana hostname
 prometheus.<PLATFORM_DOMAIN>  -> Prometheus hostname

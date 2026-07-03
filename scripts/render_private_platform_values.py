@@ -110,10 +110,346 @@ def render_longhorn(path: Path, backup_target: str) -> bool:
     return changed
 
 
+def platform_valkey_values(
+    auth_secret_name: str,
+    auth_secret_key: str,
+    storage_class: str,
+    data_size: str,
+    replica_count: str,
+    metrics_enabled: bool,
+) -> str:
+    metrics_block = "  enabled: false\n"
+    if metrics_enabled:
+        metrics_block = """  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    additionalLabels:
+      release: monitoring
+"""
+
+    return f"""# Shared platform Valkey HA profile rendered by scripts/render_private_platform_values.py.
+# Argo CD keeps its own dedicated Redis/Redis HA; this cache is for platform
+# applications such as Forgejo and Harbor.
+global:
+  defaultStorageClass: {yaml_string(storage_class)}
+
+architecture: replication
+
+auth:
+  enabled: true
+  sentinel: true
+  existingSecret: {yaml_string(auth_secret_name)}
+  existingSecretPasswordKey: {yaml_string(auth_secret_key)}
+
+commonConfiguration: |-
+  appendonly yes
+  save ""
+
+primary:
+  persistence:
+    enabled: true
+    storageClass: {yaml_string(storage_class)}
+    size: {yaml_string(data_size)}
+  podAntiAffinityPreset: soft
+  pdb:
+    create: true
+    minAvailable: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+replica:
+  replicaCount: {replica_count}
+  persistence:
+    enabled: true
+    storageClass: {yaml_string(storage_class)}
+    size: {yaml_string(data_size)}
+  podAntiAffinityPreset: hard
+  pdb:
+    create: true
+    minAvailable: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+sentinel:
+  enabled: true
+  primarySet: platform-primary
+  quorum: 2
+  service:
+    createPrimary: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+rbac:
+  create: true
+
+networkPolicy:
+  enabled: true
+  allowExternal: true
+
+metrics:
+{metrics_block}"""
+
+
+def render_platform_valkey(path: Path) -> bool:
+    replica_count = os.environ.get("PLATFORM_VALKEY_REPLICA_COUNT", "3").strip() or "3"
+    if not replica_count.isdigit() or int(replica_count) < 3:
+        raise SystemExit("PLATFORM_VALKEY_REPLICA_COUNT must be at least 3 for HA")
+    rendered = platform_valkey_values(
+        auth_secret_name=os.environ.get("PLATFORM_VALKEY_AUTH_SECRET_NAME", "platform-valkey-auth").strip()
+        or "platform-valkey-auth",
+        auth_secret_key=os.environ.get("PLATFORM_VALKEY_PASSWORD_KEY", "valkey-password").strip()
+        or "valkey-password",
+        storage_class=os.environ.get("PLATFORM_VALKEY_STORAGE_CLASS", "longhorn-critical").strip()
+        or "longhorn-critical",
+        data_size=os.environ.get("PLATFORM_VALKEY_DATA_SIZE", "8Gi").strip() or "8Gi",
+        replica_count=replica_count,
+        metrics_enabled=env_bool("PLATFORM_VALKEY_METRICS", True),
+    )
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    changed = rendered != old
+    if changed:
+        path.write_text(rendered, encoding="utf-8")
+    return changed
+
+
+def minio_values(
+    root_secret_name: str,
+    root_user_secret_key: str,
+    root_password_secret_key: str,
+    storage_class: str,
+    data_size: str,
+    replica_count: str,
+    zones: str,
+    drives_per_node: str,
+    metrics_enabled: bool,
+) -> str:
+    metrics_block = "  enabled: false\n"
+    if metrics_enabled:
+        metrics_block = """  enabled: true
+  prometheusAuthType: public
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    labels:
+      release: monitoring
+"""
+
+    return f"""# In-cluster MinIO profile rendered by scripts/render_private_platform_values.py.
+# Use this for controlled internal S3-compatible services. For production
+# disaster recovery, keep an additional off-cluster/object-store target.
+global:
+  defaultStorageClass: {yaml_string(storage_class)}
+
+mode: distributed
+
+auth:
+  existingSecret: {yaml_string(root_secret_name)}
+  rootUserSecretKey: {yaml_string(root_user_secret_key)}
+  rootPasswordSecretKey: {yaml_string(root_password_secret_key)}
+  forcePassword: true
+
+statefulset:
+  replicaCount: {replica_count}
+  zones: {zones}
+  drivesPerNode: {drives_per_node}
+
+persistence:
+  enabled: true
+  storageClass: {yaml_string(storage_class)}
+  size: {yaml_string(data_size)}
+
+networkPolicy:
+  enabled: true
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi
+
+metrics:
+{metrics_block}
+provisioning:
+  enabled: false
+"""
+
+
+def render_minio(path: Path) -> bool:
+    replica_count = os.environ.get("MINIO_REPLICA_COUNT", "4").strip() or "4"
+    zones = os.environ.get("MINIO_ZONES", "1").strip() or "1"
+    drives_per_node = os.environ.get("MINIO_DRIVES_PER_NODE", "1").strip() or "1"
+    if not replica_count.isdigit() or int(replica_count) < 4:
+        raise SystemExit("MINIO_REPLICA_COUNT must be at least 4 for distributed MinIO")
+    if not zones.isdigit() or int(zones) < 1:
+        raise SystemExit("MINIO_ZONES must be at least 1")
+    if not drives_per_node.isdigit() or int(drives_per_node) < 1:
+        raise SystemExit("MINIO_DRIVES_PER_NODE must be at least 1")
+    rendered = minio_values(
+        root_secret_name=os.environ.get("MINIO_ROOT_SECRET_NAME", "minio-root").strip() or "minio-root",
+        root_user_secret_key=os.environ.get("MINIO_ROOT_USER_SECRET_KEY", "root-user").strip() or "root-user",
+        root_password_secret_key=os.environ.get("MINIO_ROOT_PASSWORD_SECRET_KEY", "root-password").strip()
+        or "root-password",
+        storage_class=os.environ.get("MINIO_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical",
+        data_size=os.environ.get("MINIO_DATA_SIZE", "50Gi").strip() or "50Gi",
+        replica_count=replica_count,
+        zones=zones,
+        drives_per_node=drives_per_node,
+        metrics_enabled=env_bool("MINIO_METRICS", True),
+    )
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    changed = rendered != old
+    if changed:
+        path.write_text(rendered, encoding="utf-8")
+    return changed
+
+
+def keycloak_values(
+    host: str,
+    admin_secret_name: str,
+    admin_password_key: str,
+    database_host: str,
+    database_port: str,
+    database_name: str,
+    database_user: str,
+    database_secret_name: str,
+    storage_class: str,
+    replica_count: str,
+) -> str:
+    return f"""# Keycloak SSO profile rendered by scripts/render_private_platform_values.py.
+# Uses the shared CloudNativePG platform-postgres cluster through
+# secret/{database_secret_name}. Keep credentials out of Git.
+global:
+  defaultStorageClass: {yaml_string(storage_class)}
+
+image:
+  registry: docker.io
+  repository: bitnami/keycloak
+  tag: 26.3.3-debian-12-r0
+
+auth:
+  adminUser: admin
+  existingSecret: {yaml_string(admin_secret_name)}
+  passwordSecretKey: {yaml_string(admin_password_key)}
+
+production: true
+proxyHeaders: xforwarded
+hostnameStrict: true
+httpEnabled: true
+replicaCount: {replica_count}
+podAntiAffinityPreset: hard
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 2Gi
+
+pdb:
+  create: true
+  minAvailable: 1
+
+postgresql:
+  enabled: false
+
+externalDatabase:
+  host: {yaml_string(database_host)}
+  port: {database_port}
+  user: {yaml_string(database_user)}
+  database: {yaml_string(database_name)}
+  existingSecret: {yaml_string(database_secret_name)}
+  existingSecretUserKey: username
+  existingSecretPasswordKey: password
+  extraParams: sslmode=disable
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  hostname: {yaml_string(host)}
+  path: /
+  pathType: Prefix
+  servicePort: http
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  tls: true
+  extraTls:
+    - hosts:
+        - {yaml_string(host)}
+      secretName: keycloak-tls
+
+networkPolicy:
+  enabled: true
+  allowExternal: true
+  allowExternalEgress: true
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    labels:
+      release: monitoring
+"""
+
+
+def render_keycloak(path: Path, inventory: dict[str, str]) -> bool:
+    host = require(
+        "PLATFORM_KEYCLOAK_HOST or platform_keycloak_host",
+        platform_host("PLATFORM_KEYCLOAK_HOST", inventory, ("platform_keycloak_host",), "sso"),
+    )
+    replica_count = os.environ.get("KEYCLOAK_REPLICAS", "2").strip() or "2"
+    if not replica_count.isdigit() or int(replica_count) < 2:
+        raise SystemExit("KEYCLOAK_REPLICAS must be at least 2 for the premium profile")
+    database_port = os.environ.get("KEYCLOAK_DATABASE_PORT", "5432").strip() or "5432"
+    if not database_port.isdigit():
+        raise SystemExit("KEYCLOAK_DATABASE_PORT must be numeric")
+
+    rendered = keycloak_values(
+        host=host,
+        admin_secret_name=os.environ.get("KEYCLOAK_ADMIN_SECRET_NAME", "keycloak-admin").strip()
+        or "keycloak-admin",
+        admin_password_key=os.environ.get("KEYCLOAK_ADMIN_PASSWORD_KEY", "admin-password").strip()
+        or "admin-password",
+        database_host=os.environ.get(
+            "KEYCLOAK_DATABASE_HOST",
+            "platform-postgres-rw.platform-databases.svc.cluster.local",
+        ).strip()
+        or "platform-postgres-rw.platform-databases.svc.cluster.local",
+        database_port=database_port,
+        database_name=os.environ.get("KEYCLOAK_DATABASE_NAME", "keycloak").strip() or "keycloak",
+        database_user=os.environ.get("KEYCLOAK_DATABASE_USER", "keycloak").strip() or "keycloak",
+        database_secret_name=os.environ.get("KEYCLOAK_DATABASE_SECRET_NAME", "keycloak-database").strip()
+        or "keycloak-database",
+        storage_class=os.environ.get("KEYCLOAK_STORAGE_CLASS", "longhorn-critical").strip()
+        or "longhorn-critical",
+        replica_count=replica_count,
+    )
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    changed = rendered != old
+    if changed:
+        path.write_text(rendered, encoding="utf-8")
+    return changed
+
+
 def forgejo_bootstrap_values(host: str, data_size: str, storage_class: str) -> str:
     return f"""# Forgejo bootstrap profile rendered by scripts/render_private_platform_values.py.
-# This mode uses SQLite and in-process cache/queue so the first dashboard can
-# come online before external PostgreSQL and Redis are configured.
+# This opt-in mode uses SQLite and in-process cache/queue for dependency-light
+# lab bootstrap. The default SQL selector renders PostgreSQL.
 replicaCount: 1
 
 strategy:
@@ -180,14 +516,40 @@ def forgejo_external_values(
     host: str,
     data_size: str,
     storage_class: str,
+    database_type: str,
     database_host: str,
     database_name: str,
     database_user: str,
     database_secret_name: str,
     database_ssl_mode: str,
-    redis_secret_name: str,
+    redis_secret_name: str | None,
 ) -> str:
+    redis_config_env = ""
+    redis_config = """    cache:
+      ADAPTER: memory
+    queue:
+      TYPE: level"""
+    if redis_secret_name:
+        redis_config_env = f"""
+    - name: GITEA__cache__HOST
+      valueFrom:
+        secretKeyRef:
+          name: {yaml_string(redis_secret_name)}
+          key: uri
+    - name: GITEA__queue__CONN_STR
+      valueFrom:
+        secretKeyRef:
+          name: {yaml_string(redis_secret_name)}
+          key: uri"""
+        redis_config = """    cache:
+      ADAPTER: redis
+    queue:
+      TYPE: redis"""
+
     return f"""# Forgejo external database profile rendered by scripts/render_private_platform_values.py.
+# Database type is {database_type}. The premium default uses shared platform
+# Valkey for cache/queue; set FORGEJO_REDIS_MODE=memory for dependency-light
+# local cache/queue.
 replicaCount: 1
 
 strategy:
@@ -227,16 +589,7 @@ gitea:
         secretKeyRef:
           name: {yaml_string(database_secret_name)}
           key: password
-    - name: GITEA__cache__HOST
-      valueFrom:
-        secretKeyRef:
-          name: {yaml_string(redis_secret_name)}
-          key: uri
-    - name: GITEA__queue__CONN_STR
-      valueFrom:
-        secretKeyRef:
-          name: {yaml_string(redis_secret_name)}
-          key: uri
+{redis_config_env}
   config:
     server:
       DOMAIN: {yaml_string(host)}
@@ -249,17 +602,14 @@ gitea:
     repository:
       DEFAULT_BRANCH: main
     database:
-      DB_TYPE: postgres
+      DB_TYPE: {database_type}
       HOST: {yaml_string(database_host)}
       NAME: {yaml_string(database_name)}
       USER: {yaml_string(database_user)}
       SSL_MODE: {yaml_string(database_ssl_mode)}
     session:
       PROVIDER: db
-    cache:
-      ADAPTER: redis
-    queue:
-      TYPE: redis
+{redis_config}
 
 resources:
   requests:
@@ -292,23 +642,39 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
 
     data_size = os.environ.get("FORGEJO_DATA_SIZE", "20Gi").strip() or "20Gi"
     storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical").strip()
-    database_mode = os.environ.get("FORGEJO_DATABASE_MODE", "sqlite").strip().lower()
+    database_mode = (
+        os.environ.get("FORGEJO_DATABASE_MODE")
+        or os.environ.get("PLATFORM_SQL_DATABASE_MODE")
+        or "postgres"
+    ).strip().lower()
 
-    if database_mode == "sqlite":
+    if database_mode in {"sqlite", "sqlite3"}:
         rendered = forgejo_bootstrap_values(host, data_size, storage_class)
-    elif database_mode in ("external", "postgres", "postgresql"):
-        database_host = require("FORGEJO_DATABASE_HOST", os.environ.get("FORGEJO_DATABASE_HOST", "").strip())
+    elif database_mode in ("external", "postgres", "postgresql", "mysql", "mariadb"):
+        database_type = "mysql" if database_mode in {"mysql", "mariadb"} else "postgres"
+        database_host = os.environ.get("FORGEJO_DATABASE_HOST", "").strip()
+        if not database_host and database_type == "postgres":
+            cnpg_namespace = os.environ.get("CNPG_CLUSTER_NAMESPACE", "platform-databases").strip()
+            cnpg_name = os.environ.get("CNPG_CLUSTER_NAME", "platform-postgres").strip()
+            database_host = f"{cnpg_name}-rw.{cnpg_namespace}.svc.cluster.local:5432"
+        database_host = require("FORGEJO_DATABASE_HOST", database_host)
         database_name = os.environ.get("FORGEJO_DATABASE_NAME", "forgejo").strip() or "forgejo"
         database_user = os.environ.get("FORGEJO_DATABASE_USER", "forgejo").strip() or "forgejo"
         database_secret_name = os.environ.get("FORGEJO_DATABASE_SECRET_NAME", "forgejo-database").strip()
         database_secret_name = database_secret_name or "forgejo-database"
         database_ssl_mode = os.environ.get("FORGEJO_DATABASE_SSL_MODE", "disable").strip() or "disable"
-        redis_secret_name = os.environ.get("FORGEJO_REDIS_SECRET_NAME", "forgejo-redis").strip()
-        redis_secret_name = redis_secret_name or "forgejo-redis"
+        redis_mode = os.environ.get("FORGEJO_REDIS_MODE", "redis").strip().lower() or "redis"
+        if redis_mode not in {"memory", "local", "redis", "external", "valkey"}:
+            raise SystemExit("FORGEJO_REDIS_MODE must be memory, local, redis, external, or valkey")
+        redis_secret_name = None
+        if redis_mode in {"redis", "external", "valkey"}:
+            redis_secret_name = os.environ.get("FORGEJO_REDIS_SECRET_NAME", "forgejo-redis").strip()
+            redis_secret_name = redis_secret_name or "forgejo-redis"
         rendered = forgejo_external_values(
             host,
             data_size,
             storage_class,
+            database_type,
             database_host,
             database_name,
             database_user,
@@ -317,7 +683,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
             redis_secret_name,
         )
     else:
-        raise SystemExit("FORGEJO_DATABASE_MODE must be sqlite, external, postgres, or postgresql")
+        raise SystemExit("FORGEJO_DATABASE_MODE must be sqlite, postgres, postgresql, external, mysql, or mariadb")
 
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -514,6 +880,8 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
 
 def harbor_bootstrap_values(
     host: str,
+    tls_cert_source: str,
+    tls_secret_name: str,
     registry_size: str,
     joblog_size: str,
     database_size: str,
@@ -527,6 +895,9 @@ def harbor_bootstrap_values(
     redis_block: str,
     dependency_note: str,
 ) -> str:
+    tls_secret_block = ""
+    if tls_cert_source == "secret":
+        tls_secret_block = "\n    " + "secret" + f":\n      secretName: {yaml_string(tls_secret_name)}"
     return f"""# Harbor bootstrap profile rendered by scripts/render_private_platform_values.py.
 # {dependency_note}
 # Store HARBOR_ADMIN_PASSWORD in secret/{admin_secret_name} and secretKey in
@@ -535,7 +906,7 @@ expose:
   type: ingress
   tls:
     enabled: true
-    certSource: auto
+    certSource: {yaml_string(tls_cert_source)}{tls_secret_block}
   ingress:
     className: traefik
     hosts:
@@ -796,16 +1167,18 @@ def harbor_database_settings() -> tuple[str, str, str]:
 
 
 def harbor_redis_settings() -> tuple[str, str, str]:
-    redis_mode = os.environ.get("HARBOR_REDIS_MODE", "internal").strip().lower() or "internal"
+    redis_mode = os.environ.get("HARBOR_REDIS_MODE", "external").strip().lower() or "external"
     if redis_mode in {"internal", "local"}:
         return (harbor_internal_redis_block(), "internal Redis", redis_mode)
-    if redis_mode not in {"external", "redis"}:
-        raise SystemExit("HARBOR_REDIS_MODE must be internal or external")
+    if redis_mode not in {"external", "redis", "valkey"}:
+        raise SystemExit("HARBOR_REDIS_MODE must be internal, external, redis, or valkey")
 
     addr = os.environ.get("HARBOR_REDIS_ADDR", "").strip()
     if not addr:
-        host = require("HARBOR_REDIS_HOST or HARBOR_REDIS_ADDR", os.environ.get("HARBOR_REDIS_HOST", "").strip())
-        port = os.environ.get("HARBOR_REDIS_PORT", "6379").strip() or "6379"
+        host = os.environ.get("HARBOR_REDIS_HOST", "").strip()
+        host = host or os.environ.get("PLATFORM_VALKEY_PRIMARY_HOST", "platform-valkey-primary.platform-cache.svc.cluster.local").strip()
+        host = require("HARBOR_REDIS_HOST or HARBOR_REDIS_ADDR", host)
+        port = os.environ.get("HARBOR_REDIS_PORT", os.environ.get("PLATFORM_VALKEY_PORT", "6379")).strip() or "6379"
         addr = f"{host}:{port}"
     return (
         harbor_external_redis_block(
@@ -829,12 +1202,18 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
             "harbor",
         ),
     )
+    tls_cert_source = os.environ.get("HARBOR_TLS_CERT_SOURCE", "auto").strip().lower() or "auto"
+    if tls_cert_source not in {"auto", "secret"}:
+        raise SystemExit("HARBOR_TLS_CERT_SOURCE must be auto or secret")
+    tls_secret_name = os.environ.get("HARBOR_TLS_SECRET_NAME", "harbor-tls").strip() or "harbor-tls"
     storage_class = os.environ.get("HARBOR_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical"
     registry_storage_block, registry_note, _registry_mode = harbor_registry_storage_settings()
     database_block, database_note, _database_mode = harbor_database_settings()
     redis_block, redis_note, _redis_mode = harbor_redis_settings()
     rendered = harbor_bootstrap_values(
         host,
+        tls_cert_source,
+        tls_secret_name,
         os.environ.get("HARBOR_REGISTRY_SIZE", "50Gi").strip() or "50Gi",
         os.environ.get("HARBOR_JOBLOG_SIZE", "5Gi").strip() or "5Gi",
         os.environ.get("HARBOR_DATABASE_SIZE", "10Gi").strip() or "10Gi",
@@ -1315,25 +1694,20 @@ def cnpg_postgres_cluster_manifest(
     instances: str,
     data_size: str,
     storage_class: str,
+    app_database: str,
+    app_owner: str,
+    app_secret_name: str,
     backup_destination: str,
     endpoint: str,
     secret_name: str,
     retention_policy: str,
     schedule: str,
+    backup_enabled: bool,
 ) -> str:
-    return f"""apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata:
-  name: {yaml_string(name)}
-  namespace: {yaml_string(namespace)}
-spec:
-  instances: {instances}
-  primaryUpdateStrategy: unsupervised
-  storage:
-    size: {yaml_string(data_size)}
-    storageClass: {yaml_string(storage_class)}
-  monitoring:
-    enablePodMonitor: true
+    backup_block = ""
+    scheduled_backup_block = ""
+    if backup_enabled:
+        backup_block = f"""
   backup:
     retentionPolicy: {yaml_string(retention_policy)}
     barmanObjectStore:
@@ -1351,7 +1725,8 @@ spec:
         maxParallel: 4
       data:
         compression: gzip
-        jobs: 2
+        jobs: 2"""
+        scheduled_backup_block = f"""
 ---
 apiVersion: postgresql.cnpg.io/v1
 kind: ScheduledBackup
@@ -1363,7 +1738,36 @@ spec:
   backupOwnerReference: self
   cluster:
     name: {yaml_string(name)}
-  method: barmanObjectStore
+  method: barmanObjectStore"""
+
+    return f"""apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {yaml_string(name)}
+  namespace: {yaml_string(namespace)}
+spec:
+  instances: {instances}
+  primaryUpdateStrategy: unsupervised
+  managed:
+    roles:
+      - name: keycloak
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: {yaml_string(os.environ.get("KEYCLOAK_DATABASE_SECRET_NAME", "keycloak-database").strip() or "keycloak-database")}
+  bootstrap:
+    initdb:
+      database: {yaml_string(app_database)}
+      owner: {yaml_string(app_owner)}
+      secret:
+        name: {yaml_string(app_secret_name)}
+  storage:
+    size: {yaml_string(data_size)}
+    storageClass: {yaml_string(storage_class)}
+  monitoring:
+    enablePodMonitor: true
+{backup_block}{scheduled_backup_block}
 """
 
 
@@ -1372,6 +1776,10 @@ def render_cnpg_postgres_cluster(path: Path) -> bool:
     bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
     namespace = os.environ.get("CNPG_CLUSTER_NAMESPACE", "platform-databases").strip() or "platform-databases"
     name = os.environ.get("CNPG_CLUSTER_NAME", "platform-postgres").strip() or "platform-postgres"
+    backup_mode = os.environ.get("CNPG_BACKUP_ENABLED", "false").strip().lower()
+    if backup_mode not in {"0", "1", "false", "true", "no", "yes", "disabled", "enabled"}:
+        raise SystemExit("CNPG_BACKUP_ENABLED must be true or false")
+    backup_enabled = backup_mode in {"1", "true", "yes", "enabled"}
     instances = os.environ.get("CNPG_INSTANCES", "3").strip() or "3"
     if int(instances) < 1:
         raise SystemExit("CNPG_INSTANCES must be at least 1")
@@ -1385,12 +1793,17 @@ def render_cnpg_postgres_cluster(path: Path) -> bool:
         instances=instances,
         data_size=os.environ.get("POSTGRES_DATA_SIZE", "50Gi").strip() or "50Gi",
         storage_class=os.environ.get("CNPG_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical",
+        app_database=os.environ.get("FORGEJO_DATABASE_NAME", "forgejo").strip() or "forgejo",
+        app_owner=os.environ.get("FORGEJO_DATABASE_USER", "forgejo").strip() or "forgejo",
+        app_secret_name=os.environ.get("FORGEJO_DATABASE_SECRET_NAME", "forgejo-database").strip()
+        or "forgejo-database",
         backup_destination=backup_destination,
         endpoint=endpoint,
         secret_name=os.environ.get("CNPG_OBJECT_STORE_SECRET_NAME", "cnpg-object-store").strip()
         or "cnpg-object-store",
         retention_policy=os.environ.get("CNPG_RETENTION_POLICY", "30d").strip() or "30d",
         schedule=os.environ.get("CNPG_BACKUP_SCHEDULE", "0 2 * * *").strip() or "0 2 * * *",
+        backup_enabled=backup_enabled,
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -1556,7 +1969,22 @@ def main() -> int:
     parser.add_argument(
         "--cnpg-postgres-cluster",
         type=Path,
-        default=Path("gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/postgres-cluster.premium.example.yaml"),
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/platform-postgres/postgres-cluster.yaml"),
+    )
+    parser.add_argument(
+        "--platform-valkey-values",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/values.yaml"),
+    )
+    parser.add_argument(
+        "--minio-values",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml"),
+    )
+    parser.add_argument(
+        "--keycloak-values",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml"),
     )
     parser.add_argument(
         "--step-ca-values",
@@ -1571,6 +1999,9 @@ def main() -> int:
     parser.add_argument("--skip-loki", action="store_true")
     parser.add_argument("--skip-velero", action="store_true")
     parser.add_argument("--skip-cnpg-postgres-cluster", action="store_true")
+    parser.add_argument("--skip-platform-valkey", action="store_true")
+    parser.add_argument("--skip-minio", action="store_true")
+    parser.add_argument("--skip-keycloak", action="store_true")
     parser.add_argument("--skip-step-ca", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -1596,7 +2027,7 @@ def main() -> int:
         print(f"FORGEJO_HOST={host or '<missing>'}")
         print(f"FORGEJO_DATA_SIZE={os.environ.get('FORGEJO_DATA_SIZE', '20Gi')}")
         print(f"FORGEJO_STORAGE_CLASS={os.environ.get('FORGEJO_STORAGE_CLASS', 'longhorn-critical')}")
-        print(f"FORGEJO_DATABASE_MODE={os.environ.get('FORGEJO_DATABASE_MODE', 'sqlite')}")
+        print(f"FORGEJO_DATABASE_MODE={os.environ.get('FORGEJO_DATABASE_MODE', os.environ.get('PLATFORM_SQL_DATABASE_MODE', 'postgres'))}")
         print(
             "ARGOCD_HOST="
             + (
@@ -1616,6 +2047,22 @@ def main() -> int:
                 or "<missing>"
             )
         )
+        print(
+            "KEYCLOAK_HOST="
+            + (
+                platform_host("PLATFORM_KEYCLOAK_HOST", inventory, ("platform_keycloak_host",), "sso")
+                or "<missing>"
+            )
+        )
+        print(f"KEYCLOAK_ADMIN_SECRET_NAME={os.environ.get('KEYCLOAK_ADMIN_SECRET_NAME', 'keycloak-admin')}")
+        print(
+            "KEYCLOAK_DATABASE_HOST="
+            + os.environ.get(
+                "KEYCLOAK_DATABASE_HOST",
+                "platform-postgres-rw.platform-databases.svc.cluster.local",
+            )
+        )
+        print(f"KEYCLOAK_DATABASE_SECRET_NAME={os.environ.get('KEYCLOAK_DATABASE_SECRET_NAME', 'keycloak-database')}")
         print(
             "HARBOR_HOST="
             + (
@@ -1659,7 +2106,8 @@ def main() -> int:
         print(f"BACKUP_PROVIDER={os.environ.get('BACKUP_PROVIDER', 'aws')}")
         print(f"BACKUP_BUCKET={os.environ.get('BACKUP_BUCKET', os.environ.get('OBJECT_STORAGE_BUCKET_PREFIX', 'platform') + '-velero-backups')}")
         print(f"VELERO_CREDENTIALS_SECRET_NAME={os.environ.get('VELERO_CREDENTIALS_SECRET_NAME', 'velero-credentials')}")
-        print(f"CNPG_RENDER_POSTGRES_CLUSTER={os.environ.get('CNPG_RENDER_POSTGRES_CLUSTER', 'false')}")
+        print(f"CNPG_RENDER_POSTGRES_CLUSTER={os.environ.get('CNPG_RENDER_POSTGRES_CLUSTER', 'true')}")
+        print(f"CNPG_BACKUP_ENABLED={os.environ.get('CNPG_BACKUP_ENABLED', 'false')}")
         print(f"CNPG_OBJECT_STORE_SECRET_NAME={os.environ.get('CNPG_OBJECT_STORE_SECRET_NAME', 'cnpg-object-store')}")
         print(
             "CNPG_BACKUP_DESTINATION="
@@ -1671,6 +2119,14 @@ def main() -> int:
                 + os.environ.get("CNPG_CLUSTER_NAME", "platform-postgres"),
             )
         )
+        print(f"PLATFORM_VALKEY_AUTH_SECRET_NAME={os.environ.get('PLATFORM_VALKEY_AUTH_SECRET_NAME', 'platform-valkey-auth')}")
+        print(f"PLATFORM_VALKEY_PRIMARY_HOST={os.environ.get('PLATFORM_VALKEY_PRIMARY_HOST', 'platform-valkey-primary.platform-cache.svc.cluster.local')}")
+        print(f"PLATFORM_VALKEY_REPLICA_COUNT={os.environ.get('PLATFORM_VALKEY_REPLICA_COUNT', '3')}")
+        print(f"PLATFORM_VALKEY_DATA_SIZE={os.environ.get('PLATFORM_VALKEY_DATA_SIZE', '8Gi')}")
+        print(f"MINIO_ROOT_SECRET_NAME={os.environ.get('MINIO_ROOT_SECRET_NAME', 'minio-root')}")
+        print(f"MINIO_DATA_SIZE={os.environ.get('MINIO_DATA_SIZE', '50Gi')}")
+        print(f"MINIO_STORAGE_CLASS={os.environ.get('MINIO_STORAGE_CLASS', 'longhorn-critical')}")
+        print(f"MINIO_REPLICA_COUNT={os.environ.get('MINIO_REPLICA_COUNT', '4')}")
         print(f"STEP_CA_MODE={os.environ.get('STEP_CA_MODE', 'disabled')}")
         print(
             "STEP_CA_HOST="
@@ -1717,7 +2173,7 @@ def main() -> int:
     if not args.skip_velero and args.velero_values.exists() and render_velero(args.velero_values):
         changed.append(str(args.velero_values))
 
-    cnpg_render_mode = os.environ.get("CNPG_RENDER_POSTGRES_CLUSTER", "").strip().lower()
+    cnpg_render_mode = os.environ.get("CNPG_RENDER_POSTGRES_CLUSTER", "true").strip().lower()
     if (
         not args.skip_cnpg_postgres_cluster
         and args.cnpg_postgres_cluster.exists()
@@ -1725,6 +2181,19 @@ def main() -> int:
         and render_cnpg_postgres_cluster(args.cnpg_postgres_cluster)
     ):
         changed.append(str(args.cnpg_postgres_cluster))
+
+    if (
+        not args.skip_platform_valkey
+        and args.platform_valkey_values.exists()
+        and render_platform_valkey(args.platform_valkey_values)
+    ):
+        changed.append(str(args.platform_valkey_values))
+
+    if not args.skip_minio and args.minio_values.exists() and render_minio(args.minio_values):
+        changed.append(str(args.minio_values))
+
+    if not args.skip_keycloak and args.keycloak_values.exists() and render_keycloak(args.keycloak_values, inventory):
+        changed.append(str(args.keycloak_values))
 
     if not args.skip_step_ca and render_step_ca(args.step_ca_values, inventory):
         changed.append(str(args.step_ca_values))

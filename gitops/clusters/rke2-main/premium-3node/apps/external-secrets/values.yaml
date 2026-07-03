@@ -1,0 +1,59 @@
+# External Secrets Operator provides the GitOps-safe bridge to OpenBao,
+# cloud secret managers, or another approved private secret backend.
+installCRDs: true
+replicaCount: 2
+leaderElect: true
+concurrent: 2
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+serviceMonitor:
+  enabled: true
+  renderMode: skipIfMissing
+  namespace: monitoring
+  additionalLabels:
+    release: monitoring
+
+metrics:
+  service:
+    enabled: true
+
+webhook:
+  replicaCount: 2
+  failurePolicy: Fail
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  metrics:
+    service:
+      enabled: true
+
+certController:
+  replicaCount: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  metrics:
+    service:
+      enabled: true

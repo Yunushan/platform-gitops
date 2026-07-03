@@ -90,13 +90,16 @@ server nodes.
 | GitOps | Argo CD with private repository source and validated Application manifests |
 | Source control | Forgejo by default, with Gitea or GitLab CE as supported alternatives |
 | CI | Woodpecker by default, GitLab Runner as an alternative when GitLab CE is selected |
+| Identity | Keycloak for FOSS/OIDC SSO and centralized platform identity |
 | Registry | Harbor with externalized storage, database, Redis, TLS, retention, and scanning reviewed privately |
 | Databases | CloudNativePG for in-cluster PostgreSQL patterns when selected by the profile |
 | Storage | Longhorn by default for premium profile, Rook Ceph as an alternative profile |
 | Backup | Velero with off-cluster object storage and restore drill evidence |
 | Observability | Prometheus, Grafana, and Loki with retention, alerting, and SLO review |
 | PKI and trust | cert-manager, trust-manager, and optional step-ca when enabled |
-| Policy | Public Kyverno examples for baseline, no-plaintext-secret, and signed-image policy adaptation |
+| Secrets | SOPS + age starter workflow, External Secrets Operator, and OpenBao-compatible private secret backend |
+| Policy | Premium Kyverno audit baseline plus public examples for no-plaintext-secret and signed-image policy adaptation |
+| Runtime security | Tetragon on Linux RKE2 nodes for eBPF runtime observability when selected by the premium profile |
 
 ## Git and CI Compatibility
 
@@ -122,7 +125,7 @@ Included validation configs:
 - Chart versions, image tags, and selected CI actions should remain pinned and
   changed intentionally through a pull request.
 - Production deployments should use upstream-supported RKE2, operating system,
-  Longhorn, Argo CD, Harbor, Forgejo, Woodpecker, Velero, cert-manager, and
+  Longhorn, Argo CD, Keycloak, Harbor, Forgejo, Woodpecker, Velero, cert-manager, and
   observability versions.
 - Private deployments should review component lifecycle at least quarterly and
   before every production release.

@@ -97,6 +97,7 @@ platform_argocd_host=argocd.example.test
 platform_git_host=git.example.test
 platform_ci_host=ci.example.test
 platform_registry_host=registry.example.test
+platform_keycloak_host=sso.example.test
 platform_grafana_host=grafana.example.test
 platform_prometheus_host=prometheus.example.test
 platform_loki_host=loki.example.test
@@ -115,6 +116,9 @@ platform_step_ca_host=ca.example.test
             renderer.render_monitoring(premium / "monitoring/values.yaml", inventory)
             renderer.render_loki(premium / "loki/values.yaml", inventory)
             renderer.render_velero(premium / "velero/values.yaml")
+            renderer.render_platform_valkey(premium / "platform-valkey/values.yaml")
+            renderer.render_minio(premium / "minio/values.yaml")
+            renderer.render_keycloak(premium / "keycloak/values.yaml", inventory)
             renderer.render_step_ca(premium / "step-ca/values.yaml", inventory)
 
         stdout = io.StringIO()
@@ -142,6 +146,7 @@ platform_argocd_host=argocd.example.test
 platform_git_host=git.example.test
 platform_ci_host=ci.example.test
 platform_registry_host=registry.example.test
+platform_keycloak_host=sso.example.test
 platform_grafana_host=grafana.example.test
 platform_prometheus_host=prometheus.example.test
 platform_loki_host=loki.example.test
@@ -166,13 +171,15 @@ platform_step_ca_host=ca.example.test
             "loki": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/loki/values.yaml"),
             "velero": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/velero/values.yaml"),
             "cnpg": write(
-                repo / "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/postgres-cluster.yaml"
+                repo / "gitops/clusters/rke2-main/premium-3node/apps/platform-postgres/postgres-cluster.yaml"
             ),
+            "valkey": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/values.yaml"),
+            "minio": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml"),
+            "keycloak": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml"),
             "step_ca": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"),
         }
 
         env = {
-            "FORGEJO_DATABASE_MODE": "sqlite",
             "FORGEJO_DATA_SIZE": "21Gi",
             "FORGEJO_STORAGE_CLASS": "longhorn-critical",
             "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn@eu-test-1/",
@@ -218,8 +225,29 @@ platform_step_ca_host=ca.example.test
             "CNPG_OBJECT_STORE_SECRET_NAME": "cnpg-object-test",
             "CNPG_BACKUP_DESTINATION": "s3://platform-test-cnpg/platform-postgres",
             "CNPG_BACKUP_SCHEDULE": "20 2 * * *",
+            "CNPG_BACKUP_ENABLED": "true",
             "CNPG_STORAGE_CLASS": "longhorn-critical",
             "POSTGRES_DATA_SIZE": "80Gi",
+            "PLATFORM_VALKEY_AUTH_SECRET_NAME": "platform-valkey-test",
+            "PLATFORM_VALKEY_PASSWORD_KEY": "valkey-password-test",
+            "PLATFORM_VALKEY_REPLICA_COUNT": "3",
+            "PLATFORM_VALKEY_DATA_SIZE": "9Gi",
+            "PLATFORM_VALKEY_STORAGE_CLASS": "longhorn-critical",
+            "MINIO_ROOT_SECRET_NAME": "minio-root-test",
+            "MINIO_ROOT_USER_SECRET_KEY": "root-user-test",
+            "MINIO_ROOT_PASSWORD_SECRET_KEY": "root-password-test",
+            "MINIO_REPLICA_COUNT": "4",
+            "MINIO_ZONES": "1",
+            "MINIO_DRIVES_PER_NODE": "1",
+            "MINIO_DATA_SIZE": "64Gi",
+            "MINIO_STORAGE_CLASS": "longhorn-critical",
+            "KEYCLOAK_ADMIN_SECRET_NAME": "keycloak-admin-test",
+            "KEYCLOAK_DATABASE_SECRET_NAME": "keycloak-db-test",
+            "KEYCLOAK_DATABASE_HOST": "platform-postgres-rw.platform-databases.svc.cluster.local",
+            "KEYCLOAK_DATABASE_NAME": "keycloak",
+            "KEYCLOAK_DATABASE_USER": "keycloak",
+            "KEYCLOAK_REPLICAS": "2",
+            "KEYCLOAK_STORAGE_CLASS": "longhorn-critical",
             "STEP_CA_MODE": "bootstrap",
             "STEP_CA_NAME": "Platform Test CA",
             "STEP_CA_DNS_NAMES": "ca.example.test,step-ca.step-ca.svc.cluster.local",
@@ -238,12 +266,33 @@ platform_step_ca_host=ca.example.test
             renderer.render_loki(paths["loki"], inventory)
             renderer.render_velero(paths["velero"])
             renderer.render_cnpg_postgres_cluster(paths["cnpg"])
+            renderer.render_platform_valkey(paths["valkey"])
+            renderer.render_minio(paths["minio"])
+            renderer.render_keycloak(paths["keycloak"], inventory)
             renderer.render_step_ca(paths["step_ca"], inventory)
 
         rendered_paths = list(paths.values())
         assert_no_placeholders(rendered_paths)
         assert_contains(paths["argocd"], "argocd.example.test")
-        assert_contains(paths["forgejo"], "git.example.test", "21Gi", "sqlite3")
+        assert_contains(
+            paths["forgejo"],
+            "git.example.test",
+            "21Gi",
+            "DB_TYPE: postgres",
+            'HOST: "platform-postgres-rw.platform-databases.svc.cluster.local:5432"',
+            "GITEA__cache__HOST",
+            'name: "forgejo-redis"',
+            "ADAPTER: redis",
+            "TYPE: redis",
+        )
+
+        sqlite_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/sqlite-values.yaml")
+        sqlite_forgejo_env = dict(env)
+        sqlite_forgejo_env["FORGEJO_DATABASE_MODE"] = "sqlite"
+        with patched_env(sqlite_forgejo_env):
+            renderer.render_forgejo(sqlite_forgejo_path, inventory)
+        assert_contains(sqlite_forgejo_path, "git.example.test", "sqlite3")
+        assert_not_contains(sqlite_forgejo_path, "additionalConfigFromEnvs:", "DB_TYPE: postgres")
 
         external_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/external-values.yaml")
         external_forgejo_env = dict(env)
@@ -255,6 +304,7 @@ platform_step_ca_host=ca.example.test
                 "FORGEJO_DATABASE_USER": "forgejo",
                 "FORGEJO_DATABASE_SECRET_NAME": "forgejo-db-test",
                 "FORGEJO_DATABASE_SSL_MODE": "require",
+                "FORGEJO_REDIS_MODE": "redis",
                 "FORGEJO_REDIS_SECRET_NAME": "forgejo-redis-test",
             }
         )
@@ -275,12 +325,35 @@ platform_step_ca_host=ca.example.test
             'SSL_MODE: "require"',
         )
         assert_not_contains(external_forgejo_path, "FORGEJO_REDIS_URL", "redis://")
+
+        mysql_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/mysql-values.yaml")
+        mysql_forgejo_env = dict(env)
+        mysql_forgejo_env.update(
+            {
+                "FORGEJO_DATABASE_MODE": "mariadb",
+                "FORGEJO_DATABASE_HOST": "forgejo-mariadb.example.test:3306",
+                "FORGEJO_DATABASE_NAME": "forgejo",
+                "FORGEJO_DATABASE_USER": "forgejo",
+                "FORGEJO_DATABASE_SECRET_NAME": "forgejo-mariadb-test",
+            }
+        )
+        with patched_env(mysql_forgejo_env):
+            renderer.render_forgejo(mysql_forgejo_path, inventory)
+        assert_contains(
+            mysql_forgejo_path,
+            "DB_TYPE: mysql",
+            'HOST: "forgejo-mariadb.example.test:3306"',
+            'name: "forgejo-mariadb-test"',
+        )
         assert_contains(paths["longhorn"], "s3://platform-test-longhorn@eu-test-1/")
         assert_contains(
             paths["cnpg"],
             'namespace: "platform-databases"',
             'size: "80Gi"',
             'storageClass: "longhorn-critical"',
+            'database: "forgejo"',
+            'owner: "forgejo"',
+            'name: "forgejo-database"',
             'destinationPath: "s3://platform-test-cnpg/platform-postgres"',
             'endpointURL: "https://object.example.test"',
             'name: "cnpg-object-test"',
@@ -288,6 +361,62 @@ platform_step_ca_host=ca.example.test
             "key: SECRET_ACCESS_KEY",
             'schedule: "20 2 * * *"',
         )
+        assert_contains(
+            paths["valkey"],
+            'existingSecret: "platform-valkey-test"',
+            'existingSecretPasswordKey: "valkey-password-test"',
+            'storageClass: "longhorn-critical"',
+            'size: "9Gi"',
+            "replicaCount: 3",
+            "sentinel:\n  enabled: true",
+            "createPrimary: true",
+            "serviceMonitor:\n    enabled: true",
+        )
+        assert_contains(
+            paths["minio"],
+            'existingSecret: "minio-root-test"',
+            'rootUserSecretKey: "root-user-test"',
+            'rootPasswordSecretKey: "root-password-test"',
+            "mode: distributed",
+            "replicaCount: 4",
+            "zones: 1",
+            "drivesPerNode: 1",
+            'storageClass: "longhorn-critical"',
+            'size: "64Gi"',
+            "prometheusAuthType: public",
+            "serviceMonitor:\n    enabled: true",
+        )
+        assert_contains(
+            paths["keycloak"],
+            "sso.example.test",
+            'existingSecret: "keycloak-admin-test"',
+            'passwordSecretKey: "admin-password"',
+            "replicaCount: 2",
+            'host: "platform-postgres-rw.platform-databases.svc.cluster.local"',
+            'user: "keycloak"',
+            'database: "keycloak"',
+            'existingSecret: "keycloak-db-test"',
+            'defaultStorageClass: "longhorn-critical"',
+            "serviceMonitor:\n    enabled: true",
+        )
+        invalid_keycloak_env = dict(env, KEYCLOAK_REPLICAS="1")
+        with patched_env(invalid_keycloak_env):
+            try:
+                renderer.render_keycloak(paths["keycloak"], inventory)
+            except SystemExit as exc:
+                if "KEYCLOAK_REPLICAS must be at least 2" not in str(exc):
+                    raise AssertionError(f"unexpected Keycloak replica validation error: {exc}") from exc
+            else:
+                raise AssertionError("Keycloak renderer accepted a single premium replica")
+        invalid_minio_env = dict(env, MINIO_REPLICA_COUNT="3")
+        with patched_env(invalid_minio_env):
+            try:
+                renderer.render_minio(paths["minio"])
+            except SystemExit as exc:
+                if "distributed MinIO" not in str(exc):
+                    raise AssertionError(f"unexpected MinIO replica validation error: {exc}") from exc
+            else:
+                raise AssertionError("MinIO renderer accepted a non-distributed replica count")
         assert_contains(paths["woodpecker"], "ci.example.test", "woodpecker-oauth-test")
         assert_contains(
             paths["woodpecker"],
@@ -313,12 +442,16 @@ platform_step_ca_host=ca.example.test
             "trivy:\n  enabled: true\n  replicas: 1\n  resources:",
             "exporter:\n  resources:",
             "database:\n  type: internal\n  internal:\n    resources:",
-            "redis:\n  type: internal\n  internal:\n    resources:",
+            "redis:\n  type: external",
+            'addr: "platform-valkey-primary.platform-cache.svc.cluster.local:6379"',
+            'existingSecret: "harbor-redis"',
         )
 
         external_harbor_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/harbor/external-values.yaml")
         external_harbor_env = {
             "HARBOR_STORAGE_CLASS": "longhorn-critical",
+            "HARBOR_TLS_CERT_SOURCE": "secret",
+            "HARBOR_TLS_SECRET_NAME": "harbor-wildcard-test",
             "HARBOR_DATABASE_MODE": "external",
             "HARBOR_DATABASE_HOST": "harbor-postgres.example.test",
             "HARBOR_DATABASE_PORT": "5432",
@@ -340,6 +473,8 @@ platform_step_ca_host=ca.example.test
         assert_contains(
             external_harbor_path,
             "Uses external PostgreSQL, external Redis, and S3-compatible registry storage",
+            'certSource: "secret"',
+            'secretName: "harbor-wildcard-test"',
             "imageChartStorage:\n    disableredirect: true\n    type: s3",
             'bucket: "platform-test-harbor-registry"',
             'regionendpoint: "https://object.example.test"',
@@ -358,6 +493,23 @@ platform_step_ca_host=ca.example.test
             "redis:\n  type: internal",
             "type: filesystem",
         )
+
+        internal_harbor_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/harbor/internal-values.yaml")
+        internal_harbor_env = {
+            "HARBOR_DATABASE_MODE": "internal",
+            "HARBOR_REDIS_MODE": "internal",
+            "HARBOR_STORAGE_MODE": "filesystem",
+        }
+        with patched_env(internal_harbor_env):
+            renderer.render_harbor(internal_harbor_path, inventory)
+        assert_contains(
+            internal_harbor_path,
+            "Uses internal PostgreSQL, internal Redis, and filesystem registry storage",
+            "database:\n  type: internal\n  internal:\n    resources:",
+            "redis:\n  type: internal\n  internal:\n    resources:",
+            "imageChartStorage:\n    type: filesystem",
+        )
+
         assert_contains(
             paths["monitoring"],
             "crds:\n  enabled: true",

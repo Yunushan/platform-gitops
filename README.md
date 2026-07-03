@@ -53,6 +53,7 @@ RKE2 Kubernetes with Cilium CNI
 Forgejo
 Woodpecker CI with HA server replicas and 3 Kubernetes agents
 Argo CD HA
+Keycloak SSO
 Harbor
 CloudNativePG PostgreSQL
 Longhorn storage, with Rook/Ceph as an alternative
@@ -60,9 +61,10 @@ MetalLB + Traefik, with ingress-nginx as an alternative
 Prometheus + Grafana + Loki
 Velero + off-cluster backups
 cert-manager + trust-manager, optional step-ca internal CA
-SOPS + age
-Kyverno policy examples
-Cosign + Renovate supply-chain helpers
+SOPS + age, External Secrets Operator, and OpenBao-ready secret management
+Kyverno audit baseline and policy examples
+Tetragon eBPF runtime observability
+Cosign + Renovate supply-chain helpers, plus Trivy, Gitleaks, and local Semgrep scans
 Virtual IP / VIP for highly available access
 ```
 
@@ -181,7 +183,7 @@ component data, retention decisions, disposal, and private evidence.
 |  worker schedulable     worker schedulable     worker schedulable |
 |                                                                  |
 |  Forgejo/Gitea/GitLab   Woodpecker CI HA       Argo CD HA         |
-|  Harbor registry        CloudNativePG          Longhorn/Rook      |
+|  Keycloak SSO           Harbor registry        CloudNativePG      |
 |  Prometheus/Grafana     Loki                   Velero             |
  ------------------------------------------------------------------
                                   |
@@ -266,6 +268,7 @@ BSD and Solaris are supported as **operator/client workstations** for Git, SSH, 
 | Git forge | Forgejo | Gitea, GitLab CE |
 | CI | Woodpecker CI with HA server replicas and 3 Kubernetes agents | Gitea/Forgejo Actions, GitLab Runner profile |
 | CD / GitOps | Argo CD HA | Kept as required deployment engine |
+| Identity | Keycloak SSO | External OIDC/SAML identity providers |
 | Registry | Harbor | Forgejo/Gitea packages or GitLab registry profile |
 | Database | CloudNativePG PostgreSQL | External PostgreSQL profile |
 | Storage | Longhorn | Rook/Ceph |
@@ -275,9 +278,11 @@ BSD and Solaris are supported as **operator/client workstations** for Git, SSH, 
 | Monitoring | Prometheus + Grafana | Extendable |
 | Logs | Loki | Extendable |
 | Backups | Velero + DB backups + off-cluster target | External backup target profile |
+| Object storage | Optional in-cluster MinIO for controlled internal S3 use | External S3 for production DR |
 | API VIP | kube-vip | HAProxy + Keepalived |
-| Policy | Kyverno examples | Other admission controllers |
-| Secrets | SOPS + age | External Secrets, Sealed Secrets, Vault/OpenBao |
+| Policy | Kyverno audit baseline and examples | Other admission controllers |
+| Runtime security | Tetragon eBPF observability | Falco or external runtime/SIEM integrations |
+| Secrets | SOPS + age plus External Secrets Operator and OpenBao-ready backend | Sealed Secrets or external Vault-compatible/cloud secret manager |
 | Supply chain | Cosign + Renovate helpers | Extendable |
 
 ## Recommended first repositories after deployment
@@ -295,7 +300,16 @@ apps/<service-name>          # each app source repository
 The supply-chain helper surface includes `renovate.json` for dependency
 dashboards, grouped Helm updates, and Docker digest pinning, plus
 `policies/kyverno/verify-signed-images.example.yaml` for an opt-in Cosign image
-signature verification policy after your CI signs and publishes images.
+signature verification policy after your CI signs and publishes images. Run
+`make supply-chain-posture` when Syft is available to emit an SPDX SBOM under
+`rendered/supply-chain`; it also records OpenSSF Scorecard output when the
+`scorecard` binary is installed and verifies a signed image when
+`COSIGN_IMAGE`/`COSIGN_PUBLIC_KEY` are set.
+
+`make security-scan` runs Trivy, Gitleaks, and Semgrep. Semgrep defaults to the
+checked-in `.semgrep.yml` baseline so private deployments can run reproducible
+offline checks; set `SEMGREP_CONFIG=p/default` or another ruleset when you want
+to opt into Semgrep registry rules on a connected runner.
 
 For Git-stored private values, `config/sops.age.example.yaml` provides a
 copyable SOPS + age starter policy. Replace the placeholder age recipient in a

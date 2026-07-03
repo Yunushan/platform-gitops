@@ -45,27 +45,33 @@
     platform_harbor_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_DATABASE_SECRET_NAME') }}"
     platform_harbor_redis_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_REDIS_SECRET_NAME') }}"
     platform_harbor_s3_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_S3_SECRET_NAME') }}"
+    platform_valkey_auth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_VALKEY_AUTH_SECRET_NAME') }}"
+    platform_valkey_password_key_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_VALKEY_PASSWORD_KEY') }}"
     platform_forgejo_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_DATABASE_SECRET_NAME') }}"
+    platform_forgejo_redis_mode_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_MODE') }}"
     platform_forgejo_redis_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_SECRET_NAME') }}"
     platform_woodpecker_oauth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_FORGEJO_OAUTH_SECRET_NAME') }}"
     platform_woodpecker_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_SECRET_NAME') }}"
+    platform_keycloak_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_SECRET_NAME') }}"
+    platform_keycloak_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_DATABASE_SECRET_NAME') }}"
     platform_grafana_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'GRAFANA_ADMIN_SECRET_NAME') }}"
     platform_grafana_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'GRAFANA_DATABASE_SECRET_NAME') }}"
     platform_loki_object_storage_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'LOKI_OBJECT_STORAGE_SECRET_NAME') }}"
     platform_velero_credentials_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'VELERO_CREDENTIALS_SECRET_NAME') }}"
     platform_cnpg_object_store_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'CNPG_OBJECT_STORE_SECRET_NAME') }}"
+    platform_minio_root_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'MINIO_ROOT_SECRET_NAME') }}"
     platform_app_health_connect_timeout_effective: "{{ platform_app_health_connect_timeout | default(platform_app_health_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_max_time_effective: "{{ platform_app_health_max_time | default(platform_app_health_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
-    platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca metallb traefik longhorn cloudnativepg argocd-ha forgejo woodpecker harbor monitoring loki velero', true) }}"
+    platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca kyverno platform-policies tetragon external-secrets openbao metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak forgejo woodpecker harbor monitoring loki velero', true) }}"
     platform_app_health_include_existing_apps_effective: "{{ platform_app_health_include_existing_apps | default(platform_app_health_include_existing_apps_from_env, true) | default(true, true) | bool }}"
     platform_app_health_forbid_temporary_repo_effective: "{{ platform_app_health_forbid_temporary_repo | default(platform_app_health_forbid_temporary_repo_from_env, true) | default(true, true) | bool }}"
     platform_app_health_expected_repo_url_effective: "{{ platform_app_health_expected_repo_url | default(platform_app_health_expected_repo_url_from_env, true) | default(platform_repo_url_from_env, true) | default('', true) }}"
-    platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default('argocd cert-manager step-ca cnpg-system forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
+    platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default('argocd cert-manager step-ca kyverno tetragon external-secrets openbao cnpg-system platform-databases platform-cache object-storage keycloak forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
     platform_app_health_storage_classes_effective: "{{ platform_app_health_storage_classes | default(platform_app_health_storage_classes_from_env, true) | default('longhorn-standard longhorn-critical longhorn-cache', true) }}"
     platform_app_health_certificates_effective: "{{ platform_app_health_certificates | default(platform_app_health_certificates_from_env, true) | default('auto', true) }}"
     platform_app_health_trust_bundles_effective: "{{ platform_app_health_trust_bundles | default(platform_app_health_trust_bundles_from_env, true) | default('auto', true) }}"
     platform_app_health_cnpg_clusters_effective: "{{ platform_app_health_cnpg_clusters | default(platform_app_health_cnpg_clusters_from_env, true) | default('auto', true) }}"
-    platform_app_health_gui_apps_effective: "{{ platform_app_health_gui_apps | default(platform_app_health_gui_apps_from_env, true) | default('argocd forgejo harbor woodpecker grafana prometheus', true) }}"
+    platform_app_health_gui_apps_effective: "{{ platform_app_health_gui_apps | default(platform_app_health_gui_apps_from_env, true) | default('argocd forgejo harbor woodpecker keycloak grafana prometheus', true) }}"
     platform_app_health_registry_api_effective: "{{ platform_app_health_registry_api | default(platform_app_health_registry_api_from_env, true) | default(true, true) | bool }}"
     platform_app_health_monitoring_api_effective: "{{ platform_app_health_monitoring_api | default(platform_app_health_monitoring_api_from_env, true) | default(true, true) | bool }}"
     platform_app_health_step_ca_api_effective: "{{ platform_app_health_step_ca_api | default(platform_app_health_step_ca_api_from_env, true) | default(true, true) | bool }}"
@@ -90,15 +96,21 @@
     platform_harbor_database_secret_name_effective: "{{ platform_harbor_database_secret_name | default(platform_harbor_database_secret_name_from_env, true) | default('harbor-database', true) }}"
     platform_harbor_redis_secret_name_effective: "{{ platform_harbor_redis_secret_name | default(platform_harbor_redis_secret_name_from_env, true) | default('harbor-redis', true) }}"
     platform_harbor_s3_secret_name_effective: "{{ platform_harbor_s3_secret_name | default(platform_harbor_s3_secret_name_from_env, true) | default('harbor-registry-s3', true) }}"
+    platform_valkey_auth_secret_name_effective: "{{ platform_valkey_auth_secret_name | default(platform_valkey_auth_secret_name_from_env, true) | default('platform-valkey-auth', true) }}"
+    platform_valkey_password_key_effective: "{{ platform_valkey_password_key | default(platform_valkey_password_key_from_env, true) | default('valkey-password', true) }}"
     platform_forgejo_database_secret_name_effective: "{{ platform_forgejo_database_secret_name | default(platform_forgejo_database_secret_name_from_env, true) | default('forgejo-database', true) }}"
+    platform_forgejo_redis_mode_effective: "{{ platform_forgejo_redis_mode | default(platform_forgejo_redis_mode_from_env, true) | default('redis', true) }}"
     platform_forgejo_redis_secret_name_effective: "{{ platform_forgejo_redis_secret_name | default(platform_forgejo_redis_secret_name_from_env, true) | default('forgejo-redis', true) }}"
     platform_woodpecker_oauth_secret_name_effective: "{{ platform_woodpecker_oauth_secret_name | default(platform_woodpecker_oauth_secret_name_from_env, true) | default('woodpecker-forgejo-oauth', true) }}"
     platform_woodpecker_database_secret_name_effective: "{{ platform_woodpecker_database_secret_name | default(platform_woodpecker_database_secret_name_from_env, true) | default('woodpecker-database', true) }}"
+    platform_keycloak_admin_secret_name_effective: "{{ platform_keycloak_admin_secret_name | default(platform_keycloak_admin_secret_name_from_env, true) | default('keycloak-admin', true) }}"
+    platform_keycloak_database_secret_name_effective: "{{ platform_keycloak_database_secret_name | default(platform_keycloak_database_secret_name_from_env, true) | default('keycloak-database', true) }}"
     platform_grafana_admin_secret_name_effective: "{{ platform_grafana_admin_secret_name | default(platform_grafana_admin_secret_name_from_env, true) | default('grafana-admin', true) }}"
     platform_grafana_database_secret_name_effective: "{{ platform_grafana_database_secret_name | default(platform_grafana_database_secret_name_from_env, true) | default('grafana-database', true) }}"
     platform_loki_object_storage_secret_name_effective: "{{ platform_loki_object_storage_secret_name | default(platform_loki_object_storage_secret_name_from_env, true) | default('loki-object-storage', true) }}"
     platform_velero_credentials_secret_name_effective: "{{ platform_velero_credentials_secret_name | default(platform_velero_credentials_secret_name_from_env, true) | default('velero-credentials', true) }}"
     platform_cnpg_object_store_secret_name_effective: "{{ platform_cnpg_object_store_secret_name | default(platform_cnpg_object_store_secret_name_from_env, true) | default('cnpg-object-store', true) }}"
+    platform_minio_root_secret_name_effective: "{{ platform_minio_root_secret_name | default(platform_minio_root_secret_name_from_env, true) | default('minio-root', true) }}"
   vars_files:
     - ../vars/platform-hostnames.yml
 
@@ -134,11 +146,14 @@
           - platform_forgejo_redis_secret_name_effective | length > 0
           - platform_woodpecker_oauth_secret_name_effective | length > 0
           - platform_woodpecker_database_secret_name_effective | length > 0
+          - platform_keycloak_admin_secret_name_effective | length > 0
+          - platform_keycloak_database_secret_name_effective | length > 0
           - platform_grafana_admin_secret_name_effective | length > 0
           - platform_grafana_database_secret_name_effective | length > 0
           - platform_loki_object_storage_secret_name_effective | length > 0
           - platform_velero_credentials_secret_name_effective | length > 0
           - platform_cnpg_object_store_secret_name_effective | length > 0
+          - platform_minio_root_secret_name_effective | length > 0
         fail_msg: "Set rke2_ingress_vip, platform_domain/rke2_platform_domain, platform_argocd_host, and platform_ci_host/platform_woodpecker_host."
       run_once: true
 
@@ -1470,6 +1485,24 @@
 
         if [ "${requested_secrets_lower}" = "auto" ]; then
           case " ${required_apps} " in
+            *" platform-valkey "*)
+              check_secret_contract platform-cache "{{ platform_valkey_auth_secret_name_effective }}" "{{ platform_valkey_password_key_effective }}"
+              ;;
+            *)
+              echo "result=skip reason=platform-valkey-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
+            *" minio "*)
+              check_secret_contract object-storage "{{ platform_minio_root_secret_name_effective }}" root-user root-password
+              ;;
+            *)
+              echo "result=skip reason=minio-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
             *" harbor "*)
               check_secret_contract harbor "{{ platform_harbor_admin_secret_name_effective }}" HARBOR_ADMIN_PASSWORD
               check_secret_contract harbor "{{ platform_harbor_secret_key_secret_name_effective }}" secretKey
@@ -1502,8 +1535,15 @@
           case " ${required_apps} " in
             *" forgejo "*)
               if [ "{{ platform_app_health_forgejo_production_secrets_effective | ternary('true', 'false') }}" = "true" ]; then
-                check_secret_contract forgejo "{{ platform_forgejo_database_secret_name_effective }}" password
-                check_secret_contract forgejo "{{ platform_forgejo_redis_secret_name_effective }}" uri
+                check_secret_contract forgejo "{{ platform_forgejo_database_secret_name_effective }}" username password
+                case "{{ platform_forgejo_redis_mode_effective }}" in
+                  redis|external)
+                    check_secret_contract forgejo "{{ platform_forgejo_redis_secret_name_effective }}" uri
+                    ;;
+                  *)
+                    echo "result=skip reason=forgejo-redis-secret-contract-disabled"
+                    ;;
+                esac
               else
                 echo "result=skip reason=forgejo-production-secret-contracts-disabled"
               fi
@@ -1520,6 +1560,17 @@
               ;;
             *)
               echo "result=skip reason=woodpecker-not-required-by-platform-app-health-required-apps"
+              ;;
+          esac
+
+          case " ${required_apps} " in
+            *" keycloak "*)
+              check_secret_contract keycloak "{{ platform_keycloak_admin_secret_name_effective }}" admin-user admin-password
+              check_secret_contract keycloak "{{ platform_keycloak_database_secret_name_effective }}" username password
+              check_secret_contract platform-databases "{{ platform_keycloak_database_secret_name_effective }}" username password
+              ;;
+            *)
+              echo "result=skip reason=keycloak-not-required-by-platform-app-health-required-apps"
               ;;
           esac
 
@@ -2813,6 +2864,9 @@
         echo "===== CloudNativePG clusters ====="
         "$K" --kubeconfig "$C" get clusters.postgresql.cnpg.io -A -o wide || true
         echo
+        echo "===== platform Valkey ====="
+        "$K" --kubeconfig "$C" -n platform-cache get pods,svc,endpoints,endpointslice,pvc -o wide || true
+        echo
         echo "===== Loki ====="
         "$K" --kubeconfig "$C" -n logging get pods,svc,endpoints,endpointslice,ingress -o wide || true
         echo
@@ -2820,14 +2874,23 @@
         "$K" --kubeconfig "$C" -n velero get pods,backupstoragelocations.velero.io,volumesnapshotlocations.velero.io,schedules.velero.io -o wide || true
         echo
         echo "===== Generated app secrets ====="
+        "$K" --kubeconfig "$C" -n platform-cache get "secret/{{ platform_valkey_auth_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n harbor get "secret/{{ platform_harbor_admin_secret_name_effective }}" "secret/{{ platform_harbor_secret_key_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n harbor get "secret/{{ platform_harbor_database_secret_name_effective }}" "secret/{{ platform_harbor_redis_secret_name_effective }}" "secret/{{ platform_harbor_s3_secret_name_effective }}" -o wide || true
-        "$K" --kubeconfig "$C" -n forgejo get "secret/{{ platform_forgejo_database_secret_name_effective }}" "secret/{{ platform_forgejo_redis_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n forgejo get "secret/{{ platform_forgejo_database_secret_name_effective }}" -o wide || true
+        case "{{ platform_forgejo_redis_mode_effective }}" in
+          redis|external)
+            "$K" --kubeconfig "$C" -n forgejo get "secret/{{ platform_forgejo_redis_secret_name_effective }}" -o wide || true
+            ;;
+        esac
         "$K" --kubeconfig "$C" -n woodpecker get "secret/{{ platform_woodpecker_oauth_secret_name_effective }}" "secret/{{ platform_woodpecker_database_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n keycloak get "secret/{{ platform_keycloak_admin_secret_name_effective }}" "secret/{{ platform_keycloak_database_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n platform-databases get "secret/{{ platform_keycloak_database_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n monitoring get "secret/{{ platform_grafana_admin_secret_name_effective }}" "secret/{{ platform_grafana_database_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n logging get "secret/{{ platform_loki_object_storage_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n velero get "secret/{{ platform_velero_credentials_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n platform-databases get "secret/{{ platform_cnpg_object_store_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n object-storage get "secret/{{ platform_minio_root_secret_name_effective }}" -o wide || true
         echo
         echo "===== Longhorn runtime ====="
         "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io,volumes.longhorn.io,instancemanagers.longhorn.io,engineimages.longhorn.io -o wide || true
@@ -2889,11 +2952,12 @@
           are missing or misconfigured, or platform PVCs are Pending, Lost, or
           stuck Terminating, or when Longhorn node objects are not Ready or
           attached Longhorn volumes are degraded/faulted/not healthy, or when
-          generated Harbor, Forgejo, Woodpecker, Grafana, Loki, or Velero secrets are missing or
+          generated Harbor, Forgejo, Woodpecker, Keycloak, Grafana, Loki, or Velero secrets are missing or
           lack required keys, including Harbor external PostgreSQL, Redis, and
           registry S3 secret keys when PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true,
-          Forgejo external PostgreSQL and Redis secret keys when
+          Forgejo SQL password and optional Redis secret keys when
           PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true,
+          Keycloak admin and database secrets when Keycloak is required,
           or the Grafana external PostgreSQL password secret when
           PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET=true.
           It also fails when a configured GUI host has no
@@ -2955,7 +3019,7 @@
           credential secrets during production checks:
           PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true make platform-app-health
 
-          To enforce Forgejo external PostgreSQL and Redis credential secrets
+          To enforce Forgejo SQL password and optional Redis credential secrets
           during production checks:
           PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true make platform-app-health
 
@@ -2978,8 +3042,8 @@
 
           If this cluster intentionally runs only a subset of the premium stack,
           override the enforced list for this check:
-          PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg forgejo woodpecker"
-          PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system forgejo woodpecker longhorn-system metallb-system traefik"
+          PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg platform-postgres platform-valkey forgejo woodpecker"
+          PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system platform-databases platform-cache forgejo woodpecker longhorn-system metallb-system traefik"
           PLATFORM_APP_HEALTH_GUI_APPS="argocd forgejo woodpecker"
           make platform-app-health
 
@@ -2994,5 +3058,5 @@
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set, platform pods are Ready, Argo CD runtime components and configured repo-server/Redis service endpoints are present, critical HA workloads meet minimum desired and ready replica coverage, Woodpecker server and agent pods run the expected pinned image tag, cert-manager Certificates are Ready when present or explicitly required, trust-manager Bundles are synced when present or explicitly required, step-ca answers /health on its ClusterIP service when required, CloudNativePG clusters are Ready when present or explicitly required, CloudNativePG object-storage credentials are present when enforced, Loki answers a known /ready endpoint when required, Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required, generated Harbor/Forgejo/Woodpecker/Grafana/Loki/Velero/CloudNativePG app secrets exist with required keys, Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced, required StorageClasses exist, platform PVCs are Bound, Longhorn nodes are Ready/schedulable and attached Longhorn volumes are healthy, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required, Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set, platform pods are Ready, Argo CD runtime components and configured repo-server/Redis service endpoints are present, shared platform Valkey is present with its auth secret when required, critical HA workloads meet minimum desired and ready replica coverage, Woodpecker server and agent pods run the expected pinned image tag, cert-manager Certificates are Ready when present or explicitly required, trust-manager Bundles are synced when present or explicitly required, step-ca answers /health on its ClusterIP service when required, CloudNativePG clusters are Ready when present or explicitly required, CloudNativePG object-storage credentials are present when enforced, Loki answers a known /ready endpoint when required, Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required, generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey app secrets exist with required keys, Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced, required StorageClasses exist, platform PVCs are Bound, Longhorn nodes are Ready/schedulable and attached Longhorn volumes are healthy, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required, Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
       run_once: true

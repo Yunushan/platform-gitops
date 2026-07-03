@@ -1,0 +1,15 @@
+severity:
+  - HIGH
+  - CRITICAL
+ignore-unfixed: true
+scanners:
+  - vuln
+  - secret
+  - misconfig
+skip-dirs:
+  - .git
+  - .pytest_cache
+  - private
+  - rendered
+  - secrets
+

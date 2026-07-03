@@ -20,6 +20,25 @@ sys.dont_write_bytecode = True
 
 CONTRACTS = [
     {
+        "label": "Platform Valkey auth",
+        "env": "PLATFORM_VALKEY_AUTH_SECRET_NAME",
+        "default": "platform-valkey-auth",
+        "namespace": "platform-cache",
+        "keys": ["valkey-password"],
+        "playbook_key_needles": ['--from-literal="${PASSWORD_KEY}=${password}"'],
+        "static_file": PREMIUM_APPS / "platform-valkey" / "values.yaml",
+        "static_needles": [
+            "existingSecret: platform-valkey-auth",
+            "existingSecretPasswordKey: valkey-password",
+        ],
+        "rendered_app": "valkey",
+        "custom_secret": "platform-valkey-custom",
+        "rendered_needles": [
+            'existingSecret: "platform-valkey-custom"',
+            'existingSecretPasswordKey: "valkey-password-custom"',
+        ],
+    },
+    {
         "label": "Harbor admin password",
         "env": "HARBOR_ADMIN_SECRET_NAME",
         "default": "harbor-admin",
@@ -99,7 +118,7 @@ CONTRACTS = [
         "env": "FORGEJO_DATABASE_SECRET_NAME",
         "default": "forgejo-database",
         "namespace": "forgejo",
-        "keys": ["password"],
+        "keys": ["username", "password"],
         "static_file": None,
         "static_needles": [],
         "rendered_app": "forgejo",
@@ -159,6 +178,44 @@ CONTRACTS = [
         "rendered_needles": [
             'WOODPECKER_DATABASE_DRIVER: "postgres"',
             '- "woodpecker-db-custom"',
+        ],
+    },
+    {
+        "label": "Keycloak admin credentials",
+        "env": "KEYCLOAK_ADMIN_SECRET_NAME",
+        "default": "keycloak-admin",
+        "namespace": "keycloak",
+        "keys": ["admin-user", "admin-password"],
+        "static_file": PREMIUM_APPS / "keycloak" / "values.yaml",
+        "static_needles": [
+            "existingSecret: keycloak-admin",
+            "passwordSecretKey: admin-password",
+        ],
+        "rendered_app": "keycloak",
+        "custom_secret": "keycloak-admin-custom",
+        "rendered_needles": [
+            'existingSecret: "keycloak-admin-custom"',
+            'passwordSecretKey: "admin-password"',
+        ],
+    },
+    {
+        "label": "Keycloak external database password",
+        "env": "KEYCLOAK_DATABASE_SECRET_NAME",
+        "default": "keycloak-database",
+        "namespace": "keycloak",
+        "keys": ["username", "password"],
+        "static_file": PREMIUM_APPS / "keycloak" / "values.yaml",
+        "static_needles": [
+            "existingSecret: keycloak-database",
+            "existingSecretUserKey: username",
+            "existingSecretPasswordKey: password",
+        ],
+        "rendered_app": "keycloak",
+        "custom_secret": "keycloak-db-custom",
+        "rendered_needles": [
+            'existingSecret: "keycloak-db-custom"',
+            "existingSecretUserKey: username",
+            "existingSecretPasswordKey: password",
         ],
     },
     {
@@ -311,11 +368,12 @@ def check_renderer_and_secret_playbook() -> None:
             f"app-secret playbook namespace for {contract['label']}",
         )
         for key in contract["keys"]:
-            require_contains(
-                playbook_text,
-                f"--from-literal={key}=",
-                f"app-secret playbook literal key for {contract['label']}",
-            )
+            key_needles = contract.get("playbook_key_needles", [f"--from-literal={key}="])
+            if not any(needle in playbook_text for needle in key_needles):
+                raise AssertionError(
+                    f"app-secret playbook literal key for {contract['label']} is missing one of: "
+                    + ", ".join(key_needles)
+                )
 
 
 def render_with_custom_secret_names() -> dict[str, str]:
@@ -335,15 +393,21 @@ def render_with_custom_secret_names() -> dict[str, str]:
         "OBJECT_STORAGE_ENDPOINT": "https://object.example.test",
         "OBJECT_STORAGE_REGION": "eu-test-1",
         "OBJECT_STORAGE_BUCKET_PREFIX": "platform-test",
+        "CNPG_BACKUP_ENABLED": "true",
+        "PLATFORM_VALKEY_AUTH_SECRET_NAME": "platform-valkey-custom",
+        "PLATFORM_VALKEY_PASSWORD_KEY": "valkey-password-custom",
         "FORGEJO_DATABASE_MODE": "external",
         "FORGEJO_DATABASE_HOST": "forgejo-postgres.example.test",
         "FORGEJO_DATABASE_NAME": "forgejo",
         "FORGEJO_DATABASE_USER": "forgejo",
         "FORGEJO_DATABASE_SECRET_NAME": "forgejo-db-custom",
+        "FORGEJO_REDIS_MODE": "redis",
         "FORGEJO_REDIS_SECRET_NAME": "forgejo-redis-custom",
         "WOODPECKER_FORGEJO_OAUTH_SECRET_NAME": "woodpecker-oauth-custom",
         "WOODPECKER_DATABASE_MODE": "postgres",
         "WOODPECKER_DATABASE_SECRET_NAME": "woodpecker-db-custom",
+        "KEYCLOAK_ADMIN_SECRET_NAME": "keycloak-admin-custom",
+        "KEYCLOAK_DATABASE_SECRET_NAME": "keycloak-db-custom",
         "GRAFANA_ADMIN_SECRET_NAME": "grafana-admin-custom",
         "GRAFANA_DATABASE_MODE": "postgres",
         "GRAFANA_DATABASE_HOST": "grafana-postgres.example.test",
@@ -359,6 +423,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
         "platform_loki_host": "loki.example.test",
         "platform_prometheus_host": "prometheus.example.test",
         "platform_registry_host": "registry.example.test",
+        "platform_keycloak_host": "sso.example.test",
     }
     rendered: dict[str, str] = {}
     with tempfile.TemporaryDirectory(prefix="platform-secret-contract-") as tmp, patched_env(env):
@@ -371,7 +436,10 @@ def render_with_custom_secret_names() -> dict[str, str]:
             "loki": base / "loki-values.yaml",
             "cnpg": base / "cnpg-postgres.yaml",
             "velero": base / "velero-values.yaml",
+            "valkey": base / "valkey-values.yaml",
+            "keycloak": base / "keycloak-values.yaml",
         }
+        renderer.render_platform_valkey(paths["valkey"])
         renderer.render_harbor(paths["harbor"], inventory)
         renderer.render_forgejo(paths["forgejo"], inventory)
         renderer.render_woodpecker(paths["woodpecker"], inventory)
@@ -379,6 +447,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
         renderer.render_loki(paths["loki"], inventory)
         renderer.render_cnpg_postgres_cluster(paths["cnpg"])
         renderer.render_velero(paths["velero"])
+        renderer.render_keycloak(paths["keycloak"], inventory)
         for app, path in paths.items():
             rendered[app] = path.read_text(encoding="utf-8")
     return rendered

@@ -1,5 +1,5 @@
 # Harbor bootstrap profile rendered by scripts/render_private_platform_values.py.
-# Uses internal PostgreSQL, Redis, and filesystem registry storage for first deployment.
+# Uses internal PostgreSQL, external Redis, and filesystem registry storage for first deployment.
 # Store HARBOR_ADMIN_PASSWORD in secret/harbor-admin and secretKey in
 # secret/harbor-secret-key before syncing this app.
 expose:
@@ -109,14 +109,21 @@ database:
         memory: 1Gi
 
 redis:
-  type: internal
-  internal:
-    resources:
-      requests:
-        cpu: 50m
-        memory: 128Mi
-      limits:
-        memory: 256Mi
+  type: external
+  jobserviceDatabaseIndex: "1"
+  registryDatabaseIndex: "2"
+  trivyAdapterIndex: "5"
+  external:
+    addr: platform-valkey-primary.platform-cache.svc.cluster.local:6379
+    sentinelMasterSet: ""
+    tlsOptions:
+      enable: false
+    coreDatabaseIndex: "0"
+    jobserviceDatabaseIndex: "1"
+    registryDatabaseIndex: "2"
+    trivyAdapterIndex: "5"
+    username: ""
+    existingSecret: harbor-redis
 
 existingSecretAdminPassword: harbor-admin
 existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD

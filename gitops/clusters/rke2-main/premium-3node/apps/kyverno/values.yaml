@@ -1,0 +1,83 @@
+# Audit-first Kyverno profile for private platform clusters.
+# Policies are deployed separately so enforcement can be promoted deliberately.
+crds:
+  install: true
+
+features:
+  policyReports:
+    enabled: true
+  admissionReports:
+    enabled: true
+  backgroundScan:
+    enabled: true
+    backgroundScanWorkers: 2
+    backgroundScanInterval: 1h
+
+admissionController:
+  replicas: 3
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    additionalLabels:
+      release: monitoring
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+
+backgroundController:
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    additionalLabels:
+      release: monitoring
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+
+cleanupController:
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    additionalLabels:
+      release: monitoring
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+reportsController:
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    additionalLabels:
+      release: monitoring
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+

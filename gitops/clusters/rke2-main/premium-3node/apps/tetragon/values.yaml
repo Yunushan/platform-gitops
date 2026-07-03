@@ -1,0 +1,71 @@
+# Tetragon adds Cilium/eBPF runtime observability for process execution,
+# file/network events, and policy-driven runtime security investigations.
+priorityClassName: system-node-critical
+hostNetwork: true
+dnsPolicy: Default
+
+tetragon:
+  enabled: true
+  image:
+    repository: quay.io/cilium/tetragon
+    tag: v1.6.0
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  exportFilename: tetragon.log
+  exportFilePerm: "600"
+  exportFileMaxSizeMB: 25
+  exportFileMaxBackups: 5
+  exportRateLimit: 5000
+  redactionFilters: |-
+    {"redact": ["--password(?:\\s+|=)(\\S*)"]}
+    {"redact": ["--token(?:\\s+|=)(\\S*)"]}
+    {"redact": ["--secret(?:\\s+|=)(\\S*)"]}
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      extraLabels:
+        release: monitoring
+  enablePolicyFilter: true
+  enableProcessCred: true
+  enableProcessNs: true
+
+tetragonOperator:
+  enabled: true
+  replicas: 2
+  failoverLease:
+    enabled: true
+  image:
+    repository: quay.io/cilium/tetragon-operator
+    tag: v1.6.0
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      extraLabels:
+        release: monitoring
+
+export:
+  mode: stdout
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+crds:
+  installMethod: helm
+
+rthooks:
+  enabled: false

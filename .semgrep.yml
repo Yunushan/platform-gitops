@@ -1,0 +1,30 @@
+rules:
+  - id: shell-curl-pipe-shell
+    languages:
+      - generic
+    severity: ERROR
+    message: Avoid piping network downloads directly to a shell; download, verify, then execute explicitly.
+    pattern-regex: '\b(curl|wget)\b[^\n|]*\|\s*(sh|bash)\b'
+    metadata:
+      category: security
+      confidence: medium
+
+  - id: kubernetes-latest-image-tag
+    languages:
+      - yaml
+    severity: WARNING
+    message: Avoid mutable latest image tags in Kubernetes manifests; pin a version or digest.
+    pattern-regex: 'image:\s*[''"]?[^''"\s]+:latest[''"]?'
+    metadata:
+      category: supply-chain
+      confidence: medium
+
+  - id: kubernetes-privileged-container
+    languages:
+      - yaml
+    severity: WARNING
+    message: Privileged containers require an explicit security review and a documented exception.
+    pattern-regex: 'privileged:\s*true\b'
+    metadata:
+      category: policy
+      confidence: medium

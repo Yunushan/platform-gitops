@@ -1,0 +1,75 @@
+# Central OSS identity provider for platform SSO. The premium default uses the
+# shared CloudNativePG platform-postgres cluster through secret/keycloak-database.
+global:
+  defaultStorageClass: longhorn-critical
+
+image:
+  registry: docker.io
+  repository: bitnami/keycloak
+  tag: 26.3.3-debian-12-r0
+
+auth:
+  adminUser: admin
+  existingSecret: keycloak-admin
+  passwordSecretKey: admin-password
+
+production: true
+proxyHeaders: xforwarded
+hostnameStrict: true
+httpEnabled: true
+replicaCount: 2
+podAntiAffinityPreset: hard
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 2Gi
+
+pdb:
+  create: true
+  minAvailable: 1
+
+postgresql:
+  enabled: false
+
+externalDatabase:
+  host: platform-postgres-rw.platform-databases.svc.cluster.local
+  port: 5432
+  user: keycloak
+  database: keycloak
+  existingSecret: keycloak-database
+  existingSecretUserKey: username
+  existingSecretPasswordKey: password
+  extraParams: sslmode=disable
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  hostname: sso.<PLATFORM_DOMAIN>
+  path: /
+  pathType: Prefix
+  servicePort: http
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  tls: true
+  extraTls:
+    - hosts:
+        - sso.<PLATFORM_DOMAIN>
+      secretName: keycloak-tls
+
+networkPolicy:
+  enabled: true
+  allowExternal: true
+  allowExternalEgress: true
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    labels:
+      release: monitoring
+

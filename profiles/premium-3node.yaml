@@ -11,15 +11,19 @@ components:
   git_forge: forgejo
   ci: woodpecker
   cd: argocd-ha
+  identity: keycloak-sso
   registry: harbor-ha
   database: cloudnativepg
+  cache: valkey-ha
   storage: longhorn-production
   monitoring: kube-prometheus-stack
   logging: loki
+  object_storage: minio-optional-in-cluster-s3
   backups: velero-plus-cnpg-longhorn-harbor-forgejo
-  secrets: sops-age-or-external-secrets
-  policy: kyverno
-  supply_chain: cosign-renovate
+  secrets: sops-age-plus-external-secrets-openbao
+  policy: kyverno-audit-baseline
+  runtime_security: tetragon-ebpf-observability
+  supply_chain: trivy-gitleaks-semgrep-cosign-renovate
 remove:
   - gitops/clusters/rke2-main/apps/ingress-nginx
 includes:
@@ -27,6 +31,11 @@ includes:
   - gitops/clusters/rke2-main/premium-3node/apps/cert-manager
   - gitops/clusters/rke2-main/premium-3node/apps/trust-manager
   - gitops/clusters/rke2-main/premium-3node/apps/step-ca
+  - gitops/clusters/rke2-main/premium-3node/apps/kyverno
+  - gitops/clusters/rke2-main/premium-3node/apps/platform-policies
+  - gitops/clusters/rke2-main/premium-3node/apps/tetragon
+  - gitops/clusters/rke2-main/premium-3node/apps/external-secrets
+  - gitops/clusters/rke2-main/premium-3node/apps/openbao
   - gitops/clusters/rke2-main/apps/metallb
   - gitops/clusters/rke2-main/premium-3node/apps/traefik
   - gitops/clusters/rke2-main/premium-3node/apps/argocd-ha
@@ -35,6 +44,10 @@ includes:
   - gitops/clusters/rke2-main/premium-3node/apps/harbor
   - gitops/clusters/rke2-main/premium-3node/apps/longhorn
   - gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg
+  - gitops/clusters/rke2-main/premium-3node/apps/platform-postgres
+  - gitops/clusters/rke2-main/premium-3node/apps/platform-valkey
+  - gitops/clusters/rke2-main/premium-3node/apps/minio
+  - gitops/clusters/rke2-main/premium-3node/apps/keycloak
   - gitops/clusters/rke2-main/premium-3node/apps/monitoring
   - gitops/clusters/rke2-main/premium-3node/apps/loki
   - gitops/clusters/rke2-main/premium-3node/apps/velero
@@ -43,5 +56,6 @@ operational_requirements:
   - off_cluster_object_storage_for_backups
   - tested_restore_drills
   - private_secret_management
+  - centralized_sso_and_rbac_review
   - resource_requests_limits_and_pdb_review
   - node_anti_affinity_review

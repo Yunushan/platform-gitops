@@ -14,9 +14,17 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: cnpg-system
       server: https://kubernetes.default.svc
+    - namespace: external-secrets
+      server: https://kubernetes.default.svc
+    - namespace: platform-databases
+      server: https://kubernetes.default.svc
+    - namespace: platform-cache
+      server: https://kubernetes.default.svc
     - namespace: forgejo
       server: https://kubernetes.default.svc
     - namespace: harbor
+      server: https://kubernetes.default.svc
+    - namespace: keycloak
       server: https://kubernetes.default.svc
     - namespace: logging
       server: https://kubernetes.default.svc
@@ -26,7 +34,15 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: monitoring
       server: https://kubernetes.default.svc
+    - namespace: kyverno
+      server: https://kubernetes.default.svc
+    - namespace: object-storage
+      server: https://kubernetes.default.svc
+    - namespace: openbao
+      server: https://kubernetes.default.svc
     - namespace: step-ca
+      server: https://kubernetes.default.svc
+    - namespace: tetragon
       server: https://kubernetes.default.svc
     - namespace: traefik
       server: https://kubernetes.default.svc
@@ -45,6 +61,16 @@ spec:
       kind: APIService
     - group: cert-manager.io
       kind: ClusterIssuer
+    - group: external-secrets.io
+      kind: ClusterExternalSecret
+    - group: external-secrets.io
+      kind: ClusterGenerator
+    - group: external-secrets.io
+      kind: ClusterPushSecret
+    - group: external-secrets.io
+      kind: ClusterSecretStore
+    - group: kyverno.io
+      kind: ClusterPolicy
     - group: rbac.authorization.k8s.io
       kind: ClusterRole
     - group: rbac.authorization.k8s.io

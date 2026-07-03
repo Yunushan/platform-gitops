@@ -40,6 +40,14 @@ base_harbor_values = root / "gitops/clusters/rke2-main/apps/harbor/values.yaml"
 premium_harbor_values = root / "gitops/clusters/rke2-main/premium-3node/apps/harbor/values.yaml"
 base_cloudnativepg_values = root / "gitops/clusters/rke2-main/apps/cloudnativepg/values.yaml"
 premium_cloudnativepg_values = root / "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/values.yaml"
+premium_platform_postgres_cluster = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-postgres/postgres-cluster.yaml"
+premium_platform_valkey_values = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/values.yaml"
+premium_keycloak_values = root / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml"
+premium_kyverno_values = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/values.yaml"
+premium_tetragon_values = root / "gitops/clusters/rke2-main/premium-3node/apps/tetragon/values.yaml"
+premium_minio_values = root / "gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml"
+premium_external_secrets_values = root / "gitops/clusters/rke2-main/premium-3node/apps/external-secrets/values.yaml"
+premium_openbao_values = root / "gitops/clusters/rke2-main/premium-3node/apps/openbao/values.yaml"
 base_longhorn_values = root / "gitops/clusters/rke2-main/apps/longhorn/values.yaml"
 premium_longhorn_values = root / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/values.yaml"
 premium_longhorn_storageclasses = root / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/storageclasses.yaml"
@@ -73,6 +81,11 @@ platform_secret_contract_test = root / "scripts/test_platform_secret_contract.py
 policy_examples_test = root / "scripts/test_policy_examples.py"
 sops_age_policy_test = root / "scripts/test_sops_age_policy.py"
 supply_chain_helpers_test = root / "scripts/test_supply_chain_helpers.py"
+security_scan_script = root / "scripts/security-scan.sh"
+supply_chain_posture_script = root / "scripts/supply-chain-posture.sh"
+gitleaks_config = root / ".gitleaks.toml"
+semgrep_config = root / ".semgrep.yml"
+trivy_config = root / "trivy.yaml"
 backup_restore_runbook_test = root / "scripts/test_backup_restore_runbook.py"
 business_continuity_test = root / "scripts/test_business_continuity.py"
 service_catalog_test = root / "scripts/test_service_catalog.py"
@@ -149,7 +162,7 @@ ci_validation_files = [
     root / ".woodpecker/validate.yml",
 ]
 
-required_premium_apps = [
+required_base_apps = [
     "cert-manager",
     "trust-manager",
     "step-ca",
@@ -166,11 +179,38 @@ required_premium_apps = [
     "velero",
 ]
 
+required_premium_apps = [
+    "cert-manager",
+    "trust-manager",
+    "step-ca",
+    "kyverno",
+    "platform-policies",
+    "tetragon",
+    "external-secrets",
+    "openbao",
+    "metallb",
+    "traefik",
+    "longhorn",
+    "cloudnativepg",
+    "platform-postgres",
+    "platform-valkey",
+    "minio",
+    "keycloak",
+    "argocd-ha",
+    "forgejo",
+    "woodpecker",
+    "harbor",
+    "monitoring",
+    "loki",
+    "velero",
+]
+
 required_gui_hosts = [
     "argocd",
     "forgejo",
     "harbor",
     "woodpecker",
+    "keycloak",
     "grafana",
     "prometheus",
 ]
@@ -401,10 +441,19 @@ def assert_profile_catalog() -> None:
             "gitops/clusters/rke2-main/premium-3node/apps/cert-manager",
             "gitops/clusters/rke2-main/premium-3node/apps/trust-manager",
             "gitops/clusters/rke2-main/premium-3node/apps/step-ca",
+            "gitops/clusters/rke2-main/premium-3node/apps/kyverno",
+            "gitops/clusters/rke2-main/premium-3node/apps/platform-policies",
+            "gitops/clusters/rke2-main/premium-3node/apps/tetragon",
+            "gitops/clusters/rke2-main/premium-3node/apps/external-secrets",
+            "gitops/clusters/rke2-main/premium-3node/apps/openbao",
             "gitops/clusters/rke2-main/apps/metallb",
             "gitops/clusters/rke2-main/premium-3node/apps/traefik",
             "gitops/clusters/rke2-main/premium-3node/apps/longhorn",
             "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg",
+            "gitops/clusters/rke2-main/premium-3node/apps/platform-postgres",
+            "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey",
+            "gitops/clusters/rke2-main/premium-3node/apps/minio",
+            "gitops/clusters/rke2-main/premium-3node/apps/keycloak",
             "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha",
             "gitops/clusters/rke2-main/premium-3node/apps/forgejo",
             "gitops/clusters/rke2-main/premium-3node/apps/woodpecker",
@@ -484,7 +533,7 @@ def main() -> None:
 
     assert_profile_catalog()
 
-    assert_app_file(base_apps, required_premium_apps)
+    assert_app_file(base_apps, required_base_apps)
     assert_app_file(premium_apps, required_premium_apps)
 
     metallb_text = read(metallb_values)
@@ -629,10 +678,19 @@ def main() -> None:
         "DISABLE_REGISTRATION: true",
         "REQUIRE_SIGNIN_VIEW: true",
         "DEFAULT_BRANCH: main",
-        "DB_TYPE: sqlite3",
-        "PROVIDER: file",
-        "ADAPTER: memory",
-        "TYPE: level",
+        "additionalConfigFromEnvs:",
+        "GITEA__database__PASSWD",
+        "name: forgejo-database",
+        "DB_TYPE: postgres",
+        "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
+        "NAME: forgejo",
+        "USER: forgejo",
+        "SSL_MODE: disable",
+        "PROVIDER: db",
+        "GITEA__cache__HOST",
+        "name: forgejo-redis",
+        "ADAPTER: redis",
+        "TYPE: redis",
         "resources:\n  requests:\n    cpu: 250m\n    memory: 512Mi\n  limits:\n    memory: 2Gi",
     ):
         require_text(premium_forgejo_text, needle, f"premium Forgejo profile must include {needle.splitlines()[0]}")
@@ -877,6 +935,177 @@ def main() -> None:
             needle,
             f"premium CloudNativePG operator profile must include {needle.splitlines()[0]}",
         )
+
+    premium_platform_postgres_text = read(premium_platform_postgres_cluster)
+    for needle in (
+        "kind: Cluster",
+        "name: platform-postgres",
+        "namespace: platform-databases",
+        "instances: 3",
+        "database: forgejo",
+        "owner: forgejo",
+        "name: forgejo-database",
+        "managed:\n    roles:",
+        "name: keycloak",
+        "login: true",
+        "name: keycloak-database",
+        "storageClass: longhorn-critical",
+        "enablePodMonitor: true",
+    ):
+        require_text(
+            premium_platform_postgres_text,
+            needle,
+            f"premium platform PostgreSQL cluster must include {needle.splitlines()[0]}",
+        )
+
+    premium_platform_valkey_text = read(premium_platform_valkey_values)
+    for needle in (
+        "architecture: replication",
+        "existingSecret: platform-valkey-auth",
+        "existingSecretPasswordKey: valkey-password",
+        "replicaCount: 3",
+        "sentinel:\n  enabled: true",
+        "quorum: 2",
+        "createPrimary: true",
+        "storageClass: longhorn-critical",
+        "size: 8Gi",
+        "serviceMonitor:\n    enabled: true",
+    ):
+        require_text(
+            premium_platform_valkey_text,
+            needle,
+            f"premium platform Valkey profile must include {needle.splitlines()[0]}",
+        )
+
+    premium_kyverno_text = read(premium_kyverno_values)
+    for needle in (
+        "crds:\n  install: true",
+        "admissionController:\n  replicas: 3",
+        "backgroundController:\n  replicas: 2",
+        "cleanupController:\n  replicas: 2",
+        "reportsController:\n  replicas: 2",
+        "serviceMonitor:\n    enabled: true",
+        "release: monitoring",
+    ):
+        require_text(
+            premium_kyverno_text,
+            needle,
+            f"premium Kyverno profile must include {needle.splitlines()[0]}",
+        )
+
+    premium_tetragon_text = read(premium_tetragon_values)
+    for needle in (
+        "priorityClassName: system-node-critical",
+        "hostNetwork: true",
+        "dnsPolicy: Default",
+        "repository: quay.io/cilium/tetragon",
+        "tag: v1.6.0",
+        "resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
+        "exportFilePerm: \"600\"",
+        "exportRateLimit: 5000",
+        "redactionFilters: |-",
+        "serviceMonitor:\n      enabled: true",
+        "release: monitoring",
+        "enablePolicyFilter: true",
+        "enableProcessCred: true",
+        "enableProcessNs: true",
+        "tetragonOperator:\n  enabled: true\n  replicas: 2",
+        "repository: quay.io/cilium/tetragon-operator",
+        "failoverLease:\n    enabled: true",
+        "installMethod: helm",
+        "rthooks:\n  enabled: false",
+    ):
+        require_text(
+            premium_tetragon_text,
+            needle,
+            f"premium Tetragon profile must include {needle.splitlines()[0]}",
+        )
+
+    premium_minio_text = read(premium_minio_values)
+    for needle in (
+        "mode: distributed",
+        "existingSecret: minio-root",
+        "rootUserSecretKey: root-user",
+        "rootPasswordSecretKey: root-password",
+        "replicaCount: 4",
+        "storageClass: longhorn-critical",
+        "prometheusAuthType: public",
+        "serviceMonitor:\n    enabled: true",
+    ):
+        require_text(
+            premium_minio_text,
+            needle,
+            f"premium MinIO profile must include {needle.splitlines()[0]}",
+        )
+
+    premium_keycloak_text = read(premium_keycloak_values)
+    for needle in (
+        "repository: bitnami/keycloak",
+        "tag: 26.3.3-debian-12-r0",
+        "existingSecret: keycloak-admin",
+        "passwordSecretKey: admin-password",
+        "production: true",
+        "proxyHeaders: xforwarded",
+        "hostnameStrict: true",
+        "replicaCount: 2",
+        "podAntiAffinityPreset: hard",
+        "pdb:\n  create: true\n  minAvailable: 1",
+        "postgresql:\n  enabled: false",
+        "host: platform-postgres-rw.platform-databases.svc.cluster.local",
+        "user: keycloak",
+        "database: keycloak",
+        "existingSecret: keycloak-database",
+        "hostname: sso.<PLATFORM_DOMAIN>",
+        "ingressClassName: traefik",
+        "secretName: keycloak-tls",
+        "networkPolicy:\n  enabled: true",
+        "serviceMonitor:\n    enabled: true",
+    ):
+        require_text(
+            premium_keycloak_text,
+            needle,
+            f"premium Keycloak profile must include {needle.splitlines()[0]}",
+        )
+
+    premium_external_secrets_text = read(premium_external_secrets_values)
+    for needle in (
+        "installCRDs: true",
+        "replicaCount: 2",
+        "leaderElect: true",
+        "podDisruptionBudget:\n  enabled: true\n  minAvailable: 1",
+        "serviceMonitor:\n  enabled: true",
+        "renderMode: skipIfMissing",
+        "release: monitoring",
+        "webhook:\n  replicaCount: 2\n  failurePolicy: Fail",
+        "certController:\n  replicaCount: 2",
+    ):
+        require_text(
+            premium_external_secrets_text,
+            needle,
+            f"premium External Secrets profile must include {needle.splitlines()[0]}",
+        )
+
+    premium_openbao_text = read(premium_openbao_values)
+    for needle in (
+        "server:\n  enabled: true",
+        "dataStorage:\n    enabled: true\n    size: 20Gi\n    storageClass: longhorn-critical",
+        "persistentVolumeClaimRetentionPolicy:\n      whenDeleted: Retain\n      whenScaled: Retain",
+        "auditStorage:\n    enabled: true\n    size: 10Gi\n    storageClass: longhorn-critical",
+        "standalone:\n    enabled: false",
+        "ha:\n    enabled: true\n    replicas: 3",
+        "raft:\n      enabled: true\n      setNodeId: true",
+        "storage \"raft\"",
+        "service_registration \"kubernetes\"",
+        "disruptionBudget:\n    enabled: true\n    maxUnavailable: 1",
+        "serverTelemetry:\n  serviceMonitor:\n    enabled: true",
+        "grafanaDashboard:\n    enabled: true",
+    ):
+        require_text(
+            premium_openbao_text,
+            needle,
+            f"premium OpenBao profile must include {needle.splitlines()[0]}",
+        )
+
     for harbor_values, label in (
         (base_harbor_values, "base Harbor profile"),
         (premium_harbor_values, "premium Harbor profile"),
@@ -889,7 +1118,6 @@ def main() -> None:
             "persistence:\n  enabled: true",
             "imageChartStorage:\n    type: filesystem",
             "database:\n  type: internal\n  internal:\n    resources:",
-            "redis:\n  type: internal\n  internal:\n    resources:",
             "existingSecretAdminPassword: harbor-admin",
             "existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD",
             "existingSecretSecretKey: harbor-secret-key",
@@ -898,6 +1126,11 @@ def main() -> None:
             require_text(harbor_text, needle, f"{label} must include {needle.splitlines()[0]}")
 
     base_harbor_text = read(base_harbor_values)
+    require_text(
+        base_harbor_text,
+        "redis:\n  type: internal\n  internal:\n    resources:",
+        "base Harbor profile must keep internal Redis as the template default",
+    )
     for needle in (
         "storageClass: <HARBOR_STORAGE_CLASS>",
         "size: <HARBOR_REGISTRY_SIZE>",
@@ -917,6 +1150,9 @@ def main() -> None:
         "  controller:\n    resources:",
         "trivy:\n  enabled: true\n  replicas: 1\n  resources:",
         "exporter:\n  resources:",
+        "redis:\n  type: external",
+        "addr: platform-valkey-primary.platform-cache.svc.cluster.local:6379",
+        "existingSecret: harbor-redis",
     ):
         require_text(premium_harbor_text, needle, f"premium Harbor profile must include {needle.splitlines()[0]}")
     base_monitoring_text = read(base_monitoring_values)
@@ -1302,7 +1538,7 @@ def main() -> None:
         )
     require_text(
         health_text,
-        "generated Harbor/Forgejo/Woodpecker/Grafana/Loki/Velero/CloudNativePG app secrets exist with required keys",
+        "generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey app secrets exist with required keys",
         "platform-app-health success message must include generated app secret readiness",
     )
     require_text(
@@ -1415,6 +1651,14 @@ def main() -> None:
     for needle in (
         "HARBOR_ADMIN_PASSWORD",
         "secretKey",
+        "PLATFORM_VALKEY_AUTH_SECRET_NAME",
+        "PLATFORM_VALKEY_PASSWORD_KEY",
+        "platform_valkey_auth_secret_name_effective",
+        "platform_valkey_password_key_effective",
+        "platform-valkey-not-required-by-platform-app-health-required-apps",
+        "MINIO_ROOT_SECRET_NAME",
+        "platform_minio_root_secret_name_effective",
+        "minio-not-required-by-platform-app-health-required-apps",
         "PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS",
         "platform_app_health_harbor_production_secrets_effective",
         "platform_harbor_database_secret_name_effective",
@@ -1424,11 +1668,15 @@ def main() -> None:
         "REGISTRY_STORAGE_S3_SECRETKEY",
         "harbor-production-secret-contracts-disabled",
         "FORGEJO_DATABASE_SECRET_NAME",
+        "FORGEJO_REDIS_MODE",
         "FORGEJO_REDIS_SECRET_NAME",
         "PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS",
         "platform_app_health_forgejo_production_secrets_effective",
         "platform_forgejo_database_secret_name_effective",
+        "platform_forgejo_redis_mode_effective",
         "platform_forgejo_redis_secret_name_effective",
+        "username password",
+        "forgejo-redis-secret-contract-disabled",
         "forgejo-production-secret-contracts-disabled",
         "WOODPECKER_FORGEJO_CLIENT",
         "WOODPECKER_FORGEJO_SECRET",
@@ -2367,6 +2615,50 @@ def main() -> None:
         fail("validate target must invoke the portable validation runner")
     if "SHELL := bash" not in makefile_text:
         fail("Makefile must use bash as the recipe shell without embedding shell arguments in SHELL")
+    if "security-scan:" not in makefile_text:
+        fail("Makefile is missing security-scan target")
+    if "bash scripts/security-scan.sh" not in makefile_text:
+        fail("security-scan target must invoke scripts/security-scan.sh")
+    if "supply-chain-posture:" not in makefile_text:
+        fail("Makefile is missing supply-chain-posture target")
+    if "bash scripts/supply-chain-posture.sh" not in makefile_text:
+        fail("supply-chain-posture target must invoke scripts/supply-chain-posture.sh")
+    security_scan_text = read(security_scan_script)
+    for needle in (
+        "set -euo pipefail",
+        "require_tool trivy",
+        "require_tool gitleaks",
+        "require_tool semgrep",
+        "TRIVY_SEVERITY",
+        "TRIVY_EXIT_CODE",
+        "SEMGREP_CONFIG",
+        "${ROOT}/.semgrep.yml",
+        "trivy_args",
+        "gitleaks_args",
+        "semgrep_args",
+    ):
+        require_text(security_scan_text, needle, f"security scan wrapper must include {needle}")
+    supply_chain_posture_text = read(supply_chain_posture_script)
+    for needle in (
+        "set -euo pipefail",
+        "require_tool syft",
+        "spdx-json",
+        "scorecard --local",
+        "SCORECARD_REPO",
+        "COSIGN_IMAGE",
+        "COSIGN_PUBLIC_KEY",
+        "cosign verify",
+        "rendered/supply-chain",
+    ):
+        require_text(supply_chain_posture_text, needle, f"supply-chain posture wrapper must include {needle}")
+    for config_path, required_needles in (
+        (gitleaks_config, ("[extend]", "useDefault = true", "allowlists")),
+        (semgrep_config, ("rules:", "shell-curl-pipe-shell", "kubernetes-latest-image-tag", "kubernetes-privileged-container")),
+        (trivy_config, ("scanners:", "vuln", "secret", "misconfig", "skip-dirs:")),
+    ):
+        config_text = read(config_path)
+        for needle in required_needles:
+            require_text(config_text, needle, f"{config_path.relative_to(root)} must include {needle}")
     for needle in (
         "VALIDATION_SCRIPTS",
         "PYTHONDONTWRITEBYTECODE",
@@ -4317,6 +4609,9 @@ def main() -> None:
     readme_text = read(root / "README.md")
     for needle in (
         "Cosign + Renovate supply-chain helpers",
+        "make supply-chain-posture",
+        "OpenSSF Scorecard",
+        "SPDX SBOM",
         "renovate.json",
         "verify-signed-images.example.yaml",
     ):
@@ -4325,6 +4620,9 @@ def main() -> None:
     for needle in (
         "Renovate",
         "Cosign",
+        "Syft",
+        "OpenSSF Scorecard",
+        "make supply-chain-posture",
         "image signature",
         "dependency update",
     ):
@@ -4333,6 +4631,9 @@ def main() -> None:
     for needle in (
         "renovate.json",
         "Cosign",
+        "Syft",
+        "OpenSSF Scorecard",
+        "make supply-chain-posture",
         "verify-signed-images.example.yaml",
         "pinDigests",
     ):
@@ -4745,6 +5046,7 @@ def main() -> None:
         "VELERO_CREDENTIALS_SECRET_NAME",
         "CNPG_OBJECT_STORE_SECRET_NAME",
         "CNPG_RENDER_POSTGRES_CLUSTER",
+        "CNPG_BACKUP_ENABLED",
         "WOODPECKER_DATABASE_MODE",
         "WOODPECKER_DATABASE_SECRET_NAME",
         "WOODPECKER_IMAGE_TAG",
@@ -4763,6 +5065,13 @@ def main() -> None:
         "HARBOR_S3_BUCKET",
         "HARBOR_S3_SECRET_NAME",
         "OBJECT_STORAGE_ENDPOINT",
+        "PLATFORM_VALKEY_AUTH_SECRET_NAME",
+        "PLATFORM_VALKEY_PASSWORD_KEY",
+        "PLATFORM_VALKEY_REPLICA_COUNT",
+        "PLATFORM_VALKEY_PRIMARY_HOST",
+        "MINIO_ROOT_SECRET_NAME",
+        "MINIO_REPLICA_COUNT",
+        "MINIO_DATA_SIZE",
         "FORGEJO_DATABASE_MODE",
         "FORGEJO_DATABASE_SECRET_NAME",
         "FORGEJO_DATABASE_SSL_MODE",
@@ -4778,6 +5087,8 @@ def main() -> None:
     ):
         require_text(renderer_text, needle, f"private values renderer must cover {needle}")
     for needle in (
+        "render_platform_valkey",
+        "render_minio",
         "render_loki",
         "render_velero",
         "render_real_premium_profile",
@@ -4788,6 +5099,14 @@ def main() -> None:
         "platform-test-velero",
         "platform-test-cnpg",
         "cnpg-object-test",
+        "platform-valkey-test",
+        "valkey-password-test",
+        "createPrimary: true",
+        "minio-root-test",
+        "root-password-test",
+        "MINIO_REPLICA_COUNT",
+        "MINIO_DATA_SIZE",
+        "distributed MinIO",
         "FORGEJO_DATABASE_MODE",
         "forgejo-db-test",
         "forgejo-redis-test",
@@ -4846,6 +5165,9 @@ def main() -> None:
         "HARBOR_DATABASE_SECRET_NAME",
         "HARBOR_REDIS_SECRET_NAME",
         "HARBOR_S3_SECRET_NAME",
+        "PLATFORM_VALKEY_AUTH_SECRET_NAME",
+        "platform-valkey-custom",
+        "valkey-password-custom",
         "REGISTRY_STORAGE_S3_ACCESSKEY",
         "REGISTRY_STORAGE_S3_SECRETKEY",
         "FORGEJO_DATABASE_SECRET_NAME",
@@ -5053,6 +5375,7 @@ def main() -> None:
         "ALLOWED_NO_LOG_TASKS",
         "REQUIRED_VISIBLE_TASKS",
         "Register private Git repository credentials when provided",
+        "Generate or preserve shared platform Valkey auth secret",
         "Generate or preserve Harbor bootstrap secrets",
         "Generate or preserve Grafana admin credentials secret",
         "Generate or preserve Grafana database password secret",
@@ -5069,6 +5392,19 @@ def main() -> None:
             f"Ansible no_log contract self-test must cover {needle}",
         )
     for needle in (
+        "Generate or preserve shared platform Valkey auth secret",
+        "PLATFORM_VALKEY_PASSWORD",
+        "PLATFORM_VALKEY_AUTO_GENERATE",
+        "platform-cache",
+        "platform-valkey-auth",
+        "valkey-password",
+        "Generate or preserve MinIO root credentials secret",
+        "MINIO_ROOT_USER",
+        "MINIO_ROOT_PASSWORD",
+        "MINIO_ROOT_AUTO_GENERATE",
+        "object-storage",
+        "minio-root",
+        "root-password",
         "Generate or preserve Loki object storage credentials secret",
         "Generate or preserve Velero cloud credentials secret",
         "Generate or preserve Woodpecker database datasource secret",
@@ -5273,13 +5609,40 @@ def main() -> None:
         for needle in (
             "CNPG_OBJECT_STORE_SECRET_NAME=cnpg-object-store",
             "CNPG_BACKUP_DESTINATION=s3://platform-cnpg-backups/platform-postgres",
-            "CNPG_RENDER_POSTGRES_CLUSTER=false",
+            "CNPG_RENDER_POSTGRES_CLUSTER=true",
+            "CNPG_BACKUP_ENABLED=false",
             "PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=false",
             "CNPG_S3_ACCESS_KEY_ID",
             "CNPG_S3_SECRET_ACCESS_KEY",
         ):
             if needle not in env_text:
                 fail(f"{env_example.relative_to(root)} must document CloudNativePG private rendering/secret value: {needle}")
+        for needle in (
+            "FORGEJO_REDIS_MODE=redis",
+            "FORGEJO_REDIS_SECRET_NAME=forgejo-redis",
+            "PLATFORM_VALKEY_AUTH_SECRET_NAME=platform-valkey-auth",
+            "PLATFORM_VALKEY_PASSWORD_KEY=valkey-password",
+            "PLATFORM_VALKEY_PRIMARY_HOST=platform-valkey-primary.platform-cache.svc.cluster.local",
+            "PLATFORM_VALKEY_REPLICA_COUNT=3",
+            "PLATFORM_VALKEY_AUTO_GENERATE=true",
+            "HARBOR_REDIS_MODE=external",
+            "HARBOR_REDIS_ADDR=platform-valkey-primary.platform-cache.svc.cluster.local:6379",
+            "HARBOR_REDIS_SECRET_NAME=harbor-redis",
+        ):
+            if needle not in env_text:
+                fail(f"{env_example.relative_to(root)} must document shared Valkey private rendering/secret value: {needle}")
+        for needle in (
+            "MINIO_ROOT_SECRET_NAME=minio-root",
+            "MINIO_ROOT_USER=platform-admin",
+            "MINIO_ROOT_AUTO_GENERATE=true",
+            "MINIO_DATA_SIZE=50Gi",
+            "MINIO_STORAGE_CLASS=longhorn-critical",
+            "MINIO_REPLICA_COUNT=4",
+            "MINIO_ZONES=1",
+            "MINIO_DRIVES_PER_NODE=1",
+        ):
+            if needle not in env_text:
+                fail(f"{env_example.relative_to(root)} must document MinIO private rendering/secret value: {needle}")
     seed_env_text = read(seed_git_env_example)
     if "PLATFORM_SEED_SYNC_PUSH_ORIGIN=false" not in seed_env_text:
         fail("seed-git.env.example must keep source remote push disabled by default")

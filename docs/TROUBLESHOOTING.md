@@ -47,9 +47,9 @@ to logging service health or service routing; Velero `BackupStorageLocation`
 failures point to backup object storage credentials, bucket policy, endpoint
 reachability, or provider configuration; Velero backup schedule failures point
 to missing or paused scheduled backups; generated app secret contract failures
-point to missing Harbor, Forgejo, Woodpecker, Grafana, Loki, or Velero Secrets
-or missing required keys, including Forgejo external PostgreSQL and Redis
-Secrets when `PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true` and the
+point to missing Harbor, Forgejo, Woodpecker, Keycloak, Grafana, Loki, or Velero Secrets
+or missing required keys, including the Forgejo SQL password Secret and
+optional Redis Secret when `PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true` and the
 Grafana external PostgreSQL password Secret when
 `PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET=true`; Argo CD or Woodpecker ClusterIP failures point to CNI, kube-proxy,
 firewalld, or node-to-pod networking. The service-path section checks both the
@@ -196,7 +196,7 @@ PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE=false make platform-app-health
 PLATFORM_APP_HEALTH_VELERO_SCHEDULES=false make platform-app-health
 ```
 
-When Harbor, Forgejo, Woodpecker, Grafana, Loki, Velero, or CloudNativePG are required, `platform-app-health`
+When Harbor, Forgejo, Woodpecker, Keycloak, Grafana, Loki, Velero, or CloudNativePG are required, `platform-app-health`
 also verifies the generated app secret contracts created by
 `make platform-app-secrets`. It checks the expected Secret names and keys,
 including Woodpecker OAuth and `WOODPECKER_DATABASE_DATASOURCE`, without
@@ -210,13 +210,17 @@ For production Harbor, add
 `PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true` so the same gate also
 requires the external PostgreSQL password, external Redis password, and registry
 S3 credential secrets referenced by `HARBOR_DATABASE_MODE=external`,
-`HARBOR_REDIS_MODE=external`, and `HARBOR_STORAGE_MODE=s3`.
+`HARBOR_REDIS_MODE=external`, and `HARBOR_STORAGE_MODE=s3`. In the premium
+default, Harbor's external Redis secret can be derived from shared
+`platform-cache/platform-valkey-auth`; provide a separate Redis password only
+when using a separate Redis or Valkey endpoint.
 
 For production Forgejo, add
 `PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true` so the same gate also
 requires the external PostgreSQL password and Redis URI secrets referenced by
-`FORGEJO_DATABASE_MODE=external`, `FORGEJO_DATABASE_SECRET_NAME`, and
-`FORGEJO_REDIS_SECRET_NAME`.
+`FORGEJO_DATABASE_MODE=postgres`, `FORGEJO_DATABASE_SECRET_NAME`, and
+`FORGEJO_REDIS_SECRET_NAME` when `FORGEJO_REDIS_MODE=redis`. The premium
+default derives that URI from shared `platform-valkey`.
 
 For production Grafana, add
 `PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET=true` so the same gate also
@@ -268,8 +272,8 @@ If a cluster intentionally deploys only part of the stack, override the app,
 namespace, and GUI route lists together. For example:
 
 ```bash
-PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg forgejo woodpecker" \
-PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system forgejo woodpecker longhorn-system metallb-system traefik" \
+PLATFORM_APP_HEALTH_REQUIRED_APPS="cert-manager trust-manager metallb traefik longhorn cloudnativepg platform-postgres platform-valkey forgejo woodpecker" \
+PLATFORM_APP_HEALTH_NAMESPACES="argocd cert-manager cnpg-system platform-databases platform-cache forgejo woodpecker longhorn-system metallb-system traefik" \
 PLATFORM_APP_HEALTH_GUI_APPS="argocd forgejo woodpecker" \
 make platform-app-health
 ```
@@ -523,14 +527,15 @@ make platform-app-secrets
 PLATFORM_PROFILE=premium-3node make platform-profile-check
 ```
 
-Set Forgejo dependency, Woodpecker datasource, Harbor dependency, Grafana database, and
+Set Forgejo dependency, Woodpecker datasource, Keycloak admin/database, Harbor dependency, Grafana database, and
 object-storage values in ignored env files or your secret manager before running
 `platform-app-secrets`:
 `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
 `WOODPECKER_DATABASE_DATASOURCE`, or `WOODPECKER_DATABASE_HOST` plus
 `WOODPECKER_DATABASE_PASSWORD`, plus `HARBOR_DATABASE_PASSWORD`,
 `HARBOR_REDIS_PASSWORD`, `HARBOR_S3_ACCESS_KEY_ID`,
-`HARBOR_S3_SECRET_ACCESS_KEY`, `GRAFANA_DATABASE_PASSWORD`,
+`HARBOR_S3_SECRET_ACCESS_KEY`, `KEYCLOAK_ADMIN_PASSWORD`,
+`KEYCLOAK_DATABASE_PASSWORD`, `GRAFANA_DATABASE_PASSWORD`,
 `LOKI_S3_ACCESS_KEY_ID`,
 `LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`,
 `CNPG_S3_ACCESS_KEY_ID`, `CNPG_S3_SECRET_ACCESS_KEY`, or the shared
@@ -546,13 +551,16 @@ Set `PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true`,
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true`, and
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=true` when enabling Harbor
 external PostgreSQL, Redis, and S3 registry storage.
-Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` and
-`PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true` when enabling
-`FORGEJO_DATABASE_MODE=external`; the default secret names are
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` when enabling an
+external Forgejo SQL backend. Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true`
+only when `FORGEJO_REDIS_MODE=redis`; the default secret names are
 `FORGEJO_DATABASE_SECRET_NAME=forgejo-database` and
 `FORGEJO_REDIS_SECRET_NAME=forgejo-redis`.
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` when enabling
 `GRAFANA_DATABASE_MODE=postgres`.
+Set `PLATFORM_APP_SECRET_REQUIRE_KEYCLOAK_DATABASE=true` when you require a
+specific Keycloak database password instead of generated first-deploy
+credentials.
 
 If Argo CD controller logs show timeouts to the Kubernetes API service IP or an
 Argo CD Redis ClusterIP, the pod-to-service path is unhealthy. First deployment
