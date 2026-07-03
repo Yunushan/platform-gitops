@@ -59,6 +59,7 @@ required = [
     'scripts/test_profile_checker.py',
     'scripts/test_deployable_renderer.py',
     'scripts/test_gitops_selection_helper.py',
+    'scripts/test_bootstrap_env_loader.py',
     'scripts/test_private_values_renderer.py',
     'scripts/test_platform_secret_contract.py',
     'scripts/test_policy_examples.py',

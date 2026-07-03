@@ -2,12 +2,9 @@
 set -euo pipefail
 
 env_file="${PLATFORM_FIRST_DEPLOY_ENV_FILE:-private/first-deploy.env}"
-if [[ -f "${env_file}" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "${env_file}"
-  set +a
-fi
+# shellcheck source=scripts/bootstrap/load-env-file.sh
+. scripts/bootstrap/load-env-file.sh
+load_env_file "${env_file}"
 
 require_env() {
   local name="$1"

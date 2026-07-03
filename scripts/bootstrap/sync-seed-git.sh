@@ -2,12 +2,9 @@
 set -euo pipefail
 
 env_file="${PLATFORM_SEED_DEPLOY_ENV_FILE:-private/seed-git.env}"
-if [[ -f "${env_file}" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "${env_file}"
-  set +a
-fi
+# shellcheck source=scripts/bootstrap/load-env-file.sh
+. scripts/bootstrap/load-env-file.sh
+load_env_file "${env_file}"
 
 PLATFORM_DEPLOY_BRANCH="${PLATFORM_DEPLOY_BRANCH:-main}"
 PLATFORM_PROFILE="${PLATFORM_PROFILE:-premium-3node}"
