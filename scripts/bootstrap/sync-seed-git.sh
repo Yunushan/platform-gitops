@@ -20,6 +20,7 @@ PLATFORM_SEED_GIT_FORCE_WITH_LEASE="${PLATFORM_SEED_GIT_FORCE_WITH_LEASE:-true}"
 PLATFORM_SEED_SYNC_PULL="${PLATFORM_SEED_SYNC_PULL:-true}"
 PLATFORM_SEED_SYNC_PUSH_ORIGIN="${PLATFORM_SEED_SYNC_PUSH_ORIGIN:-false}"
 PLATFORM_SEED_SYNC_ENSURE_SERVICE="${PLATFORM_SEED_SYNC_ENSURE_SERVICE:-true}"
+PLATFORM_AUTO_RENDER_PRIVATE_VALUES="${PLATFORM_AUTO_RENDER_PRIVATE_VALUES:-false}"
 PLATFORM_AUTO_COMMIT="${PLATFORM_AUTO_COMMIT:-false}"
 PLATFORM_AUTO_COMMIT_MESSAGE="${PLATFORM_AUTO_COMMIT_MESSAGE:-Sync platform GitOps deployment}"
 PLATFORM_VALIDATE_BEFORE_PUSH="${PLATFORM_VALIDATE_BEFORE_PUSH:-true}"
@@ -56,7 +57,11 @@ export PLATFORM_GITOPS_PLACEHOLDER_MODE
 
 git rev-parse --is-inside-work-tree >/dev/null
 
-if [[ -n "$(git status --porcelain)" ]]; then
+commit_or_fail_dirty_worktree() {
+  if [[ -z "$(git status --porcelain)" ]]; then
+    return
+  fi
+
   if [[ "${PLATFORM_AUTO_COMMIT}" == "true" ]]; then
     git add -A
     if ! git diff --cached --quiet; then
@@ -67,7 +72,9 @@ if [[ -n "$(git status --porcelain)" ]]; then
     echo "Commit them manually, or rerun with PLATFORM_AUTO_COMMIT=true." >&2
     exit 1
   fi
-fi
+}
+
+commit_or_fail_dirty_worktree
 
 if [[ "${PLATFORM_SEED_SYNC_PULL}" == "true" ]]; then
   if git remote get-url "${PLATFORM_SOURCE_REMOTE_NAME}" >/dev/null 2>&1; then
@@ -75,6 +82,11 @@ if [[ "${PLATFORM_SEED_SYNC_PULL}" == "true" ]]; then
   else
     echo "Source remote ${PLATFORM_SOURCE_REMOTE_NAME} does not exist; skipping source remote pull." >&2
   fi
+fi
+
+if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
+  "${PYTHON_BIN}" scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
+  commit_or_fail_dirty_worktree
 fi
 
 if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then

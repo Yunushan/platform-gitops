@@ -27,6 +27,7 @@ RUNNER_SURFACE_FILES = [
 ALLOWED_EXTRA_SCRIPTS = {
     Path("scripts/bootstrap/private-first-deploy.sh"): {"scripts/render_private_platform_values.py"},
     Path("scripts/bootstrap/seed-first-deploy.sh"): {"scripts/render_private_platform_values.py"},
+    Path("scripts/bootstrap/sync-seed-git.sh"): {"scripts/render_private_platform_values.py"},
 }
 
 
