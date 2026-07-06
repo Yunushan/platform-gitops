@@ -2915,10 +2915,57 @@
       run_once: true
       when: platform_app_health_failure_diagnostics is defined and platform_app_health_failure_diagnostics.stdout_lines is defined
 
+    - name: Build compact platform app health failure summary
+      ansible.builtin.set_fact:
+        platform_app_health_failure_summary: |-
+          {% set probes = [
+            ('Argo CD applications', hostvars[rke2_first_server].platform_app_health_argocd_app_probe | default(none)),
+            ('Argo CD source repositories', hostvars[rke2_first_server].platform_app_health_argocd_source_probe | default(none)),
+            ('platform pod readiness', hostvars[rke2_first_server].platform_app_health_pod_probe | default(none)),
+            ('Argo CD runtime', hostvars[rke2_first_server].platform_app_health_argocd_runtime_probe | default(none)),
+            ('HA replica coverage', hostvars[rke2_first_server].platform_app_health_ha_replica_probe | default(none)),
+            ('Woodpecker image tags', hostvars[rke2_first_server].platform_app_health_woodpecker_image_probe | default(none)),
+            ('cert-manager Certificates', hostvars[rke2_first_server].platform_app_health_certificate_probe | default(none)),
+            ('trust-manager Bundles', hostvars[rke2_first_server].platform_app_health_trust_bundle_probe | default(none)),
+            ('step-ca API', hostvars[rke2_first_server].platform_app_health_step_ca_api_probe | default(none)),
+            ('CloudNativePG clusters', hostvars[rke2_first_server].platform_app_health_cnpg_cluster_probe | default(none)),
+            ('Loki API', hostvars[rke2_first_server].platform_app_health_loki_api_probe | default(none)),
+            ('Velero backup storage', hostvars[rke2_first_server].platform_app_health_velero_backup_storage_probe | default(none)),
+            ('Velero schedules', hostvars[rke2_first_server].platform_app_health_velero_schedule_probe | default(none)),
+            ('generated app secrets', hostvars[rke2_first_server].platform_app_health_app_secret_probe | default(none)),
+            ('StorageClasses', hostvars[rke2_first_server].platform_app_health_storage_class_probe | default(none)),
+            ('PVCs', hostvars[rke2_first_server].platform_app_health_pvc_probe | default(none)),
+            ('Longhorn runtime', hostvars[rke2_first_server].platform_app_health_longhorn_runtime_probe | default(none)),
+            ('GUI backend endpoints', hostvars[rke2_first_server].platform_app_health_ingress_backend_probe | default(none)),
+            ('controller app VIP ingress', hostvars[rke2_first_server].platform_app_health_controller_ingress_probe | default(none)),
+            ('Harbor registry API', hostvars[rke2_first_server].platform_app_health_registry_api_probe | default(none)),
+            ('Grafana/Prometheus API', hostvars[rke2_first_server].platform_app_health_monitoring_api_probe | default(none)),
+            ('HTTP to HTTPS redirect', hostvars[rke2_first_server].platform_app_health_http_redirect_probe | default(none)),
+            ('host ClusterIP service paths', platform_app_health_service_probe | default(none)),
+            ('pod-pinned ClusterIP service paths', hostvars[rke2_first_server].platform_app_health_pod_service_probe | default(none))
+          ] %}
+          {% for label, probe in probes %}
+          {% if probe is mapping and probe.rc is defined and (probe.rc | int) != 0 %}
+          ===== {{ label }} =====
+          rc={{ probe.rc | default('not run') }}
+          {{ probe.stdout | default('not collected') }}
+          {% endif %}
+          {% endfor %}
+          {% if (platform_app_health_node_ingress_strict_effective | bool) and (platform_app_health_ingress_probe is defined) and (platform_app_health_ingress_probe.rc is defined) and (platform_app_health_ingress_probe.rc | int) != 0 %}
+          ===== strict node-originated app VIP ingress =====
+          rc={{ platform_app_health_ingress_probe.rc | default('not run') }}
+          {{ platform_app_health_ingress_probe.stdout | default('not collected') }}
+          {% endif %}
+      run_once: true
+      when: ansible_play_hosts | map('extract', hostvars, 'platform_app_health_failed') | map('bool') | select('equalto', true) | list | length > 0
+
     - name: Stop when platform app health checks fail
       ansible.builtin.fail:
         msg: |
           Platform app health verification failed.
+
+          Failed probe summary:
+          {{ platform_app_health_failure_summary | default('not collected') }}
 
           At least one required Argo CD Application, platform namespace,
           Argo CD source repository, Argo CD runtime component/service endpoint, critical HA workload replica contract,
