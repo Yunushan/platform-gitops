@@ -16,6 +16,27 @@ RENDERER_PATH = ROOT / "scripts" / "render_private_platform_values.py"
 APP_SECRETS_PLAYBOOK = ROOT / "ansible" / "playbooks" / "configure-platform-app-secrets.yml"
 PREMIUM_APPS = ROOT / "gitops" / "clusters" / "rke2-main" / "premium-3node" / "apps"
 sys.dont_write_bytecode = True
+RENDERER_ENV_PREFIXES = (
+    "PLATFORM_",
+    "RKE2_",
+    "FORGEJO_",
+    "LONGHORN_",
+    "WOODPECKER_",
+    "HARBOR_",
+    "MONITORING_",
+    "PROMETHEUS_",
+    "ALERTMANAGER_",
+    "GRAFANA_",
+    "OBJECT_STORAGE_",
+    "LOKI_",
+    "BACKUP_",
+    "VELERO_",
+    "CNPG_",
+    "POSTGRES_",
+    "MINIO_",
+    "KEYCLOAK_",
+    "STEP_CA_",
+)
 
 
 CONTRACTS = [
@@ -310,8 +331,16 @@ CONTRACTS = [
 
 @contextmanager
 def patched_env(values: dict[str, str]):
-    previous = {key: os.environ.get(key) for key in values}
+    managed_keys = set(values)
+    managed_keys.update(
+        key
+        for key in os.environ
+        if key.startswith(RENDERER_ENV_PREFIXES)
+    )
+    previous = {key: os.environ.get(key) for key in managed_keys}
     try:
+        for key in managed_keys:
+            os.environ.pop(key, None)
         os.environ.update(values)
         yield
     finally:
@@ -336,6 +365,29 @@ def require_contains(text: str, needle: str, label: str) -> None:
         raise AssertionError(f"{label} is missing {needle!r}")
 
 
+def needle_variants(needle: str) -> set[str]:
+    variants = {needle}
+    if "\n" in needle or '"' in needle:
+        return variants
+    if ": " in needle:
+        key, value = needle.rsplit(": ", 1)
+        if value:
+            variants.add(f'{key}: "{value}"')
+    stripped = needle.lstrip()
+    indent = needle[: len(needle) - len(stripped)]
+    if stripped.startswith("- "):
+        value = stripped[2:]
+        if value:
+            variants.add(f'{indent}- "{value}"')
+    return variants
+
+
+def require_contains_any(text: str, needles: set[str], label: str) -> None:
+    if not any(needle in text for needle in needles):
+        options = ", ".join(repr(needle) for needle in sorted(needles))
+        raise AssertionError(f"{label} is missing one of: {options}")
+
+
 def check_static_values() -> None:
     for contract in CONTRACTS:
         static_file = contract["static_file"]
@@ -343,7 +395,11 @@ def check_static_values() -> None:
             continue
         text = static_file.read_text(encoding="utf-8")
         for needle in contract["static_needles"]:
-            require_contains(text, needle, f"{static_file.relative_to(ROOT)} for {contract['label']}")
+            require_contains_any(
+                text,
+                needle_variants(needle),
+                f"{static_file.relative_to(ROOT)} for {contract['label']}",
+            )
 
 
 def check_renderer_and_secret_playbook() -> None:
