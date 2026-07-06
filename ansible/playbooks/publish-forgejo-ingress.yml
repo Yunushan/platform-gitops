@@ -49,8 +49,83 @@
         executable: /bin/bash
       register: platform_forgejo_backend_ready
       changed_when: false
+      failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
+
+    - name: Collect Forgejo backend diagnostics after readiness failure
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        echo "===== Forgejo resources ====="
+        "$K" --kubeconfig "$C" -n forgejo get pods,pvc,svc,endpoints,endpointslice,ingress -o wide || true
+
+        echo "===== Forgejo pod states ====="
+        "$K" --kubeconfig "$C" -n forgejo get pods \
+          -l app.kubernetes.io/name=forgejo \
+          -o jsonpath='{range .items[*]}pod:{.metadata.name}{" node="}{.spec.nodeName}{" phase="}{.status.phase}{" podIP="}{.status.podIP}{"\n"}{range .status.initContainerStatuses[*]}  init:{.name} ready={.ready} restart={.restartCount} reason={.state.waiting.reason}{.state.terminated.reason} exit={.state.terminated.exitCode}{"\n"}{end}{range .status.containerStatuses[*]}  container:{.name} ready={.ready} restart={.restartCount} reason={.state.waiting.reason}{.state.terminated.reason}{"\n"}{end}{end}' || true
+        echo
+
+        pods="$("$K" --kubeconfig "$C" -n forgejo get pods \
+          -l app.kubernetes.io/name=forgejo \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        for pod in ${pods}; do
+          echo "===== describe pod/${pod} ====="
+          "$K" --kubeconfig "$C" -n forgejo describe "pod/${pod}" || true
+
+          init_containers="$("$K" --kubeconfig "$C" -n forgejo get "pod/${pod}" \
+            -o jsonpath='{range .spec.initContainers[*]}{.name}{"\n"}{end}' 2>/dev/null || true)"
+          for container in ${init_containers}; do
+            echo "===== current logs pod/${pod} init/${container} ====="
+            "$K" --kubeconfig "$C" -n forgejo logs "pod/${pod}" \
+              -c "${container}" --tail=160 || true
+            echo "===== previous logs pod/${pod} init/${container} ====="
+            "$K" --kubeconfig "$C" -n forgejo logs "pod/${pod}" \
+              -c "${container}" --previous --tail=160 || true
+          done
+        done
+
+        echo "===== Forgejo recent events ====="
+        "$K" --kubeconfig "$C" -n forgejo get events \
+          --sort-by=.lastTimestamp | tail -100 || true
+      args:
+        executable: /bin/bash
+      register: platform_forgejo_backend_failure
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_forgejo_backend_ready.rc != 0
+
+    - name: Stop when Forgejo backend is not ready
+      ansible.builtin.fail:
+        msg: |-
+          Forgejo is not ready yet, so Traefik will return 502/Bad Gateway for
+          https://{{ platform_forgejo_host_effective }}.
+
+          Backend readiness check:
+          rc={{ platform_forgejo_backend_ready.rc | default('not run') }}
+          stdout:
+          {{ platform_forgejo_backend_ready.stdout | default('not run') }}
+          stderr:
+          {{ platform_forgejo_backend_ready.stderr | default('') }}
+
+          Diagnostic summary:
+          {{ platform_forgejo_backend_failure.stdout | default('not collected') }}
+
+          If the diagnostics show Longhorn/PVC attach or mount errors, run:
+          make platform-forgejo-storage-repair
+
+          If this is still an empty first deployment and the PVC is stuck, run:
+          PLATFORM_FORGEJO_RESET_STUCK_PVC=true make platform-forgejo-storage-repair
+
+          If the diagnostics show missing/invalid Forgejo secrets or database
+          credentials, run:
+          make platform-app-secrets
+          make platform-seed-git-sync
+      run_once: true
+      when: platform_forgejo_backend_ready.rc != 0
 
     - name: Annotate Forgejo service for Traefik native load balancing
       ansible.builtin.command:
