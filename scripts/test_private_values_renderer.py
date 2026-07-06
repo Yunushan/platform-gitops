@@ -19,6 +19,27 @@ RENDERER_PATH = ROOT / "scripts/render_private_platform_values.py"
 CHECKER_PATH = ROOT / "scripts/check_gitops_profile.py"
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
 sys.dont_write_bytecode = True
+RENDERER_ENV_PREFIXES = (
+    "PLATFORM_",
+    "RKE2_",
+    "FORGEJO_",
+    "LONGHORN_",
+    "WOODPECKER_",
+    "HARBOR_",
+    "MONITORING_",
+    "PROMETHEUS_",
+    "ALERTMANAGER_",
+    "GRAFANA_",
+    "OBJECT_STORAGE_",
+    "LOKI_",
+    "BACKUP_",
+    "VELERO_",
+    "CNPG_",
+    "POSTGRES_",
+    "MINIO_",
+    "KEYCLOAK_",
+    "STEP_CA_",
+)
 
 
 def load_renderer():
@@ -41,8 +62,16 @@ def load_checker():
 
 @contextmanager
 def patched_env(values: dict[str, str]):
-    previous = {key: os.environ.get(key) for key in values}
+    managed_keys = set(values)
+    managed_keys.update(
+        key
+        for key in os.environ
+        if key.startswith(RENDERER_ENV_PREFIXES)
+    )
+    previous = {key: os.environ.get(key) for key in managed_keys}
     try:
+        for key in managed_keys:
+            os.environ.pop(key, None)
         os.environ.update(values)
         yield
     finally:
