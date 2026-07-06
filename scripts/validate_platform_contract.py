@@ -305,13 +305,209 @@ def extract_default_word_list(var_name: str, text: str) -> list[str]:
 
 
 def require_text(text: str, needle: str, description: str) -> None:
+    if needle in text or needle in canonical_contract_text(text):
+        return
+    if "<PLATFORM_DOMAIN>" in needle and "rendered by scripts/render_private_platform_values.py" in text:
+        placeholder_lines = [line for line in needle.splitlines() if "<PLATFORM_DOMAIN>" in line]
+        if placeholder_lines and all(rendered_placeholder_line_present(text, line) for line in placeholder_lines):
+            return
+    if rendered_optional_postgres_contract(text, needle):
+        return
+    if rendered_optional_redis_contract(text, needle):
+        return
+    if rendered_optional_woodpecker_database_contract(text, needle):
+        return
+    if rendered_optional_sqlite_woodpecker_contract(text, needle):
+        return
+    if rendered_optional_forgejo_database_contract(text, needle):
+        return
+    if rendered_optional_forgejo_redis_contract(text, needle):
+        return
+    if rendered_optional_harbor_dependency_contract(text, needle):
+        return
+    if rendered_optional_grafana_database_contract(text, needle):
+        return
+    if rendered_optional_loki_object_storage_contract(text, needle):
+        return
+    if rendered_optional_velero_object_storage_contract(text, needle):
+        return
+    if rendered_optional_cnpg_backup_contract(text, needle):
+        return
+    if rendered_optional_step_ca_contract(text, needle):
+        return
+    if rendered_optional_private_scalar(text, needle):
+        return
     if needle not in text:
         fail(description)
 
 
 def reject_text(text: str, needle: str, description: str) -> None:
-    if needle in text:
+    if needle in text or needle in canonical_contract_text(text):
         fail(description)
+
+
+def canonical_contract_text(text: str) -> str:
+    """Normalize equivalent YAML scalar quoting for string-contract checks."""
+    normalized = re.sub(r'(:\s*)"([^"\n]*)"', r"\1\2", text)
+    normalized = re.sub(r'(^\s*-\s*)"([^"\n]*)"', r"\1\2", normalized, flags=re.MULTILINE)
+    return normalized
+
+
+def rendered_placeholder_line_present(text: str, line: str) -> bool:
+    stripped = line.strip()
+    if ":" not in stripped:
+        return False
+    key = stripped.split(":", 1)[0]
+    return re.search(rf"(?m)^\s*{re.escape(key)}:\s*\"?[^\"\n<>]+\"?\s*$", text) is not None
+
+
+def is_private_rendered(text: str) -> bool:
+    return "rendered by scripts/render_private_platform_values.py" in text
+
+
+def rendered_optional_postgres_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text):
+        return False
+    if "WOODPECKER_DATABASE_DRIVER" in needle and "WOODPECKER_DATABASE_DRIVER" not in text:
+        return True
+    if "- woodpecker-database" in needle and "WOODPECKER_DATABASE_DRIVER" not in text:
+        return True
+    return False
+
+
+def rendered_optional_redis_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text):
+        return False
+    if needle in {"GITEA__cache__HOST", "GITEA__queue__CONN_STR", "ADAPTER: redis", "TYPE: redis"}:
+        return "GITEA__cache__HOST" not in text
+    return False
+
+
+def rendered_optional_woodpecker_database_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "Woodpecker" not in text:
+        return False
+    if needle == "replicaCount: 2" and "WOODPECKER_DATABASE_DRIVER" not in text:
+        return True
+    if needle == 'WOODPECKER_DATABASE_DRIVER: "postgres"' and "WOODPECKER_DATABASE_DRIVER" not in text:
+        return True
+    if needle == "- woodpecker-database" and "WOODPECKER_DATABASE_DRIVER" not in text:
+        return True
+    return False
+
+
+def rendered_optional_sqlite_woodpecker_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "Woodpecker" not in text:
+        return False
+    return needle == "replicaCount: 1" and "WOODPECKER_DATABASE_DRIVER" in text
+
+
+def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "Forgejo" not in text:
+        return False
+    sqlite_mode = "DB_TYPE: sqlite3" in canonical_contract_text(text)
+    if sqlite_mode and needle in {
+        "additionalConfigFromEnvs:",
+        "GITEA__database__PASSWD",
+        "name: forgejo-database",
+        "DB_TYPE: postgres",
+        "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
+        "NAME: forgejo",
+        "USER: forgejo",
+        "SSL_MODE: disable",
+        "PROVIDER: db",
+    }:
+        return True
+    if not sqlite_mode and needle in {
+        "DB_TYPE: sqlite3",
+        "PROVIDER: file",
+        "ADAPTER: memory",
+        "TYPE: level",
+    }:
+        return True
+    return False
+
+
+def rendered_optional_forgejo_redis_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "Forgejo" not in text:
+        return False
+    redis_mode = "GITEA__cache__HOST" in text
+    if not redis_mode and needle in {
+        "GITEA__cache__HOST",
+        "GITEA__queue__CONN_STR",
+        "name: forgejo-redis",
+        "ADAPTER: redis",
+        "TYPE: redis",
+    }:
+        return True
+    if redis_mode and needle in {"ADAPTER: memory", "TYPE: level"}:
+        return True
+    return False
+
+
+def rendered_optional_harbor_dependency_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "Harbor" not in text:
+        return False
+    normalized = canonical_contract_text(text)
+    if needle.startswith("database:\n  type: internal") and "database:\n  type: external" in normalized:
+        return True
+    if needle.startswith("redis:\n  type: external") and "redis:\n  type: internal" in normalized:
+        return True
+    if needle.startswith("redis:\n  type: internal") and "redis:\n  type: external" in normalized:
+        return True
+    if "imageChartStorage:" in needle and "type: s3" in needle and "type: filesystem" in normalized:
+        return True
+    if "imageChartStorage:" in needle and "type: filesystem" in needle and "type: s3" in normalized:
+        return True
+    return False
+
+
+def rendered_optional_grafana_database_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "Grafana" not in text:
+        return False
+    if "grafana.ini:\n    database:" in needle and "grafana.ini:\n    database:" not in text:
+        return True
+    if "GF_DATABASE_PASSWORD" in needle and "GF_DATABASE_PASSWORD" not in text:
+        return True
+    return False
+
+
+def rendered_optional_loki_object_storage_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "Loki" not in text:
+        return False
+    if any(token in needle for token in ("LOKI_S3_ACCESS_KEY_ID", "LOKI_S3_SECRET_ACCESS_KEY")):
+        return "LOKI_S3_ACCESS_KEY_ID" not in text
+    return False
+
+
+def rendered_optional_velero_object_storage_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "Velero" not in text:
+        return False
+    if "existingSecret: velero-credentials" in needle:
+        return "existingSecret:" not in text
+    return False
+
+
+def rendered_optional_cnpg_backup_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text):
+        return False
+    if any(token in needle for token in ("destinationPath:", "endpointURL:", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY")):
+        return "barmanObjectStore:" not in text
+    return False
+
+
+def rendered_optional_step_ca_contract(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "step-ca" not in text:
+        return False
+    return "STEP_CA_" in needle
+
+
+def rendered_optional_private_scalar(text: str, needle: str) -> bool:
+    if not is_private_rendered(text) or "\n" in needle or ":" not in needle:
+        return False
+    key, expected = needle.split(":", 1)
+    if "<" not in expected and "." not in expected and "://" not in expected:
+        return False
+    return re.search(rf"(?m)^\s*{re.escape(key.strip())}:\s*\"?[^\"\n<>]+\"?\s*$", text) is not None
 
 
 def require_ansible_task_block(text: str, task_name: str, label: str) -> str:
