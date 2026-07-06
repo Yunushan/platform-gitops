@@ -10,7 +10,7 @@
     platform_woodpecker_repair_expected_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_EXPECTED_IMAGE_TAG') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_repair_timeout_effective: "{{ platform_woodpecker_repair_timeout | default(platform_woodpecker_repair_timeout_from_env, true) | default(300, true) | int }}"
-    platform_woodpecker_repair_expected_image_tag_effective: "{{ platform_woodpecker_repair_expected_image_tag | default(platform_woodpecker_repair_expected_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('3.16.0', true) }}"
+    platform_woodpecker_repair_expected_image_tag_effective: "{{ platform_woodpecker_repair_expected_image_tag | default(platform_woodpecker_repair_expected_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
   tasks:
     - name: Show Woodpecker state before repair
       ansible.builtin.shell: |
@@ -140,6 +140,7 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         EXPECTED_TAG="{{ platform_woodpecker_repair_expected_image_tag_effective }}"
+        CANONICAL_EXPECTED_TAG="${EXPECTED_TAG#v}"
         failed=0
         server_seen=0
         agent_seen=0
@@ -148,6 +149,7 @@
           exit 1
         fi
         echo "expected_woodpecker_image_tag=${EXPECTED_TAG}"
+        echo "canonical_expected_woodpecker_image_tag=${CANONICAL_EXPECTED_TAG}"
         pods="$("$K" --kubeconfig "$C" -n woodpecker get pods -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.ready}{","}{.restartCount}{","}{.state.waiting.reason}{";"}{end}{"|"}{range .spec.containers[*]}{.image}{" "}{end}{"\n"}{end}' 2>/dev/null || true)"
         pods_file="$(mktemp)"
         printf '%s\n' "${pods}" > "${pods_file}"
@@ -180,10 +182,13 @@
             failed=1
           fi
           for image in ${images}; do
-            case "${image}" in
-              *"${expected_repo}:${EXPECTED_TAG}") ;;
+            image_tag="${image##*:}"
+            canonical_image_tag="${image_tag#v}"
+            image_repo="${image%:*}"
+            case "${image_repo}:${canonical_image_tag}" in
+              *"${expected_repo}:${CANONICAL_EXPECTED_TAG}") ;;
               *)
-                echo "result=fail reason=woodpecker-image-tag-mismatch role=${role} pod=${pod} image=${image} expected_repo=${expected_repo} expected_tag=${EXPECTED_TAG}"
+                echo "result=fail reason=woodpecker-image-tag-mismatch role=${role} pod=${pod} image=${image} expected_repo=${expected_repo} expected_tag=${EXPECTED_TAG} canonical_expected_tag=${CANONICAL_EXPECTED_TAG}"
                 failed=1
                 ;;
             esac

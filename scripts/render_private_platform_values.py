@@ -826,6 +826,13 @@ agent:
 """
 
 
+def normalize_woodpecker_image_tag(image_tag: str) -> str:
+    tag = image_tag.strip()
+    if tag and tag[0].isdigit():
+        return f"v{tag}"
+    return tag
+
+
 def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     host = require(
         "PLATFORM_WOODPECKER_HOST or platform_ci_host",
@@ -849,7 +856,7 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     storage_class = os.environ.get("WOODPECKER_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
     admin_users = os.environ.get("WOODPECKER_ADMIN_USERS", "admin").strip() or "admin"
     oauth_secret_name = os.environ.get("WOODPECKER_FORGEJO_OAUTH_SECRET_NAME", "woodpecker-forgejo-oauth").strip()
-    image_tag = os.environ.get("WOODPECKER_IMAGE_TAG", "3.16.0").strip() or "3.16.0"
+    image_tag = normalize_woodpecker_image_tag(os.environ.get("WOODPECKER_IMAGE_TAG", "v3.16.0").strip() or "v3.16.0")
     database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "sqlite").strip().lower() or "sqlite"
     database_secret_name = os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip() or "woodpecker-database"
     default_server_replicas = "2" if database_mode in {"postgres", "postgresql", "external"} else "1"

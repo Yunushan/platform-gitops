@@ -457,7 +457,7 @@ platform_step_ca_host=ca.example.test
             "replicaCount: 2",
             "repository: woodpeckerci/woodpecker-server",
             "repository: woodpeckerci/woodpecker-agent",
-            'tag: "3.16.0"',
+            'tag: "v3.16.0"',
             'WOODPECKER_BACKEND_K8S_STORAGE_CLASS: "longhorn-standard"',
         )
         assert_contains(paths["harbor"], "registry.example.test", "harbor-admin-test", "55Gi")
@@ -655,7 +655,7 @@ platform_step_ca_host=ca.example.test
             "replicaCount: 1",
             "repository: woodpeckerci/woodpecker-server",
             "repository: woodpeckerci/woodpecker-agent",
-            'tag: "3.16.0"',
+            'tag: "v3.16.0"',
             '"woodpecker-oauth-test"',
         )
         assert_not_contains(

@@ -927,14 +927,14 @@ def main() -> None:
         base_woodpecker_text,
         "server",
         "woodpeckerci/woodpecker-server",
-        "3.16.0",
+        "v3.16.0",
         "default Woodpecker profile",
     )
     require_woodpecker_role_image_pin(
         base_woodpecker_text,
         "agent",
         "woodpeckerci/woodpecker-agent",
-        "3.16.0",
+        "v3.16.0",
         "default Woodpecker profile",
     )
     require_text(
@@ -979,14 +979,14 @@ def main() -> None:
         premium_woodpecker_text,
         "server",
         "woodpeckerci/woodpecker-server",
-        "3.16.0",
+        "v3.16.0",
         "premium Woodpecker profile",
     )
     require_woodpecker_role_image_pin(
         premium_woodpecker_text,
         "agent",
         "woodpeckerci/woodpecker-agent",
-        "3.16.0",
+        "v3.16.0",
         "premium Woodpecker profile",
     )
     for cert_manager_values, label, replicas in (
@@ -1724,7 +1724,7 @@ def main() -> None:
     )
     for needle in (
         "woodpecker-image-tag-mismatch",
-        "PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG=3.16.0",
+        "PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG=v3.16.0",
         'expected_tag="{{ platform_app_health_woodpecker_image_tag_effective }}"',
     ):
         require_text(
@@ -5315,7 +5315,7 @@ def main() -> None:
         "replicaCount: 1",
         "repository: woodpeckerci/woodpecker-server",
         "repository: woodpeckerci/woodpecker-agent",
-        'tag: "3.16.0"',
+        'tag: "v3.16.0"',
         "SQLite-backed Woodpecker accepted multiple server replicas",
         "Woodpecker renderer accepted a mutable image tag",
         "portal:\\n  replicas: 1\\n  resources:",
@@ -5800,7 +5800,7 @@ def main() -> None:
             fail(f"{env_example.relative_to(root)} must document private hostname safety-scan behavior")
         if "PYTHON=/usr/bin/python3" not in env_text:
             fail(f"{env_example.relative_to(root)} must document the PYTHON interpreter override")
-        if "WOODPECKER_IMAGE_TAG=3.16.0" not in env_text:
+        if "WOODPECKER_IMAGE_TAG=v3.16.0" not in env_text:
             fail(f"{env_example.relative_to(root)} must document the pinned Woodpecker image tag")
         for needle in (
             "CNPG_OBJECT_STORE_SECRET_NAME=cnpg-object-store",

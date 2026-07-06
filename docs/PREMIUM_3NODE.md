@@ -165,7 +165,7 @@ make platform-app-secrets
 
 WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
-WOODPECKER_IMAGE_TAG=3.16.0 \
+WOODPECKER_IMAGE_TAG=v3.16.0 \
 WOODPECKER_SERVER_REPLICAS=2 \
 WOODPECKER_AGENT_REPLICAS=3 \
 make platform-render-private-values
@@ -587,7 +587,7 @@ PLATFORM_APP_HEALTH_HA_REPLICAS=false make platform-app-health
 After an intentional Woodpecker upgrade, set the expected runtime image tag:
 
 ```bash
-PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG=3.16.0 make platform-app-health
+PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG=v3.16.0 make platform-app-health
 ```
 
 To skip only HTTP-to-HTTPS redirect enforcement during a temporary debug run:

@@ -51,6 +51,7 @@
     platform_forgejo_redis_mode_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_MODE') }}"
     platform_forgejo_redis_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_SECRET_NAME') }}"
     platform_woodpecker_oauth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_FORGEJO_OAUTH_SECRET_NAME') }}"
+    platform_woodpecker_database_mode_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_MODE') }}"
     platform_woodpecker_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_SECRET_NAME') }}"
     platform_keycloak_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_SECRET_NAME') }}"
     platform_keycloak_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_DATABASE_SECRET_NAME') }}"
@@ -90,7 +91,7 @@
     platform_app_health_node_ingress_strict_effective: "{{ platform_app_health_node_ingress_strict | default(platform_app_health_node_ingress_strict_from_env, true) | default(false, true) | bool }}"
     platform_app_health_service_check_image_effective: "{{ platform_app_health_service_check_image | default(platform_app_health_service_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_app_health_service_check_timeout_effective: "{{ platform_app_health_service_check_timeout | default(platform_app_health_service_check_timeout_from_env, true) | default(120, true) | string | regex_replace('s$', '') | int }}"
-    platform_app_health_woodpecker_image_tag_effective: "{{ platform_app_health_woodpecker_image_tag | default(platform_app_health_woodpecker_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('3.16.0', true) }}"
+    platform_app_health_woodpecker_image_tag_effective: "{{ platform_app_health_woodpecker_image_tag | default(platform_app_health_woodpecker_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
     platform_harbor_admin_secret_name_effective: "{{ platform_harbor_admin_secret_name | default(platform_harbor_admin_secret_name_from_env, true) | default('harbor-admin', true) }}"
     platform_harbor_secret_key_secret_name_effective: "{{ platform_harbor_secret_key_secret_name | default(platform_harbor_secret_key_secret_name_from_env, true) | default('harbor-secret-key', true) }}"
     platform_harbor_database_secret_name_effective: "{{ platform_harbor_database_secret_name | default(platform_harbor_database_secret_name_from_env, true) | default('harbor-database', true) }}"
@@ -102,6 +103,7 @@
     platform_forgejo_redis_mode_effective: "{{ platform_forgejo_redis_mode | default(platform_forgejo_redis_mode_from_env, true) | default('redis', true) }}"
     platform_forgejo_redis_secret_name_effective: "{{ platform_forgejo_redis_secret_name | default(platform_forgejo_redis_secret_name_from_env, true) | default('forgejo-redis', true) }}"
     platform_woodpecker_oauth_secret_name_effective: "{{ platform_woodpecker_oauth_secret_name | default(platform_woodpecker_oauth_secret_name_from_env, true) | default('woodpecker-forgejo-oauth', true) }}"
+    platform_woodpecker_database_mode_effective: "{{ platform_woodpecker_database_mode | default(platform_woodpecker_database_mode_from_env, true) | default('auto', true) | lower }}"
     platform_woodpecker_database_secret_name_effective: "{{ platform_woodpecker_database_secret_name | default(platform_woodpecker_database_secret_name_from_env, true) | default('woodpecker-database', true) }}"
     platform_keycloak_admin_secret_name_effective: "{{ platform_keycloak_admin_secret_name | default(platform_keycloak_admin_secret_name_from_env, true) | default('keycloak-admin', true) }}"
     platform_keycloak_database_secret_name_effective: "{{ platform_keycloak_database_secret_name | default(platform_keycloak_database_secret_name_from_env, true) | default('keycloak-database', true) }}"
@@ -548,6 +550,43 @@
           esac
         }
 
+        woodpecker_uses_postgres() {
+          mode="{{ platform_woodpecker_database_mode_effective }}"
+          case "${mode}" in
+            postgres|postgresql|external)
+              echo "woodpecker_database_mode=${mode}"
+              return 0
+              ;;
+            sqlite)
+              echo "woodpecker_database_mode=sqlite"
+              return 1
+              ;;
+          esac
+
+          for workload in statefulset/woodpecker-server deployment/woodpecker-server; do
+            if ! "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
+              continue
+            fi
+            driver="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" -o jsonpath='{range .spec.template.spec.containers[*].env[?(@.name=="WOODPECKER_DATABASE_DRIVER")]}{.value}{"\n"}{end}' 2>/dev/null || true)"
+            env_from="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" -o jsonpath='{range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{"\n"}{end}' 2>/dev/null || true)"
+            case "${driver}" in
+              *postgres*|*postgresql*)
+                echo "woodpecker_database_mode=postgres source=${workload}/env"
+                return 0
+                ;;
+            esac
+            case " ${env_from} " in
+              *" {{ platform_woodpecker_database_secret_name_effective }} "*)
+                echo "woodpecker_database_mode=postgres source=${workload}/envFrom"
+                return 0
+                ;;
+            esac
+          done
+
+          echo "woodpecker_database_mode=sqlite source=auto"
+          return 1
+        }
+
         sanitize_uint() {
           case "${1:-}" in
             ''|*[!0-9]*) printf '0' ;;
@@ -644,7 +683,11 @@
         fi
 
         if required_app_present woodpecker; then
-          check_first_workload woodpecker 2 2 woodpecker-server statefulset/woodpecker-server deployment/woodpecker-server
+          if woodpecker_uses_postgres; then
+            check_first_workload woodpecker 2 2 woodpecker-server statefulset/woodpecker-server deployment/woodpecker-server
+          else
+            check_first_workload woodpecker 1 1 woodpecker-server statefulset/woodpecker-server deployment/woodpecker-server
+          fi
           check_first_workload woodpecker 3 3 woodpecker-agent statefulset/woodpecker-agent deployment/woodpecker-agent
         else
           echo "result=skip reason=woodpecker-not-required-by-platform-app-health-required-apps"
@@ -671,6 +714,7 @@
         C=/etc/rancher/rke2/rke2.yaml
         required_apps=" {{ platform_app_health_required_apps_effective }} "
         expected_tag="{{ platform_app_health_woodpecker_image_tag_effective }}"
+        canonical_expected_tag="${expected_tag#v}"
         failed=0
 
         case "${required_apps}" in
@@ -683,6 +727,7 @@
 
         echo "===== Woodpecker runtime image tags ====="
         echo "expected_tag=${expected_tag}"
+        echo "canonical_expected_tag=${canonical_expected_tag}"
         if ! "$K" --kubeconfig "$C" get namespace/woodpecker >/dev/null 2>&1; then
           echo "result=fail reason=missing-namespace namespace=woodpecker"
           exit 1
@@ -710,11 +755,13 @@
             for image in ${images}; do
               [ -n "${image}" ] || continue
               echo "role=${role} pod=${pod} image=${image}"
-              case "${image}" in
-                *":${expected_tag}")
+              image_tag="${image##*:}"
+              canonical_image_tag="${image_tag#v}"
+              case "${canonical_image_tag}" in
+                "${canonical_expected_tag}")
                   ;;
                 *)
-                  echo "result=fail reason=woodpecker-image-tag-mismatch role=${role} pod=${pod} image=${image} expected_tag=${expected_tag}"
+                  echo "result=fail reason=woodpecker-image-tag-mismatch role=${role} pod=${pod} image=${image} expected_tag=${expected_tag} canonical_expected_tag=${canonical_expected_tag}"
                   failed=1
                   ;;
               esac
@@ -1483,6 +1530,43 @@
           fi
         }
 
+        woodpecker_uses_postgres() {
+          mode="{{ platform_woodpecker_database_mode_effective }}"
+          case "${mode}" in
+            postgres|postgresql|external)
+              echo "woodpecker_database_mode=${mode}"
+              return 0
+              ;;
+            sqlite)
+              echo "woodpecker_database_mode=sqlite"
+              return 1
+              ;;
+          esac
+
+          for workload in statefulset/woodpecker-server deployment/woodpecker-server; do
+            if ! "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
+              continue
+            fi
+            driver="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" -o jsonpath='{range .spec.template.spec.containers[*].env[?(@.name=="WOODPECKER_DATABASE_DRIVER")]}{.value}{"\n"}{end}' 2>/dev/null || true)"
+            env_from="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" -o jsonpath='{range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{"\n"}{end}' 2>/dev/null || true)"
+            case "${driver}" in
+              *postgres*|*postgresql*)
+                echo "woodpecker_database_mode=postgres source=${workload}/env"
+                return 0
+                ;;
+            esac
+            case " ${env_from} " in
+              *" {{ platform_woodpecker_database_secret_name_effective }} "*)
+                echo "woodpecker_database_mode=postgres source=${workload}/envFrom"
+                return 0
+                ;;
+            esac
+          done
+
+          echo "woodpecker_database_mode=sqlite source=auto"
+          return 1
+        }
+
         if [ "${requested_secrets_lower}" = "auto" ]; then
           case " ${required_apps} " in
             *" platform-valkey "*)
@@ -1556,7 +1640,11 @@
           case " ${required_apps} " in
             *" woodpecker "*)
               check_secret_contract woodpecker "{{ platform_woodpecker_oauth_secret_name_effective }}" WOODPECKER_FORGEJO_CLIENT WOODPECKER_FORGEJO_SECRET
-              check_secret_contract woodpecker "{{ platform_woodpecker_database_secret_name_effective }}" WOODPECKER_DATABASE_DATASOURCE
+              if woodpecker_uses_postgres; then
+                check_secret_contract woodpecker "{{ platform_woodpecker_database_secret_name_effective }}" WOODPECKER_DATABASE_DATASOURCE
+              else
+                echo "result=skip reason=woodpecker-database-secret-not-required"
+              fi
               ;;
             *)
               echo "result=skip reason=woodpecker-not-required-by-platform-app-health-required-apps"
@@ -3041,7 +3129,7 @@
           PLATFORM_APP_HEALTH_HA_REPLICAS=false make platform-app-health
 
           To set the expected Woodpecker image tag after an intentional upgrade:
-          PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG=3.16.0 make platform-app-health
+          PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG=v3.16.0 make platform-app-health
 
           To skip HTTP-to-HTTPS redirect enforcement for a temporary debug run:
           PLATFORM_APP_HEALTH_HTTP_REDIRECT=false make platform-app-health
