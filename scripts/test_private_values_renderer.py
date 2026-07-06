@@ -211,6 +211,7 @@ platform_step_ca_host=ca.example.test
         env = {
             "FORGEJO_DATA_SIZE": "21Gi",
             "FORGEJO_STORAGE_CLASS": "longhorn-critical",
+            "FORGEJO_IMAGE_TAG": "15.0.3-rootless",
             "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn@eu-test-1/",
             "WOODPECKER_DATA_SIZE": "11Gi",
             "WOODPECKER_STORAGE_CLASS": "longhorn-standard",
@@ -307,6 +308,7 @@ platform_step_ca_host=ca.example.test
             paths["forgejo"],
             "git.example.test",
             "21Gi",
+            'tag: "15.0.3-rootless"',
             "DB_TYPE: postgres",
             'HOST: "platform-postgres-rw.platform-databases.svc.cluster.local:5432"',
             "GITEA__cache__HOST",
@@ -320,7 +322,7 @@ platform_step_ca_host=ca.example.test
         sqlite_forgejo_env["FORGEJO_DATABASE_MODE"] = "sqlite"
         with patched_env(sqlite_forgejo_env):
             renderer.render_forgejo(sqlite_forgejo_path, inventory)
-        assert_contains(sqlite_forgejo_path, "git.example.test", "sqlite3")
+        assert_contains(sqlite_forgejo_path, "git.example.test", "sqlite3", 'tag: "15.0.3-rootless"')
         assert_not_contains(sqlite_forgejo_path, "additionalConfigFromEnvs:", "DB_TYPE: postgres")
 
         external_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/external-values.yaml")

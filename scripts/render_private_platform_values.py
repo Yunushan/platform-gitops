@@ -446,7 +446,16 @@ def render_keycloak(path: Path, inventory: dict[str, str]) -> bool:
     return changed
 
 
-def forgejo_bootstrap_values(host: str, data_size: str, storage_class: str) -> str:
+def forgejo_image_block(image_tag: str) -> str:
+    tag_line = ""
+    if image_tag:
+        tag_line = f"  tag: {yaml_string(image_tag)}\n"
+    return f"""image:
+  rootless: true
+{tag_line}"""
+
+
+def forgejo_bootstrap_values(host: str, data_size: str, storage_class: str, image_tag: str) -> str:
     return f"""# Forgejo bootstrap profile rendered by scripts/render_private_platform_values.py.
 # This opt-in mode uses SQLite and in-process cache/queue for dependency-light
 # lab bootstrap. The default SQL selector renders PostgreSQL.
@@ -455,8 +464,7 @@ replicaCount: 1
 strategy:
   type: Recreate
 
-image:
-  rootless: true
+{forgejo_image_block(image_tag)}
 
 ingress:
   enabled: true
@@ -516,6 +524,7 @@ def forgejo_external_values(
     host: str,
     data_size: str,
     storage_class: str,
+    image_tag: str,
     database_type: str,
     database_host: str,
     database_name: str,
@@ -555,8 +564,7 @@ replicaCount: 1
 strategy:
   type: Recreate
 
-image:
-  rootless: true
+{forgejo_image_block(image_tag)}
 
 ingress:
   enabled: true
@@ -642,6 +650,9 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
 
     data_size = os.environ.get("FORGEJO_DATA_SIZE", "20Gi").strip() or "20Gi"
     storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical").strip()
+    image_tag = os.environ.get("FORGEJO_IMAGE_TAG", "").strip()
+    if image_tag and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$", image_tag):
+        raise SystemExit("FORGEJO_IMAGE_TAG must be an immutable release tag such as 15.0.3-rootless")
     database_mode = (
         os.environ.get("FORGEJO_DATABASE_MODE")
         or os.environ.get("PLATFORM_SQL_DATABASE_MODE")
@@ -649,7 +660,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
     ).strip().lower()
 
     if database_mode in {"sqlite", "sqlite3"}:
-        rendered = forgejo_bootstrap_values(host, data_size, storage_class)
+        rendered = forgejo_bootstrap_values(host, data_size, storage_class, image_tag)
     elif database_mode in ("external", "postgres", "postgresql", "mysql", "mariadb"):
         database_type = "mysql" if database_mode in {"mysql", "mariadb"} else "postgres"
         database_host = os.environ.get("FORGEJO_DATABASE_HOST", "").strip()
@@ -674,6 +685,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
             host,
             data_size,
             storage_class,
+            image_tag,
             database_type,
             database_host,
             database_name,
