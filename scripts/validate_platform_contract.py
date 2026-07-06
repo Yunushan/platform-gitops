@@ -2349,7 +2349,7 @@ def main() -> None:
     ):
         require_text(makefile_text, needle, f"platform-woodpecker-repair must cover {needle}")
     woodpecker_repair_target = re.search(
-        r"(?ms)^platform-woodpecker-repair:\n(?P<body>(?:\t.*\n)+)",
+        r"(?m)^platform-woodpecker-repair:\n(?P<body>(?:\t[^\n]*\n)+)",
         makefile_text,
     )
     if not woodpecker_repair_target:
@@ -2359,11 +2359,10 @@ def main() -> None:
     strict_repair = "ansible/playbooks/repair-woodpecker.yml"
     first_consumer_refresh = woodpecker_repair_body.find(consumer_refresh)
     strict_repair_index = woodpecker_repair_body.find(strict_repair)
-    last_consumer_refresh = woodpecker_repair_body.rfind(consumer_refresh)
-    if woodpecker_repair_body.count(consumer_refresh) < 2:
-        fail("platform-woodpecker-repair must refresh service-path consumers before and after strict repair")
-    if not (0 <= first_consumer_refresh < strict_repair_index < last_consumer_refresh):
-        fail("platform-woodpecker-repair must run service-path consumer refresh before strict Woodpecker repair")
+    if woodpecker_repair_body.count(consumer_refresh) != 1:
+        fail("platform-woodpecker-repair must refresh service-path consumers once after strict repair")
+    if not (0 <= strict_repair_index < first_consumer_refresh):
+        fail("platform-woodpecker-repair must run strict Woodpecker repair before service-path consumer refresh")
     service_path_consumers_text = read(service_path_consumers_playbook)
     for needle in (
         "Refresh Woodpecker agents after service path repair",
@@ -2389,6 +2388,12 @@ def main() -> None:
             needle,
             f"service-path consumer repair playbook must cover {needle}",
         )
+    if (
+        "register: platform_woodpecker_grpc_node_probe_before\n"
+        "      changed_when: false\n"
+        "      failed_when: false"
+    ) not in service_path_consumers_text:
+        fail("initial Woodpecker gRPC service-path probe must be diagnostic-only")
     woodpecker_repair_text = read(woodpecker_repair_playbook)
     for needle in (
         "Repair Woodpecker CI rollout and runtime drift",

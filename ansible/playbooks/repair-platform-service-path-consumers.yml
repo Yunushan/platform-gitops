@@ -65,6 +65,7 @@
         executable: /bin/bash
       register: platform_woodpecker_grpc_node_probe_before
       changed_when: false
+      failed_when: false
       when:
         - platform_service_path_consumer_repair_woodpecker_effective | bool
         - platform_woodpecker_consumer_state_before is defined
@@ -375,6 +376,12 @@
           port 9000. Review the diagnostics above before rerunning:
 
           make platform-service-path-repair
+
+          Node probe before agent refresh stdout:
+          {{ (platform_woodpecker_grpc_node_probe_before | default({})).stdout | default('not run', true) }}
+
+          Node probe before agent refresh stderr:
+          {{ (platform_woodpecker_grpc_node_probe_before | default({})).stderr | default('not run', true) }}
 
           Node probe stdout:
           {{ (platform_woodpecker_grpc_node_probe | default({})).stdout | default('not run', true) }}

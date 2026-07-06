@@ -374,8 +374,8 @@ make platform-woodpecker-repair
 
 That hard-refreshes and syncs the Woodpecker Argo CD application, waits for the
 server and agents, verifies the running server and agent image tags, and runs
-service-path consumer refresh before and after the strict Woodpecker rollout
-gate before `make platform-ci-health`.
+service-path consumer refresh after the strict Woodpecker rollout gate before
+`make platform-ci-health`.
 
 Before final production registration, prove that the selected profile has no
 unresolved placeholders:

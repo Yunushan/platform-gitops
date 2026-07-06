@@ -685,11 +685,10 @@ CD Applications do not block this focused repair check.
 
 If Woodpecker remains `Synced` but `Progressing`, or agents still show an old
 `next-*` image after you pushed corrected values, run the focused repair. It
-first refreshes service-path consumers so `CrashLoopBackOff` agents are not
-blocked by stale ClusterIP routing, hard-refreshes and syncs the Woodpecker
-Argo CD application, waits for the server and agents, verifies the running
-server and agent image tags, refreshes service-path consumers again, and then
-runs the focused CI health gate:
+hard-refreshes and syncs the Woodpecker Argo CD application first, waits for
+the server and agents, verifies the running server and agent image tags,
+refreshes service-path consumers so agents are not blocked by stale ClusterIP
+routing, and then runs the focused CI health gate:
 
 ```bash
 make platform-woodpecker-repair

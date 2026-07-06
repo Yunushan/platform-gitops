@@ -179,7 +179,6 @@ platform-ci-health:
 	ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-app-health.yml
 
 platform-woodpecker-repair:
-	@$(MAKE) platform-service-path-consumers-repair
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml
 	@$(MAKE) platform-service-path-consumers-repair
 	@$(MAKE) platform-ci-health

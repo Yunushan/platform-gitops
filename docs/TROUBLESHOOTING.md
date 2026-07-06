@@ -78,10 +78,9 @@ still `Progressing`, or agents are stuck on an old `next-*` image and
 make platform-woodpecker-repair
 ```
 
-It refreshes service-path consumers first, hard-refreshes and syncs the
-Woodpecker application, waits for the server and agents, verifies the runtime
-server and agent image tags, refreshes service-path consumers again, and then
-runs `make platform-ci-health`.
+It hard-refreshes and syncs the Woodpecker application first, waits for the
+server and agents, verifies the runtime server and agent image tags, refreshes
+service-path consumers, and then runs `make platform-ci-health`.
 
 If `make platform-status` shows a published GUI host returning `502` or `504`
 through the app VIP from either the cluster-side probe or the controller/client
