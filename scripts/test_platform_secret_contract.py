@@ -194,6 +194,11 @@ CONTRACTS = [
             "- woodpecker-database",
             'WOODPECKER_DATABASE_DRIVER: "postgres"',
         ],
+        "static_when_any": [
+            "- woodpecker-database",
+            'WOODPECKER_DATABASE_DRIVER: "postgres"',
+            "WOODPECKER_DATABASE_DRIVER: postgres",
+        ],
         "rendered_app": "woodpecker",
         "custom_secret": "woodpecker-db-custom",
         "rendered_needles": [
@@ -394,6 +399,13 @@ def check_static_values() -> None:
         if static_file is None:
             continue
         text = static_file.read_text(encoding="utf-8")
+        static_when_any = contract.get("static_when_any", [])
+        if static_when_any and not any(
+            variant in text
+            for needle in static_when_any
+            for variant in needle_variants(needle)
+        ):
+            continue
         for needle in contract["static_needles"]:
             require_contains_any(
                 text,
