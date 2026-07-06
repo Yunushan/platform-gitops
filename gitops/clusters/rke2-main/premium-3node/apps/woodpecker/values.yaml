@@ -7,7 +7,7 @@
 server:
   enabled: true
   statefulSet:
-    replicaCount: 2
+    replicaCount: 3
   image:
     registry: docker.io
     repository: woodpeckerci/woodpecker-server

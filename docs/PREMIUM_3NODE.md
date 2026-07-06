@@ -142,34 +142,39 @@ The premium profile keeps Forgejo as the Git forge and uses Woodpecker plus Argo
 
 Woodpecker is configured for the 3-node cluster with:
 
-- `server.statefulSet.replicaCount: 2` for the Woodpecker web/API service.
+- `server.statefulSet.replicaCount: 3` for the Woodpecker web/API service.
 - `agent.replicas: 3` for Kubernetes-backed build agents.
-- Explicit server and agent image repositories plus `WOODPECKER_IMAGE_TAG`, defaulting to `3.16.0`.
+- Explicit server and agent image repositories plus `WOODPECKER_IMAGE_TAG`, defaulting to `v3.16.0`.
 - PostgreSQL-backed state through `WOODPECKER_DATABASE_DRIVER=postgres`.
 - Traefik ingress at the effective CI hostname, defaulting to `woodpecker.<PLATFORM_DOMAIN>` unless `platform_ci_host` or `platform_woodpecker_host` is set.
 
-The first-deploy renderer defaults Woodpecker to single-server SQLite so the
-dashboard can come online before a PostgreSQL DSN exists. Keep
-`WOODPECKER_SERVER_REPLICAS=1` while `WOODPECKER_DATABASE_MODE=sqlite`. It also
-pins both Woodpecker server and agent image repositories plus
-`WOODPECKER_IMAGE_TAG`, defaulting to `3.16.0`; change that only as an intentional upgrade. For production HA,
-provide either `WOODPECKER_DATABASE_DATASOURCE` or `WOODPECKER_DATABASE_HOST`
-plus `WOODPECKER_DATABASE_PASSWORD`, let `platform-app-secrets` create the
-`woodpecker-database` secret, then render with:
+The first-deploy renderer defaults Woodpecker to PostgreSQL HA against the
+shared `platform-postgres` CloudNativePG cluster. `platform-app-secrets`
+generates `woodpecker/woodpecker-database` and the matching
+`platform-databases/woodpecker-database` role password secret unless you provide
+`WOODPECKER_DATABASE_PASSWORD` or a full `WOODPECKER_DATABASE_DATASOURCE`.
+Render with:
 
 ```bash
-WOODPECKER_DATABASE_DATASOURCE='postgres://woodpecker:<PASSWORD>@<POSTGRES_HOST>:5432/woodpecker?sslmode=disable' \
+WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
+WOODPECKER_DATABASE_HOST=platform-postgres-rw.platform-databases.svc.cluster.local:5432 \
+WOODPECKER_DATABASE_NAME=woodpecker \
+WOODPECKER_DATABASE_USER=woodpecker \
+WOODPECKER_DATABASE_SSLMODE=disable \
 PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true \
 make platform-app-secrets
 
 WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
 WOODPECKER_IMAGE_TAG=v3.16.0 \
-WOODPECKER_SERVER_REPLICAS=2 \
+WOODPECKER_SERVER_REPLICAS=3 \
 WOODPECKER_AGENT_REPLICAS=3 \
 make platform-render-private-values
 ```
+
+For a small non-HA bootstrap, set `WOODPECKER_DATABASE_MODE=sqlite` and keep
+`WOODPECKER_SERVER_REPLICAS=1`.
 
 Harbor also has a bootstrap-first default: internal PostgreSQL, shared
 external `platform-valkey`, and filesystem registry storage. For the premium

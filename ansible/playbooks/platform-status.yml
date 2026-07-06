@@ -13,7 +13,7 @@
     platform_ip_redirect_target_host_effective: "{{ platform_ip_redirect_target_host | default(platform_ip_redirect_target_host_from_env, true) | default(platform_argocd_host_effective, true) }}"
     platform_status_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_STATUS_WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
-    platform_status_woodpecker_image_tag_effective: "{{ platform_status_woodpecker_image_tag | default(platform_status_woodpecker_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('3.16.0', true) }}"
+    platform_status_woodpecker_image_tag_effective: "{{ platform_status_woodpecker_image_tag | default(platform_status_woodpecker_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
     platform_status_expected_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_STATUS_EXPECTED_REPO_URL') }}"
     platform_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_URL') }}"
     platform_status_expected_repo_url_effective: "{{ platform_status_expected_repo_url | default(platform_status_expected_repo_url_from_env, true) | default(platform_repo_url_from_env, true) | default('', true) }}"

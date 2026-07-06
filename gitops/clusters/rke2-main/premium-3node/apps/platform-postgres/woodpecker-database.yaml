@@ -1,0 +1,11 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: platform-postgres-woodpecker
+  namespace: platform-databases
+spec:
+  name: woodpecker
+  owner: woodpecker
+  cluster:
+    name: platform-postgres
+  databaseReclaimPolicy: retain

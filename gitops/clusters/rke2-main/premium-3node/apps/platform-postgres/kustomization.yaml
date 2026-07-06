@@ -5,3 +5,4 @@ resources:
   - namespace.yaml
   - postgres-cluster.yaml
   - keycloak-database.yaml
+  - woodpecker-database.yaml

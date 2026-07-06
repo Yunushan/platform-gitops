@@ -336,28 +336,35 @@ default. `platform-app-secrets` generates `keycloak/keycloak-admin`,
 `platform-databases/keycloak-database` CloudNativePG role password secret unless
 you provide `KEYCLOAK_ADMIN_PASSWORD` or `KEYCLOAK_DATABASE_PASSWORD`.
 
-Woodpecker also defaults to single-server SQLite for the first private CI
-dashboard. Keep `WOODPECKER_SERVER_REPLICAS=1` while
-`WOODPECKER_DATABASE_MODE=sqlite`. The renderer pins both Woodpecker server and
-agent image repositories plus `WOODPECKER_IMAGE_TAG`, defaulting to `3.16.0`;
-change that only as an intentional upgrade. For production HA, provide either `WOODPECKER_DATABASE_DATASOURCE`
-or `WOODPECKER_DATABASE_HOST` plus `WOODPECKER_DATABASE_PASSWORD`, let
-`platform-app-secrets` create the `woodpecker-database` secret, then render
-with:
+Woodpecker defaults to PostgreSQL-backed HA for the 3-node premium profile.
+`platform-app-secrets` generates `woodpecker/woodpecker-database` and the
+matching `platform-databases/woodpecker-database` CloudNativePG role password
+secret unless you provide `WOODPECKER_DATABASE_PASSWORD` or a full
+`WOODPECKER_DATABASE_DATASOURCE`. The renderer pins both Woodpecker server and
+agent image repositories plus `WOODPECKER_IMAGE_TAG`, defaulting to `v3.16.0`;
+change that only as an intentional upgrade. Render with 3 server replicas for
+the shared `platform-postgres` cluster:
 
 ```bash
-WOODPECKER_DATABASE_DATASOURCE='postgres://woodpecker:<PASSWORD>@<POSTGRES_HOST>:5432/woodpecker?sslmode=disable' \
+WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
+WOODPECKER_DATABASE_HOST=platform-postgres-rw.platform-databases.svc.cluster.local:5432 \
+WOODPECKER_DATABASE_NAME=woodpecker \
+WOODPECKER_DATABASE_USER=woodpecker \
+WOODPECKER_DATABASE_SSLMODE=disable \
 PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true \
 make platform-app-secrets
 
 WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
 WOODPECKER_IMAGE_TAG=v3.16.0 \
-WOODPECKER_SERVER_REPLICAS=2 \
+WOODPECKER_SERVER_REPLICAS=3 \
 WOODPECKER_AGENT_REPLICAS=3 \
 make platform-render-private-values
 ```
+
+For a small non-HA bootstrap, set `WOODPECKER_DATABASE_MODE=sqlite` and keep
+`WOODPECKER_SERVER_REPLICAS=1`.
 
 Harbor defaults to internal PostgreSQL, the shared external
 `platform-valkey` service, and filesystem registry storage so a first private
@@ -458,8 +465,8 @@ PostgreSQL cluster used by Forgejo. Set `CNPG_RENDER_POSTGRES_CLUSTER=false`
 only when you provide PostgreSQL outside this profile. Set
 `CNPG_BACKUP_ENABLED=true` with CloudNativePG object-storage credentials when
 you want the rendered cluster to include WAL/archive backups.
-Set `PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` before enabling
-Woodpecker HA values so a missing PostgreSQL datasource secret fails before
+Keep `PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` for the premium
+default so a missing Woodpecker PostgreSQL datasource secret fails before
 Argo CD rolls Woodpecker.
 Set `PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true`,
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true`, and

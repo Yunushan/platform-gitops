@@ -220,7 +220,7 @@ platform_step_ca_host=ca.example.test
             "WOODPECKER_IMAGE_TAG": "3.16.0",
             "WOODPECKER_DATABASE_MODE": "postgres",
             "WOODPECKER_DATABASE_SECRET_NAME": "woodpecker-db-test",
-            "WOODPECKER_SERVER_REPLICAS": "2",
+            "WOODPECKER_SERVER_REPLICAS": "3",
             "WOODPECKER_AGENT_REPLICAS": "3",
             "HARBOR_STORAGE_CLASS": "longhorn-critical",
             "HARBOR_REGISTRY_SIZE": "55Gi",
@@ -454,7 +454,7 @@ platform_step_ca_host=ca.example.test
             'WOODPECKER_HOST: "https://ci.example.test"',
             'WOODPECKER_DATABASE_DRIVER: "postgres"',
             '"woodpecker-db-test"',
-            "replicaCount: 2",
+            "replicaCount: 3",
             "repository: woodpeckerci/woodpecker-server",
             "repository: woodpeckerci/woodpecker-agent",
             'tag: "v3.16.0"',
@@ -645,6 +645,7 @@ platform_step_ca_host=ca.example.test
             "WOODPECKER_ADMIN_USERS": "platform-admin",
             "WOODPECKER_FORGEJO_OAUTH_SECRET_NAME": "woodpecker-oauth-test",
             "WOODPECKER_IMAGE_TAG": "3.16.0",
+            "WOODPECKER_DATABASE_MODE": "sqlite",
             "WOODPECKER_AGENT_REPLICAS": "3",
         }
         with patched_env(sqlite_env):

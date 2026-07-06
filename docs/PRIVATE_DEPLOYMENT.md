@@ -159,7 +159,7 @@ not expose `python3`; `make platform-argocd`, validation, rendering, and
 selected GitOps profile checks use the same interpreter.
 
 The private values renderer pins both Woodpecker server and agent images with
-`WOODPECKER_IMAGE_TAG`, defaulting to `3.16.0`. Treat changes to that value as
+`WOODPECKER_IMAGE_TAG`, defaulting to `v3.16.0`. Treat changes to that value as
 an intentional Woodpecker upgrade: render, validate, sync, then prove the
 Woodpecker server and agents are healthy.
 
@@ -173,16 +173,16 @@ secrets, Harbor's external
 database/Redis/S3 secrets, plus Loki, Velero, and CloudNativePG
 object-storage secrets from ignored env values such
 as `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
-`WOODPECKER_DATABASE_DATASOURCE`, `WOODPECKER_DATABASE_HOST` plus
-`WOODPECKER_DATABASE_PASSWORD`, `HARBOR_DATABASE_PASSWORD`,
+`WOODPECKER_DATABASE_PASSWORD` or a full `WOODPECKER_DATABASE_DATASOURCE`,
+`HARBOR_DATABASE_PASSWORD`,
 `HARBOR_REDIS_PASSWORD`, `HARBOR_S3_ACCESS_KEY_ID`,
 `HARBOR_S3_SECRET_ACCESS_KEY`, `KEYCLOAK_ADMIN_PASSWORD`,
 `KEYCLOAK_DATABASE_PASSWORD`, `GRAFANA_DATABASE_PASSWORD`, `LOKI_S3_ACCESS_KEY_ID`,
 `LOKI_S3_SECRET_ACCESS_KEY`, `VELERO_CLOUD_CREDENTIALS`,
 `CNPG_S3_ACCESS_KEY_ID`, `CNPG_S3_SECRET_ACCESS_KEY`, or
-`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Set
-`PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` before enabling
-Woodpecker HA so a missing datasource secret fails before rollout. Set
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Keep
+`PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` for the premium
+Woodpecker HA default so a missing datasource secret fails before rollout. Set
 `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` for production so missing
 Loki, Velero, or CloudNativePG object-storage credential secrets fail before app sync.
 Set `PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=true` when only the
@@ -202,11 +202,19 @@ Set `PLATFORM_APP_SECRET_REQUIRE_KEYCLOAK_DATABASE=true` when you want a
 predefined Keycloak database password instead of generated first-deploy
 credentials.
 
-For production Woodpecker HA, either provide a full datasource:
+For production Woodpecker HA, use the shared `platform-postgres` CloudNativePG
+cluster by default. `platform-app-secrets` generates the datasource and the
+matching `platform-databases/woodpecker-database` role password secret unless
+you provide `WOODPECKER_DATABASE_PASSWORD` or a full
+`WOODPECKER_DATABASE_DATASOURCE`:
 
 ```bash
-WOODPECKER_DATABASE_DATASOURCE='postgres://woodpecker:<PASSWORD>@<POSTGRES_HOST>:5432/woodpecker?sslmode=disable' \
+WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
+WOODPECKER_DATABASE_HOST=platform-postgres-rw.platform-databases.svc.cluster.local:5432 \
+WOODPECKER_DATABASE_NAME=woodpecker \
+WOODPECKER_DATABASE_USER=woodpecker \
+WOODPECKER_DATABASE_SSLMODE=disable \
 PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true \
 make platform-app-secrets
 ```

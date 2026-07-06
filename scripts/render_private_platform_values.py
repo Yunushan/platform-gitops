@@ -755,8 +755,8 @@ def woodpecker_bootstrap_values(
 # {database_comment}
 # For Forgejo login, create the OAuth app in Forgejo and store its client/secret in
 # the {oauth_secret_name} Kubernetes secret before syncing this app.
-# When WOODPECKER_DATABASE_MODE=postgres, run make platform-app-secrets with
-# WOODPECKER_DATABASE_DATASOURCE so secret/{database_secret_name} exists before syncing.
+# When WOODPECKER_DATABASE_MODE=postgres, run make platform-app-secrets so
+# secret/{database_secret_name} exists before syncing.
 server:
   enabled: true
   statefulSet:
@@ -857,9 +857,9 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     admin_users = os.environ.get("WOODPECKER_ADMIN_USERS", "admin").strip() or "admin"
     oauth_secret_name = os.environ.get("WOODPECKER_FORGEJO_OAUTH_SECRET_NAME", "woodpecker-forgejo-oauth").strip()
     image_tag = normalize_woodpecker_image_tag(os.environ.get("WOODPECKER_IMAGE_TAG", "v3.16.0").strip() or "v3.16.0")
-    database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "sqlite").strip().lower() or "sqlite"
+    database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "postgres").strip().lower() or "postgres"
     database_secret_name = os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip() or "woodpecker-database"
-    default_server_replicas = "2" if database_mode in {"postgres", "postgresql", "external"} else "1"
+    default_server_replicas = "3" if database_mode in {"postgres", "postgresql", "external"} else "1"
     server_replicas = os.environ.get("WOODPECKER_SERVER_REPLICAS", default_server_replicas).strip() or default_server_replicas
     agent_replicas = os.environ.get("WOODPECKER_AGENT_REPLICAS", "3").strip() or "3"
     if database_mode not in {"sqlite", "postgres", "postgresql", "external"}:

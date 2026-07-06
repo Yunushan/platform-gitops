@@ -25,3 +25,9 @@ spec:
         superuser: false
         passwordSecret:
           name: keycloak-database
+      - name: woodpecker
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: woodpecker-database

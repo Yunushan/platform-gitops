@@ -386,7 +386,7 @@ def rendered_optional_redis_contract(text: str, needle: str) -> bool:
 def rendered_optional_woodpecker_database_contract(text: str, needle: str) -> bool:
     if not is_private_rendered(text) or "Woodpecker" not in text:
         return False
-    if needle == "replicaCount: 2" and "WOODPECKER_DATABASE_DRIVER" not in text:
+    if needle == "replicaCount: 3" and "WOODPECKER_DATABASE_DRIVER" not in text:
         return True
     if needle == 'WOODPECKER_DATABASE_DRIVER: "postgres"' and "WOODPECKER_DATABASE_DRIVER" not in text:
         return True
@@ -939,7 +939,7 @@ def main() -> None:
     )
     require_text(
         premium_woodpecker_text,
-        "replicaCount: 2",
+        "replicaCount: 3",
         "premium Woodpecker profile must keep HA server replicas",
     )
     require_text(
@@ -1145,6 +1145,8 @@ def main() -> None:
         "name: keycloak",
         "login: true",
         "name: keycloak-database",
+        "name: woodpecker",
+        "name: woodpecker-database",
         "storageClass: longhorn-critical",
         "enablePodMonitor: true",
     ):
@@ -5249,7 +5251,6 @@ def main() -> None:
         "woodpeckerci/woodpecker-server",
         "woodpeckerci/woodpecker-agent",
         "WOODPECKER_SERVER_REPLICAS",
-        "WOODPECKER_DATABASE_DATASOURCE",
         "default_server_replicas",
         "WOODPECKER_SERVER_REPLICAS must be 1 when WOODPECKER_DATABASE_MODE=sqlite",
         "WOODPECKER_IMAGE_TAG must be a stable release tag",
