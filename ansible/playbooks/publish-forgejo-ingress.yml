@@ -48,6 +48,9 @@
       args:
         executable: /bin/bash
       register: platform_forgejo_backend_ready
+      retries: "{{ platform_forgejo_ingress_verify_retries }}"
+      delay: "{{ platform_forgejo_ingress_poll_interval_effective }}"
+      until: platform_forgejo_backend_ready.rc == 0
       changed_when: false
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
