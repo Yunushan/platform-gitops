@@ -1759,6 +1759,22 @@ spec:
     name: {yaml_string(name)}
   method: barmanObjectStore"""
 
+    woodpecker_database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "postgres").strip().lower() or "postgres"
+    woodpecker_role_block = ""
+    if woodpecker_database_mode in {"postgres", "postgresql", "external"}:
+        woodpecker_role_name = os.environ.get("WOODPECKER_DATABASE_USER", "woodpecker").strip() or "woodpecker"
+        woodpecker_secret_name = (
+            os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip()
+            or "woodpecker-database"
+        )
+        woodpecker_role_block = f"""
+      - name: {yaml_string(woodpecker_role_name)}
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: {yaml_string(woodpecker_secret_name)}"""
+
     return f"""apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -1775,6 +1791,7 @@ spec:
         superuser: false
         passwordSecret:
           name: {yaml_string(os.environ.get("KEYCLOAK_DATABASE_SECRET_NAME", "keycloak-database").strip() or "keycloak-database")}
+{woodpecker_role_block}
   bootstrap:
     initdb:
       database: {yaml_string(app_database)}

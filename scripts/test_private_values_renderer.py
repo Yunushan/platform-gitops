@@ -385,6 +385,8 @@ platform_step_ca_host=ca.example.test
             'database: "forgejo"',
             'owner: "forgejo"',
             'name: "forgejo-database"',
+            'name: "woodpecker"',
+            'name: "woodpecker-db-test"',
             'destinationPath: "s3://platform-test-cnpg/platform-postgres"',
             'endpointURL: "https://object.example.test"',
             'name: "cnpg-object-test"',
