@@ -65,10 +65,10 @@ make platform-ci-health
 
 If Woodpecker server and agent pods report different or unexpected versions,
 confirm the rendered values pin the Woodpecker server and agent image
-repositories plus `WOODPECKER_IMAGE_TAG` (`3.16.0` by default), then sync the
+repositories plus `WOODPECKER_IMAGE_TAG` (`v3.16.0` by default), then sync the
 app again. The health gate also verifies the running Woodpecker server and agent images against
 `PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG`, which falls back to
-`WOODPECKER_IMAGE_TAG` and then `3.16.0`.
+`WOODPECKER_IMAGE_TAG` and then `v3.16.0`.
 
 For the common case where the Woodpecker Argo CD application is `Synced` but
 still `Progressing`, or agents are stuck on an old `next-*` image and
