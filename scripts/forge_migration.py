@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Mirror and verify Git forge migrations with machine-readable proof.
 
-The first supported migration planes are Git refs, repository labels, and
-repository milestones: branches, tags, optional wiki/LFS repositories, and
-provider-common metadata. Other provider metadata such as issues, pull
-requests, merge requests, packages, and releases is intentionally modeled in
-the plan and rejected when marked required until an importer for that surface
-exists. That keeps "verified migration" claims honest.
+The first supported migration planes are Git refs, repository labels,
+repository milestones, and portable issues/comments: branches, tags, optional
+wiki/LFS repositories, and provider-common metadata. Other provider metadata
+such as pull requests, merge requests, packages, and releases is intentionally
+modeled in the plan and rejected when marked required until an importer for
+that surface exists. That keeps "verified migration" claims honest.
 """
 
 from __future__ import annotations
@@ -40,9 +40,8 @@ OPTIONAL_DIRECTIONS = {
     "gitlab-to-github",
 }
 SUPPORTED_METADATA_STATES = {"skip", "skipped", "false", "none", "not-required"}
-SUPPORTED_METADATA_SURFACES = {"labels", "milestones"}
+SUPPORTED_METADATA_SURFACES = {"labels", "milestones", "issues"}
 UNSUPPORTED_METADATA_SURFACES = {
-    "issues",
     "pull_requests",
     "merge_requests",
     "releases",
@@ -395,6 +394,7 @@ def validate_metadata_requirements(repo: RepoPlan) -> dict[str, Any]:
     return {
         "labels": planned_surface("labels"),
         "milestones": planned_surface("milestones"),
+        "issues": planned_surface("issues"),
         "verified": True,
     }
 
@@ -884,23 +884,467 @@ def verify_milestones(repo: RepoPlan) -> dict[str, Any]:
     }
 
 
+def list_issues(target: ApiTarget) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    base = repo_api_base(target)
+    for page in range(1, 1001):
+        payload = api_request(
+            target,
+            "GET",
+            f"{base}/issues",
+            query={"state": "all", "per_page": 100, "page": page},
+            expected=(200,),
+        )
+        if not isinstance(payload, list):
+            raise MigrationError(f"{target.provider} issues API returned a non-list response")
+        for issue in payload:
+            if isinstance(issue, dict) and issue.get("pull_request"):
+                continue
+            issues.append(issue)
+        if len(payload) < 100:
+            break
+    return issues
+
+
+def issue_api_id(target: ApiTarget, issue: dict[str, Any]) -> str:
+    if target.provider == "gitlab":
+        value = issue.get("iid") or issue.get("number") or issue.get("id")
+    else:
+        value = issue.get("number") or issue.get("index") or issue.get("id")
+    if value is None or str(value).strip() == "":
+        raise MigrationError(f"{target.provider} issue is missing a stable API id: {issue}")
+    return str(value)
+
+
+def list_issue_comments(target: ApiTarget, issue: dict[str, Any]) -> list[dict[str, Any]]:
+    comments: list[dict[str, Any]] = []
+    base = repo_api_base(target)
+    issue_id = quote(issue_api_id(target, issue), safe="")
+    if target.provider == "gitlab":
+        path = f"{base}/issues/{issue_id}/notes"
+        query: dict[str, Any] = {
+            "sort": "asc",
+            "order_by": "created_at",
+            "per_page": 100,
+        }
+    else:
+        path = f"{base}/issues/{issue_id}/comments"
+        query = {"per_page": 100}
+        if target.provider == "github":
+            query.update({"sort": "created", "direction": "asc"})
+    for page in range(1, 1001):
+        query["page"] = page
+        payload = api_request(target, "GET", path, query=query, expected=(200,))
+        if not isinstance(payload, list):
+            raise MigrationError(f"{target.provider} issue comments API returned a non-list response")
+        comments.extend(comment for comment in payload if not (isinstance(comment, dict) and comment.get("system")))
+        if len(payload) < 100:
+            break
+    return comments
+
+
+def normalize_issue_state(value: Any) -> str:
+    state = str(value or "open").strip().lower()
+    if state in {"open", "opened"}:
+        return "open"
+    if state == "closed":
+        return "closed"
+    raise MigrationError(f"issue state must be open/opened or closed, got {value!r}")
+
+
+def normalize_issue_body(issue: dict[str, Any]) -> str:
+    value = issue.get("body")
+    if value is None:
+        value = issue.get("description")
+    return "" if value is None else str(value)
+
+
+def normalize_issue_labels(value: Any) -> list[str]:
+    labels: list[str] = []
+    if value is None:
+        return labels
+    if isinstance(value, str):
+        candidates: list[Any] = [part.strip() for part in value.split(",") if part.strip()]
+    elif isinstance(value, list):
+        candidates = value
+    else:
+        raise MigrationError(f"issue labels must be a string or list, got {type(value).__name__}")
+    for label in candidates:
+        if isinstance(label, dict):
+            name = str(label.get("name") or "").strip()
+        else:
+            name = str(label or "").strip()
+        if name:
+            labels.append(name)
+    return sorted(set(labels), key=str.casefold)
+
+
+def normalize_issue_milestone(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return str(value.get("title") or "").strip()
+    return str(value or "").strip()
+
+
+def normalize_comments(comments: list[dict[str, Any]]) -> list[str]:
+    bodies: list[str] = []
+    for comment in comments:
+        body = comment.get("body") if isinstance(comment, dict) else None
+        if body is not None:
+            bodies.append(str(body))
+    return bodies
+
+
+def normalize_issue(issue: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
+    title = str(issue.get("title") or "").strip()
+    if not title:
+        raise MigrationError("issue is missing a title")
+    return {
+        "title": title,
+        "body": normalize_issue_body(issue),
+        "state": normalize_issue_state(issue.get("state")),
+        "labels": normalize_issue_labels(issue.get("labels")),
+        "milestone": normalize_issue_milestone(issue.get("milestone")),
+        "comments": normalize_comments(comments),
+    }
+
+
+def normalized_issues(target: ApiTarget) -> list[dict[str, Any]]:
+    normalized = [normalize_issue(issue, list_issue_comments(target, issue)) for issue in list_issues(target)]
+    return sorted(normalized, key=lambda item: item["title"].casefold())
+
+
+def issue_digest(issues: list[dict[str, Any]]) -> str:
+    payload = json.dumps(issues, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def issues_by_title(issues: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_title: dict[str, dict[str, Any]] = {}
+    duplicates: set[str] = set()
+    for issue in issues:
+        title = issue["title"]
+        if title in by_title:
+            duplicates.add(title)
+        by_title[title] = issue
+    if duplicates:
+        details = ", ".join(sorted(duplicates, key=str.casefold))
+        raise MigrationError(f"duplicate issue titles cannot be proven by the portable importer: {details}")
+    return by_title
+
+
+def issue_core(issue: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": issue["title"],
+        "body": issue["body"],
+        "state": issue["state"],
+        "labels": issue["labels"],
+        "milestone": issue["milestone"],
+    }
+
+
+def missing_comment_bodies(source_comments: list[str], destination_comments: list[str]) -> list[str]:
+    missing: list[str] = []
+    destination_index = 0
+    for source_body in source_comments:
+        found = False
+        while destination_index < len(destination_comments):
+            if destination_comments[destination_index] == source_body:
+                destination_index += 1
+                found = True
+                break
+            destination_index += 1
+        if not found:
+            missing.append(source_body)
+    return missing
+
+
+def replicated_issue_view(source_issue: dict[str, Any], destination_issue: dict[str, Any]) -> dict[str, Any]:
+    view = issue_core(destination_issue)
+    destination_comments = destination_issue["comments"]
+    matched_comments: list[str] = []
+    destination_index = 0
+    for source_body in source_issue["comments"]:
+        while destination_index < len(destination_comments):
+            if destination_comments[destination_index] == source_body:
+                matched_comments.append(destination_comments[destination_index])
+                destination_index += 1
+                break
+            destination_index += 1
+    view["comments"] = matched_comments
+    return view
+
+
+def compare_issue_sets(source_issues: list[dict[str, Any]], destination_issues: list[dict[str, Any]]) -> dict[str, Any]:
+    source_by_title = issues_by_title(source_issues)
+    destination_by_title = issues_by_title(destination_issues)
+    missing = sorted(set(source_by_title) - set(destination_by_title), key=str.casefold)
+    extra = sorted(set(destination_by_title) - set(source_by_title), key=str.casefold)
+    mismatched: list[str] = []
+    missing_comment_counts: dict[str, int] = {}
+    extra_comment_counts: dict[str, int] = {}
+    replicated_destination_issues: list[dict[str, Any]] = []
+
+    for title in sorted(set(source_by_title) & set(destination_by_title), key=str.casefold):
+        source_issue = source_by_title[title]
+        destination_issue = destination_by_title[title]
+        comment_missing = missing_comment_bodies(source_issue["comments"], destination_issue["comments"])
+        if issue_core(source_issue) != issue_core(destination_issue) or comment_missing:
+            mismatched.append(title)
+        if comment_missing:
+            missing_comment_counts[title] = len(comment_missing)
+        extra_comments = max(0, len(destination_issue["comments"]) - len(source_issue["comments"]))
+        if extra_comments:
+            extra_comment_counts[title] = extra_comments
+        replicated_destination_issues.append(replicated_issue_view(source_issue, destination_issue))
+
+    replicated_destination_issues = sorted(replicated_destination_issues, key=lambda item: item["title"].casefold())
+    return {
+        "verified": not missing and not mismatched,
+        "source_count": len(source_issues),
+        "destination_count": len(destination_issues),
+        "source_digest": issue_digest(source_issues),
+        "destination_digest": issue_digest(replicated_destination_issues),
+        "missing": missing,
+        "mismatched": mismatched,
+        "extra": extra,
+        "missing_comment_counts": missing_comment_counts,
+        "extra_comment_counts": extra_comment_counts,
+    }
+
+
+def destination_label_maps(target: ApiTarget) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    raw_by_name: dict[str, dict[str, Any]] = {}
+    id_by_name: dict[str, int] = {}
+    for label in list_labels(target):
+        normalized = normalize_label(label)
+        raw_by_name[normalized["name"]] = label
+        label_id = label.get("id")
+        if label_id is not None:
+            id_by_name[normalized["name"]] = int(label_id)
+    return raw_by_name, id_by_name
+
+
+def destination_milestone_maps(target: ApiTarget) -> dict[str, dict[str, Any]]:
+    raw_by_title: dict[str, dict[str, Any]] = {}
+    for milestone in list_milestones(target):
+        raw_by_title[normalize_milestone(milestone)["title"]] = milestone
+    return raw_by_title
+
+
+def issue_label_payload(target: ApiTarget, issue: dict[str, Any], label_id_by_name: dict[str, int]) -> Any:
+    labels = issue["labels"]
+    if target.provider == "gitlab":
+        return ",".join(labels)
+    if target.provider == "forgejo":
+        missing = [label for label in labels if label not in label_id_by_name]
+        if missing:
+            raise MigrationError(
+                f"Forgejo issue migration requires destination label IDs; missing labels: {', '.join(missing)}"
+            )
+        return [label_id_by_name[label] for label in labels]
+    return labels
+
+
+def milestone_payload_id(target: ApiTarget, issue: dict[str, Any], milestone_by_title: dict[str, dict[str, Any]]) -> Any:
+    title = issue["milestone"]
+    if not title:
+        return None
+    milestone = milestone_by_title.get(title)
+    if milestone is None:
+        raise MigrationError(f"issue {issue['title']!r} references missing destination milestone {title!r}")
+    if target.provider == "github":
+        return milestone.get("number") or milestone.get("id")
+    if target.provider == "gitlab":
+        return milestone.get("id") or milestone.get("iid")
+    return milestone.get("id") or milestone.get("number")
+
+
+def provider_issue_payload(
+    target: ApiTarget,
+    issue: dict[str, Any],
+    label_id_by_name: dict[str, int],
+    milestone_by_title: dict[str, dict[str, Any]],
+    existing_issue: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    milestone_id = milestone_payload_id(target, issue, milestone_by_title)
+    if target.provider == "gitlab":
+        payload: dict[str, Any] = {
+            "title": issue["title"],
+            "description": issue["body"],
+            "labels": issue_label_payload(target, issue, label_id_by_name),
+        }
+        if milestone_id is not None:
+            payload["milestone_id"] = milestone_id
+        if existing_issue is not None and issue["state"] != normalize_issue_state(existing_issue.get("state")):
+            payload["state_event"] = "close" if issue["state"] == "closed" else "reopen"
+        return payload
+
+    payload = {
+        "title": issue["title"],
+        "body": issue["body"],
+        "labels": issue_label_payload(target, issue, label_id_by_name),
+    }
+    if milestone_id is not None:
+        payload["milestone"] = milestone_id
+    if existing_issue is not None:
+        payload["state"] = issue["state"]
+    return payload
+
+
+def issue_update_path(target: ApiTarget, existing_issue: dict[str, Any]) -> str:
+    return f"{repo_api_base(target)}/issues/{quote(issue_api_id(target, existing_issue), safe='')}"
+
+
+def create_issue(
+    target: ApiTarget,
+    issue: dict[str, Any],
+    label_id_by_name: dict[str, int],
+    milestone_by_title: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    created = api_request(
+        target,
+        "POST",
+        f"{repo_api_base(target)}/issues",
+        body=provider_issue_payload(target, issue, label_id_by_name, milestone_by_title),
+        expected=(200, 201),
+    )
+    if not isinstance(created, dict):
+        raise MigrationError(f"{target.provider} issue create API returned a non-object response")
+    if issue["state"] == "closed":
+        update_issue(target, created, issue, label_id_by_name, milestone_by_title)
+    return created
+
+
+def update_issue(
+    target: ApiTarget,
+    existing_issue: dict[str, Any],
+    issue: dict[str, Any],
+    label_id_by_name: dict[str, int],
+    milestone_by_title: dict[str, dict[str, Any]],
+) -> None:
+    method = "PUT" if target.provider == "gitlab" else "PATCH"
+    api_request(
+        target,
+        method,
+        issue_update_path(target, existing_issue),
+        body=provider_issue_payload(
+            target,
+            issue,
+            label_id_by_name,
+            milestone_by_title,
+            existing_issue=existing_issue,
+        ),
+        expected=(200,),
+    )
+
+
+def create_issue_comment(target: ApiTarget, issue: dict[str, Any], body: str) -> None:
+    base = repo_api_base(target)
+    issue_id = quote(issue_api_id(target, issue), safe="")
+    if target.provider == "gitlab":
+        path = f"{base}/issues/{issue_id}/notes"
+    else:
+        path = f"{base}/issues/{issue_id}/comments"
+    api_request(target, "POST", path, body={"body": body}, expected=(200, 201))
+
+
+def migrate_issues(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "issues")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    source = api_target(repo, "source")
+    destination = api_target(repo, "destination")
+    source_issues = normalized_issues(source)
+    destination_before_raw = list_issues(destination)
+    destination_before = [
+        normalize_issue(issue, list_issue_comments(destination, issue)) for issue in destination_before_raw
+    ]
+    raw_by_title = {
+        normalize_issue(issue, list_issue_comments(destination, issue))["title"]: issue
+        for issue in destination_before_raw
+    }
+    destination_by_title = issues_by_title(destination_before)
+    _, label_id_by_name = destination_label_maps(destination)
+    milestone_by_title = destination_milestone_maps(destination)
+
+    created = 0
+    updated = 0
+    comments_created = 0
+    for issue in source_issues:
+        existing = destination_by_title.get(issue["title"])
+        if existing is None:
+            created_issue = create_issue(destination, issue, label_id_by_name, milestone_by_title)
+            created += 1
+            for comment_body in issue["comments"]:
+                create_issue_comment(destination, created_issue, comment_body)
+                comments_created += 1
+            continue
+        existing_raw = raw_by_title[issue["title"]]
+        if issue_core(existing) != issue_core(issue):
+            update_issue(destination, existing_raw, issue, label_id_by_name, milestone_by_title)
+            updated += 1
+        destination_comments = normalize_comments(list_issue_comments(destination, existing_raw))
+        for comment_body in missing_comment_bodies(issue["comments"], destination_comments):
+            create_issue_comment(destination, existing_raw, comment_body)
+            comments_created += 1
+
+    destination_after = normalized_issues(destination)
+    comparison = compare_issue_sets(source_issues, destination_after)
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        "created": created,
+        "updated": updated,
+        "comments_created": comments_created,
+        **comparison,
+    }
+
+
+def verify_issues(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "issues")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    source = api_target(repo, "source")
+    destination = api_target(repo, "destination")
+    comparison = compare_issue_sets(normalized_issues(source), normalized_issues(destination))
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        **comparison,
+    }
+
+
 def migrate_metadata(repo: RepoPlan) -> dict[str, Any]:
     labels = migrate_labels(repo)
     milestones = migrate_milestones(repo)
+    issues = migrate_issues(repo)
     return {
         "labels": labels,
         "milestones": milestones,
-        "verified": labels.get("verified", False) and milestones.get("verified", False),
+        "issues": issues,
+        "verified": labels.get("verified", False)
+        and milestones.get("verified", False)
+        and issues.get("verified", False),
     }
 
 
 def verify_metadata(repo: RepoPlan) -> dict[str, Any]:
     labels = verify_labels(repo)
     milestones = verify_milestones(repo)
+    issues = verify_issues(repo)
     return {
         "labels": labels,
         "milestones": milestones,
-        "verified": labels.get("verified", False) and milestones.get("verified", False),
+        "issues": issues,
+        "verified": labels.get("verified", False)
+        and milestones.get("verified", False)
+        and issues.get("verified", False),
     }
 
 

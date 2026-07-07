@@ -7,7 +7,7 @@ report shows the selected source and destination surfaces were verified.
 ## Supported Directions
 
 The current migration helper supports the Git data plane, repository labels,
-and repository milestones for these directions:
+repository milestones, and portable issues/comments for these directions:
 
 - GitHub to Forgejo
 - GitLab to Forgejo
@@ -18,11 +18,15 @@ The Git data plane includes branches and tags, with optional wiki and Git LFS
 handling. Label migration copies and verifies the provider-common label fields:
 name, color, and description. Milestone migration copies and verifies the
 provider-common milestone fields: title, description, open/closed state, and
-due date. Provider metadata such as issues, pull requests, merge requests,
-releases, packages, branch protection, teams, permissions, and webhooks is
-modeled in the migration plan but intentionally fails closed when marked
-required. This prevents a partial repository mirror from being reported as a
-complete forge migration.
+due date. Issue migration copies and verifies the provider-common portable
+fields: title, body/description, open/closed state, labels, milestone title, and
+comment bodies. Native source authors, timestamps, issue numbers, reactions,
+cross-links, and audit history are provider-owned fields and are not rewritten
+through normal forge APIs. Provider metadata such as pull requests, merge
+requests, releases, packages, branch protection, teams, permissions, and
+webhooks is modeled in the migration plan but intentionally fails closed when
+marked required. This prevents a partial repository mirror from being reported
+as a complete forge migration.
 
 ## Plan File
 
@@ -52,7 +56,7 @@ Create a private JSON plan outside public Git, for example
       "metadata": {
         "labels": "required",
         "milestones": "required",
-        "issues": "skip",
+        "issues": "required",
         "merge_requests": "skip",
         "releases": "skip"
       }
@@ -99,29 +103,31 @@ python3 scripts/forge_migration.py verify \
 
 The proof is successful only when all selected repositories report
 `"verified": true` and every branch/tag ref matches between source and
-destination. When labels or milestones are enabled, proof also includes
+destination. When labels, milestones, or issues are enabled, proof also includes
 created/updated counts, source/destination metadata digests, missing items,
-mismatched items, and extra destination-only items. Extra destination metadata is
-reported for review but does not fail verification unless it shadows a source
-item with different content.
+mismatched items, and extra destination-only items. Issue proof also reports the
+number of comments created and per-issue missing/extra comment counts without
+printing comment bodies. Extra destination metadata is reported for review but
+does not fail verification unless it shadows a source item with different
+content or the destination issue is missing source comments.
 
 ## Metadata Policy
 
 For a true full-fidelity migration, inventory the non-Git surfaces first:
 
-- Issues and comments
 - Pull requests or merge requests
 - Releases and release assets
 - Packages and container registry artifacts
 - Wikis
 - Repository labels
 - Repository milestones
+- Portable issues and comments
 - Webhooks
 - Branch protection and rulesets
 - Users, teams, permissions, and CODEOWNERS
 
-Set supported surfaces such as `labels` and `milestones` to `"required"` when
-they must be migrated and verified. Set unsupported required surfaces to
+Set supported surfaces such as `labels`, `milestones`, and `issues` to
+`"required"` when they must be migrated and verified. Set unsupported required surfaces to
 `"required"` in the plan while designing a provider-specific importer. The
 helper will fail and name the missing surface. Set a surface to `"skip"` only
 when the migration approval explicitly accepts that loss.

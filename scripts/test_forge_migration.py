@@ -73,6 +73,7 @@ class FakeLabelApi:
     def __init__(self) -> None:
         self.labels: dict[tuple[str, str], list[dict[str, object]]] = {}
         self.milestones: dict[tuple[str, str], list[dict[str, object]]] = {}
+        self.issues: dict[tuple[str, str], list[dict[str, object]]] = {}
         self.next_id = 1
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
@@ -107,6 +108,29 @@ class FakeLabelApi:
             self.next_id += 1
         self.milestones[(provider, repository)] = seeded
 
+    def seed_issues(self, provider: str, repository: str, issues: list[dict[str, object]]) -> None:
+        seeded: list[dict[str, object]] = []
+        for issue in issues:
+            comments = [
+                {"id": self.next_id + index + 1, "body": str(comment)}
+                for index, comment in enumerate(issue.get("comments", []))
+            ]
+            seeded.append(
+                {
+                    "id": self.next_id,
+                    "number": self.next_id,
+                    "iid": self.next_id,
+                    "title": str(issue["title"]),
+                    "body": "" if issue.get("body") is None else str(issue.get("body")),
+                    "state": normalize_fake_state(issue.get("state")),
+                    "labels": [str(label) for label in issue.get("labels", [])],
+                    "milestone": "" if issue.get("milestone") is None else str(issue.get("milestone")),
+                    "comments": comments,
+                }
+            )
+            self.next_id += 1 + len(comments)
+        self.issues[(provider, repository)] = seeded
+
     def url_for(self, provider: str) -> str:
         if self.server is None:
             raise AssertionError("fake API is not running")
@@ -134,19 +158,21 @@ class FakeLabelApi:
                     return {}
                 return json.loads(self.rfile.read(size).decode("utf-8"))
 
-            def parse_resource_path(self) -> tuple[str, str, str, str | None]:
+            def parse_resource_path(self) -> tuple[str, str, str, str | None, str | None]:
                 raw_parts = [part for part in urlsplit(self.path).path.strip("/").split("/") if part]
                 parts = [unquote(part) for part in raw_parts]
-                if len(parts) >= 5 and parts[1] == "repos" and parts[4] in {"labels", "milestones"}:
+                if len(parts) >= 5 and parts[1] == "repos" and parts[4] in {"labels", "milestones", "issues"}:
                     provider = parts[0]
                     repository = f"{parts[2]}/{parts[3]}"
                     resource_id = parts[5] if len(parts) > 5 else None
-                    return provider, repository, parts[4], resource_id
-                if len(parts) >= 4 and parts[1] == "projects" and parts[3] in {"labels", "milestones"}:
+                    subresource = parts[6] if len(parts) > 6 else None
+                    return provider, repository, parts[4], resource_id, subresource
+                if len(parts) >= 4 and parts[1] == "projects" and parts[3] in {"labels", "milestones", "issues"}:
                     provider = parts[0]
                     repository = parts[2]
                     resource_id = parts[4] if len(parts) > 4 else None
-                    return provider, repository, parts[3], resource_id
+                    subresource = parts[5] if len(parts) > 5 else None
+                    return provider, repository, parts[3], resource_id, subresource
                 raise AssertionError(f"unexpected fake API path: {self.path}")
 
             def response_label(self, provider: str, label: dict[str, object]) -> dict[str, object]:
@@ -188,6 +214,44 @@ class FakeLabelApi:
                     "due_on": timestamp,
                 }
 
+            def response_issue(self, provider: str, repository: str, issue: dict[str, object]) -> dict[str, object]:
+                milestone_title = str(issue.get("milestone") or "")
+                milestone = None
+                if milestone_title:
+                    for candidate in api.milestones.setdefault((provider, repository), []):
+                        if candidate.get("title") == milestone_title:
+                            milestone = self.response_milestone(provider, candidate)
+                            break
+                labels = []
+                label_names = [str(label) for label in issue.get("labels", [])]
+                for label_name in label_names:
+                    label = self.find_resource(api.labels.setdefault((provider, repository), []), label_name, "name")
+                    labels.append(self.response_label(provider, label) if label else {"name": label_name})
+                if provider == "gitlab":
+                    return {
+                        "id": issue["id"],
+                        "iid": issue["iid"],
+                        "title": issue["title"],
+                        "description": issue.get("body", ""),
+                        "state": "opened" if issue.get("state") == "open" else "closed",
+                        "labels": label_names,
+                        "milestone": milestone,
+                    }
+                return {
+                    "id": issue["id"],
+                    "number": issue["number"],
+                    "title": issue["title"],
+                    "body": issue.get("body", ""),
+                    "state": issue.get("state", "open"),
+                    "labels": labels,
+                    "milestone": milestone,
+                }
+
+            def response_comment(self, provider: str, comment: dict[str, object]) -> dict[str, object]:
+                if provider == "gitlab":
+                    return {"id": comment["id"], "body": comment["body"], "system": False}
+                return {"id": comment["id"], "body": comment["body"]}
+
             def find_resource(
                 self,
                 resources: list[dict[str, object]],
@@ -203,8 +267,31 @@ class FakeLabelApi:
                         return resource
                 return None
 
+            def labels_from_payload(self, provider: str, repository: str, body: dict[str, object]) -> list[str]:
+                raw = body.get("labels", [])
+                if isinstance(raw, str):
+                    return [part.strip() for part in raw.split(",") if part.strip()]
+                labels: list[str] = []
+                for item in raw if isinstance(raw, list) else []:
+                    if provider == "forgejo" and str(item).isdigit():
+                        label = self.find_resource(api.labels.setdefault((provider, repository), []), str(item), "name")
+                        if label is not None:
+                            labels.append(str(label["name"]))
+                            continue
+                    labels.append(str(item))
+                return labels
+
+            def milestone_from_payload(self, provider: str, repository: str, body: dict[str, object]) -> str:
+                raw = body.get("milestone_id")
+                if raw is None:
+                    raw = body.get("milestone")
+                if raw is None:
+                    return ""
+                milestone = self.find_resource(api.milestones.setdefault((provider, repository), []), str(raw), "title")
+                return str(milestone["title"]) if milestone is not None else ""
+
             def do_GET(self) -> None:
-                provider, repository, resource, resource_id = self.parse_resource_path()
+                provider, repository, resource, resource_id, subresource = self.parse_resource_path()
                 if resource == "labels":
                     labels = api.labels.setdefault((provider, repository), [])
                     if resource_id is not None:
@@ -216,22 +303,49 @@ class FakeLabelApi:
                         return
                     self.send_json(200, [self.response_label(provider, label) for label in labels])
                     return
-                milestones = api.milestones.setdefault((provider, repository), [])
+                if resource == "milestones":
+                    milestones = api.milestones.setdefault((provider, repository), [])
+                    if resource_id is not None:
+                        milestone = self.find_resource(milestones, resource_id, "title")
+                        if milestone is None:
+                            self.send_json(404, {"message": "not found"})
+                            return
+                        self.send_json(200, self.response_milestone(provider, milestone))
+                        return
+                    self.send_json(200, [self.response_milestone(provider, milestone) for milestone in milestones])
+                    return
+                issues = api.issues.setdefault((provider, repository), [])
                 if resource_id is not None:
-                    milestone = self.find_resource(milestones, resource_id, "title")
-                    if milestone is None:
+                    issue = self.find_resource(issues, resource_id, "title")
+                    if issue is None:
                         self.send_json(404, {"message": "not found"})
                         return
-                    self.send_json(200, self.response_milestone(provider, milestone))
+                    if subresource in {"comments", "notes"}:
+                        self.send_json(
+                            200,
+                            [self.response_comment(provider, comment) for comment in issue.get("comments", [])],
+                        )
+                        return
+                    self.send_json(200, self.response_issue(provider, repository, issue))
                     return
-                self.send_json(200, [self.response_milestone(provider, milestone) for milestone in milestones])
+                self.send_json(200, [self.response_issue(provider, repository, issue) for issue in issues])
 
             def do_POST(self) -> None:
-                provider, repository, resource, resource_id = self.parse_resource_path()
+                provider, repository, resource, resource_id, subresource = self.parse_resource_path()
+                body = self.read_json()
+                if resource == "issues" and resource_id is not None and subresource in {"comments", "notes"}:
+                    issue = self.find_resource(api.issues.setdefault((provider, repository), []), resource_id, "title")
+                    if issue is None:
+                        self.send_json(404, {"message": "not found"})
+                        return
+                    comment = {"id": api.next_id, "body": str(body.get("body") or "")}
+                    api.next_id += 1
+                    issue.setdefault("comments", []).append(comment)
+                    self.send_json(201, self.response_comment(provider, comment))
+                    return
                 if resource_id is not None:
                     self.send_json(404, {"message": "unexpected nested POST"})
                     return
-                body = self.read_json()
                 if resource == "labels":
                     labels = api.labels.setdefault((provider, repository), [])
                     label = {
@@ -244,26 +358,44 @@ class FakeLabelApi:
                     labels.append(label)
                     self.send_json(201, self.response_label(provider, label))
                     return
-                milestones = api.milestones.setdefault((provider, repository), [])
-                due_value = body.get("due_date")
-                if due_value is None:
-                    due_value = body.get("due_on")
-                if due_value is None:
-                    due_value = body.get("deadline")
-                milestone = {
+                if resource == "milestones":
+                    milestones = api.milestones.setdefault((provider, repository), [])
+                    due_value = body.get("due_date")
+                    if due_value is None:
+                        due_value = body.get("due_on")
+                    if due_value is None:
+                        due_value = body.get("deadline")
+                    milestone = {
+                        "id": api.next_id,
+                        "number": api.next_id,
+                        "title": str(body["title"]),
+                        "description": "" if body.get("description") is None else str(body.get("description")),
+                        "state": normalize_fake_state(body.get("state")),
+                        "due_date": normalize_fake_due_date(due_value),
+                    }
+                    api.next_id += 1
+                    milestones.append(milestone)
+                    self.send_json(201, self.response_milestone(provider, milestone))
+                    return
+                issue = {
                     "id": api.next_id,
                     "number": api.next_id,
+                    "iid": api.next_id,
                     "title": str(body["title"]),
-                    "description": "" if body.get("description") is None else str(body.get("description")),
+                    "body": "" if body.get("description") is None else str(body.get("description")),
                     "state": normalize_fake_state(body.get("state")),
-                    "due_date": normalize_fake_due_date(due_value),
+                    "labels": self.labels_from_payload(provider, repository, body),
+                    "milestone": self.milestone_from_payload(provider, repository, body),
+                    "comments": [],
                 }
+                if body.get("body") is not None:
+                    issue["body"] = str(body.get("body"))
                 api.next_id += 1
-                milestones.append(milestone)
-                self.send_json(201, self.response_milestone(provider, milestone))
+                api.issues.setdefault((provider, repository), []).append(issue)
+                self.send_json(201, self.response_issue(provider, repository, issue))
 
             def update_resource(self) -> None:
-                provider, repository, resource, resource_id = self.parse_resource_path()
+                provider, repository, resource, resource_id, _subresource = self.parse_resource_path()
                 if resource_id is None:
                     self.send_json(404, {"message": "resource id is required"})
                     return
@@ -281,6 +413,28 @@ class FakeLabelApi:
                     if "description" in body:
                         label["description"] = "" if body.get("description") is None else str(body.get("description"))
                     self.send_json(200, self.response_label(provider, label))
+                    return
+                if resource == "issues":
+                    issues = api.issues.setdefault((provider, repository), [])
+                    issue = self.find_resource(issues, resource_id, "title")
+                    if issue is None:
+                        self.send_json(404, {"message": "not found"})
+                        return
+                    if body.get("title"):
+                        issue["title"] = str(body["title"])
+                    if "body" in body:
+                        issue["body"] = "" if body.get("body") is None else str(body.get("body"))
+                    if "description" in body:
+                        issue["body"] = "" if body.get("description") is None else str(body.get("description"))
+                    if "labels" in body:
+                        issue["labels"] = self.labels_from_payload(provider, repository, body)
+                    if "milestone" in body or "milestone_id" in body:
+                        issue["milestone"] = self.milestone_from_payload(provider, repository, body)
+                    if body.get("state_event"):
+                        issue["state"] = "closed" if body["state_event"] == "close" else "open"
+                    elif body.get("state"):
+                        issue["state"] = normalize_fake_state(body["state"])
+                    self.send_json(200, self.response_issue(provider, repository, issue))
                     return
                 milestones = api.milestones.setdefault((provider, repository), [])
                 milestone = self.find_resource(milestones, resource_id, "title")
@@ -468,6 +622,50 @@ def test_metadata_migration_for_supported_directions() -> None:
                     },
                 ],
             )
+            api.seed_issues(
+                source_provider,
+                source_repository,
+                [
+                    {
+                        "title": "Production checklist",
+                        "body": "Prepare the platform for the first rollout.",
+                        "state": "open",
+                        "labels": ["bug", "ci"],
+                        "milestone": "v1.0",
+                        "comments": ["Confirm DNS before cutover.", "Record the final proof artifact."],
+                    },
+                    {
+                        "title": "Closed incident",
+                        "body": "Document the resolved bootstrap issue.",
+                        "state": "closed",
+                        "labels": ["bug"],
+                        "milestone": "legacy cleanup",
+                        "comments": ["Resolved during migration rehearsal."],
+                    },
+                ],
+            )
+            api.seed_issues(
+                destination_provider,
+                destination_repository,
+                [
+                    {
+                        "title": "Production checklist",
+                        "body": "old body",
+                        "state": "closed",
+                        "labels": ["bug"],
+                        "milestone": "legacy cleanup",
+                        "comments": [],
+                    },
+                    {
+                        "title": "destination-only issue",
+                        "body": "kept as extra",
+                        "state": "open",
+                        "labels": [],
+                        "milestone": "",
+                        "comments": [],
+                    },
+                ],
+            )
             plan = {
                 "direction": direction,
                 "repositories": [
@@ -483,7 +681,7 @@ def test_metadata_migration_for_supported_directions() -> None:
                             "api_url": api.url_for(destination_provider),
                             "api_repository": destination_repository,
                         },
-                        "metadata": {"labels": "required", "milestones": "required", "issues": "skip"},
+                        "metadata": {"labels": "required", "milestones": "required", "issues": "required"},
                     }
                 ],
             }
@@ -520,6 +718,15 @@ def test_metadata_migration_for_supported_directions() -> None:
                 )
             if milestones["extra"] != ["destination-only"]:
                 raise AssertionError(f"{direction}: expected destination-only milestone to be reported as extra")
+            issues = proof["repositories"][0]["metadata"]["issues"]
+            if not issues["verified"]:
+                raise AssertionError(f"{direction}: issue proof did not verify")
+            if issues["created"] != 1 or issues["updated"] != 1 or issues["comments_created"] != 3:
+                raise AssertionError(
+                    f"{direction}: expected one created issue, one updated issue, and three comments, got {issues}"
+                )
+            if issues["extra"] != ["destination-only issue"]:
+                raise AssertionError(f"{direction}: expected destination-only issue to be reported as extra")
 
             verify_proof = root / direction / "verify-proof.json"
             run(
@@ -531,6 +738,8 @@ def test_metadata_migration_for_supported_directions() -> None:
                 raise AssertionError(f"{direction}: verify command did not prove labels")
             if not verified_again["repositories"][0]["metadata"]["milestones"]["verified"]:
                 raise AssertionError(f"{direction}: verify command did not prove milestones")
+            if not verified_again["repositories"][0]["metadata"]["issues"]["verified"]:
+                raise AssertionError(f"{direction}: verify command did not prove issues")
 
 
 def test_required_metadata_fails_closed() -> None:
@@ -549,7 +758,7 @@ def test_required_metadata_fails_closed() -> None:
                         "name": "metadata-required",
                         "source_url": str(source),
                         "destination_url": str(destination),
-                        "metadata": {"issues": "required"},
+                        "metadata": {"pull_requests": "required"},
                     }
                 ],
             },
