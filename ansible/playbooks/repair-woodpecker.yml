@@ -223,6 +223,84 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Collect Woodpecker crash diagnostics after repair failure
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        redact() {
+          sed -E \
+            -e 's#(postgres(ql)?://[^:/ @]+:)[^@]+@#\1<redacted>@#g' \
+            -e 's#(mysql://[^:/ @]+:)[^@]+@#\1<redacted>@#g' \
+            -e 's#([?&](password|secret|token)=)[^[:space:]&]+#\1<redacted>#Ig' \
+            -e 's#((password|secret|token)[[:space:]]*[:=][[:space:]]*)[^[:space:]]+#\1<redacted>#Ig'
+        }
+
+        echo "===== woodpecker pods/services/endpoints ====="
+        "$K" --kubeconfig "$C" -n woodpecker get pods,svc,endpoints,endpointslice,pvc -o wide 2>&1 | redact || true
+
+        echo "===== woodpecker app status ====="
+        "$K" --kubeconfig "$C" -n argocd get application/woodpecker -o wide 2>&1 | redact || true
+        "$K" --kubeconfig "$C" -n argocd get application/woodpecker \
+          -o jsonpath='{range .status.conditions[*]}{.type}{": "}{.message}{"\n"}{end}' 2>&1 | redact || true
+
+        echo "===== woodpecker workload env refs ====="
+        for workload in statefulset/woodpecker-server deployment/woodpecker-server statefulset/woodpecker-agent deployment/woodpecker-agent; do
+          if "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
+            echo "--- ${workload} ---"
+            "$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
+              -o jsonpath='images={range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\n"}env_names={range .spec.template.spec.containers[*].env[*]}{.name}{" "}{end}{"\n"}env_from_secrets={range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{" "}{end}{"\n"}' 2>&1 | redact || true
+          fi
+        done
+
+        echo "===== required secrets state ====="
+        for item in \
+          woodpecker/woodpecker-forgejo-oauth \
+          woodpecker/woodpecker-database \
+          platform-databases/woodpecker-database
+        do
+          ns="${item%/*}"
+          secret="${item#*/}"
+          if "$K" --kubeconfig "$C" -n "${ns}" get "secret/${secret}" >/dev/null 2>&1; then
+            keys="$("$K" --kubeconfig "$C" -n "${ns}" get "secret/${secret}" \
+              -o jsonpath='{range $key,$value := .data}{$key}{" "}{end}' 2>/dev/null || true)"
+            echo "secret=${item} state=present keys=${keys:-none}"
+          else
+            echo "secret=${item} state=absent"
+          fi
+        done
+
+        echo "===== platform postgres state ====="
+        "$K" --kubeconfig "$C" -n platform-databases get pods,svc,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
+
+        echo "===== woodpecker logs and events ====="
+        pods="$("$K" --kubeconfig "$C" -n woodpecker get pods \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null |
+          grep '^woodpecker-' || true)"
+        for pod in ${pods}; do
+          echo "--- pod/${pod} current logs ---"
+          "$K" --kubeconfig "$C" -n woodpecker logs "pod/${pod}" --all-containers --tail=120 2>&1 | redact || true
+          echo "--- pod/${pod} previous logs ---"
+          "$K" --kubeconfig "$C" -n woodpecker logs "pod/${pod}" --all-containers --previous --tail=120 2>&1 | redact || true
+          echo "--- pod/${pod} events ---"
+          "$K" --kubeconfig "$C" -n woodpecker describe "pod/${pod}" 2>&1 |
+            sed -n '/Events:/,$p' |
+            tail -120 |
+            redact || true
+        done
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_failure_diagnostics
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: >
+        ((platform_woodpecker_argocd_sync_wait | default({})).rc | default(0) | int != 0) or
+        ((platform_woodpecker_rollout_wait | default({})).rc | default(0) | int != 0) or
+        ((platform_woodpecker_runtime_verify | default({})).rc | default(0) | int != 0)
+
     - name: Stop after Woodpecker repair failure
       ansible.builtin.fail:
         msg: |
@@ -249,6 +327,9 @@
           {{ (platform_woodpecker_runtime_verify | default({})).stdout | default('not run') }}
           stderr:
           {{ (platform_woodpecker_runtime_verify | default({})).stderr | default('not run') }}
+
+          Failure diagnostics:
+          {{ (platform_woodpecker_failure_diagnostics | default({})).stdout | default('not run') }}
 
           If runtime verification shows `woodpecker-image-tag-mismatch`, the
           Argo CD source still contains stale rendered Woodpecker values. For
