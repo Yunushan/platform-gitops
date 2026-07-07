@@ -6,8 +6,8 @@ report shows the selected source and destination surfaces were verified.
 
 ## Supported Directions
 
-The current migration helper supports the Git data plane and repository label
-metadata for these directions:
+The current migration helper supports the Git data plane, repository labels,
+and repository milestones for these directions:
 
 - GitHub to Forgejo
 - GitLab to Forgejo
@@ -16,11 +16,13 @@ metadata for these directions:
 
 The Git data plane includes branches and tags, with optional wiki and Git LFS
 handling. Label migration copies and verifies the provider-common label fields:
-name, color, and description. Provider metadata such as issues, pull requests,
-merge requests, releases, packages, branch protection, teams, permissions, and
-webhooks is modeled in the migration plan but intentionally fails closed when
-marked required. This prevents a partial repository mirror from being reported
-as a complete forge migration.
+name, color, and description. Milestone migration copies and verifies the
+provider-common milestone fields: title, description, open/closed state, and
+due date. Provider metadata such as issues, pull requests, merge requests,
+releases, packages, branch protection, teams, permissions, and webhooks is
+modeled in the migration plan but intentionally fails closed when marked
+required. This prevents a partial repository mirror from being reported as a
+complete forge migration.
 
 ## Plan File
 
@@ -49,6 +51,7 @@ Create a private JSON plan outside public Git, for example
       "lfs": "auto",
       "metadata": {
         "labels": "required",
+        "milestones": "required",
         "issues": "skip",
         "merge_requests": "skip",
         "releases": "skip"
@@ -96,11 +99,11 @@ python3 scripts/forge_migration.py verify \
 
 The proof is successful only when all selected repositories report
 `"verified": true` and every branch/tag ref matches between source and
-destination. When labels are enabled, proof also includes created/updated label
-counts, source/destination label digests, missing labels, mismatched labels, and
-extra destination labels. Extra destination labels are reported for review but
-do not fail verification unless they shadow a source label with different
-content.
+destination. When labels or milestones are enabled, proof also includes
+created/updated counts, source/destination metadata digests, missing items,
+mismatched items, and extra destination-only items. Extra destination metadata is
+reported for review but does not fail verification unless it shadows a source
+item with different content.
 
 ## Metadata Policy
 
@@ -112,15 +115,16 @@ For a true full-fidelity migration, inventory the non-Git surfaces first:
 - Packages and container registry artifacts
 - Wikis
 - Repository labels
+- Repository milestones
 - Webhooks
 - Branch protection and rulesets
 - Users, teams, permissions, and CODEOWNERS
 
-Set supported surfaces such as `labels` to `"required"` when they must be
-migrated and verified. Set unsupported required surfaces to `"required"` in the
-plan while designing a provider-specific importer. The helper will fail and
-name the missing surface. Set a surface to `"skip"` only when the migration
-approval explicitly accepts that loss.
+Set supported surfaces such as `labels` and `milestones` to `"required"` when
+they must be migrated and verified. Set unsupported required surfaces to
+`"required"` in the plan while designing a provider-specific importer. The
+helper will fail and name the missing surface. Set a surface to `"skip"` only
+when the migration approval explicitly accepts that loss.
 
 ## Acceptance Evidence
 

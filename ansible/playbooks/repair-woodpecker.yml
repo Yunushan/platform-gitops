@@ -107,31 +107,31 @@
               echo "argocd_application_${safe_name}=absent reason=woodpecker-source-repo-url-empty"
               return 1
             fi
-            cat <<APP | "$K" --kubeconfig "$C" apply -f -
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: ${name}
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "${wave}"
-spec:
-  project: "${project_yaml}"
-  source:
-    repoURL: "${repo_url_yaml}"
-    targetRevision: "${target_revision_yaml}"
-    path: ${path}
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: ${namespace}
-  syncPolicy:
-    automated:
-      prune: false
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-      - ServerSideApply=true
-APP
+            {
+              printf '%s\n' 'apiVersion: argoproj.io/v1alpha1'
+              printf '%s\n' 'kind: Application'
+              printf '%s\n' 'metadata:'
+              printf '  name: %s\n' "${name}"
+              printf '%s\n' '  namespace: argocd'
+              printf '%s\n' '  annotations:'
+              printf '    argocd.argoproj.io/sync-wave: "%s"\n' "${wave}"
+              printf '%s\n' 'spec:'
+              printf '  project: "%s"\n' "${project_yaml}"
+              printf '%s\n' '  source:'
+              printf '    repoURL: "%s"\n' "${repo_url_yaml}"
+              printf '    targetRevision: "%s"\n' "${target_revision_yaml}"
+              printf '    path: %s\n' "${path}"
+              printf '%s\n' '  destination:'
+              printf '%s\n' '    server: https://kubernetes.default.svc'
+              printf '    namespace: %s\n' "${namespace}"
+              printf '%s\n' '  syncPolicy:'
+              printf '%s\n' '    automated:'
+              printf '%s\n' '      prune: false'
+              printf '%s\n' '      selfHeal: true'
+              printf '%s\n' '    syncOptions:'
+              printf '%s\n' '      - CreateNamespace=true'
+              printf '%s\n' '      - ServerSideApply=true'
+            } | "$K" --kubeconfig "$C" apply -f -
             echo "argocd_application_${safe_name}=auto-registered repo=${repo_url_yaml} revision=${target_revision_yaml} path=${path}"
           }
 

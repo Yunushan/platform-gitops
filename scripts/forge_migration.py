@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Mirror and verify Git forge migrations with machine-readable proof.
 
-The first supported migration planes are Git refs and repository labels:
-branches, tags, optional wiki/LFS repositories, and provider-common label
-metadata. Other provider metadata such as issues, pull requests, merge requests,
-packages, and releases is intentionally modeled in the plan and rejected when
-marked required until an importer for that surface exists. That keeps
-"verified migration" claims honest.
+The first supported migration planes are Git refs, repository labels, and
+repository milestones: branches, tags, optional wiki/LFS repositories, and
+provider-common metadata. Other provider metadata such as issues, pull
+requests, merge requests, packages, and releases is intentionally modeled in
+the plan and rejected when marked required until an importer for that surface
+exists. That keeps "verified migration" claims honest.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ OPTIONAL_DIRECTIONS = {
     "gitlab-to-github",
 }
 SUPPORTED_METADATA_STATES = {"skip", "skipped", "false", "none", "not-required"}
-SUPPORTED_METADATA_SURFACES = {"labels"}
+SUPPORTED_METADATA_SURFACES = {"labels", "milestones"}
 UNSUPPORTED_METADATA_SURFACES = {
     "issues",
     "pull_requests",
@@ -369,13 +369,20 @@ def api_target(repo: RepoPlan, side: str) -> ApiTarget:
 
 def validate_metadata_requirements(repo: RepoPlan) -> dict[str, Any]:
     require_supported_metadata(repo)
-    labels_mode = metadata_mode(repo, "labels")
-    labels: dict[str, Any] = {"mode": labels_mode, "status": "skipped"}
-    if labels_mode != "skip":
-        source = api_target(repo, "source")
-        destination = api_target(repo, "destination")
-        labels = {
-            "mode": labels_mode,
+    source: ApiTarget | None = None
+    destination: ApiTarget | None = None
+
+    def planned_surface(surface: str) -> dict[str, Any]:
+        nonlocal source, destination
+        mode = metadata_mode(repo, surface)
+        if mode == "skip":
+            return {"mode": mode, "status": "skipped"}
+        if source is None:
+            source = api_target(repo, "source")
+        if destination is None:
+            destination = api_target(repo, "destination")
+        return {
+            "mode": mode,
             "status": "planned",
             "source_provider": source.provider,
             "destination_provider": destination.provider,
@@ -384,7 +391,12 @@ def validate_metadata_requirements(repo: RepoPlan) -> dict[str, Any]:
             "source_repository": source.repository,
             "destination_repository": destination.repository,
         }
-    return {"labels": labels, "verified": True}
+
+    return {
+        "labels": planned_surface("labels"),
+        "milestones": planned_surface("milestones"),
+        "verified": True,
+    }
 
 
 def api_headers(target: ApiTarget) -> dict[str, str]:
@@ -638,14 +650,258 @@ def verify_labels(repo: RepoPlan) -> dict[str, Any]:
     }
 
 
+def list_milestones(target: ApiTarget) -> list[dict[str, Any]]:
+    milestones: list[dict[str, Any]] = []
+    base = repo_api_base(target)
+    for page in range(1, 1001):
+        query: dict[str, Any] = {"per_page": 100, "page": page}
+        if target.provider in {"github", "forgejo"}:
+            query["state"] = "all"
+        payload = api_request(
+            target,
+            "GET",
+            f"{base}/milestones",
+            query=query,
+            expected=(200,),
+        )
+        if not isinstance(payload, list):
+            raise MigrationError(f"{target.provider} milestones API returned a non-list response")
+        milestones.extend(payload)
+        if len(payload) < 100:
+            break
+    return milestones
+
+
+def normalize_milestone_state(value: Any) -> str:
+    state = str(value or "open").strip().lower()
+    if state in {"open", "active"}:
+        return "open"
+    if state == "closed":
+        return "closed"
+    raise MigrationError(f"milestone state must be open/active or closed, got {value!r}")
+
+
+def normalize_milestone_due_date(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    match = re.match(r"^\d{4}-\d{2}-\d{2}", text)
+    if not match:
+        raise MigrationError(f"milestone due date must start with YYYY-MM-DD, got {value!r}")
+    return match.group(0)
+
+
+def normalize_milestone(milestone: dict[str, Any]) -> dict[str, str]:
+    title = str(milestone.get("title") or "").strip()
+    if not title:
+        raise MigrationError("milestone is missing a title")
+    description = milestone.get("description")
+    due_value = milestone.get("due_date")
+    if due_value is None:
+        due_value = milestone.get("due_on")
+    if due_value is None:
+        due_value = milestone.get("deadline")
+    return {
+        "title": title,
+        "description": "" if description is None else str(description),
+        "state": normalize_milestone_state(milestone.get("state")),
+        "due_date": normalize_milestone_due_date(due_value),
+    }
+
+
+def normalized_milestones(milestones: list[dict[str, Any]]) -> list[dict[str, str]]:
+    normalized = [normalize_milestone(milestone) for milestone in milestones]
+    return sorted(normalized, key=lambda item: item["title"].casefold())
+
+
+def milestone_digest(milestones: list[dict[str, str]]) -> str:
+    payload = json.dumps(milestones, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def milestone_timestamp(due_date: str) -> str | None:
+    if not due_date:
+        return None
+    return f"{due_date}T00:00:00Z"
+
+
+def provider_milestone_payload(
+    target: ApiTarget,
+    milestone: dict[str, str],
+    existing_milestone: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if target.provider == "gitlab":
+        payload: dict[str, Any] = {
+            "title": milestone["title"],
+            "description": milestone["description"],
+            "due_date": milestone["due_date"] or None,
+        }
+        if existing_milestone is not None:
+            existing_state = normalize_milestone_state(existing_milestone.get("state"))
+            if milestone["state"] != existing_state:
+                payload["state_event"] = "close" if milestone["state"] == "closed" else "activate"
+        return payload
+    if target.provider == "forgejo":
+        return {
+            "title": milestone["title"],
+            "description": milestone["description"],
+            "state": milestone["state"],
+            "deadline": milestone_timestamp(milestone["due_date"]),
+        }
+    return {
+        "title": milestone["title"],
+        "description": milestone["description"],
+        "state": milestone["state"],
+        "due_on": milestone_timestamp(milestone["due_date"]),
+    }
+
+
+def milestone_update_path(target: ApiTarget, existing_milestone: dict[str, Any], milestone: dict[str, str]) -> str:
+    base = repo_api_base(target)
+    if target.provider == "github":
+        milestone_id = existing_milestone.get("number") or existing_milestone.get("id") or milestone["title"]
+    else:
+        milestone_id = existing_milestone.get("id") or existing_milestone.get("iid") or milestone["title"]
+    return f"{base}/milestones/{quote(str(milestone_id), safe='')}"
+
+
+def create_milestone(target: ApiTarget, milestone: dict[str, str]) -> dict[str, Any]:
+    payload = provider_milestone_payload(target, milestone)
+    if target.provider == "gitlab":
+        initial_payload = {key: value for key, value in payload.items() if key != "state_event"}
+        created = api_request(
+            target,
+            "POST",
+            f"{repo_api_base(target)}/milestones",
+            body=initial_payload,
+            expected=(200, 201),
+        )
+        if milestone["state"] == "closed":
+            update_milestone(target, created, milestone)
+        return created if isinstance(created, dict) else {}
+    created = api_request(
+        target,
+        "POST",
+        f"{repo_api_base(target)}/milestones",
+        body=payload,
+        expected=(200, 201),
+    )
+    return created if isinstance(created, dict) else {}
+
+
+def update_milestone(target: ApiTarget, existing_milestone: dict[str, Any], milestone: dict[str, str]) -> None:
+    method = "PUT" if target.provider == "gitlab" else "PATCH"
+    api_request(
+        target,
+        method,
+        milestone_update_path(target, existing_milestone, milestone),
+        body=provider_milestone_payload(target, milestone, existing_milestone=existing_milestone),
+        expected=(200,),
+    )
+
+
+def compare_milestone_sets(
+    source_milestones: list[dict[str, str]],
+    destination_milestones: list[dict[str, str]],
+) -> dict[str, Any]:
+    source_by_title = {milestone["title"]: milestone for milestone in source_milestones}
+    destination_by_title = {milestone["title"]: milestone for milestone in destination_milestones}
+    missing = sorted(set(source_by_title) - set(destination_by_title), key=str.casefold)
+    mismatched = sorted(
+        title
+        for title in set(source_by_title) & set(destination_by_title)
+        if source_by_title[title] != destination_by_title[title]
+    )
+    extra = sorted(set(destination_by_title) - set(source_by_title), key=str.casefold)
+    replicated_destination_milestones = sorted(
+        (destination_by_title[title] for title in source_by_title if title in destination_by_title),
+        key=lambda item: item["title"].casefold(),
+    )
+    return {
+        "verified": not missing and not mismatched,
+        "source_count": len(source_milestones),
+        "destination_count": len(destination_milestones),
+        "source_digest": milestone_digest(source_milestones),
+        "destination_digest": milestone_digest(replicated_destination_milestones),
+        "missing": missing,
+        "mismatched": mismatched,
+        "extra": extra,
+    }
+
+
+def migrate_milestones(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "milestones")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    source = api_target(repo, "source")
+    destination = api_target(repo, "destination")
+    source_milestones = normalized_milestones(list_milestones(source))
+    destination_before_raw = list_milestones(destination)
+    destination_before = normalized_milestones(destination_before_raw)
+    raw_by_title = {normalize_milestone(milestone)["title"]: milestone for milestone in destination_before_raw}
+    destination_by_title = {milestone["title"]: milestone for milestone in destination_before}
+    created = 0
+    updated = 0
+    for milestone in source_milestones:
+        existing = destination_by_title.get(milestone["title"])
+        if existing is None:
+            create_milestone(destination, milestone)
+            created += 1
+        elif existing != milestone:
+            update_milestone(destination, raw_by_title[milestone["title"]], milestone)
+            updated += 1
+    destination_after = normalized_milestones(list_milestones(destination))
+    comparison = compare_milestone_sets(source_milestones, destination_after)
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        "created": created,
+        "updated": updated,
+        **comparison,
+    }
+
+
+def verify_milestones(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "milestones")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    source = api_target(repo, "source")
+    destination = api_target(repo, "destination")
+    comparison = compare_milestone_sets(
+        normalized_milestones(list_milestones(source)),
+        normalized_milestones(list_milestones(destination)),
+    )
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        **comparison,
+    }
+
+
 def migrate_metadata(repo: RepoPlan) -> dict[str, Any]:
     labels = migrate_labels(repo)
-    return {"labels": labels, "verified": labels.get("verified", False)}
+    milestones = migrate_milestones(repo)
+    return {
+        "labels": labels,
+        "milestones": milestones,
+        "verified": labels.get("verified", False) and milestones.get("verified", False),
+    }
 
 
 def verify_metadata(repo: RepoPlan) -> dict[str, Any]:
     labels = verify_labels(repo)
-    return {"labels": labels, "verified": labels.get("verified", False)}
+    milestones = verify_milestones(repo)
+    return {
+        "labels": labels,
+        "milestones": milestones,
+        "verified": labels.get("verified", False) and milestones.get("verified", False),
+    }
 
 
 def ls_remote_refs(url: str) -> tuple[dict[str, str], str | None]:
