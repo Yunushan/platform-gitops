@@ -236,6 +236,22 @@
           make platform-woodpecker-repair
 
           {% endif %}
+          {% if backend_output | regex_search('cnpg-webhook-service|mcluster\\.cnpg\\.io|failed calling webhook.*cnpg|context deadline exceeded') %}
+          CloudNativePG webhook calls are timing out while applying
+          platform-postgres. Restart/verify the CloudNativePG operator and
+          service endpoints before rerunning Woodpecker repair:
+
+          ansible -i inventory/hosts.local.ini node-1 -b -m shell -a '
+          K=/var/lib/rancher/rke2/bin/kubectl
+          C=/etc/rancher/rke2/rke2.yaml
+          $K --kubeconfig "$C" -n cnpg-system rollout restart deployment/cloudnative-pg
+          $K --kubeconfig "$C" -n cnpg-system rollout status deployment/cloudnative-pg --timeout=300s
+          $K --kubeconfig "$C" -n cnpg-system get pods,svc,endpointslice -o wide
+          '
+
+          make platform-woodpecker-repair
+
+          {% endif %}
           Woodpecker is configured for PostgreSQL, but the required
           platform PostgreSQL backend is not ready.
 
