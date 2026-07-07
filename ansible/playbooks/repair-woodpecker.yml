@@ -211,6 +211,31 @@
           redact || true
         echo "===== platform-databases runtime ====="
         "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpoints,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
+        echo "===== platform-databases pod events ====="
+        pods="$("$K" --kubeconfig "$C" -n platform-databases get pods \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        for pod in ${pods}; do
+          echo "----- pod/${pod} -----"
+          "$K" --kubeconfig "$C" -n platform-databases describe "pod/${pod}" 2>&1 |
+            sed -n '/Events:/,$p' |
+            redact || true
+        done
+        echo "===== platform-databases PVC and Longhorn backing volumes ====="
+        pvcs="$("$K" --kubeconfig "$C" -n platform-databases get pvc \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        for pvc in ${pvcs}; do
+          echo "----- pvc/${pvc} -----"
+          "$K" --kubeconfig "$C" -n platform-databases describe "pvc/${pvc}" 2>&1 | redact || true
+          pv="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+          if [ -n "${pv}" ]; then
+            handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+            printf 'pv=%s longhornVolume=%s\n' "${pv}" "${handle:-none}"
+            if [ -n "${handle}" ] && "$K" --kubeconfig "$C" get crd/volumes.longhorn.io >/dev/null 2>&1; then
+              "$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" -o wide 2>&1 | redact || true
+              "$K" --kubeconfig "$C" -n longhorn-system describe "volumes.longhorn.io/${handle}" 2>&1 | redact || true
+            fi
+          fi
+        done
         exit 1
       args:
         executable: /bin/bash
@@ -250,6 +275,20 @@
           '
 
           make platform-woodpecker-repair
+
+          {% endif %}
+          {% if backend_output | regex_search('AttachVolume\\.Attach failed|not ready for workloads|longhornVolume=') %}
+          The platform PostgreSQL PVC is blocked by a Longhorn attach/volume
+          readiness problem. PostgreSQL init cannot start until the Longhorn
+          volume backing platform-databases/platform-postgres-1 is healthy.
+
+          For an empty first deployment where platform-postgres has never
+          initialized, the fastest recovery is to delete and recreate only the
+          stuck platform PostgreSQL PVC/PV/Longhorn volume, then rerun:
+
+          make platform-woodpecker-repair
+
+          Do not delete this PVC if the database already contains real data.
 
           {% endif %}
           Woodpecker is configured for PostgreSQL, but the required
