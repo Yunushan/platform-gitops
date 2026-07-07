@@ -37,6 +37,137 @@
         var: platform_woodpecker_repair_state_before.stdout_lines
       run_once: true
 
+    - name: Ensure platform PostgreSQL backend is available when Woodpecker uses Postgres
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
+
+        redact() {
+          sed -E \
+            -e 's#(postgres(ql)?://[^:/ @]+:)[^@]+@#\1<redacted>@#g' \
+            -e 's#([?&](password|secret|token)=)[^[:space:]&]+#\1<redacted>#Ig' \
+            -e 's#((password|secret|token)[[:space:]]*[:=][[:space:]]*)[^[:space:]]+#\1<redacted>#Ig'
+        }
+
+        workload=""
+        for candidate in statefulset/woodpecker-server deployment/woodpecker-server; do
+          if "$K" --kubeconfig "$C" -n woodpecker get "${candidate}" >/dev/null 2>&1; then
+            workload="${candidate}"
+            break
+          fi
+        done
+        if [ -z "${workload}" ]; then
+          echo "woodpecker_server_workload=absent postgres_backend_check=skipped"
+          exit 0
+        fi
+
+        driver="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
+          -o jsonpath='{range .spec.template.spec.containers[*].env[?(@.name=="WOODPECKER_DATABASE_DRIVER")]}{.value}{"\n"}{end}' 2>/dev/null |
+          tail -n 1 || true)"
+        case "${driver}" in
+          postgres|postgresql)
+            ;;
+          *)
+            echo "woodpecker_database_driver=${driver:-unset} postgres_backend_check=skipped"
+            exit 0
+            ;;
+        esac
+
+        echo "woodpecker_database_driver=${driver}"
+        echo "required_postgres_service=platform-databases/platform-postgres-rw"
+
+        if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1 &&
+          "$K" --kubeconfig "$C" -n argocd get application/platform-postgres >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n argocd annotate application/platform-postgres \
+            argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+          "$K" --kubeconfig "$C" -n argocd patch application/platform-postgres --type merge \
+            -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' >/dev/null 2>&1 || true
+
+          sync_deadline=$(( $(date +%s) + TIMEOUT ))
+          while [ "$(date +%s)" -lt "${sync_deadline}" ]; do
+            sync_status="$("$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
+            health_status="$("$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+            operation_phase="$("$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
+            conditions="$("$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o jsonpath='{range .status.conditions[*]}{.type}{":"}{.message}{";"}{end}' 2>/dev/null || true)"
+            echo "platform-postgres sync=${sync_status:-unknown} health=${health_status:-unknown} operation=${operation_phase:-none} conditions=${conditions:-none}" | redact
+            case "${operation_phase}" in
+              Error|Failed)
+                break
+                ;;
+            esac
+            if [ "${sync_status}" = "Synced" ] && [ "${operation_phase}" != "Running" ]; then
+              break
+            fi
+            sleep 5
+          done
+        else
+          echo "argocd_application_platform_postgres=absent"
+        fi
+
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          if "$K" --kubeconfig "$C" -n platform-databases get service/platform-postgres-rw >/dev/null 2>&1; then
+            ready_endpoints="$("$K" --kubeconfig "$C" -n platform-databases get endpointslice \
+              -l kubernetes.io/service-name=platform-postgres-rw \
+              -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+              awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
+            echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints}"
+            if [ "${ready_endpoints}" -ge 1 ]; then
+              exit 0
+            fi
+          else
+            echo "platform_postgres_rw_service=absent"
+          fi
+          "$K" --kubeconfig "$C" -n platform-databases get pods,svc,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
+          sleep 10
+        done
+
+        echo "result=fail reason=woodpecker-postgres-backend-not-ready"
+        echo "===== platform-postgres application ====="
+        "$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o wide 2>&1 | redact || true
+        "$K" --kubeconfig "$C" -n argocd describe application/platform-postgres 2>&1 |
+          sed -n '/Status:/,/Events:/p' |
+          redact || true
+        echo "===== platform-databases runtime ====="
+        "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpoints,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_postgres_backend_check
+      changed_when: >-
+        'platform-postgres sync=' in platform_woodpecker_postgres_backend_check.stdout or
+        'application/platform-postgres annotated' in platform_woodpecker_postgres_backend_check.stdout
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Stop when Woodpecker PostgreSQL backend is missing
+      ansible.builtin.fail:
+        msg: |
+          Woodpecker is configured for PostgreSQL, but the required
+          platform PostgreSQL backend is not ready.
+
+          Woodpecker cannot start until this Kubernetes service has ready
+          endpoints:
+          - platform-databases/platform-postgres-rw
+
+          Backend check output:
+          {{ platform_woodpecker_postgres_backend_check.stdout | default('not run') }}
+
+          Usual recovery:
+          1. Sync the private GitOps source that Argo CD reads.
+          2. Ensure the platform-postgres Argo CD Application exists and is Synced.
+          3. Rerun:
+             make platform-woodpecker-repair
+
+          If the platform-postgres Application is absent, rerun the Argo CD
+          application registration with your PLATFORM_REPO_URL and
+          PLATFORM_APPLY_GITOPS=true before rerunning this repair.
+      run_once: true
+      when: platform_woodpecker_postgres_backend_check.rc | int != 0
+
     - name: Refresh and sync Woodpecker Argo CD application
       ansible.builtin.shell: |
         set -o pipefail

@@ -26,6 +26,8 @@ jobs:
         run: python scripts/test_gitops_selection_helper.py
       - name: Test bootstrap env loader
         run: python scripts/test_bootstrap_env_loader.py
+      - name: Test forge migration helper
+        run: python scripts/test_forge_migration.py
       - name: Test private values renderer
         run: python scripts/test_private_values_renderer.py
       - name: Test platform app secret contract

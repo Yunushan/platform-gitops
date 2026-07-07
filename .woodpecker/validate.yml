@@ -10,6 +10,7 @@ steps:
       - python scripts/test_deployable_renderer.py
       - python scripts/test_gitops_selection_helper.py
       - python scripts/test_bootstrap_env_loader.py
+      - python scripts/test_forge_migration.py
       - python scripts/test_private_values_renderer.py
       - python scripts/test_platform_secret_contract.py
       - python scripts/test_policy_examples.py
