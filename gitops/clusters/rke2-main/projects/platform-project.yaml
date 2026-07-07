@@ -51,6 +51,8 @@ spec:
     - namespace: woodpecker
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
     - group: admissionregistration.k8s.io
       kind: MutatingWebhookConfiguration
     - group: admissionregistration.k8s.io

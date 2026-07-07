@@ -50,6 +50,7 @@ REQUIRED_APP_DEPENDENCIES = {
     "velero": {"longhorn"},
 }
 REQUIRED_CLUSTER_RESOURCE_WHITELIST = {
+    ("", "Namespace"),
     ("admissionregistration.k8s.io", "MutatingWebhookConfiguration"),
     ("admissionregistration.k8s.io", "ValidatingWebhookConfiguration"),
     ("apiextensions.k8s.io", "CustomResourceDefinition"),
