@@ -230,28 +230,35 @@
           within {{ platform_woodpecker_repair_timeout_effective }}s.
 
           Argo CD sync wait:
-          rc={{ (platform_woodpecker_argocd_sync_wait | default({})).rc | default('not run', true) }}
+          rc={{ (platform_woodpecker_argocd_sync_wait | default({})).rc | default('not run') }}
           stdout:
-          {{ (platform_woodpecker_argocd_sync_wait | default({})).stdout | default('not run', true) }}
+          {{ (platform_woodpecker_argocd_sync_wait | default({})).stdout | default('not run') }}
           stderr:
-          {{ (platform_woodpecker_argocd_sync_wait | default({})).stderr | default('not run', true) }}
+          {{ (platform_woodpecker_argocd_sync_wait | default({})).stderr | default('not run') }}
 
           Rollout wait:
-          rc={{ (platform_woodpecker_rollout_wait | default({})).rc | default('not run', true) }}
+          rc={{ (platform_woodpecker_rollout_wait | default({})).rc | default('not run') }}
           stdout:
-          {{ (platform_woodpecker_rollout_wait | default({})).stdout | default('not run', true) }}
+          {{ (platform_woodpecker_rollout_wait | default({})).stdout | default('not run') }}
           stderr:
-          {{ (platform_woodpecker_rollout_wait | default({})).stderr | default('not run', true) }}
+          {{ (platform_woodpecker_rollout_wait | default({})).stderr | default('not run') }}
 
           Runtime verification:
-          rc={{ (platform_woodpecker_runtime_verify | default({})).rc | default('not run', true) }}
+          rc={{ (platform_woodpecker_runtime_verify | default({})).rc | default('not run') }}
           stdout:
-          {{ (platform_woodpecker_runtime_verify | default({})).stdout | default('not run', true) }}
+          {{ (platform_woodpecker_runtime_verify | default({})).stdout | default('not run') }}
           stderr:
-          {{ (platform_woodpecker_runtime_verify | default({})).stderr | default('not run', true) }}
+          {{ (platform_woodpecker_runtime_verify | default({})).stderr | default('not run') }}
 
-          If the runtime still shows an old `next-*` image, sync your private
-          GitOps repo into Argo CD and rerun:
+          If runtime verification shows `woodpecker-image-tag-mismatch`, the
+          Argo CD source still contains stale rendered Woodpecker values. For
+          example, `woodpecker-server:3.16.0` must be rendered and synced as
+          `woodpecker-server:v3.16.0`.
+
+          Update your private/seed deployment values, sync them into the GitOps
+          source that Argo CD reads, and rerun:
+          WOODPECKER_IMAGE_TAG=v3.16.0 make platform-render-private-values
+          PLATFORM_AUTO_COMMIT=true make platform-seed-git-sync
           make platform-woodpecker-repair
       run_once: true
       when: >
