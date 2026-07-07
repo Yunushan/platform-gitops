@@ -39,6 +39,98 @@
         - platform_service_path_consumer_repair_woodpecker_effective | bool
         - platform_woodpecker_consumer_state_before is defined
 
+    - name: Verify Woodpecker server has ready gRPC backends before consumer refresh
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        failed=0
+
+        if ! "$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server >/dev/null 2>&1; then
+          echo "woodpecker_server_service=absent"
+          exit 0
+        fi
+
+        svc_ip="$("$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+        ready_endpoints="$("$K" --kubeconfig "$C" -n woodpecker get endpointslice \
+          -l kubernetes.io/service-name=woodpecker-server \
+          -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+          awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
+        grpc_port_present="$("$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server \
+          -o jsonpath='{range .spec.ports[*]}{.name}{":"}{.port}{"\n"}{end}' 2>/dev/null |
+          awk -F: '$1 == "grpc" && $2 == "9000" { found=1 } END { print found + 0 }')"
+
+        echo "woodpecker_server_cluster_ip=${svc_ip:-missing}"
+        echo "woodpecker_server_ready_endpoints=${ready_endpoints}"
+        echo "woodpecker_server_grpc_port_present=${grpc_port_present}"
+
+        echo "===== woodpecker server pods ====="
+        "$K" --kubeconfig "$C" -n woodpecker get pods \
+          -l app.kubernetes.io/name=woodpecker-server -o wide 2>/dev/null ||
+          "$K" --kubeconfig "$C" -n woodpecker get pods \
+            -l app.kubernetes.io/name=server -o wide 2>/dev/null ||
+          "$K" --kubeconfig "$C" -n woodpecker get pods -o wide || true
+
+        echo "===== woodpecker server service/endpoints ====="
+        "$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server -o wide 2>/dev/null || true
+        "$K" --kubeconfig "$C" -n woodpecker get endpointslice \
+          -l kubernetes.io/service-name=woodpecker-server -o wide 2>/dev/null || true
+
+        echo "===== woodpecker app and database backend ====="
+        "$K" --kubeconfig "$C" -n argocd get application/woodpecker -o wide 2>/dev/null || true
+        "$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o wide 2>/dev/null || true
+        "$K" --kubeconfig "$C" -n platform-databases get service/platform-postgres-rw -o wide 2>/dev/null || true
+        "$K" --kubeconfig "$C" -n platform-databases get endpointslice \
+          -l kubernetes.io/service-name=platform-postgres-rw -o wide 2>/dev/null || true
+
+        if [ "${grpc_port_present}" -lt 1 ]; then
+          echo "result=fail reason=woodpecker-server-service-missing-grpc-port"
+          failed=1
+        fi
+        if [ "${ready_endpoints}" -lt 1 ]; then
+          echo "result=fail reason=woodpecker-server-has-no-ready-grpc-endpoints"
+          failed=1
+        fi
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_server_backend_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+
+    - name: Stop when Woodpecker server backend is not ready for service-path verification
+      ansible.builtin.fail:
+        msg: |
+          Woodpecker server does not have a ready gRPC backend on service
+          woodpecker/woodpecker-server port 9000, so ClusterIP probes from
+          RKE2 nodes will return connection refused even when kube-proxy/CNI
+          service routing is working.
+
+          Fix Woodpecker itself before rerunning service-path consumer repair:
+
+          make platform-app-secrets
+          make platform-woodpecker-repair
+
+          If Woodpecker is configured for PostgreSQL, also make sure the
+          platform PostgreSQL backend exists and has ready endpoints:
+          platform-databases/platform-postgres-rw
+
+          Backend probe:
+          {{ (platform_woodpecker_server_backend_probe | default({})).stdout | default('not run', true) }}
+      run_once: true
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+        - (platform_woodpecker_server_backend_probe | default({})).rc | default(0) | int != 0
+
     - name: Verify Woodpecker gRPC ClusterIP service path before agent refresh from every RKE2 node
       ansible.builtin.shell: |
         set -o pipefail
