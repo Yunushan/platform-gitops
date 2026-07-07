@@ -226,6 +226,16 @@
     - name: Stop when Woodpecker PostgreSQL backend is missing
       ansible.builtin.fail:
         msg: |
+          {% set backend_output = platform_woodpecker_postgres_backend_check.stdout | default('', true) %}
+          {% if backend_output | regex_search('dial tcp [0-9.]+:8081: i/o timeout|Failed to load target state|repo-server') %}
+          Argo CD could not render/sync the platform PostgreSQL backend because
+          its repo-server path is unhealthy. Repair Argo CD internal service
+          reachability first, then rerun the Woodpecker repair:
+
+          make platform-argocd-service-repair
+          make platform-woodpecker-repair
+
+          {% endif %}
           Woodpecker is configured for PostgreSQL, but the required
           platform PostgreSQL backend is not ready.
 
