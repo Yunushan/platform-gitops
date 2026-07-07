@@ -78,32 +78,111 @@
         echo "woodpecker_database_driver=${driver}"
         echo "required_postgres_service=platform-databases/platform-postgres-rw"
 
-        if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1 &&
-          "$K" --kubeconfig "$C" -n argocd get application/platform-postgres >/dev/null 2>&1; then
-          "$K" --kubeconfig "$C" -n argocd annotate application/platform-postgres \
-            argocd.argoproj.io/refresh=hard --overwrite >/dev/null
-          "$K" --kubeconfig "$C" -n argocd patch application/platform-postgres --type merge \
-            -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' >/dev/null 2>&1 || true
+        if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
+          repo_url="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.spec.source.repoURL}' 2>/dev/null || true)"
+          target_revision="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+          project="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.spec.project}' 2>/dev/null || true)"
+          target_revision="${target_revision:-main}"
+          project="${project:-platform}"
+
+          yaml_escape() {
+            sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+          }
+
+          repo_url_yaml="$(printf '%s' "${repo_url}" | yaml_escape)"
+          target_revision_yaml="$(printf '%s' "${target_revision}" | yaml_escape)"
+          project_yaml="$(printf '%s' "${project}" | yaml_escape)"
+
+          register_app_if_missing() {
+            name="$1"
+            wave="$2"
+            path="$3"
+            namespace="$4"
+            safe_name="$(printf '%s' "${name}" | tr '-' '_')"
+            if "$K" --kubeconfig "$C" -n argocd get "application/${name}" >/dev/null 2>&1; then
+              echo "argocd_application_${safe_name}=present"
+              return 0
+            fi
+            if [ -z "${repo_url}" ]; then
+              echo "argocd_application_${safe_name}=absent reason=woodpecker-source-repo-url-empty"
+              return 1
+            fi
+            cat <<APP | "$K" --kubeconfig "$C" apply -f -
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ${name}
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "${wave}"
+spec:
+  project: "${project_yaml}"
+  source:
+    repoURL: "${repo_url_yaml}"
+    targetRevision: "${target_revision_yaml}"
+    path: ${path}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ${namespace}
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+APP
+            echo "argocd_application_${safe_name}=auto-registered repo=${repo_url_yaml} revision=${target_revision_yaml} path=${path}"
+          }
+
+          register_app_if_missing cloudnativepg 2 gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg cnpg-system
+          register_app_if_missing platform-postgres 4 gitops/clusters/rke2-main/premium-3node/apps/platform-postgres platform-databases
+
+          for app in cloudnativepg platform-postgres; do
+            if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+              echo "argocd_application_${app}=absent"
+              continue
+            fi
+            "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+              argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+            "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
+              -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' >/dev/null 2>&1 || true
+          done
 
           sync_deadline=$(( $(date +%s) + TIMEOUT ))
           while [ "$(date +%s)" -lt "${sync_deadline}" ]; do
+            cnpg_sync="$("$K" --kubeconfig "$C" -n argocd get application/cloudnativepg -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
+            cnpg_health="$("$K" --kubeconfig "$C" -n argocd get application/cloudnativepg -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+            cnpg_operation="$("$K" --kubeconfig "$C" -n argocd get application/cloudnativepg -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
             sync_status="$("$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
             health_status="$("$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
             operation_phase="$("$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
             conditions="$("$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o jsonpath='{range .status.conditions[*]}{.type}{":"}{.message}{";"}{end}' 2>/dev/null || true)"
+            echo "cloudnativepg sync=${cnpg_sync:-unknown} health=${cnpg_health:-unknown} operation=${cnpg_operation:-none}" | redact
             echo "platform-postgres sync=${sync_status:-unknown} health=${health_status:-unknown} operation=${operation_phase:-none} conditions=${conditions:-none}" | redact
+            case "${cnpg_operation}:${operation_phase}" in
+              Error:*|Failed:*|*:Error|*:Failed)
+                break
+                ;;
+            esac
+            if [ "${cnpg_operation}" = "Running" ] || [ "${operation_phase}" = "Running" ]; then
+              sleep 5
+              continue
+            fi
+            case "${sync_status}" in
+              Synced)
+                break
+                ;;
+            esac
             case "${operation_phase}" in
               Error|Failed)
                 break
                 ;;
             esac
-            if [ "${sync_status}" = "Synced" ] && [ "${operation_phase}" != "Running" ]; then
-              break
-            fi
             sleep 5
           done
         else
-          echo "argocd_application_platform_postgres=absent"
+          echo "argocd_application_crd=absent"
         fi
 
         deadline=$(( $(date +%s) + TIMEOUT ))
@@ -138,7 +217,8 @@
       register: platform_woodpecker_postgres_backend_check
       changed_when: >-
         'platform-postgres sync=' in platform_woodpecker_postgres_backend_check.stdout or
-        'application/platform-postgres annotated' in platform_woodpecker_postgres_backend_check.stdout
+        'argocd_application_platform_postgres=auto-registered' in platform_woodpecker_postgres_backend_check.stdout or
+        'argocd_application_cloudnativepg=auto-registered' in platform_woodpecker_postgres_backend_check.stdout
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true

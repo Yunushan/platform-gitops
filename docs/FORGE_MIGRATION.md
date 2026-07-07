@@ -6,7 +6,8 @@ report shows the selected source and destination surfaces were verified.
 
 ## Supported Directions
 
-The current migration helper supports the Git data plane for these directions:
+The current migration helper supports the Git data plane and repository label
+metadata for these directions:
 
 - GitHub to Forgejo
 - GitLab to Forgejo
@@ -14,11 +15,12 @@ The current migration helper supports the Git data plane for these directions:
 - Forgejo to GitLab
 
 The Git data plane includes branches and tags, with optional wiki and Git LFS
-handling. Provider metadata such as issues, pull requests, merge requests,
-releases, packages, branch protection, teams, permissions, and webhooks is
-modeled in the migration plan but intentionally fails closed when marked
-required. This prevents a partial repository mirror from being reported as a
-complete forge migration.
+handling. Label migration copies and verifies the provider-common label fields:
+name, color, and description. Provider metadata such as issues, pull requests,
+merge requests, releases, packages, branch protection, teams, permissions, and
+webhooks is modeled in the migration plan but intentionally fails closed when
+marked required. This prevents a partial repository mirror from being reported
+as a complete forge migration.
 
 ## Plan File
 
@@ -31,11 +33,22 @@ Create a private JSON plan outside public Git, for example
   "repositories": [
     {
       "name": "platform-app",
-      "source_url": "https://gitlab.example.com/group/platform-app.git",
-      "destination_url": "https://gitops.example.com/group/platform-app.git",
+      "source": {
+        "url": "https://gitlab.example.com/group/platform-app.git",
+        "api_url": "https://gitlab.example.com/api/v4",
+        "api_repository": "group/platform-app",
+        "token_env": "GITLAB_TOKEN"
+      },
+      "destination": {
+        "url": "https://gitops.example.com/group/platform-app.git",
+        "api_url": "https://gitops.example.com/api/v1",
+        "api_repository": "group/platform-app",
+        "token_env": "FORGEJO_TOKEN"
+      },
       "wiki": "auto",
       "lfs": "auto",
       "metadata": {
+        "labels": "required",
         "issues": "skip",
         "merge_requests": "skip",
         "releases": "skip"
@@ -45,10 +58,16 @@ Create a private JSON plan outside public Git, for example
 }
 ```
 
-Keep credentials in Git credential helpers, CI secrets, or temporary
-environment-scoped helpers. Do not put tokens in the plan. If a URL still
-contains credentials, proof output redacts the user-info section before writing
-the report.
+Keep Git credentials in Git credential helpers, CI secrets, or temporary
+environment-scoped helpers. Keep API credentials in environment variables named
+by `source.token_env` and `destination.token_env`. Do not put tokens in the
+plan. If a URL still contains credentials, proof output redacts the user-info
+section before writing the report.
+
+`api_url` and `api_repository` are optional when they can be inferred from a
+standard public forge URL, but explicit values are recommended for self-hosted
+GitHub Enterprise, GitLab, and Forgejo installs. Use `owner/repo` for GitHub and
+Forgejo. Use the project path or numeric project ID for GitLab.
 
 ## Execute and Prove
 
@@ -77,7 +96,11 @@ python3 scripts/forge_migration.py verify \
 
 The proof is successful only when all selected repositories report
 `"verified": true` and every branch/tag ref matches between source and
-destination.
+destination. When labels are enabled, proof also includes created/updated label
+counts, source/destination label digests, missing labels, mismatched labels, and
+extra destination labels. Extra destination labels are reported for review but
+do not fail verification unless they shadow a source label with different
+content.
 
 ## Metadata Policy
 
@@ -88,14 +111,16 @@ For a true full-fidelity migration, inventory the non-Git surfaces first:
 - Releases and release assets
 - Packages and container registry artifacts
 - Wikis
+- Repository labels
 - Webhooks
 - Branch protection and rulesets
 - Users, teams, permissions, and CODEOWNERS
 
-Set unsupported required surfaces to `"required"` in the plan while designing a
-provider-specific importer. The helper will fail and name the missing surface.
-Set a surface to `"skip"` only when the migration approval explicitly accepts
-that loss.
+Set supported surfaces such as `labels` to `"required"` when they must be
+migrated and verified. Set unsupported required surfaces to `"required"` in the
+plan while designing a provider-specific importer. The helper will fail and
+name the missing surface. Set a surface to `"skip"` only when the migration
+approval explicitly accepts that loss.
 
 ## Acceptance Evidence
 
