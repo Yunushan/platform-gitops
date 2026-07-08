@@ -748,6 +748,27 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Restart Woodpecker workloads after secret and source repair
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        restarted=0
+        for workload in statefulset/woodpecker-server deployment/woodpecker-server statefulset/woodpecker-agent deployment/woodpecker-agent; do
+          if "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n woodpecker rollout restart "${workload}"
+            restarted=$((restarted + 1))
+          fi
+        done
+        echo "woodpecker_workloads_restarted=${restarted}"
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_workload_restart
+      changed_when: "'woodpecker_workloads_restarted=0' not in platform_woodpecker_workload_restart.stdout"
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Wait for Woodpecker server and agents after repair
       ansible.builtin.shell: |
         set -o pipefail

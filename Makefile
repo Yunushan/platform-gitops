@@ -181,6 +181,7 @@ platform-ci-health:
 platform-woodpecker-repair:
 	@$(MAKE) platform-argocd-service-repair
 	@$(MAKE) platform-longhorn-bootstrap
+	@$(MAKE) platform-app-secrets
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml
 	@$(MAKE) platform-service-path-consumers-repair
 	@$(MAKE) platform-ci-health
