@@ -207,7 +207,10 @@
             case "${cluster_instances}" in ""|*[!0-9]*) cluster_instances=0 ;; esac
             case "${cluster_ready}" in ""|*[!0-9]*) cluster_ready=0 ;; esac
             echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints} cluster_ready=${cluster_ready}/${cluster_instances} cluster_phase=${cluster_phase:-unknown}"
-            if [ "${ready_endpoints}" -ge 1 ] && [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -ge "${cluster_instances}" ]; then
+            if [ "${ready_endpoints}" -ge 1 ]; then
+              if [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -lt "${cluster_instances}" ]; then
+                echo "platform_postgres_ha_state=progressing ready=${cluster_ready}/${cluster_instances} action=continue-woodpecker-repair"
+              fi
               exit 0
             fi
           else
@@ -397,40 +400,35 @@
             -l cnpg.io/cluster=platform-postgres --ignore-not-found=true --wait=false || true
         fi
 
-        if [ "${RESET_FAILED_REPLICA_PVCS}" = "true" ] &&
-          "$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres >/dev/null 2>&1; then
+        cleanup_failed_postgres_replica_pvcs() {
+          [ "${RESET_FAILED_REPLICA_PVCS}" = "true" ] || return 0
+          "$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres >/dev/null 2>&1 || return 0
+
           replica_pvcs="$(
             "$K" --kubeconfig "$C" -n platform-databases get pvc \
               -l cnpg.io/cluster=platform-postgres \
               -o json 2>/dev/null |
-              python3 -c '
-        import json
-        import sys
-
-        data = json.load(sys.stdin)
-        for item in data.get("items", []):
-            metadata = item.get("metadata", {})
-            labels = metadata.get("labels") or {}
-            annotations = metadata.get("annotations") or {}
-            spec = item.get("spec") or {}
-            print("|".join([
-                metadata.get("name", ""),
-                labels.get("role", ""),
-                labels.get("cnpg.io/instanceName", ""),
-                annotations.get("cnpg.io/pvcStatus", ""),
-                spec.get("volumeName", ""),
-            ]))
-        ' || true
+              python3 -c 'import json,sys; data=json.load(sys.stdin); [print("|".join([((item.get("metadata") or {}).get("name") or ""), (((item.get("metadata") or {}).get("labels") or {}).get("role") or ""), (((item.get("metadata") or {}).get("labels") or {}).get("cnpg.io/instanceName") or ""), (((item.get("metadata") or {}).get("annotations") or {}).get("cnpg.io/pvcStatus") or ""), ((item.get("spec") or {}).get("volumeName") or "")])) for item in data.get("items", [])]' || true
           )"
           printf '%s\n' "${replica_pvcs}" | while IFS='|' read -r pvc role instance pvc_status pv; do
             [ -n "${pvc}" ] || continue
             [ "${role}" = "replica" ] || continue
             [ "${pvc_status}" = "initializing" ] || continue
 
-            pod_phase="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${instance}" \
-              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-            if [ -n "${pod_phase}" ] && [ "${pod_phase}" != "Failed" ] && [ "${pod_phase}" != "Succeeded" ]; then
-              echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-pod-active pod=${instance} phase=${pod_phase}"
+            active_pod=false
+            if [ -n "${instance}" ]; then
+              for pod_object in $("$K" --kubeconfig "$C" -n platform-databases get pod -o name 2>/dev/null |
+                grep -E "^pod/${instance}($|-join)" || true); do
+                pod_phase="$("$K" --kubeconfig "$C" -n platform-databases get "${pod_object}" \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+                if [ -n "${pod_phase}" ] && [ "${pod_phase}" != "Failed" ] && [ "${pod_phase}" != "Succeeded" ]; then
+                  echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-pod-active pod=${pod_object#pod/} phase=${pod_phase}"
+                  active_pod=true
+                  break
+                fi
+              done
+            fi
+            if [ "${active_pod}" = "true" ]; then
               continue
             fi
 
@@ -464,7 +462,9 @@
             fi
             "$K" --kubeconfig "$C" -n platform-databases delete "pvc/${pvc}" --ignore-not-found=true --wait=false || true
           done
-        fi
+        }
+
+        cleanup_failed_postgres_replica_pvcs
 
         if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
           for app in cloudnativepg platform-postgres; do
@@ -482,6 +482,7 @@
 
         deadline=$(( $(date +%s) + TIMEOUT ))
         while [ "$(date +%s)" -lt "${deadline}" ]; do
+          cleanup_failed_postgres_replica_pvcs
           ready_endpoints="$("$K" --kubeconfig "$C" -n platform-databases get endpointslice \
             -l kubernetes.io/service-name=platform-postgres-rw \
             -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
@@ -495,7 +496,10 @@
           case "${cluster_instances}" in ""|*[!0-9]*) cluster_instances=0 ;; esac
           case "${cluster_ready}" in ""|*[!0-9]*) cluster_ready=0 ;; esac
           echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints} cluster_ready=${cluster_ready}/${cluster_instances} cluster_phase=${cluster_phase:-unknown}"
-          if [ "${ready_endpoints}" -ge 1 ] && [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -ge "${cluster_instances}" ]; then
+          if [ "${ready_endpoints}" -ge 1 ]; then
+            if [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -lt "${cluster_instances}" ]; then
+              echo "platform_postgres_ha_state=progressing ready=${cluster_ready}/${cluster_instances} action=continue-woodpecker-repair"
+            fi
             exit 0
           fi
           "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
@@ -548,7 +552,10 @@
           case "${cluster_instances}" in ""|*[!0-9]*) cluster_instances=0 ;; esac
           case "${cluster_ready}" in ""|*[!0-9]*) cluster_ready=0 ;; esac
           echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints} cluster_ready=${cluster_ready}/${cluster_instances} cluster_phase=${cluster_phase:-unknown}"
-          if [ "${ready_endpoints}" -ge 1 ] && [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -ge "${cluster_instances}" ]; then
+          if [ "${ready_endpoints}" -ge 1 ]; then
+            if [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -lt "${cluster_instances}" ]; then
+              echo "platform_postgres_ha_state=progressing ready=${cluster_ready}/${cluster_instances} action=continue-woodpecker-repair"
+            fi
             exit 0
           fi
           "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
