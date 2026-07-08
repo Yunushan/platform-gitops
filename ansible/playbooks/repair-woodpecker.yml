@@ -402,7 +402,25 @@
           replica_pvcs="$(
             "$K" --kubeconfig "$C" -n platform-databases get pvc \
               -l cnpg.io/cluster=platform-postgres \
-              -o go-template='{{range .items}}{{.metadata.name}}{{"|"}}{{index .metadata.labels "role"}}{{"|"}}{{index .metadata.labels "cnpg.io/instanceName"}}{{"|"}}{{index .metadata.annotations "cnpg.io/pvcStatus"}}{{"|"}}{{.spec.volumeName}}{{"\n"}}{{end}}' 2>/dev/null || true
+              -o json 2>/dev/null |
+              python3 -c '
+        import json
+        import sys
+
+        data = json.load(sys.stdin)
+        for item in data.get("items", []):
+            metadata = item.get("metadata", {})
+            labels = metadata.get("labels") or {}
+            annotations = metadata.get("annotations") or {}
+            spec = item.get("spec") or {}
+            print("|".join([
+                metadata.get("name", ""),
+                labels.get("role", ""),
+                labels.get("cnpg.io/instanceName", ""),
+                annotations.get("cnpg.io/pvcStatus", ""),
+                spec.get("volumeName", ""),
+            ]))
+        ' || true
           )"
           printf '%s\n' "${replica_pvcs}" | while IFS='|' read -r pvc role instance pvc_status pv; do
             [ -n "${pvc}" ] || continue
