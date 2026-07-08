@@ -201,6 +201,7 @@
               spec:
                 repo: {{ platform_longhorn_chart_repo_effective }}
                 chart: longhorn
+                failurePolicy: abort
               {% if platform_longhorn_chart_version_effective | length > 0 %}
                 version: {{ platform_longhorn_chart_version_effective }}
               {% endif %}
@@ -313,9 +314,42 @@
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
+            cleanup_helm_jobs={{ platform_longhorn_cleanup_helm_jobs_effective | ternary('true', 'false') }}
+            missing=""
             for crd in {{ platform_longhorn_required_crds | join(' ') }}; do
-              "$K" --kubeconfig "$C" get "crd/${crd}" >/dev/null
+              if ! "$K" --kubeconfig "$C" get "crd/${crd}" >/dev/null 2>&1; then
+                missing="${missing} ${crd}"
+              fi
             done
+            missing="$(printf '%s' "${missing}" | xargs)"
+            if [ -z "${missing}" ]; then
+              exit 0
+            fi
+
+            if [ "${cleanup_helm_jobs}" = "true" ]; then
+              uninstall_failed="$("$K" --kubeconfig "$C" -n longhorn-system get job/longhorn-uninstall \
+                -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+              helm_uninstall_stuck=""
+              for pod in $("$K" --kubeconfig "$C" -n kube-system get pods \
+                  -l job-name=helm-install-platform-longhorn -o name 2>/dev/null || true); do
+                if "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --tail=80 2>/dev/null |
+                    grep -E "uninstalling|Uninstalling failed helm chart|longhorn-uninstall not ready" >/dev/null; then
+                  helm_uninstall_stuck=1
+                fi
+              done
+              if [ -n "${uninstall_failed}" ] || [ -n "${helm_uninstall_stuck}" ]; then
+                echo "Detected stalled Longhorn Helm uninstall hook while waiting for CRDs; deleting Helm/uninstall jobs so RKE2 can retry." >&2
+                "$K" --kubeconfig "$C" -n longhorn-system delete job/longhorn-uninstall \
+                  --ignore-not-found=true --wait=false || true
+                "$K" --kubeconfig "$C" -n longhorn-system delete pods \
+                  -l job-name=longhorn-uninstall --ignore-not-found=true --wait=false || true
+                "$K" --kubeconfig "$C" -n kube-system delete job/helm-install-platform-longhorn \
+                  --ignore-not-found=true --wait=false || true
+              fi
+            fi
+
+            echo "Missing Longhorn CRDs: ${missing}" >&2
+            exit 1
           args:
             executable: /bin/bash
           register: platform_longhorn_crds
@@ -720,9 +754,10 @@
                         continue
 
                     patch = json.dumps({"spec": {"disks": {disk_name: None}}})
+                    disk_path = spec_disks.get(disk_name, {}).get("path", "")
                     print(
                         f"Removing empty duplicate Longhorn disk from node={name}: "
-                        f"disk={disk_name} path={spec_disks.get(disk_name, {}).get('path', '')}"
+                        f"disk={disk_name} path={disk_path}"
                     )
                     subprocess.run(
                         [

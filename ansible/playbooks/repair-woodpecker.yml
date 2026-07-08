@@ -336,7 +336,10 @@
             fi
           done
 
-          "$K" --kubeconfig "$C" -n platform-databases delete cluster.postgresql.cnpg.io/platform-postgres --ignore-not-found=true --wait=false
+          for database in platform-postgres-keycloak platform-postgres-woodpecker; do
+            "$K" --kubeconfig "$C" -n platform-databases delete "database.postgresql.cnpg.io/${database}" --ignore-not-found=true --wait=false || true
+          done
+          "$K" --kubeconfig "$C" -n platform-databases delete cluster.postgresql.cnpg.io/platform-postgres --ignore-not-found=true --wait=false || true
           "$K" --kubeconfig "$C" -n platform-databases delete job,pod -l cnpg.io/cluster=platform-postgres --ignore-not-found=true --wait=false || true
 
           if [ -n "${pvc_names}" ] && [ "${ALLOW_DESTRUCTIVE_RESET}" = "true" ]; then
@@ -350,6 +353,37 @@
               "$K" --kubeconfig "$C" -n longhorn-system delete "volumes.longhorn.io/${handle}" --ignore-not-found=true --wait=false || true
             done
           fi
+
+          delete_deadline=$(( $(date +%s) + 90 ))
+          while [ "$(date +%s)" -lt "${delete_deadline}" ]; do
+            if ! "$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres >/dev/null 2>&1; then
+              break
+            fi
+            sleep 5
+          done
+
+          if "$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres >/dev/null 2>&1; then
+            echo "platform_postgres_cluster_delete=stuck action=clear-empty-cluster-finalizers"
+            "$K" --kubeconfig "$C" -n platform-databases patch cluster.postgresql.cnpg.io/platform-postgres \
+              --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+            "$K" --kubeconfig "$C" -n platform-databases delete cluster.postgresql.cnpg.io/platform-postgres --ignore-not-found=true --wait=false || true
+          fi
+
+          for database in platform-postgres-keycloak platform-postgres-woodpecker; do
+            if "$K" --kubeconfig "$C" -n platform-databases get "database.postgresql.cnpg.io/${database}" >/dev/null 2>&1; then
+              echo "platform_postgres_database_delete=stuck name=${database} action=clear-finalizers"
+              "$K" --kubeconfig "$C" -n platform-databases patch "database.postgresql.cnpg.io/${database}" \
+                --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+              "$K" --kubeconfig "$C" -n platform-databases delete "database.postgresql.cnpg.io/${database}" --ignore-not-found=true --wait=false || true
+            fi
+          done
+
+          "$K" --kubeconfig "$C" -n platform-databases delete service/platform-postgres-r service/platform-postgres-ro service/platform-postgres-rw \
+            --ignore-not-found=true --wait=false || true
+          "$K" --kubeconfig "$C" -n platform-databases delete endpoints/platform-postgres-r endpoints/platform-postgres-ro endpoints/platform-postgres-rw \
+            --ignore-not-found=true --wait=false || true
+          "$K" --kubeconfig "$C" -n platform-databases delete endpointslice \
+            -l cnpg.io/cluster=platform-postgres --ignore-not-found=true --wait=false || true
         fi
 
         if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
