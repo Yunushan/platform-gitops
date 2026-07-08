@@ -759,7 +759,7 @@
                         f"Removing empty duplicate Longhorn disk from node={name}: "
                         f"disk={disk_name} path={disk_path}"
                     )
-                    subprocess.run(
+                    result = subprocess.run(
                         [
                             "/var/lib/rancher/rke2/bin/kubectl",
                             "--kubeconfig",
@@ -772,16 +772,54 @@
                             "-p",
                             patch,
                         ],
-                        check=True,
+                        text=True,
+                        capture_output=True,
                     )
-                    changed = True
+                    if result.returncode == 0:
+                        changed = True
+                        continue
+
+                    combined_error = (result.stderr or "") + (result.stdout or "")
+                    if (
+                        "Please disable the disk" in combined_error
+                        or "remove all replicas and backing images first" in combined_error
+                    ):
+                        disable_patch = json.dumps(
+                            {"spec": {"disks": {disk_name: {"allowScheduling": False}}}}
+                        )
+                        print(
+                            f"Longhorn refused duplicate disk removal; disabling scheduling instead: "
+                            f"node={name} disk={disk_name} path={disk_path}"
+                        )
+                        subprocess.run(
+                            [
+                                "/var/lib/rancher/rke2/bin/kubectl",
+                                "--kubeconfig",
+                                "/etc/rancher/rke2/rke2.yaml",
+                                "-n",
+                                "longhorn-system",
+                                "patch",
+                                f"nodes.longhorn.io/{name}",
+                                "--type=merge",
+                                "-p",
+                                disable_patch,
+                            ],
+                            check=True,
+                        )
+                        changed = True
+                        continue
+
+                    sys.stderr.write(combined_error)
+                    raise SystemExit(result.returncode)
 
             sys.exit(0)
             '
           args:
             executable: /bin/bash
           register: platform_longhorn_duplicate_disk_repair
-          changed_when: "'Removing empty duplicate Longhorn disk' in platform_longhorn_duplicate_disk_repair.stdout"
+          changed_when: >-
+            'Removing empty duplicate Longhorn disk' in platform_longhorn_duplicate_disk_repair.stdout or
+            'disabling scheduling instead' in platform_longhorn_duplicate_disk_repair.stdout
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 

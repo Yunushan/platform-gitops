@@ -196,8 +196,16 @@
               -l kubernetes.io/service-name=platform-postgres-rw \
               -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
               awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
-            echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints}"
-            if [ "${ready_endpoints}" -ge 1 ]; then
+            cluster_instances="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+              -o jsonpath='{.spec.instances}' 2>/dev/null || true)"
+            cluster_ready="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+              -o jsonpath='{.status.readyInstances}' 2>/dev/null || true)"
+            cluster_phase="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${cluster_instances}" in ""|*[!0-9]*) cluster_instances=0 ;; esac
+            case "${cluster_ready}" in ""|*[!0-9]*) cluster_ready=0 ;; esac
+            echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints} cluster_ready=${cluster_ready}/${cluster_instances} cluster_phase=${cluster_phase:-unknown}"
+            if [ "${ready_endpoints}" -ge 1 ] && [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -ge "${cluster_instances}" ]; then
               exit 0
             fi
           else
@@ -406,8 +414,16 @@
             -l kubernetes.io/service-name=platform-postgres-rw \
             -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
             awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
-          echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints}"
-          if [ "${ready_endpoints}" -ge 1 ]; then
+          cluster_instances="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.spec.instances}' 2>/dev/null || true)"
+          cluster_ready="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.readyInstances}' 2>/dev/null || true)"
+          cluster_phase="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          case "${cluster_instances}" in ""|*[!0-9]*) cluster_instances=0 ;; esac
+          case "${cluster_ready}" in ""|*[!0-9]*) cluster_ready=0 ;; esac
+          echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints} cluster_ready=${cluster_ready}/${cluster_instances} cluster_phase=${cluster_phase:-unknown}"
+          if [ "${ready_endpoints}" -ge 1 ] && [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -ge "${cluster_instances}" ]; then
             exit 0
           fi
           "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
@@ -451,8 +467,16 @@
             -l kubernetes.io/service-name=platform-postgres-rw \
             -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
             awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
-          echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints}"
-          if [ "${ready_endpoints}" -ge 1 ]; then
+          cluster_instances="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.spec.instances}' 2>/dev/null || true)"
+          cluster_ready="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.readyInstances}' 2>/dev/null || true)"
+          cluster_phase="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          case "${cluster_instances}" in ""|*[!0-9]*) cluster_instances=0 ;; esac
+          case "${cluster_ready}" in ""|*[!0-9]*) cluster_ready=0 ;; esac
+          echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints} cluster_ready=${cluster_ready}/${cluster_instances} cluster_phase=${cluster_phase:-unknown}"
+          if [ "${ready_endpoints}" -ge 1 ] && [ "${cluster_instances}" -gt 0 ] && [ "${cluster_ready}" -ge "${cluster_instances}" ]; then
             exit 0
           fi
           "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
