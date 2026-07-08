@@ -19,6 +19,9 @@
     platform_longhorn_image_pull_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_TIMEOUT') }}"
     platform_longhorn_image_pull_fast_fail_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_FAST_FAIL') }}"
     platform_longhorn_default_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
+    platform_longhorn_auto_extra_disk_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK') }}"
+    platform_longhorn_auto_extra_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_PATH') }}"
+    platform_longhorn_auto_extra_disk_min_available_gib_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_MIN_AVAILABLE_GIB') }}"
     platform_longhorn_chart_repo_effective: "{{ platform_longhorn_chart_repo | default(platform_longhorn_chart_repo_from_env, true) | default('https://charts.longhorn.io', true) }}"
     platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) }}"
     platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"
@@ -35,6 +38,9 @@
     platform_longhorn_image_pull_timeout_effective: "{{ platform_longhorn_image_pull_timeout | default(platform_longhorn_image_pull_timeout_from_env, true) | default(300, true) | int }}"
     platform_longhorn_image_pull_fast_fail_effective: "{{ platform_longhorn_image_pull_fast_fail | default(platform_longhorn_image_pull_fast_fail_from_env, true) | default(false, true) | bool }}"
     platform_longhorn_default_disk_path_effective: "{{ platform_longhorn_default_disk_path | default(platform_longhorn_default_disk_path_from_env, true) | default('/var/lib/longhorn', true) }}"
+    platform_longhorn_auto_extra_disk_enabled_effective: "{{ platform_longhorn_auto_extra_disk_enabled | default(platform_longhorn_auto_extra_disk_enabled_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_auto_extra_disk_path_effective: "{{ platform_longhorn_auto_extra_disk_path | default(platform_longhorn_auto_extra_disk_path_from_env, true) | default('/home/longhorn', true) }}"
+    platform_longhorn_auto_extra_disk_min_available_gib_effective: "{{ platform_longhorn_auto_extra_disk_min_available_gib | default(platform_longhorn_auto_extra_disk_min_available_gib_from_env, true) | default(40, true) | int }}"
     platform_longhorn_required_crds:
       - nodes.longhorn.io
       - engines.longhorn.io
@@ -120,6 +126,15 @@
             owner: root
             group: root
             mode: "0755"
+
+        - name: Ensure Longhorn automatic extra disk path exists on all nodes
+          ansible.builtin.file:
+            path: "{{ platform_longhorn_auto_extra_disk_path_effective }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          when: platform_longhorn_auto_extra_disk_enabled_effective | bool
 
         - name: Apply Longhorn namespace, storage classes, and RKE2 HelmChart
           ansible.builtin.shell: |
@@ -586,6 +601,112 @@
           changed_when: "'Adding default Longhorn disk' in platform_longhorn_default_disk_config.stdout"
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
+
+        - name: Detect Longhorn automatic extra disk candidates
+          ansible.builtin.shell: |
+            set -o pipefail
+            default_path={{ platform_longhorn_default_disk_path_effective | quote }}
+            extra_path={{ platform_longhorn_auto_extra_disk_path_effective | quote }}
+            min_available_gib={{ platform_longhorn_auto_extra_disk_min_available_gib_effective }}
+            min_available_bytes=$(( min_available_gib * 1024 * 1024 * 1024 ))
+
+            mkdir -p "${extra_path}"
+
+            default_source="$(df -P "${default_path}" | awk 'NR == 2 { print $1 }')"
+            extra_source="$(df -P "${extra_path}" | awk 'NR == 2 { print $1 }')"
+            extra_available_bytes="$(df -PB1 "${extra_path}" | awk 'NR == 2 { print $4 }')"
+            node_name="$(hostname -s)"
+
+            eligible=false
+            reason=""
+            if [ -z "${default_source}" ] || [ -z "${extra_source}" ] || [ -z "${extra_available_bytes}" ]; then
+              reason="df-detection-failed"
+            elif [ "${default_source}" = "${extra_source}" ]; then
+              reason="same-filesystem-as-default-disk"
+            elif [ "${extra_available_bytes}" -lt "${min_available_bytes}" ]; then
+              reason="insufficient-extra-disk-free-space"
+            else
+              eligible=true
+              reason="extra-disk-eligible"
+            fi
+
+            printf 'node=%s extra_disk_path=%s eligible=%s reason=%s default_source=%s extra_source=%s extra_available_bytes=%s min_available_bytes=%s\n' \
+              "${node_name}" \
+              "${extra_path}" \
+              "${eligible}" \
+              "${reason}" \
+              "${default_source:-unknown}" \
+              "${extra_source:-unknown}" \
+              "${extra_available_bytes:-0}" \
+              "${min_available_bytes}"
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_auto_extra_disk_candidate
+          changed_when: false
+          when: platform_longhorn_auto_extra_disk_enabled_effective | bool
+
+        - name: Configure Longhorn automatic extra disks when default disks lack schedulable capacity
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            changed=0
+            candidates='{{ groups['rke2_servers'] | map('extract', hostvars, ['platform_longhorn_auto_extra_disk_candidate', 'stdout']) | select('defined') | list | to_json }}'
+
+            python3 - "$candidates" <<'PY' |
+            import json
+            import shlex
+            import sys
+
+            for line in json.loads(sys.argv[1]):
+                values = {}
+                for part in shlex.split(line):
+                    if "=" in part:
+                        key, value = part.split("=", 1)
+                        values[key] = value
+                if values:
+                    print(
+                        values.get("node", ""),
+                        values.get("extra_disk_path", ""),
+                        values.get("eligible", "false"),
+                        values.get("reason", "unknown"),
+                    )
+            PY
+            while read -r node extra_path eligible reason; do
+              [ -n "${node}" ] || continue
+              echo "Longhorn automatic extra disk candidate: node=${node} path=${extra_path} eligible=${eligible} reason=${reason}"
+
+              if [ "${eligible}" != "true" ]; then
+                continue
+              fi
+              if ! "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" >/dev/null 2>&1; then
+                echo "Skipping automatic extra Longhorn disk for ${node}; Longhorn node object is absent."
+                continue
+              fi
+              if "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" \
+                -o jsonpath='{range .spec.disks[*]}{.path}{"\n"}{end}' |
+                grep -Fx "${extra_path}" >/dev/null; then
+                echo "${node} already has Longhorn disk path ${extra_path}."
+                continue
+              fi
+
+              echo "Adding automatic extra Longhorn disk on ${node}: ${extra_path}"
+              "$K" --kubeconfig "$C" -n longhorn-system patch "nodes.longhorn.io/${node}" \
+                --type=merge \
+                -p "{\"spec\":{\"allowScheduling\":true,\"disks\":{\"auto-extra-disk\":{\"path\":\"${extra_path}\",\"allowScheduling\":true,\"storageReserved\":0,\"tags\":[],\"diskType\":\"filesystem\",\"evictionRequested\":false}}}}"
+              changed=1
+            done
+
+            if [ "${changed}" -eq 0 ]; then
+              echo "No automatic extra Longhorn disk changes were required."
+            fi
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_auto_extra_disk_config
+          changed_when: "'Adding automatic extra Longhorn disk' in platform_longhorn_auto_extra_disk_config.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when: platform_longhorn_auto_extra_disk_enabled_effective | bool
 
         - name: Wait for Longhorn default disks to become ready
           ansible.builtin.shell: |
