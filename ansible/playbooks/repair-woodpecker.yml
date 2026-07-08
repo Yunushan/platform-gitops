@@ -9,11 +9,13 @@
     platform_woodpecker_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_TIMEOUT') }}"
     platform_woodpecker_repair_expected_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_EXPECTED_IMAGE_TAG') }}"
     platform_woodpecker_repair_auto_prerequisites_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_PREREQUISITES') }}"
+    platform_woodpecker_repair_reset_failed_replica_pvcs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_FAILED_REPLICA_PVCS') }}"
     platform_woodpecker_repair_reset_unrecoverable_postgres_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_repair_timeout_effective: "{{ platform_woodpecker_repair_timeout | default(platform_woodpecker_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_woodpecker_repair_expected_image_tag_effective: "{{ platform_woodpecker_repair_expected_image_tag | default(platform_woodpecker_repair_expected_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
     platform_woodpecker_repair_auto_prerequisites_effective: "{{ platform_woodpecker_repair_auto_prerequisites | default(platform_woodpecker_repair_auto_prerequisites_from_env, true) | default(true, true) | bool }}"
+    platform_woodpecker_repair_reset_failed_replica_pvcs_effective: "{{ platform_woodpecker_repair_reset_failed_replica_pvcs | default(platform_woodpecker_repair_reset_failed_replica_pvcs_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_reset_unrecoverable_postgres_effective: "{{ platform_woodpecker_repair_reset_unrecoverable_postgres | default(platform_woodpecker_repair_reset_unrecoverable_postgres_from_env, true) | default(false, true) | bool }}"
   tasks:
     - name: Show Woodpecker state before repair
@@ -277,6 +279,7 @@
         C=/etc/rancher/rke2/rke2.yaml
         TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
         ALLOW_DESTRUCTIVE_RESET={{ platform_woodpecker_repair_reset_unrecoverable_postgres_effective | bool | lower }}
+        RESET_FAILED_REPLICA_PVCS={{ platform_woodpecker_repair_reset_failed_replica_pvcs_effective | bool | lower }}
 
         redact() {
           sed -E \
@@ -392,6 +395,57 @@
             --ignore-not-found=true --wait=false || true
           "$K" --kubeconfig "$C" -n platform-databases delete endpointslice \
             -l cnpg.io/cluster=platform-postgres --ignore-not-found=true --wait=false || true
+        fi
+
+        if [ "${RESET_FAILED_REPLICA_PVCS}" = "true" ] &&
+          "$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres >/dev/null 2>&1; then
+          replica_pvcs="$(
+            "$K" --kubeconfig "$C" -n platform-databases get pvc \
+              -l cnpg.io/cluster=platform-postgres \
+              -o go-template='{{range .items}}{{.metadata.name}}{{"|"}}{{index .metadata.labels "role"}}{{"|"}}{{index .metadata.labels "cnpg.io/instanceName"}}{{"|"}}{{index .metadata.annotations "cnpg.io/pvcStatus"}}{{"|"}}{{.spec.volumeName}}{{"\n"}}{{end}}' 2>/dev/null || true
+          )"
+          printf '%s\n' "${replica_pvcs}" | while IFS='|' read -r pvc role instance pvc_status pv; do
+            [ -n "${pvc}" ] || continue
+            [ "${role}" = "replica" ] || continue
+            [ "${pvc_status}" = "initializing" ] || continue
+
+            pod_phase="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${instance}" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            if [ -n "${pod_phase}" ] && [ "${pod_phase}" != "Failed" ] && [ "${pod_phase}" != "Succeeded" ]; then
+              echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-pod-active pod=${instance} phase=${pod_phase}"
+              continue
+            fi
+
+            handle=""
+            actual_size=0
+            volume_state=""
+            if [ -n "${pv}" ]; then
+              handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+            fi
+            if [ -n "${handle}" ] && "$K" --kubeconfig "$C" get crd/volumes.longhorn.io >/dev/null 2>&1 &&
+              "$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" >/dev/null 2>&1; then
+              actual_size="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+                -o jsonpath='{.status.actualSize}' 2>/dev/null || echo 0)"
+              volume_state="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+                -o jsonpath='{.status.state}' 2>/dev/null || true)"
+            fi
+            case "${actual_size}" in ""|*[!0-9]*) actual_size=1 ;; esac
+
+            if [ "${actual_size}" -gt 0 ]; then
+              echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-volume-has-data actual_size=${actual_size} state=${volume_state:-unknown}"
+              continue
+            fi
+
+            echo "platform_postgres_replica_pvc=${pvc} action=delete-failed-cnpg-replica-pvc instance=${instance:-unknown} pv=${pv:-none} longhornVolume=${handle:-none} state=${volume_state:-unknown}"
+            if [ -n "${instance}" ]; then
+              for object in $("$K" --kubeconfig "$C" -n platform-databases get job,pod -o name 2>/dev/null |
+                grep -E "^(.+/)?${instance}-join" || true); do
+                echo "platform_postgres_replica_init_object=${object} action=delete-failed-cnpg-replica-join"
+                "$K" --kubeconfig "$C" -n platform-databases delete "${object}" --ignore-not-found=true --wait=false || true
+              done
+            fi
+            "$K" --kubeconfig "$C" -n platform-databases delete "pvc/${pvc}" --ignore-not-found=true --wait=false || true
+          done
         fi
 
         if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
