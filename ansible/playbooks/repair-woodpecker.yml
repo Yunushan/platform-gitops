@@ -8,9 +8,13 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_woodpecker_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_TIMEOUT') }}"
     platform_woodpecker_repair_expected_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_EXPECTED_IMAGE_TAG') }}"
+    platform_woodpecker_repair_auto_prerequisites_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_PREREQUISITES') }}"
+    platform_woodpecker_repair_reset_unrecoverable_postgres_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_repair_timeout_effective: "{{ platform_woodpecker_repair_timeout | default(platform_woodpecker_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_woodpecker_repair_expected_image_tag_effective: "{{ platform_woodpecker_repair_expected_image_tag | default(platform_woodpecker_repair_expected_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
+    platform_woodpecker_repair_auto_prerequisites_effective: "{{ platform_woodpecker_repair_auto_prerequisites | default(platform_woodpecker_repair_auto_prerequisites_from_env, true) | default(true, true) | bool }}"
+    platform_woodpecker_repair_reset_unrecoverable_postgres_effective: "{{ platform_woodpecker_repair_reset_unrecoverable_postgres | default(platform_woodpecker_repair_reset_unrecoverable_postgres_from_env, true) | default(false, true) | bool }}"
   tasks:
     - name: Show Woodpecker state before repair
       ansible.builtin.shell: |
@@ -258,10 +262,198 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Automatically repair PostgreSQL prerequisites for Woodpecker when safe
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
+        ALLOW_DESTRUCTIVE_RESET={{ platform_woodpecker_repair_reset_unrecoverable_postgres_effective | bool | lower }}
+
+        redact() {
+          sed -E \
+            -e 's#(postgres(ql)?://[^:/ @]+:)[^@]+@#\1<redacted>@#g' \
+            -e 's#([?&](password|secret|token)=)[^[:space:]&]+#\1<redacted>#Ig' \
+            -e 's#((password|secret|token)[[:space:]]*[:=][[:space:]]*)[^[:space:]]+#\1<redacted>#Ig'
+        }
+
+        echo "===== automatic Woodpecker PostgreSQL prerequisite repair ====="
+
+        if "$K" --kubeconfig "$C" -n cnpg-system get deployment/cloudnative-pg >/dev/null 2>&1; then
+          echo "action=restart-cloudnativepg-operator"
+          "$K" --kubeconfig "$C" -n cnpg-system rollout restart deployment/cloudnative-pg
+          "$K" --kubeconfig "$C" -n cnpg-system rollout status deployment/cloudnative-pg --timeout=300s || true
+          "$K" --kubeconfig "$C" -n cnpg-system get pods,svc,endpointslice -o wide 2>&1 | redact || true
+        else
+          echo "cloudnativepg_operator=absent"
+        fi
+
+        reset_postgres=false
+        cluster_status="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
+          -o jsonpath='{.status.phase} {.status.conditions[*].message}' 2>/dev/null || true)"
+        if printf '%s\n' "${cluster_status}" | grep -qi 'unrecoverable'; then
+          pvc_names="$(
+            {
+              "$K" --kubeconfig "$C" -n platform-databases get pvc \
+                -l cnpg.io/cluster=platform-postgres \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+              "$K" --kubeconfig "$C" -n platform-databases get pvc \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null |
+                grep -E '^platform-postgres-[0-9]+$' || true
+            } | sort -u
+          )"
+          if [ -z "${pvc_names}" ]; then
+            echo "platform_postgres_unrecoverable=true pvc_count=0 action=reset-empty-cnpg-cluster"
+            reset_postgres=true
+          elif [ "${ALLOW_DESTRUCTIVE_RESET}" = "true" ]; then
+            echo "platform_postgres_unrecoverable=true pvc_count=$(printf '%s\n' "${pvc_names}" | wc -l) action=destructive-reset-enabled"
+            reset_postgres=true
+          else
+            echo "platform_postgres_unrecoverable=true pvc_count=$(printf '%s\n' "${pvc_names}" | wc -l) action=blocked-needs-PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES"
+          fi
+        fi
+
+        if [ "${reset_postgres}" = "true" ]; then
+          pv_names=""
+          longhorn_handles=""
+          pvc_names="$(
+            {
+              "$K" --kubeconfig "$C" -n platform-databases get pvc \
+                -l cnpg.io/cluster=platform-postgres \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+              "$K" --kubeconfig "$C" -n platform-databases get pvc \
+                -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null |
+                grep -E '^platform-postgres-[0-9]+$' || true
+            } | sort -u
+          )"
+          for pvc in ${pvc_names}; do
+            pv="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+            [ -n "${pv}" ] || continue
+            handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+            pv_names="${pv_names} ${pv}"
+            if [ -n "${handle}" ]; then
+              longhorn_handles="${longhorn_handles} ${handle}"
+            fi
+          done
+
+          "$K" --kubeconfig "$C" -n platform-databases delete cluster.postgresql.cnpg.io/platform-postgres --ignore-not-found=true --wait=false
+          "$K" --kubeconfig "$C" -n platform-databases delete job,pod -l cnpg.io/cluster=platform-postgres --ignore-not-found=true --wait=false || true
+
+          if [ -n "${pvc_names}" ] && [ "${ALLOW_DESTRUCTIVE_RESET}" = "true" ]; then
+            for pvc in ${pvc_names}; do
+              "$K" --kubeconfig "$C" -n platform-databases delete "pvc/${pvc}" --ignore-not-found=true --wait=false
+            done
+            for pv in ${pv_names}; do
+              "$K" --kubeconfig "$C" delete "pv/${pv}" --ignore-not-found=true --wait=false
+            done
+            for handle in ${longhorn_handles}; do
+              "$K" --kubeconfig "$C" -n longhorn-system delete "volumes.longhorn.io/${handle}" --ignore-not-found=true --wait=false || true
+            done
+          fi
+        fi
+
+        if "$K" --kubeconfig "$C" get crd applications.argoproj.io >/dev/null 2>&1; then
+          for app in cloudnativepg platform-postgres; do
+            if "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+              "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+                argocd.argoproj.io/refresh=hard --overwrite >/dev/null || true
+              "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
+                -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' >/dev/null 2>&1 || true
+              echo "argocd_application_${app}=refresh-sync-requested"
+            else
+              echo "argocd_application_${app}=absent"
+            fi
+          done
+        fi
+
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          ready_endpoints="$("$K" --kubeconfig "$C" -n platform-databases get endpointslice \
+            -l kubernetes.io/service-name=platform-postgres-rw \
+            -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+            awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
+          echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints}"
+          if [ "${ready_endpoints}" -ge 1 ]; then
+            exit 0
+          fi
+          "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
+          sleep 10
+        done
+
+        echo "result=fail reason=automatic-postgres-prerequisite-repair-did-not-produce-ready-endpoint"
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_postgres_auto_repair
+      changed_when: >-
+        'action=restart-cloudnativepg-operator' in platform_woodpecker_postgres_auto_repair.stdout or
+        'action=reset-empty-cnpg-cluster' in platform_woodpecker_postgres_auto_repair.stdout or
+        'action=destructive-reset-enabled' in platform_woodpecker_postgres_auto_repair.stdout or
+        'refresh-sync-requested' in platform_woodpecker_postgres_auto_repair.stdout
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: >
+        platform_woodpecker_repair_auto_prerequisites_effective | bool and
+        platform_woodpecker_postgres_backend_check.rc | int != 0
+
+    - name: Re-check platform PostgreSQL backend after automatic prerequisite repair
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
+
+        redact() {
+          sed -E \
+            -e 's#(postgres(ql)?://[^:/ @]+:)[^@]+@#\1<redacted>@#g' \
+            -e 's#([?&](password|secret|token)=)[^[:space:]&]+#\1<redacted>#Ig' \
+            -e 's#((password|secret|token)[[:space:]]*[:=][[:space:]]*)[^[:space:]]+#\1<redacted>#Ig'
+        }
+
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          ready_endpoints="$("$K" --kubeconfig "$C" -n platform-databases get endpointslice \
+            -l kubernetes.io/service-name=platform-postgres-rw \
+            -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+            awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
+          echo "platform_postgres_rw_service=present ready_endpoints=${ready_endpoints}"
+          if [ "${ready_endpoints}" -ge 1 ]; then
+            exit 0
+          fi
+          "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
+          sleep 10
+        done
+
+        echo "result=fail reason=woodpecker-postgres-backend-not-ready-after-auto-repair"
+        echo "===== platform-postgres application ====="
+        "$K" --kubeconfig "$C" -n argocd get application/platform-postgres -o wide 2>&1 | redact || true
+        "$K" --kubeconfig "$C" -n argocd describe application/platform-postgres 2>&1 |
+          sed -n '/Status:/,/Events:/p' |
+          redact || true
+        echo "===== platform-databases runtime ====="
+        "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpoints,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_postgres_backend_recheck
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: >
+        platform_woodpecker_repair_auto_prerequisites_effective | bool and
+        platform_woodpecker_postgres_backend_check.rc | int != 0
+
     - name: Stop when Woodpecker PostgreSQL backend is missing
       ansible.builtin.fail:
         msg: |
-          {% set backend_output = platform_woodpecker_postgres_backend_check.stdout | default('', true) %}
+          {% set backend_output = (platform_woodpecker_postgres_backend_recheck.stdout | default('', true)) or (platform_woodpecker_postgres_backend_check.stdout | default('', true)) %}
+          {% if (platform_woodpecker_postgres_auto_repair | default({})).stdout | default('', true) %}
+          Automatic prerequisite repair output:
+          {{ platform_woodpecker_postgres_auto_repair.stdout | default('not run') }}
+
+          {% endif %}
           {% if backend_output | regex_search('dial tcp [0-9.]+:8081: i/o timeout|Failed to load target state|repo-server') %}
           Argo CD could not render/sync the platform PostgreSQL backend because
           its repo-server path is unhealthy. Repair Argo CD internal service
@@ -285,6 +477,14 @@
           '
 
           make platform-woodpecker-repair
+
+          {% endif %}
+          {% if backend_output | regex_search('blocked-needs-PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES') %}
+          platform-postgres is unrecoverable and still has PVCs, so automatic
+          repair did not delete it. If this is an empty redeploy and the
+          platform-postgres database contains no real data, rerun:
+
+          PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES=true make platform-woodpecker-repair
 
           {% endif %}
           {% if backend_output | regex_search('AttachVolume\\.Attach failed|not ready for workloads|longhornVolume=') %}
@@ -345,7 +545,9 @@
           application registration with your PLATFORM_REPO_URL and
           PLATFORM_APPLY_GITOPS=true before rerunning this repair.
       run_once: true
-      when: platform_woodpecker_postgres_backend_check.rc | int != 0
+      when: >
+        platform_woodpecker_postgres_backend_check.rc | int != 0 and
+        ((platform_woodpecker_postgres_backend_recheck | default({})).rc | default(1) | int != 0)
 
     - name: Refresh and sync Woodpecker Argo CD application
       ansible.builtin.shell: |
