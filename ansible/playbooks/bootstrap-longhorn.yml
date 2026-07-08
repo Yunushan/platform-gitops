@@ -616,15 +616,19 @@
 
             default_source="$(df -P "${default_path}" | awk 'NR == 2 { print $1 }')"
             extra_source="$(df -P "${extra_path}" | awk 'NR == 2 { print $1 }')"
+            default_fsid="$(stat -f -c '%i' "${default_path}" 2>/dev/null || true)"
+            extra_fsid="$(stat -f -c '%i' "${extra_path}" 2>/dev/null || true)"
             extra_available_bytes="$(df -PB1 "${extra_path}" | awk 'NR == 2 { print $4 }')"
             node_name="$(hostname -s)"
 
             eligible=false
             reason=""
-            if [ -z "${default_source}" ] || [ -z "${extra_source}" ] || [ -z "${extra_available_bytes}" ]; then
+            if [ -z "${default_source}" ] || [ -z "${extra_source}" ] || [ -z "${extra_available_bytes}" ] || [ -z "${default_fsid}" ] || [ -z "${extra_fsid}" ]; then
               reason="df-detection-failed"
             elif [ "${default_source}" = "${extra_source}" ]; then
               reason="same-filesystem-as-default-disk"
+            elif [ "${default_fsid}" = "${extra_fsid}" ]; then
+              reason="same-filesystem-id-as-default-disk"
             elif [ "${extra_available_bytes}" -lt "${min_available_bytes}" ]; then
               reason="insufficient-extra-disk-free-space"
             else
@@ -632,13 +636,15 @@
               reason="extra-disk-eligible"
             fi
 
-            printf 'Longhorn automatic extra disk candidate: node=%s path=%s eligible=%s reason=%s default_source=%s extra_source=%s extra_available_bytes=%s min_available_bytes=%s\n' \
+            printf 'Longhorn automatic extra disk candidate: node=%s path=%s eligible=%s reason=%s default_source=%s extra_source=%s default_fsid=%s extra_fsid=%s extra_available_bytes=%s min_available_bytes=%s\n' \
               "${node_name}" \
               "${extra_path}" \
               "${eligible}" \
               "${reason}" \
               "${default_source:-unknown}" \
               "${extra_source:-unknown}" \
+              "${default_fsid:-unknown}" \
+              "${extra_fsid:-unknown}" \
               "${extra_available_bytes:-0}" \
               "${min_available_bytes}"
 
@@ -665,6 +671,84 @@
           register: platform_longhorn_auto_extra_disk_config
           changed_when: "'Adding automatic extra Longhorn disk' in platform_longhorn_auto_extra_disk_config.stdout"
           when: platform_longhorn_auto_extra_disk_enabled_effective | bool
+
+        - name: Repair duplicate Longhorn disk filesystem IDs when an empty duplicate disk exists
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json |
+              python3 -c '
+            import json
+            import subprocess
+            import sys
+
+            data = json.load(sys.stdin)
+            changed = False
+
+            for item in data.get("items", []):
+                name = item.get("metadata", {}).get("name", "")
+                spec_disks = item.get("spec", {}).get("disks") or {}
+                status_disks = item.get("status", {}).get("diskStatus") or {}
+                if len(spec_disks) <= 1:
+                    continue
+
+                for disk_name, status in status_disks.items():
+                    conditions = status.get("conditions") or []
+                    duplicate_filesystem = any(
+                        condition.get("type") == "Ready"
+                        and condition.get("status") == "False"
+                        and (
+                            condition.get("reason") == "DiskFilesystemChanged"
+                            or "same file system ID" in (condition.get("message") or "")
+                        )
+                        for condition in conditions
+                    )
+                    if not duplicate_filesystem:
+                        continue
+
+                    scheduled = status.get("scheduledReplica") or {}
+                    if scheduled:
+                        print(
+                            f"Longhorn duplicate filesystem disk retained: node={name} "
+                            f"disk={disk_name} reason=scheduled-replicas-present count={len(scheduled)}"
+                        )
+                        continue
+
+                    if disk_name not in spec_disks:
+                        continue
+
+                    patch = json.dumps({"spec": {"disks": {disk_name: None}}})
+                    print(
+                        f"Removing empty duplicate Longhorn disk from node={name}: "
+                        f"disk={disk_name} path={spec_disks.get(disk_name, {}).get('path', '')}"
+                    )
+                    subprocess.run(
+                        [
+                            "/var/lib/rancher/rke2/bin/kubectl",
+                            "--kubeconfig",
+                            "/etc/rancher/rke2/rke2.yaml",
+                            "-n",
+                            "longhorn-system",
+                            "patch",
+                            f"nodes.longhorn.io/{name}",
+                            "--type=merge",
+                            "-p",
+                            patch,
+                        ],
+                        check=True,
+                    )
+                    changed = True
+
+            sys.exit(0)
+            '
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_duplicate_disk_repair
+          changed_when: "'Removing empty duplicate Longhorn disk' in platform_longhorn_duplicate_disk_repair.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
 
         - name: Wait for Longhorn default disks to become ready
           ansible.builtin.shell: |
