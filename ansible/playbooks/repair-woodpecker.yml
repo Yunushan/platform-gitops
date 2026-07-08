@@ -211,6 +211,16 @@
           redact || true
         echo "===== platform-databases runtime ====="
         "$K" --kubeconfig "$C" -n platform-databases get pods,svc,endpoints,endpointslice,clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io -o wide 2>&1 | redact || true
+        echo "===== Longhorn node and disk scheduling state ====="
+        "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide 2>&1 | redact || true
+        nodes="$("$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        for node in ${nodes}; do
+          echo "----- longhorn-node/${node} -----"
+          "$K" --kubeconfig "$C" -n longhorn-system describe "nodes.longhorn.io/${node}" 2>&1 |
+            sed -n '/Spec:/,/Events:/p' |
+            redact || true
+        done
         echo "===== platform-databases pod events ====="
         pods="$("$K" --kubeconfig "$C" -n platform-databases get pods \
           -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
@@ -289,6 +299,30 @@
           make platform-woodpecker-repair
 
           Do not delete this PVC if the database already contains real data.
+
+          {% endif %}
+          {% if backend_output | regex_search('ReplicaSchedulingFailure|insufficient storage|disks are unavailable') %}
+          Longhorn cannot schedule enough replicas for the platform PostgreSQL
+          volume. In this deployment the platform-postgres PVC is 50Gi on the
+          longhorn-critical StorageClass, so three Longhorn replicas need
+          schedulable disk capacity on the RKE2 nodes.
+
+          Fix Longhorn capacity/disk scheduling first:
+
+          make platform-longhorn-bootstrap
+
+          Then check the Longhorn node disk state:
+
+          ansible -i inventory/hosts.local.ini rke2_servers -b -m shell -a 'df -h /var/lib/longhorn || df -h /'
+
+          After Longhorn has enough schedulable free space, rerun:
+
+          make platform-woodpecker-repair
+
+          If this is still an empty first deployment and CloudNativePG now says
+          platform-postgres is unrecoverable, reset only the empty
+          platform-postgres PVC/PV/Longhorn volume after fixing capacity. Do
+          not reset it if it ever contained real database data.
 
           {% endif %}
           Woodpecker is configured for PostgreSQL, but the required
