@@ -602,9 +602,11 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
-        - name: Detect Longhorn automatic extra disk candidates
+        - name: Configure Longhorn automatic extra disk on each node
           ansible.builtin.shell: |
             set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
             default_path={{ platform_longhorn_default_disk_path_effective | quote }}
             extra_path={{ platform_longhorn_auto_extra_disk_path_effective | quote }}
             min_available_gib={{ platform_longhorn_auto_extra_disk_min_available_gib_effective }}
@@ -630,7 +632,7 @@
               reason="extra-disk-eligible"
             fi
 
-            printf 'node=%s extra_disk_path=%s eligible=%s reason=%s default_source=%s extra_source=%s extra_available_bytes=%s min_available_bytes=%s\n' \
+            printf 'Longhorn automatic extra disk candidate: node=%s path=%s eligible=%s reason=%s default_source=%s extra_source=%s extra_available_bytes=%s min_available_bytes=%s\n' \
               "${node_name}" \
               "${extra_path}" \
               "${eligible}" \
@@ -639,73 +641,29 @@
               "${extra_source:-unknown}" \
               "${extra_available_bytes:-0}" \
               "${min_available_bytes}"
-          args:
-            executable: /bin/bash
-          register: platform_longhorn_auto_extra_disk_candidate
-          changed_when: false
-          when: platform_longhorn_auto_extra_disk_enabled_effective | bool
 
-        - name: Configure Longhorn automatic extra disks when default disks lack schedulable capacity
-          ansible.builtin.shell: |
-            set -o pipefail
-            K=/var/lib/rancher/rke2/bin/kubectl
-            C=/etc/rancher/rke2/rke2.yaml
-            changed=0
-            candidates='{{ groups['rke2_servers'] | map('extract', hostvars, ['platform_longhorn_auto_extra_disk_candidate', 'stdout']) | select('defined') | list | to_json }}'
-
-            python3 - "$candidates" <<'PY' |
-            import json
-            import shlex
-            import sys
-
-            for line in json.loads(sys.argv[1]):
-                values = {}
-                for part in shlex.split(line):
-                    if "=" in part:
-                        key, value = part.split("=", 1)
-                        values[key] = value
-                if values:
-                    print(
-                        values.get("node", ""),
-                        values.get("extra_disk_path", ""),
-                        values.get("eligible", "false"),
-                        values.get("reason", "unknown"),
-                    )
-            PY
-            while read -r node extra_path eligible reason; do
-              [ -n "${node}" ] || continue
-              echo "Longhorn automatic extra disk candidate: node=${node} path=${extra_path} eligible=${eligible} reason=${reason}"
-
-              if [ "${eligible}" != "true" ]; then
-                continue
-              fi
-              if ! "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" >/dev/null 2>&1; then
-                echo "Skipping automatic extra Longhorn disk for ${node}; Longhorn node object is absent."
-                continue
-              fi
-              if "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node}" \
+            if [ "${eligible}" != "true" ]; then
+              exit 0
+            fi
+            if ! "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node_name}" >/dev/null 2>&1; then
+              echo "Skipping automatic extra Longhorn disk for ${node_name}; Longhorn node object is absent."
+              exit 0
+            fi
+            if "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node_name}" \
                 -o jsonpath='{range .spec.disks[*]}{.path}{"\n"}{end}' |
                 grep -Fx "${extra_path}" >/dev/null; then
-                echo "${node} already has Longhorn disk path ${extra_path}."
-                continue
-              fi
-
-              echo "Adding automatic extra Longhorn disk on ${node}: ${extra_path}"
-              "$K" --kubeconfig "$C" -n longhorn-system patch "nodes.longhorn.io/${node}" \
-                --type=merge \
-                -p "{\"spec\":{\"allowScheduling\":true,\"disks\":{\"auto-extra-disk\":{\"path\":\"${extra_path}\",\"allowScheduling\":true,\"storageReserved\":0,\"tags\":[],\"diskType\":\"filesystem\",\"evictionRequested\":false}}}}"
-              changed=1
-            done
-
-            if [ "${changed}" -eq 0 ]; then
-              echo "No automatic extra Longhorn disk changes were required."
+              echo "${node_name} already has Longhorn disk path ${extra_path}."
+              exit 0
             fi
+
+            echo "Adding automatic extra Longhorn disk on ${node_name}: ${extra_path}"
+            "$K" --kubeconfig "$C" -n longhorn-system patch "nodes.longhorn.io/${node_name}" \
+              --type=merge \
+              -p "{\"spec\":{\"allowScheduling\":true,\"disks\":{\"auto-extra-disk\":{\"path\":\"${extra_path}\",\"allowScheduling\":true,\"storageReserved\":0,\"tags\":[],\"diskType\":\"filesystem\",\"evictionRequested\":false}}}}"
           args:
             executable: /bin/bash
           register: platform_longhorn_auto_extra_disk_config
           changed_when: "'Adding automatic extra Longhorn disk' in platform_longhorn_auto_extra_disk_config.stdout"
-          delegate_to: "{{ rke2_first_server }}"
-          run_once: true
           when: platform_longhorn_auto_extra_disk_enabled_effective | bool
 
         - name: Wait for Longhorn default disks to become ready
