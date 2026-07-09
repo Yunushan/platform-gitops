@@ -115,4 +115,6 @@ controller:
 
 configs:
   params:
+    repo.server: argo-cd-argocd-repo-server:8081
+    redis.server: argo-cd-redis-ha-haproxy:6379
     server.insecure: true

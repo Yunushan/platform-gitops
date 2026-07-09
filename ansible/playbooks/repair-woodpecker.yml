@@ -934,7 +934,7 @@
           secret="${item#*/}"
           if "$K" --kubeconfig "$C" -n "${ns}" get "secret/${secret}" >/dev/null 2>&1; then
             keys="$("$K" --kubeconfig "$C" -n "${ns}" get "secret/${secret}" \
-              -o jsonpath='{range $key,$value := .data}{$key}{" "}{end}' 2>/dev/null || true)"
+              -o go-template='{{ "{{" }} range $key, $_ := .data {{ "}}" }}{{ "{{" }} $key {{ "}}" }} {{ "{{" }} end {{ "}}" }}' 2>/dev/null || true)"
             echo "secret=${item} state=present keys=${keys:-none}"
           else
             echo "secret=${item} state=absent"

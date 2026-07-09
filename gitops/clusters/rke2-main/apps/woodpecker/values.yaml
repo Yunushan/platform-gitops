@@ -16,6 +16,9 @@ server:
     WOODPECKER_OPEN: "false"
     WOODPECKER_FORGEJO: "true"
     WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>
+    WOODPECKER_SERVER_ADDR: ":8000"
+    WOODPECKER_GRPC_ADDR: ":9000"
+    WOODPECKER_LOG_LEVEL: "debug"
   ingress:
     enabled: true
     ingressClassName: traefik

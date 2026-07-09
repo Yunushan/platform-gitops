@@ -204,7 +204,19 @@
           operation_phase="$(printf '%s' "${status}" | cut -d'|' -f3)"
           condition_types="$(printf '%s' "${status}" | cut -d'|' -f4)"
           condition_messages="$(printf '%s' "${status}" | cut -d'|' -f5-)"
-          echo "sync=${sync_status:-unknown} health=${health_status:-unknown} operation=${operation_phase:-none} conditions=${condition_types:-none}"
+          blocking_condition_types=""
+          for condition_type in ${condition_types}; do
+            case "${condition_type}" in
+              OrphanedResourceWarning)
+                ;;
+              *)
+                blocking_condition_types="${blocking_condition_types}${condition_type} "
+                ;;
+            esac
+          done
+          blocking_condition_types="${blocking_condition_types% }"
+
+          echo "sync=${sync_status:-unknown} health=${health_status:-unknown} operation=${operation_phase:-none} conditions=${condition_types:-none} blocking_conditions=${blocking_condition_types:-none}"
           if [ -n "${condition_messages}" ]; then
             printf '%s\n' "${condition_messages}" | sed 's/^/condition_message=/'
           fi
@@ -220,7 +232,7 @@
               ;;
           esac
 
-          if [ "${sync_status}" = "Synced" ] && [ "${health_status}" = "Healthy" ] && [ -z "${condition_types}" ] && [ "${operation_unhealthy}" -eq 0 ]; then
+          if [ "${sync_status}" = "Synced" ] && [ "${health_status}" = "Healthy" ] && [ -z "${blocking_condition_types}" ] && [ "${operation_unhealthy}" -eq 0 ]; then
             echo "result=ok"
           else
             echo "result=fail"
@@ -341,6 +353,11 @@
         C=/etc/rancher/rke2/rke2.yaml
         namespaces="{{ platform_app_health_namespaces_effective }}"
         failed=0
+        argocd_helm_stack=false
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+          "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          argocd_helm_stack=true
+        fi
 
         for namespace in ${namespaces}; do
           echo "===== namespace ${namespace} pods ====="
@@ -360,6 +377,14 @@
           namespace_failed=0
           while read -r name ready status rest; do
             [ -n "${name}" ] || continue
+            if [ "${namespace}" = "argocd" ] && [ "${argocd_helm_stack}" = "true" ]; then
+              case "${name}" in
+                argocd-*)
+                  echo "pod=${name} ready=${ready} status=${status} result=skip reason=stale-bootstrap-argocd-workload"
+                  continue
+                  ;;
+              esac
+            fi
             echo "pod=${name} ready=${ready} status=${status}"
             case "${status}" in
               Running)
@@ -495,20 +520,42 @@
           printf '%s' "${value}"
         }
 
-        repo_server="$("$K" --kubeconfig "$C" -n argocd get configmap/argocd-cmd-params-cm -o jsonpath='{.data.repo\.server}' 2>/dev/null || true)"
-        redis_server="$("$K" --kubeconfig "$C" -n argocd get configmap/argocd-cmd-params-cm -o jsonpath='{.data.redis\.server}' 2>/dev/null || true)"
-        repo_server="${repo_server:-argocd-repo-server:8081}"
-        redis_server="${redis_server:-argocd-redis:6379}"
+        active_stack=bootstrap
+        server_service=argocd-server
+        repo_server_default=argocd-repo-server:8081
+        redis_server_default=argocd-redis:6379
+        cmd_params_cm=argocd-cmd-params-cm
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+          "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          active_stack=helm-ha
+          server_service=argo-cd-argocd-server
+          repo_server_default=argo-cd-argocd-repo-server:8081
+          redis_server_default=argo-cd-redis-ha-haproxy:6379
+          cmd_params_cm=argo-cd-argocd-cmd-params-cm
+        fi
+
+        repo_server="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cmd_params_cm}" -o jsonpath='{.data.repo\.server}' 2>/dev/null || true)"
+        redis_server="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cmd_params_cm}" -o jsonpath='{.data.redis\.server}' 2>/dev/null || true)"
+        repo_server="${repo_server:-${repo_server_default}}"
+        redis_server="${redis_server:-${redis_server_default}}"
         repo_service="$(service_name_from_hostport "${repo_server}")"
         redis_service="$(service_name_from_hostport "${redis_server}")"
 
+        echo "active_stack=${active_stack} cmd_params_cm=${cmd_params_cm}"
         echo "configured_repo_server=${repo_server} repo_service=${repo_service}"
         echo "configured_redis_server=${redis_server} redis_service=${redis_service}"
 
-        check_workload_ready deployment/argocd-server 1
-        check_workload_ready deployment/argocd-repo-server 1
-        check_workload_ready statefulset/argocd-application-controller 1
-        check_service_ready argocd-server 80
+        if [ "${active_stack}" = "helm-ha" ]; then
+          check_workload_ready deployment/argo-cd-argocd-server 1
+          check_workload_ready deployment/argo-cd-argocd-repo-server 1
+          check_workload_ready statefulset/argo-cd-argocd-application-controller 1
+          check_service_ready "${server_service}" 80
+        else
+          check_workload_ready deployment/argocd-server 1
+          check_workload_ready deployment/argocd-repo-server 1
+          check_workload_ready statefulset/argocd-application-controller 1
+          check_service_ready "${server_service}" 80
+        fi
         check_service_ready "${repo_service}" 8081
         check_service_ready "${redis_service}" 6379
 
@@ -668,10 +715,10 @@
         }
 
         if required_app_present argocd-ha; then
-          check_workload argocd deployment/argocd-server 2 2 argocd-server
-          check_workload argocd deployment/argocd-repo-server 2 2 argocd-repo-server
-          check_workload argocd deployment/argocd-applicationset-controller 2 2 argocd-applicationset-controller
-          check_workload argocd statefulset/argocd-redis-ha-server 3 3 argocd-redis-ha-server
+          check_first_workload argocd 2 2 argocd-server deployment/argo-cd-argocd-server deployment/argocd-server
+          check_first_workload argocd 2 2 argocd-repo-server deployment/argo-cd-argocd-repo-server deployment/argocd-repo-server
+          check_first_workload argocd 2 2 argocd-applicationset-controller deployment/argo-cd-argocd-applicationset-controller deployment/argocd-applicationset-controller
+          check_first_workload argocd 3 3 argocd-redis-ha-server statefulset/argo-cd-redis-ha-server statefulset/argocd-redis-ha-server
         else
           echo "result=skip reason=argocd-ha-not-required-by-platform-app-health-required-apps"
         fi
@@ -2641,11 +2688,15 @@
           esac
         }
 
-        argocd_ip="$("$K" --kubeconfig "$C" -n argocd get service argocd-server -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+        argocd_service=argocd-server
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1; then
+          argocd_service=argo-cd-argocd-server
+        fi
+        argocd_ip="$("$K" --kubeconfig "$C" -n argocd get "service/${argocd_service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
         woodpecker_ip="$("$K" --kubeconfig "$C" -n woodpecker get service woodpecker-server -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
 
         if [ -z "${argocd_ip}" ] || [ "${argocd_ip}" = "None" ]; then
-          echo "argocd service clusterIP missing"
+          echo "argocd service clusterIP missing service=${argocd_service}"
           failed=1
         else
           tcp_probe "argocd-server" "${argocd_ip}" 80
@@ -2703,6 +2754,11 @@
           exit 1
         fi
 
+        argocd_service_dns=argocd-server.argocd.svc.cluster.local
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1; then
+          argocd_service_dns=argo-cd-argocd-server.argocd.svc.cluster.local
+        fi
+
         expected=0
         for node in ${nodes}; do
           expected=$((expected + 1))
@@ -2742,6 +2798,8 @@
                       value: "${CONNECT_TIMEOUT}"
                     - name: MAX_TIME
                       value: "${MAX_TIME}"
+                    - name: ARGOCD_SERVICE_DNS
+                      value: "${argocd_service_dns}"
                   command:
                     - sh
                     - -c
@@ -2837,7 +2895,7 @@
                         failed=1
                       }
 
-                      probe_http argocd-server argocd-server.argocd.svc.cluster.local 80 /
+                      probe_http argocd-server "\${ARGOCD_SERVICE_DNS}" 80 /
                       probe_http woodpecker-http woodpecker-server.woodpecker.svc.cluster.local 80 /
                       probe_tcp woodpecker-grpc woodpecker-server.woodpecker.svc.cluster.local 9000
                       exit "\${failed}"

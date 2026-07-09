@@ -113,16 +113,30 @@
               -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
               awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }'
           }
-          repo_server="$("$K" --kubeconfig "$C" -n argocd get configmap/argocd-cmd-params-cm -o jsonpath='{.data.repo\.server}' 2>/dev/null || true)"
-          redis_server="$("$K" --kubeconfig "$C" -n argocd get configmap/argocd-cmd-params-cm -o jsonpath='{.data.redis\.server}' 2>/dev/null || true)"
-          repo_server="${repo_server:-argocd-repo-server:8081}"
-          redis_server="${redis_server:-argocd-redis:6379}"
+          active_stack=bootstrap
+          server_service=argocd-server
+          repo_server_default=argocd-repo-server:8081
+          redis_server_default=argocd-redis:6379
+          cmd_params_cm=argocd-cmd-params-cm
+          if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+            "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+            active_stack=helm-ha
+            server_service=argo-cd-argocd-server
+            repo_server_default=argo-cd-argocd-repo-server:8081
+            redis_server_default=argo-cd-redis-ha-haproxy:6379
+            cmd_params_cm=argo-cd-argocd-cmd-params-cm
+          fi
+          repo_server="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cmd_params_cm}" -o jsonpath='{.data.repo\.server}' 2>/dev/null || true)"
+          redis_server="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cmd_params_cm}" -o jsonpath='{.data.redis\.server}' 2>/dev/null || true)"
+          repo_server="${repo_server:-${repo_server_default}}"
+          redis_server="${redis_server:-${redis_server_default}}"
           repo_service="$(service_name_from_hostport "${repo_server}")"
           redis_service="$(service_name_from_hostport "${redis_server}")"
           runtime_not_ready=0
+          echo "  active stack: ${active_stack} (cmd params: ${cmd_params_cm})"
           echo "  configured repo-server: ${repo_server} -> service/${repo_service}"
           echo "  configured Redis: ${redis_server} -> service/${redis_service}"
-          for service in argocd-server "${repo_service}" "${redis_service}"; do
+          for service in "${server_service}" "${repo_service}" "${redis_service}"; do
             if "$K" --kubeconfig "$C" -n argocd get "service/${service}" >/dev/null 2>&1; then
               cluster_ip="$("$K" --kubeconfig "$C" -n argocd get "service/${service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
               endpoints="$(service_ready_endpoint_count "${service}")"

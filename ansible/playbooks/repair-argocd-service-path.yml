@@ -10,12 +10,14 @@
     platform_argocd_service_repair_refresh_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_REFRESH_APPS') }}"
     platform_argocd_service_repair_node_local_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_NODE_LOCAL') }}"
     platform_argocd_service_repair_host_network_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_HOST_NETWORK') }}"
+    platform_argocd_cleanup_stale_bootstrap_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CLEAN_STALE_BOOTSTRAP') }}"
     platform_argocd_controller_readiness_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_TIMEOUT') }}"
     platform_argocd_controller_readiness_failure_threshold_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_FAILURE_THRESHOLD') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_node_local_effective: "{{ platform_argocd_service_repair_node_local | default(platform_argocd_service_repair_node_local_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_host_network_effective: "{{ platform_argocd_service_repair_host_network | default(platform_argocd_service_repair_host_network_from_env, true) | default(true, true) | bool }}"
+    platform_argocd_cleanup_stale_bootstrap_effective: "{{ platform_argocd_cleanup_stale_bootstrap | default(platform_argocd_cleanup_stale_bootstrap_from_env, true) | default(true, true) | bool }}"
     platform_argocd_controller_readiness_timeout_effective: "{{ platform_argocd_controller_readiness_timeout | default(platform_argocd_controller_readiness_timeout_from_env, true) | default(10, true) | int }}"
     platform_argocd_controller_readiness_failure_threshold_effective: "{{ platform_argocd_controller_readiness_failure_threshold | default(platform_argocd_controller_readiness_failure_threshold_from_env, true) | default(18, true) | int }}"
   tasks:
@@ -23,13 +25,28 @@
       ansible.builtin.shell: |
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
+
+        echo "===== argocd active stack ====="
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+          "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          echo "argocd_active_stack=helm-ha release=argo-cd"
+        else
+          echo "argocd_active_stack=bootstrap"
+        fi
+
         echo "===== argocd services ====="
         "$K" --kubeconfig "$C" -n argocd get svc -o wide || true
         echo "===== argocd endpointslices ====="
         "$K" --kubeconfig "$C" -n argocd get endpointslice -o wide || true
         echo "===== argocd command parameters ====="
-        "$K" --kubeconfig "$C" -n argocd get cm argocd-cmd-params-cm \
-          -o jsonpath='repo.server={.data.repo\.server}{"\n"}redis.server={.data.redis\.server}{"\n"}' || true
+        for cm in argo-cd-argocd-cmd-params-cm argocd-cmd-params-cm; do
+          echo "--- configmap/${cm} ---"
+          "$K" --kubeconfig "$C" -n argocd get "cm/${cm}" \
+            -o jsonpath='repo.server={.data.repo\.server}{"\n"}redis.server={.data.redis\.server}{"\n"}' 2>/dev/null ||
+            echo "missing"
+        done
+        echo "===== argocd workloads ====="
+        "$K" --kubeconfig "$C" -n argocd get deploy,statefulset,pods -o wide || true
       args:
         executable: /bin/bash
       register: platform_argocd_service_path_before
@@ -42,13 +59,58 @@
         var: platform_argocd_service_path_before.stdout_lines
       run_once: true
 
-    - name: Create headless Argo CD internal services and patch command parameters
+    - name: Patch active Argo CD command parameters and restart active workloads
       ansible.builtin.shell: |
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
 
-        "$K" --kubeconfig "$C" apply -f - <<'YAML'
+        active_stack=bootstrap
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+          "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          active_stack=helm-ha
+        fi
+        echo "argocd_active_stack=${active_stack}"
+
+        patch_cm_if_present() {
+          cm="$1"
+          repo_server="$2"
+          redis_server="$3"
+          if "$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd patch "configmap/${cm}" \
+              --type merge \
+              -p "$(printf '{"data":{"repo.server":"%s","redis.server":"%s"}}' "${repo_server}" "${redis_server}")"
+          fi
+        }
+
+        restart_if_present() {
+          workload="$1"
+          if "$K" --kubeconfig "$C" -n argocd get "${workload}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd rollout restart "${workload}"
+          fi
+        }
+
+        if [ "${active_stack}" = "helm-ha" ]; then
+          patch_cm_if_present argo-cd-argocd-cmd-params-cm \
+            argo-cd-argocd-repo-server:8081 \
+            argo-cd-redis-ha-haproxy:6379
+          patch_cm_if_present argocd-cmd-params-cm \
+            argo-cd-argocd-repo-server:8081 \
+            argo-cd-redis-ha-haproxy:6379
+
+          for workload in \
+            deployment/argo-cd-argocd-applicationset-controller \
+            deployment/argo-cd-argocd-dex-server \
+            deployment/argo-cd-argocd-notifications-controller \
+            deployment/argo-cd-argocd-repo-server \
+            deployment/argo-cd-argocd-server \
+            deployment/argo-cd-redis-ha-haproxy \
+            statefulset/argo-cd-argocd-application-controller \
+            statefulset/argo-cd-redis-ha-server; do
+            restart_if_present "${workload}"
+          done
+        else
+          "$K" --kubeconfig "$C" apply -f - <<'YAML'
         ---
         apiVersion: v1
         kind: Service
@@ -89,24 +151,20 @@
               protocol: TCP
         YAML
 
-        "$K" --kubeconfig "$C" -n argocd patch configmap argocd-cmd-params-cm \
-          --type merge \
-          -p '{"data":{"repo.server":"argocd-repo-server-headless:8081","redis.server":"argocd-redis-headless:6379"}}'
+          patch_cm_if_present argocd-cmd-params-cm \
+            argocd-repo-server-headless:8081 \
+            argocd-redis-headless:6379
 
-        for deployment in \
-          argocd-applicationset-controller \
-          argocd-dex-server \
-          argocd-notifications-controller \
-          argocd-redis \
-          argocd-repo-server \
-          argocd-server; do
-          if "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n argocd rollout restart "deployment/${deployment}"
-          fi
-        done
-
-        if "$K" --kubeconfig "$C" -n argocd get statefulset/argocd-application-controller >/dev/null 2>&1; then
-          "$K" --kubeconfig "$C" -n argocd rollout restart statefulset/argocd-application-controller
+          for workload in \
+            deployment/argocd-applicationset-controller \
+            deployment/argocd-dex-server \
+            deployment/argocd-notifications-controller \
+            deployment/argocd-redis \
+            deployment/argocd-repo-server \
+            deployment/argocd-server \
+            statefulset/argocd-application-controller; do
+            restart_if_present "${workload}"
+          done
         fi
       args:
         executable: /bin/bash
@@ -119,11 +177,18 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Co-locate Argo CD internal bootstrap components on first server
+    - name: Co-locate bootstrap Argo CD internals on first server when bootstrap stack is active
       ansible.builtin.shell: |
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
+
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+          "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          echo "argocd_active_stack=helm-ha action=skip-bootstrap-node-local-patch"
+          exit 0
+        fi
+
         target_node="{{ rke2_first_server }}"
         hostname_label="$("$K" --kubeconfig "$C" get node "${target_node}" \
           -o jsonpath='{.metadata.labels.kubernetes\.io/hostname}' 2>/dev/null || true)"
@@ -170,11 +235,7 @@
           "$K" --kubeconfig "$C" -n argocd rollout restart statefulset/argocd-application-controller
         fi
 
-        echo "Argo CD internal bootstrap components pinned to kubernetes.io/hostname=${hostname_label}"
-        if [ "{{ platform_argocd_service_repair_host_network_effective | bool | lower }}" = "true" ]; then
-          echo "Argo CD internal bootstrap components use hostNetwork and direct ${node_ip}:8081/${node_ip}:6379 command parameters"
-          echo "Argo CD repo-server uses node DNS policy so Helm chart rendering does not depend on CoreDNS external recursion."
-        fi
+        echo "Argo CD bootstrap internals pinned to kubernetes.io/hostname=${hostname_label}"
       args:
         executable: /bin/bash
       register: platform_argocd_service_path_node_local
@@ -185,17 +246,19 @@
       run_once: true
       when: platform_argocd_service_repair_node_local_effective | bool
 
-    - name: Relax Argo CD application controller readiness probe for loaded clusters
+    - name: Relax active Argo CD application controller readiness probe for loaded clusters
       ansible.builtin.shell: |
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
 
-        if "$K" --kubeconfig "$C" -n argocd get statefulset/argocd-application-controller >/dev/null 2>&1; then
-          "$K" --kubeconfig "$C" -n argocd patch statefulset/argocd-application-controller \
-            --type strategic \
-            -p '{"spec":{"template":{"spec":{"containers":[{"name":"argocd-application-controller","readinessProbe":{"timeoutSeconds":{{ platform_argocd_controller_readiness_timeout_effective }},"failureThreshold":{{ platform_argocd_controller_readiness_failure_threshold_effective }}}}]}}}}'
-        fi
+        for statefulset in argo-cd-argocd-application-controller argocd-application-controller; do
+          if "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd patch "statefulset/${statefulset}" \
+              --type json \
+              -p '[{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":{{ platform_argocd_controller_readiness_timeout_effective }}},{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":{{ platform_argocd_controller_readiness_failure_threshold_effective }}}]' || true
+          fi
+        done
       args:
         executable: /bin/bash
       register: platform_argocd_controller_readiness_patch
@@ -203,16 +266,26 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Wait for Argo CD internal service endpoints
+    - name: Wait for active Argo CD internal service endpoints
       ansible.builtin.shell: |
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
-        for service in argocd-repo-server-headless argocd-redis-headless; do
+
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+          "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          services="argo-cd-argocd-server argo-cd-argocd-repo-server argo-cd-redis-ha-haproxy"
+        else
+          services="argocd-server argocd-repo-server-headless argocd-redis-headless"
+        fi
+
+        for service in ${services}; do
           endpoints="$("$K" --kubeconfig "$C" -n argocd get endpointslice \
             -l "kubernetes.io/service-name=${service}" \
-            -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{" "}{end}' 2>/dev/null || true)"
-          test -n "${endpoints}"
+            -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+            awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
+          echo "service=${service} ready_endpoints=${endpoints}"
+          test "${endpoints}" -ge 1
         done
       args:
         executable: /bin/bash
@@ -224,25 +297,41 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Wait for Argo CD workloads after internal service repair
+    - name: Wait for active Argo CD workloads after internal service repair
       ansible.builtin.shell: |
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
-        for deployment in \
-          argocd-applicationset-controller \
-          argocd-dex-server \
-          argocd-notifications-controller \
-          argocd-redis \
-          argocd-repo-server \
-          argocd-server; do
-          if "$K" --kubeconfig "$C" -n argocd get "deployment/${deployment}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n argocd rollout status "deployment/${deployment}" --timeout={{ platform_argocd_service_repair_timeout_effective }}s
+
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+          "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          workloads="
+          deployment/argo-cd-argocd-applicationset-controller
+          deployment/argo-cd-argocd-dex-server
+          deployment/argo-cd-argocd-notifications-controller
+          deployment/argo-cd-argocd-repo-server
+          deployment/argo-cd-argocd-server
+          deployment/argo-cd-redis-ha-haproxy
+          statefulset/argo-cd-argocd-application-controller
+          statefulset/argo-cd-redis-ha-server
+          "
+        else
+          workloads="
+          deployment/argocd-applicationset-controller
+          deployment/argocd-dex-server
+          deployment/argocd-notifications-controller
+          deployment/argocd-redis
+          deployment/argocd-repo-server
+          deployment/argocd-server
+          statefulset/argocd-application-controller
+          "
+        fi
+
+        for workload in ${workloads}; do
+          if "$K" --kubeconfig "$C" -n argocd get "${workload}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd rollout status "${workload}" --timeout={{ platform_argocd_service_repair_timeout_effective }}s
           fi
         done
-        if "$K" --kubeconfig "$C" -n argocd get statefulset/argocd-application-controller >/dev/null 2>&1; then
-          "$K" --kubeconfig "$C" -n argocd rollout status statefulset/argocd-application-controller --timeout={{ platform_argocd_service_repair_timeout_effective }}s
-        fi
       args:
         executable: /bin/bash
       register: platform_argocd_service_path_rollout
@@ -250,24 +339,57 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Remove stale bootstrap Argo CD workloads when Helm HA stack is active
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        if ! "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 &&
+          ! "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          echo "argocd_active_stack=bootstrap cleanup=skipped"
+          exit 0
+        fi
+
+        echo "argocd_active_stack=helm-ha cleanup=stale-bootstrap"
+        for kind in deployment statefulset service ingress ingressroute.traefik.io poddisruptionbudget; do
+          "$K" --kubeconfig "$C" -n argocd get "${kind}" -o name 2>/dev/null |
+            grep -E "/argocd-" |
+            while read -r resource; do
+              [ -n "${resource}" ] || continue
+              "$K" --kubeconfig "$C" -n argocd delete "${resource}" --ignore-not-found=true --wait=false
+            done
+        done
+
+        "$K" --kubeconfig "$C" -n argocd get pod -o name 2>/dev/null |
+          grep -E "^pod/argocd-" |
+          while read -r pod; do
+            [ -n "${pod}" ] || continue
+            "$K" --kubeconfig "$C" -n argocd delete "${pod}" --ignore-not-found=true --wait=false
+          done
+      args:
+        executable: /bin/bash
+      register: platform_argocd_stale_bootstrap_cleanup
+      changed_when: "'deleted' in platform_argocd_stale_bootstrap_cleanup.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_argocd_cleanup_stale_bootstrap_effective | bool
+
     - name: Refresh platform applications after Argo CD service repair
       ansible.builtin.shell: |
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
-        for app in longhorn forgejo; do
-          if "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
-              argocd.argoproj.io/refresh=hard --overwrite
-            "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
-              -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' || true
-          fi
+
+        apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        for app in ${apps}; do
+          "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+            argocd.argoproj.io/refresh=hard --overwrite
         done
       args:
         executable: /bin/bash
       register: platform_argocd_service_path_app_refresh
-      changed_when: >-
-        'annotated' in platform_argocd_service_path_app_refresh.stdout or
-        'patched' in platform_argocd_service_path_app_refresh.stdout
+      changed_when: "'annotated' in platform_argocd_service_path_app_refresh.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: platform_argocd_service_repair_refresh_apps_effective | bool
@@ -276,21 +398,31 @@
       ansible.builtin.shell: |
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
+
+        echo "===== argocd active stack ====="
+        if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
+          "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          echo "argocd_active_stack=helm-ha release=argo-cd"
+        else
+          echo "argocd_active_stack=bootstrap"
+        fi
+
         echo "===== argocd command parameters ====="
-        "$K" --kubeconfig "$C" -n argocd get cm argocd-cmd-params-cm \
-          -o jsonpath='repo.server={.data.repo\.server}{"\n"}redis.server={.data.redis\.server}{"\n"}'
-        echo "===== repaired services ====="
-        "$K" --kubeconfig "$C" -n argocd get svc argocd-repo-server-headless argocd-redis-headless -o wide
-        echo "===== repaired endpoints ====="
-        for service in argocd-repo-server-headless argocd-redis-headless; do
-          echo "--- ${service} ---"
-          "$K" --kubeconfig "$C" -n argocd get endpointslice \
-            -l "kubernetes.io/service-name=${service}" -o wide || true
+        for cm in argo-cd-argocd-cmd-params-cm argocd-cmd-params-cm; do
+          echo "--- configmap/${cm} ---"
+          "$K" --kubeconfig "$C" -n argocd get "cm/${cm}" \
+            -o jsonpath='repo.server={.data.repo\.server}{"\n"}redis.server={.data.redis\.server}{"\n"}' 2>/dev/null ||
+            echo "missing"
         done
-        echo "===== argocd pod placement ====="
+
+        echo "===== argocd services ====="
+        "$K" --kubeconfig "$C" -n argocd get svc -o wide || true
+        echo "===== argocd endpoints ====="
+        "$K" --kubeconfig "$C" -n argocd get endpointslice -o wide || true
+        echo "===== argocd pods ====="
         "$K" --kubeconfig "$C" -n argocd get pods -o wide || true
-        echo "===== longhorn and forgejo applications ====="
-        "$K" --kubeconfig "$C" -n argocd get applications longhorn forgejo || true
+        echo "===== platform applications ====="
+        "$K" --kubeconfig "$C" -n argocd get applications.argoproj.io || true
       args:
         executable: /bin/bash
       register: platform_argocd_service_path_after
