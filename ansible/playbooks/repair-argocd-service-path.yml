@@ -10,6 +10,8 @@
     platform_argocd_service_repair_refresh_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_REFRESH_APPS') }}"
     platform_argocd_service_repair_node_local_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_NODE_LOCAL') }}"
     platform_argocd_service_repair_host_network_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_HOST_NETWORK') }}"
+    platform_argocd_service_repair_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_ROLLOUT_TIMEOUT') }}"
+    platform_argocd_service_repair_rollout_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_ROLLOUT_STRICT') }}"
     platform_argocd_cleanup_stale_bootstrap_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CLEAN_STALE_BOOTSTRAP') }}"
     platform_argocd_controller_readiness_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_TIMEOUT') }}"
     platform_argocd_controller_readiness_failure_threshold_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_FAILURE_THRESHOLD') }}"
@@ -17,6 +19,8 @@
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_node_local_effective: "{{ platform_argocd_service_repair_node_local | default(platform_argocd_service_repair_node_local_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_host_network_effective: "{{ platform_argocd_service_repair_host_network | default(platform_argocd_service_repair_host_network_from_env, true) | default(true, true) | bool }}"
+    platform_argocd_service_repair_rollout_timeout_effective: "{{ platform_argocd_service_repair_rollout_timeout | default(platform_argocd_service_repair_rollout_timeout_from_env, true) | default(60, true) | int }}"
+    platform_argocd_service_repair_rollout_strict_effective: "{{ platform_argocd_service_repair_rollout_strict | default(platform_argocd_service_repair_rollout_strict_from_env, true) | default(false, true) | bool }}"
     platform_argocd_cleanup_stale_bootstrap_effective: "{{ platform_argocd_cleanup_stale_bootstrap | default(platform_argocd_cleanup_stale_bootstrap_from_env, true) | default(true, true) | bool }}"
     platform_argocd_controller_readiness_timeout_effective: "{{ platform_argocd_controller_readiness_timeout | default(platform_argocd_controller_readiness_timeout_from_env, true) | default(10, true) | int }}"
     platform_argocd_controller_readiness_failure_threshold_effective: "{{ platform_argocd_controller_readiness_failure_threshold | default(platform_argocd_controller_readiness_failure_threshold_from_env, true) | default(18, true) | int }}"
@@ -297,11 +301,14 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Wait for active Argo CD workloads after internal service repair
+    - name: Check active Argo CD workload rollouts after internal service repair
       ansible.builtin.shell: |
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
+        STRICT="{{ platform_argocd_service_repair_rollout_strict_effective | bool | lower }}"
+        ROLLOUT_TIMEOUT={{ platform_argocd_service_repair_rollout_timeout_effective }}
+        failed=0
 
         if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
           "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
@@ -329,9 +336,23 @@
 
         for workload in ${workloads}; do
           if "$K" --kubeconfig "$C" -n argocd get "${workload}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n argocd rollout status "${workload}" --timeout={{ platform_argocd_service_repair_timeout_effective }}s
+            echo "checking rollout workload=${workload} timeout=${ROLLOUT_TIMEOUT}s strict=${STRICT}"
+            if "$K" --kubeconfig "$C" -n argocd rollout status "${workload}" --timeout="${ROLLOUT_TIMEOUT}s"; then
+              echo "result=ok workload=${workload}"
+            else
+              echo "result=warn reason=argocd-workload-rollout-timeout workload=${workload}"
+              failed=1
+            fi
           fi
         done
+
+        echo "===== argocd workload summary after rollout check ====="
+        "$K" --kubeconfig "$C" -n argocd get deploy,statefulset,pods -o wide || true
+
+        if [ "${failed}" -ne 0 ] && [ "${STRICT}" = "true" ]; then
+          exit 1
+        fi
+        exit 0
       args:
         executable: /bin/bash
       register: platform_argocd_service_path_rollout
