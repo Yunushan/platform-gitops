@@ -7,31 +7,47 @@ report shows the selected source and destination surfaces were verified.
 ## Supported Directions
 
 The current migration helper supports the Git data plane, repository labels,
-repository milestones, and portable issues/comments for these directions:
+repository milestones, portable releases, and portable issues/comments for
+these directions:
 
 - GitHub to Forgejo
 - GitLab to Forgejo
 - Forgejo to GitHub
 - Forgejo to GitLab
 
-The Git data plane includes branches and tags, with optional wiki and Git LFS
-handling. Label migration copies and verifies the provider-common label fields:
+The Git data plane includes branches, tags, Git notes, and the default branch,
+with optional wiki and Git LFS handling. Wiki refs are re-read from both forges.
+When Git LFS is selected and `git-lfs` is available, all objects are fetched,
+checked, and compared by content-addressed object ID and manifest digest.
+`lfs: "required"` fails when `git-lfs` is unavailable; `lfs: "auto"` records an
+explicit accepted skip in that case.
+Provider-internal refs such as GitHub
+`refs/pull/*` are deliberately excluded because they are not portable repository
+refs. Label migration copies and verifies the provider-common label fields:
 name, color, and description. Milestone migration copies and verifies the
 provider-common milestone fields: title, description, open/closed state, and
-due date. Issue migration copies and verifies the provider-common portable
+due date. Release migration copies and verifies tag name, normalized release
+name (the tag when no name exists), and description/body. Issue migration copies
+and verifies the provider-common portable
 fields: title, body/description, open/closed state, labels, milestone title, and
 comment bodies. Native source authors, timestamps, issue numbers, reactions,
 cross-links, and audit history are provider-owned fields and are not rewritten
 through normal forge APIs. Provider metadata such as pull requests, merge
-requests, releases, packages, branch protection, teams, permissions, and
+requests, release assets, packages, branch protection, teams, permissions, and
 webhooks is modeled in the migration plan but intentionally fails closed when
-marked required. This prevents a partial repository mirror from being reported
-as a complete forge migration.
+marked required. Draft/prerelease state and original release timestamps are not
+portable across all three providers; they are outside the verified release
+surface. This prevents a partial repository mirror from being reported as a
+complete forge migration.
 
 ## Plan File
 
 Create a private JSON plan outside public Git, for example
 `private/migrations/gitlab-to-forgejo.json`:
+
+Ready-to-edit portable examples for all four directions are under
+`examples/migrations/`. Copy one into the ignored `private/` tree and inventory
+every intentionally skipped surface before approval.
 
 ```json
 {
@@ -49,16 +65,20 @@ Create a private JSON plan outside public Git, for example
         "url": "https://gitops.example.com/group/platform-app.git",
         "api_url": "https://gitops.example.com/api/v1",
         "api_repository": "group/platform-app",
-        "token_env": "FORGEJO_TOKEN"
+        "token_env": "FORGEJO_TOKEN",
+        "create": "required",
+        "private": true,
+        "description": "Platform application"
       },
       "wiki": "auto",
       "lfs": "auto",
       "metadata": {
         "labels": "required",
         "milestones": "required",
+        "releases": "required",
         "issues": "required",
         "merge_requests": "skip",
-        "releases": "skip"
+        "release_assets": "skip"
       }
     }
   ]
@@ -76,12 +96,26 @@ standard public forge URL, but explicit values are recommended for self-hosted
 GitHub Enterprise, GitLab, and Forgejo installs. Use `owner/repo` for GitHub and
 Forgejo. Use the project path or numeric project ID for GitLab.
 
+Set `destination.create` to `"required"` to make migration idempotently create
+a missing destination repository through the provider API before pushing Git
+refs. Existing repositories are reused and reported as `"existing"` in proof.
+Repository creation is disabled by default so an older plan cannot unexpectedly
+create remote state. For a GitLab group or subgroup, the tool resolves the
+namespace by full path; set `destination.namespace_id` explicitly when the
+token cannot list namespaces. Destination repositories default to private.
+
 ## Execute and Prove
 
 Validate the plan:
 
 ```bash
 python3 scripts/forge_migration.py validate-plan private/migrations/gitlab-to-forgejo.json
+```
+
+The equivalent Make target is:
+
+```bash
+make forge-migration-validate PLAN=private/migrations/gitlab-to-forgejo.json
 ```
 
 Run the migration and write proof:
@@ -93,6 +127,15 @@ python3 scripts/forge_migration.py migrate \
   --proof private/migrations/proof/gitlab-to-forgejo.proof.json
 ```
 
+Or run the same operation through Make:
+
+```bash
+make forge-migration-run \
+  PLAN=private/migrations/gitlab-to-forgejo.json \
+  WORK_DIR=/tmp/platform-forge-migration \
+  PROOF=private/migrations/proof/gitlab-to-forgejo.proof.json
+```
+
 Re-verify later without pushing:
 
 ```bash
@@ -101,9 +144,24 @@ python3 scripts/forge_migration.py verify \
   --proof private/migrations/proof/gitlab-to-forgejo.verify.json
 ```
 
+Check that a stored proof is both successful and unchanged:
+
+```bash
+python3 scripts/forge_migration.py verify-proof \
+  private/migrations/proof/gitlab-to-forgejo.proof.json
+```
+
+Every proof contains a canonical SHA-256 integrity digest. This detects an
+accidentally or casually modified artifact; it is not a cryptographic signature
+of operator identity. Store proofs in an access-controlled evidence system and
+sign or attest them with the organization's normal release process when
+non-repudiation is required.
+
 The proof is successful only when all selected repositories report
-`"verified": true` and every branch/tag ref matches between source and
-destination. When labels, milestones, or issues are enabled, proof also includes
+`"verified": true`, every branch/tag/note ref matches between source and
+destination, and the default branch matches. When repository creation is managed, proof also records whether
+the destination was created or already existed and confirms it remains API
+readable. When labels, milestones, releases, or issues are enabled, proof also includes
 created/updated counts, source/destination metadata digests, missing items,
 mismatched items, and extra destination-only items. Issue proof also reports the
 number of comments created and per-issue missing/extra comment counts without
@@ -111,12 +169,19 @@ printing comment bodies. Extra destination metadata is reported for review but
 does not fail verification unless it shadows a source item with different
 content or the destination issue is missing source comments.
 
+Repositories in one plan are isolated batch items. A failure in one repository
+does not prevent the remaining repositories from being attempted; the command
+returns nonzero and writes a top-level failed proof containing each individual
+outcome. Duplicate names, work-directory-safe names, or destination URLs are
+rejected before any migration begins.
+
 ## Metadata Policy
 
 For a true full-fidelity migration, inventory the non-Git surfaces first:
 
 - Pull requests or merge requests
-- Releases and release assets
+- Releases
+- Release assets
 - Packages and container registry artifacts
 - Wikis
 - Repository labels
@@ -126,7 +191,7 @@ For a true full-fidelity migration, inventory the non-Git surfaces first:
 - Branch protection and rulesets
 - Users, teams, permissions, and CODEOWNERS
 
-Set supported surfaces such as `labels`, `milestones`, and `issues` to
+Set supported surfaces such as `labels`, `milestones`, `releases`, and `issues` to
 `"required"` when they must be migrated and verified. Set unsupported required surfaces to
 `"required"` in the plan while designing a provider-specific importer. The
 helper will fail and name the missing surface. Set a surface to `"skip"` only
@@ -139,6 +204,7 @@ or evidence store:
 
 - Migration plan JSON
 - Migration proof JSON
+- Successful `verify-proof` result (or an organizational signature/attestation)
 - Verification proof JSON after a second read-only pass
 - Source and destination forge URLs
 - Operator, date, and change ticket

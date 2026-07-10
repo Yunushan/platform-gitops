@@ -36,6 +36,7 @@
   <a href="docs/PREMIUM_3NODE.md">Premium 3-Node</a> •
   <a href="docs/PRIVATE_DEPLOYMENT.md">Private Deployment</a> •
   <a href="docs/COMPONENT_SWITCHING.md">Change Components</a> •
+  <a href="docs/FORGE_MIGRATION.md">Forge Migration</a> •
   <a href="docs/SECRETS_AND_PRIVACY.md">Secrets & Privacy</a> •
   <a href="SECURITY.md">Security</a> •
   <a href="docs/USER_GUIDE.md">User Guide</a> •

@@ -71,12 +71,23 @@ def normalize_fake_due_date(value: object) -> str:
 
 class FakeLabelApi:
     def __init__(self) -> None:
+        self.repositories: dict[tuple[str, str], dict[str, object]] = {}
         self.labels: dict[tuple[str, str], list[dict[str, object]]] = {}
         self.milestones: dict[tuple[str, str], list[dict[str, object]]] = {}
+        self.releases: dict[tuple[str, str], list[dict[str, object]]] = {}
         self.issues: dict[tuple[str, str], list[dict[str, object]]] = {}
         self.next_id = 1
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
+
+    def seed_repository(self, provider: str, repository: str, default_branch: str = "legacy") -> None:
+        self.repositories[(provider, repository)] = {
+            "id": self.next_id,
+            "full_name": repository,
+            "path_with_namespace": repository,
+            "default_branch": default_branch,
+        }
+        self.next_id += 1
 
     def seed(self, provider: str, repository: str, labels: list[dict[str, object]]) -> None:
         seeded: list[dict[str, object]] = []
@@ -107,6 +118,20 @@ class FakeLabelApi:
             )
             self.next_id += 1
         self.milestones[(provider, repository)] = seeded
+
+    def seed_releases(self, provider: str, repository: str, releases: list[dict[str, object]]) -> None:
+        seeded: list[dict[str, object]] = []
+        for release in releases:
+            seeded.append(
+                {
+                    "id": self.next_id,
+                    "tag_name": str(release["tag_name"]),
+                    "name": "" if release.get("name") is None else str(release.get("name")),
+                    "body": "" if release.get("body") is None else str(release.get("body")),
+                }
+            )
+            self.next_id += 1
+        self.releases[(provider, repository)] = seeded
 
     def seed_issues(self, provider: str, repository: str, issues: list[dict[str, object]]) -> None:
         seeded: list[dict[str, object]] = []
@@ -161,19 +186,60 @@ class FakeLabelApi:
             def parse_resource_path(self) -> tuple[str, str, str, str | None, str | None]:
                 raw_parts = [part for part in urlsplit(self.path).path.strip("/").split("/") if part]
                 parts = [unquote(part) for part in raw_parts]
-                if len(parts) >= 5 and parts[1] == "repos" and parts[4] in {"labels", "milestones", "issues"}:
+                if len(parts) >= 5 and parts[1] == "repos" and parts[4] in {
+                    "labels",
+                    "milestones",
+                    "releases",
+                    "issues",
+                }:
                     provider = parts[0]
                     repository = f"{parts[2]}/{parts[3]}"
                     resource_id = parts[5] if len(parts) > 5 else None
                     subresource = parts[6] if len(parts) > 6 else None
                     return provider, repository, parts[4], resource_id, subresource
-                if len(parts) >= 4 and parts[1] == "projects" and parts[3] in {"labels", "milestones", "issues"}:
+                if len(parts) >= 4 and parts[1] == "projects" and parts[3] in {
+                    "labels",
+                    "milestones",
+                    "releases",
+                    "issues",
+                }:
                     provider = parts[0]
                     repository = parts[2]
                     resource_id = parts[4] if len(parts) > 4 else None
                     subresource = parts[5] if len(parts) > 5 else None
                     return provider, repository, parts[3], resource_id, subresource
                 raise AssertionError(f"unexpected fake API path: {self.path}")
+
+            def request_parts(self) -> list[str]:
+                raw_parts = [part for part in urlsplit(self.path).path.strip("/").split("/") if part]
+                return [unquote(part) for part in raw_parts]
+
+            def repository_response(self, provider: str, repository: str) -> bool:
+                record = api.repositories.get((provider, repository))
+                if record is None:
+                    self.send_json(404, {"message": "not found"})
+                    return True
+                self.send_json(200, record)
+                return True
+
+            def update_repository_settings(self) -> bool:
+                parts = self.request_parts()
+                repository = ""
+                if len(parts) == 4 and parts[1] == "repos":
+                    repository = f"{parts[2]}/{parts[3]}"
+                elif len(parts) == 3 and parts[1] == "projects":
+                    repository = parts[2]
+                else:
+                    return False
+                record = api.repositories.get((parts[0], repository))
+                if record is None:
+                    self.send_json(404, {"message": "not found"})
+                    return True
+                body = self.read_json()
+                if "default_branch" in body:
+                    record["default_branch"] = str(body["default_branch"])
+                self.send_json(200, record)
+                return True
 
             def response_label(self, provider: str, label: dict[str, object]) -> dict[str, object]:
                 color = str(label["color"])
@@ -213,6 +279,18 @@ class FakeLabelApi:
                     "state": milestone.get("state", "open"),
                     "due_on": timestamp,
                 }
+
+            def response_release(self, provider: str, release: dict[str, object]) -> dict[str, object]:
+                payload = {
+                    "id": release["id"],
+                    "tag_name": release["tag_name"],
+                    "name": release.get("name", ""),
+                }
+                if provider == "gitlab":
+                    payload["description"] = release.get("body", "")
+                else:
+                    payload["body"] = release.get("body", "")
+                return payload
 
             def response_issue(self, provider: str, repository: str, issue: dict[str, object]) -> dict[str, object]:
                 milestone_title = str(issue.get("milestone") or "")
@@ -291,6 +369,16 @@ class FakeLabelApi:
                 return str(milestone["title"]) if milestone is not None else ""
 
             def do_GET(self) -> None:
+                parts = self.request_parts()
+                if len(parts) == 2 and parts[1] == "user":
+                    self.send_json(200, {"login": "destination-owner", "username": "destination-owner"})
+                    return
+                if len(parts) == 4 and parts[1] == "repos":
+                    self.repository_response(parts[0], f"{parts[2]}/{parts[3]}")
+                    return
+                if len(parts) == 3 and parts[1] == "projects":
+                    self.repository_response(parts[0], parts[2])
+                    return
                 provider, repository, resource, resource_id, subresource = self.parse_resource_path()
                 if resource == "labels":
                     labels = api.labels.setdefault((provider, repository), [])
@@ -314,6 +402,17 @@ class FakeLabelApi:
                         return
                     self.send_json(200, [self.response_milestone(provider, milestone) for milestone in milestones])
                     return
+                if resource == "releases":
+                    releases = api.releases.setdefault((provider, repository), [])
+                    if resource_id is not None:
+                        release = self.find_resource(releases, resource_id, "tag_name")
+                        if release is None:
+                            self.send_json(404, {"message": "not found"})
+                            return
+                        self.send_json(200, self.response_release(provider, release))
+                        return
+                    self.send_json(200, [self.response_release(provider, release) for release in releases])
+                    return
                 issues = api.issues.setdefault((provider, repository), [])
                 if resource_id is not None:
                     issue = self.find_resource(issues, resource_id, "title")
@@ -331,6 +430,25 @@ class FakeLabelApi:
                 self.send_json(200, [self.response_issue(provider, repository, issue) for issue in issues])
 
             def do_POST(self) -> None:
+                parts = self.request_parts()
+                if len(parts) == 3 and parts[1:] == ["user", "repos"]:
+                    body = self.read_json()
+                    repository = f"destination-owner/{body['name']}"
+                    api.seed_repository(parts[0], repository)
+                    self.send_json(201, api.repositories[(parts[0], repository)])
+                    return
+                if len(parts) == 4 and parts[1] == "orgs" and parts[3] == "repos":
+                    body = self.read_json()
+                    repository = f"{parts[2]}/{body['name']}"
+                    api.seed_repository(parts[0], repository)
+                    self.send_json(201, api.repositories[(parts[0], repository)])
+                    return
+                if len(parts) == 2 and parts[1] == "projects":
+                    body = self.read_json()
+                    repository = str(body["path"])
+                    api.seed_repository(parts[0], repository)
+                    self.send_json(201, api.repositories[(parts[0], repository)])
+                    return
                 provider, repository, resource, resource_id, subresource = self.parse_resource_path()
                 body = self.read_json()
                 if resource == "issues" and resource_id is not None and subresource in {"comments", "notes"}:
@@ -376,6 +494,21 @@ class FakeLabelApi:
                     api.next_id += 1
                     milestones.append(milestone)
                     self.send_json(201, self.response_milestone(provider, milestone))
+                    return
+                if resource == "releases":
+                    release = {
+                        "id": api.next_id,
+                        "tag_name": str(body["tag_name"]),
+                        "name": "" if body.get("name") is None else str(body.get("name")),
+                        "body": "",
+                    }
+                    if body.get("body") is not None:
+                        release["body"] = str(body.get("body"))
+                    elif body.get("description") is not None:
+                        release["body"] = str(body.get("description"))
+                    api.next_id += 1
+                    api.releases.setdefault((provider, repository), []).append(release)
+                    self.send_json(201, self.response_release(provider, release))
                     return
                 issue = {
                     "id": api.next_id,
@@ -436,6 +569,22 @@ class FakeLabelApi:
                         issue["state"] = normalize_fake_state(body["state"])
                     self.send_json(200, self.response_issue(provider, repository, issue))
                     return
+                if resource == "releases":
+                    releases = api.releases.setdefault((provider, repository), [])
+                    release = self.find_resource(releases, resource_id, "tag_name")
+                    if release is None:
+                        self.send_json(404, {"message": "not found"})
+                        return
+                    if "tag_name" in body:
+                        release["tag_name"] = str(body["tag_name"])
+                    if "name" in body:
+                        release["name"] = "" if body.get("name") is None else str(body.get("name"))
+                    if "body" in body:
+                        release["body"] = "" if body.get("body") is None else str(body.get("body"))
+                    if "description" in body:
+                        release["body"] = "" if body.get("description") is None else str(body.get("description"))
+                    self.send_json(200, self.response_release(provider, release))
+                    return
                 milestones = api.milestones.setdefault((provider, repository), [])
                 milestone = self.find_resource(milestones, resource_id, "title")
                 if milestone is None:
@@ -459,9 +608,13 @@ class FakeLabelApi:
                 self.send_json(200, self.response_milestone(provider, milestone))
 
             def do_PATCH(self) -> None:
+                if self.update_repository_settings():
+                    return
                 self.update_resource()
 
             def do_PUT(self) -> None:
+                if self.update_repository_settings():
+                    return
                 self.update_resource()
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -493,7 +646,9 @@ def create_source_repo(root: Path) -> Path:
     git(["commit", "-m", "feature"], cwd=work)
     git(["tag", "v1.0.0"], cwd=work)
     git(["checkout", "master"], cwd=work)
+    git(["notes", "add", "-m", "migration proof note"], cwd=work)
     git(["clone", "--bare", str(work), str(bare)])
+    git(["push", str(bare), "refs/notes/commits:refs/notes/commits"], cwd=work)
     return bare
 
 
@@ -542,6 +697,31 @@ def test_mirror_migration() -> None:
             raise AssertionError(f"expected two branches, got {repo['git']['branch_count']}")
         if repo["git"]["tag_count"] != 1:
             raise AssertionError(f"expected one tag, got {repo['git']['tag_count']}")
+        if repo["git"]["note_ref_count"] != 1:
+            raise AssertionError(f"expected one notes ref, got {repo['git']['note_ref_count']}")
+        if not repo["git"]["default_branch_verified"]:
+            raise AssertionError("default branch was not verified")
+        integrity = run(
+            [sys.executable, str(MIGRATION_SCRIPT), "verify-proof", str(proof_path)],
+            cwd=ROOT,
+        )
+        integrity_result = json.loads(integrity.stdout)
+        if not integrity_result["accepted"]:
+            raise AssertionError("migration proof integrity was not accepted")
+
+        tampered_path = root / "tampered-proof.json"
+        tampered = dict(proof)
+        tampered["repositories"] = [dict(proof["repositories"][0])]
+        tampered["repositories"][0]["git"] = dict(proof["repositories"][0]["git"])
+        tampered["repositories"][0]["git"]["branch_count"] = 999
+        write_json(tampered_path, tampered)
+        tampered_result = run(
+            [sys.executable, str(MIGRATION_SCRIPT), "verify-proof", str(tampered_path)],
+            cwd=ROOT,
+            check=False,
+        )
+        if tampered_result.returncode == 0:
+            raise AssertionError("tampered migration proof unexpectedly passed integrity verification")
 
         verify_proof = root / "verify-proof.json"
         run(
@@ -622,6 +802,38 @@ def test_metadata_migration_for_supported_directions() -> None:
                     },
                 ],
             )
+            api.seed_releases(
+                source_provider,
+                source_repository,
+                [
+                    {
+                        "tag_name": "v1.0.0",
+                        "name": "Platform 1.0",
+                        "body": "First production release.",
+                    },
+                    {
+                        "tag_name": "v0.9.0",
+                        "name": "Platform 0.9",
+                        "body": "Migration rehearsal release.",
+                    },
+                ],
+            )
+            api.seed_releases(
+                destination_provider,
+                destination_repository,
+                [
+                    {
+                        "tag_name": "v1.0.0",
+                        "name": "old release name",
+                        "body": "old release body",
+                    },
+                    {
+                        "tag_name": "destination-only",
+                        "name": "Destination only",
+                        "body": "kept as extra",
+                    },
+                ],
+            )
             api.seed_issues(
                 source_provider,
                 source_repository,
@@ -681,7 +893,12 @@ def test_metadata_migration_for_supported_directions() -> None:
                             "api_url": api.url_for(destination_provider),
                             "api_repository": destination_repository,
                         },
-                        "metadata": {"labels": "required", "milestones": "required", "issues": "required"},
+                        "metadata": {
+                            "labels": "required",
+                            "milestones": "required",
+                            "releases": "required",
+                            "issues": "required",
+                        },
                     }
                 ],
             }
@@ -718,6 +935,15 @@ def test_metadata_migration_for_supported_directions() -> None:
                 )
             if milestones["extra"] != ["destination-only"]:
                 raise AssertionError(f"{direction}: expected destination-only milestone to be reported as extra")
+            releases = proof["repositories"][0]["metadata"]["releases"]
+            if not releases["verified"]:
+                raise AssertionError(f"{direction}: release proof did not verify")
+            if releases["created"] != 1 or releases["updated"] != 1:
+                raise AssertionError(
+                    f"{direction}: expected one created and one updated release, got {releases}"
+                )
+            if releases["extra"] != ["destination-only"]:
+                raise AssertionError(f"{direction}: expected destination-only release to be reported as extra")
             issues = proof["repositories"][0]["metadata"]["issues"]
             if not issues["verified"]:
                 raise AssertionError(f"{direction}: issue proof did not verify")
@@ -738,8 +964,129 @@ def test_metadata_migration_for_supported_directions() -> None:
                 raise AssertionError(f"{direction}: verify command did not prove labels")
             if not verified_again["repositories"][0]["metadata"]["milestones"]["verified"]:
                 raise AssertionError(f"{direction}: verify command did not prove milestones")
+            if not verified_again["repositories"][0]["metadata"]["releases"]["verified"]:
+                raise AssertionError(f"{direction}: verify command did not prove releases")
             if not verified_again["repositories"][0]["metadata"]["issues"]["verified"]:
                 raise AssertionError(f"{direction}: verify command did not prove issues")
+
+
+def test_destination_repository_creation_for_supported_directions() -> None:
+    with tempfile.TemporaryDirectory(prefix="forge-migration-create-test-") as temp, FakeLabelApi() as api:
+        root = Path(temp)
+        for direction in ("github-to-forgejo", "gitlab-to-forgejo", "forgejo-to-github", "forgejo-to-gitlab"):
+            source_provider, destination_provider = direction.split("-to-", 1)
+            source = create_source_repo(root / direction)
+            destination = root / direction / "destination.git"
+            git(["init", "--bare", str(destination)])
+            repository_name = f"created-{source_provider}-{destination_provider}"
+            destination_repository = (
+                repository_name
+                if destination_provider == "gitlab"
+                else f"destination-owner/{repository_name}"
+            )
+            plan = {
+                "direction": direction,
+                "repositories": [
+                    {
+                        "name": f"create-{direction}",
+                        "source_url": str(source),
+                        "destination": {
+                            "url": str(destination),
+                            "api_url": api.url_for(destination_provider),
+                            "api_repository": destination_repository,
+                            "create": "required",
+                            "private": True,
+                            "description": "Created by the migration proof test",
+                        },
+                    }
+                ],
+            }
+            plan_path = root / direction / "create-plan.json"
+            proof_path = root / direction / "create-proof.json"
+            write_json(plan_path, plan)
+            run(
+                [
+                    sys.executable,
+                    str(MIGRATION_SCRIPT),
+                    "migrate",
+                    str(plan_path),
+                    "--work-dir",
+                    str(root / direction / "create-work"),
+                    "--proof",
+                    str(proof_path),
+                ],
+                cwd=ROOT,
+            )
+            proof = json.loads(proof_path.read_text(encoding="utf-8"))
+            lifecycle = proof["repositories"][0]["destination_repository"]
+            if lifecycle["status"] != "created" or not lifecycle["verified"]:
+                raise AssertionError(f"{direction}: destination repository creation was not proven: {lifecycle}")
+            if not lifecycle["default_branch_updated"] or not lifecycle["default_branch_verified"]:
+                raise AssertionError(f"{direction}: default branch reconciliation was not proven: {lifecycle}")
+            if (destination_provider, destination_repository) not in api.repositories:
+                raise AssertionError(f"{direction}: fake destination repository was not created")
+
+            verify_path = root / direction / "create-verify-proof.json"
+            run(
+                [sys.executable, str(MIGRATION_SCRIPT), "verify", str(plan_path), "--proof", str(verify_path)],
+                cwd=ROOT,
+            )
+            verify_proof = json.loads(verify_path.read_text(encoding="utf-8"))
+            verified_lifecycle = verify_proof["repositories"][0]["destination_repository"]
+            if verified_lifecycle["status"] != "existing" or not verified_lifecycle["verified"]:
+                raise AssertionError(f"{direction}: destination repository re-verification failed")
+
+
+def test_batch_failure_writes_proof_and_continues() -> None:
+    with tempfile.TemporaryDirectory(prefix="forge-migration-batch-test-") as temp:
+        root = Path(temp)
+        good_source = create_source_repo(root / "good")
+        bad_source = create_source_repo(root / "bad")
+        good_destination = root / "good-destination.git"
+        bad_destination = root / "missing" / "bad-destination.git"
+        git(["init", "--bare", str(good_destination)])
+        plan = {
+            "direction": "github-to-forgejo",
+            "repositories": [
+                {
+                    "name": "good",
+                    "source_url": str(good_source),
+                    "destination_url": str(good_destination),
+                },
+                {
+                    "name": "bad",
+                    "source_url": str(bad_source),
+                    "destination_url": str(bad_destination),
+                },
+            ],
+        }
+        plan_path = root / "batch-plan.json"
+        proof_path = root / "batch-proof.json"
+        write_json(plan_path, plan)
+        result = run(
+            [
+                sys.executable,
+                str(MIGRATION_SCRIPT),
+                "migrate",
+                str(plan_path),
+                "--work-dir",
+                str(root / "work"),
+                "--proof",
+                str(proof_path),
+            ],
+            cwd=ROOT,
+            check=False,
+        )
+        if result.returncode == 0:
+            raise AssertionError("partially failed batch unexpectedly returned success")
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+        if proof["verified"]:
+            raise AssertionError("partially failed batch proof unexpectedly verified")
+        by_name = {repo["name"]: repo for repo in proof["repositories"]}
+        if not by_name["good"]["verified"] or by_name["bad"]["verified"]:
+            raise AssertionError(f"batch proof did not preserve per-repository outcomes: {by_name}")
+        if by_name["bad"].get("status") != "failed" or not by_name["bad"].get("error"):
+            raise AssertionError("failed repository proof is missing compact diagnostics")
 
 
 def test_required_metadata_fails_closed() -> None:
@@ -758,7 +1105,7 @@ def test_required_metadata_fails_closed() -> None:
                         "name": "metadata-required",
                         "source_url": str(source),
                         "destination_url": str(destination),
-                        "metadata": {"pull_requests": "required"},
+                        "metadata": {"release_assets": "required"},
                     }
                 ],
             },
@@ -780,6 +1127,8 @@ def main() -> int:
         return 1
     test_mirror_migration()
     test_metadata_migration_for_supported_directions()
+    test_destination_repository_creation_for_supported_directions()
+    test_batch_failure_writes_proof_and_continues()
     test_required_metadata_fails_closed()
     print("Forge migration helper self-test passed.")
     return 0

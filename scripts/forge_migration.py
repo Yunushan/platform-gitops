@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Mirror and verify Git forge migrations with machine-readable proof.
 
-The first supported migration planes are Git refs, repository labels,
-repository milestones, and portable issues/comments: branches, tags, optional
+The supported migration planes are Git refs, repository labels, milestones,
+portable releases, and portable issues/comments: branches, tags, optional
 wiki/LFS repositories, and provider-common metadata. Other provider metadata
-such as pull requests, merge requests, packages, and releases is intentionally
-modeled in the plan and rejected when marked required until an importer for
-that surface exists. That keeps "verified migration" claims honest.
+such as pull requests, merge requests, packages, and release assets is
+intentionally modeled in the plan and rejected when marked required until an
+importer for that surface exists. That keeps "verified migration" claims
+honest.
 """
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -40,11 +42,11 @@ OPTIONAL_DIRECTIONS = {
     "gitlab-to-github",
 }
 SUPPORTED_METADATA_STATES = {"skip", "skipped", "false", "none", "not-required"}
-SUPPORTED_METADATA_SURFACES = {"labels", "milestones", "issues"}
+SUPPORTED_METADATA_SURFACES = {"labels", "milestones", "releases", "issues"}
 UNSUPPORTED_METADATA_SURFACES = {
     "pull_requests",
     "merge_requests",
-    "releases",
+    "release_assets",
     "packages",
     "project_boards",
     "wikis_metadata",
@@ -75,6 +77,10 @@ class RepoPlan:
     destination_api_repository: str | None
     source_token_env: str | None
     destination_token_env: str | None
+    destination_create: str
+    destination_private: bool
+    destination_description: str
+    destination_namespace_id: str | None
     wiki: str
     lfs: str
     metadata: dict[str, Any]
@@ -98,11 +104,18 @@ def run_command(args: list[str], cwd: Path | None = None, check: bool = True) ->
         check=False,
     )
     if check and result.returncode != 0:
-        command = " ".join(args)
+        command = " ".join(redact_url(arg) for arg in args)
+        stdout = result.stdout
+        stderr = result.stderr
+        for arg in args:
+            redacted = redact_url(arg)
+            if redacted != arg:
+                stdout = stdout.replace(arg, redacted)
+                stderr = stderr.replace(arg, redacted)
         raise MigrationError(
             f"command failed rc={result.returncode}: {command}\n"
-            f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}"
         )
     return result
 
@@ -205,11 +218,27 @@ def normalize_bool_mode(value: Any, default: str = "false") -> str:
     raise MigrationError(f"unsupported mode {value!r}; use true, false, required, or auto")
 
 
+def normalize_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "yes", "true", "on"}:
+        return True
+    if normalized in {"0", "no", "false", "off"}:
+        return False
+    raise MigrationError(f"unsupported boolean value {value!r}")
+
+
 def load_plan(path: Path) -> dict[str, Any]:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise MigrationError(f"{path}: invalid JSON: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise MigrationError(f"{path}: JSON root must be an object")
+    return loaded
 
 
 def get_url(raw: dict[str, Any], flat_key: str, nested_key: str) -> str:
@@ -247,6 +276,11 @@ def parse_repo(raw: dict[str, Any], index: int, direction: str) -> RepoPlan:
     destination_provider = (
         flat_or_nested(raw, "destination_provider", "destination", "provider") or direction_destination_provider
     ).lower()
+    if source_provider != direction_source_provider or destination_provider != direction_destination_provider:
+        raise MigrationError(
+            f"repositories[{index}] provider pair {source_provider}-to-{destination_provider} "
+            f"does not match plan direction {direction}"
+        )
     source_api_url = (
         flat_or_nested(raw, "source_api_url", "source", "api_url")
         or infer_api_url(source_url, source_provider)
@@ -271,6 +305,34 @@ def parse_repo(raw: dict[str, Any], index: int, direction: str) -> RepoPlan:
     )
     source_token_env = flat_or_nested(raw, "source_token_env", "source", "token_env") or None
     destination_token_env = flat_or_nested(raw, "destination_token_env", "destination", "token_env") or None
+    destination_config = raw.get("destination") if isinstance(raw.get("destination"), dict) else {}
+    destination_create_value = (
+        raw["destination_create"]
+        if "destination_create" in raw
+        else destination_config.get("create")
+    )
+    destination_private_value = (
+        raw["destination_private"]
+        if "destination_private" in raw
+        else destination_config.get("private")
+    )
+    destination_create = normalize_bool_mode(
+        destination_create_value,
+        default="false",
+    )
+    destination_private = normalize_bool(
+        destination_private_value,
+        default=True,
+    )
+    destination_description = flat_or_nested(
+        raw,
+        "destination_description",
+        "destination",
+        "description",
+    )
+    destination_namespace_id = (
+        flat_or_nested(raw, "destination_namespace_id", "destination", "namespace_id") or None
+    )
     return RepoPlan(
         name=name,
         source_url=source_url,
@@ -285,6 +347,10 @@ def parse_repo(raw: dict[str, Any], index: int, direction: str) -> RepoPlan:
         destination_api_repository=destination_api_repository,
         source_token_env=source_token_env,
         destination_token_env=destination_token_env,
+        destination_create=destination_create,
+        destination_private=destination_private,
+        destination_description=destination_description,
+        destination_namespace_id=destination_namespace_id,
         wiki=wiki,
         lfs=lfs,
         metadata=metadata,
@@ -301,7 +367,23 @@ def parse_plan(data: dict[str, Any]) -> tuple[str, list[RepoPlan]]:
     repositories = data.get("repositories")
     if not isinstance(repositories, list) or not repositories:
         raise MigrationError("plan.repositories must be a non-empty list")
-    parsed = [parse_repo(repo, index, direction) for index, repo in enumerate(repositories)]
+    parsed: list[RepoPlan] = []
+    for index, raw_repo in enumerate(repositories):
+        if not isinstance(raw_repo, dict):
+            raise MigrationError(f"repositories[{index}] must be an object")
+        parsed.append(parse_repo(raw_repo, index, direction))
+    names = [repo.name.casefold() for repo in parsed]
+    if len(names) != len(set(names)):
+        raise MigrationError("repository names must be unique within a migration plan")
+    work_names = [safe_name(repo.name).casefold() for repo in parsed]
+    if len(work_names) != len(set(work_names)):
+        raise MigrationError("repository names must map to unique migration work directories")
+    destinations = [repo.destination_url.casefold() for repo in parsed]
+    if len(destinations) != len(set(destinations)):
+        raise MigrationError("destination URLs must be unique within a migration plan")
+    for repo in parsed:
+        if repo.source_url.casefold() == repo.destination_url.casefold():
+            raise MigrationError(f"{repo.name}: source and destination URLs must be different")
     return direction, parsed
 
 
@@ -394,6 +476,7 @@ def validate_metadata_requirements(repo: RepoPlan) -> dict[str, Any]:
     return {
         "labels": planned_surface("labels"),
         "milestones": planned_surface("milestones"),
+        "releases": planned_surface("releases"),
         "issues": planned_surface("issues"),
         "verified": True,
     }
@@ -424,6 +507,7 @@ def api_request(
     body: dict[str, Any] | None = None,
     query: dict[str, Any] | None = None,
     expected: tuple[int, ...] = (200,),
+    return_status: bool = False,
 ) -> Any:
     url = f"{target.api_url}/{path.lstrip('/')}"
     if query:
@@ -437,7 +521,13 @@ def api_request(
     except HTTPError as exc:
         payload = exc.read().decode("utf-8", errors="replace")
         if exc.code in expected:
-            return json.loads(payload) if payload else {}
+            try:
+                decoded = json.loads(payload) if payload else {}
+            except json.JSONDecodeError as decode_error:
+                raise MigrationError(
+                    f"{method} {redact_url(url)} returned invalid JSON: {decode_error}"
+                ) from decode_error
+            return (exc.code, decoded) if return_status else decoded
         raise MigrationError(
             f"{method} {redact_url(url)} failed with HTTP {exc.code}: {payload[:500]}"
         ) from exc
@@ -446,11 +536,13 @@ def api_request(
     if status not in expected:
         raise MigrationError(f"{method} {redact_url(url)} returned HTTP {status}: {payload[:500]}")
     if not payload:
-        return {}
+        decoded = {}
+        return (status, decoded) if return_status else decoded
     try:
-        return json.loads(payload)
+        decoded = json.loads(payload)
     except json.JSONDecodeError as exc:
         raise MigrationError(f"{method} {redact_url(url)} returned invalid JSON: {exc}") from exc
+    return (status, decoded) if return_status else decoded
 
 
 def repo_api_base(target: ApiTarget) -> str:
@@ -465,6 +557,213 @@ def repo_api_base(target: ApiTarget) -> str:
     if target.provider == "gitlab":
         return f"projects/{quote(target.repository.strip('/'), safe='')}"
     raise MigrationError(f"unsupported provider: {target.provider}")
+
+
+def destination_repository_plan(repo: RepoPlan) -> dict[str, Any]:
+    mode = repo.destination_create
+    if mode == "false":
+        return {"mode": mode, "status": "not-managed", "verified": True}
+    destination = api_target(repo, "destination")
+    return {
+        "mode": mode,
+        "status": "planned",
+        "provider": destination.provider,
+        "api_url": redact_url(destination.api_url),
+        "repository": destination.repository,
+        "private": repo.destination_private,
+        "verified": True,
+    }
+
+
+def repository_probe(target: ApiTarget) -> tuple[int, dict[str, Any]]:
+    response = api_request(
+        target,
+        "GET",
+        repo_api_base(target),
+        expected=(200, 404),
+        return_status=True,
+    )
+    if not isinstance(response, tuple) or len(response) != 2:
+        raise MigrationError(f"{target.provider} repository probe did not return an HTTP status")
+    status, payload = response
+    if not isinstance(payload, dict):
+        raise MigrationError(f"{target.provider} repository probe returned a non-object response")
+    return int(status), payload
+
+
+def authenticated_login(target: ApiTarget) -> str:
+    payload = api_request(target, "GET", "user", expected=(200,))
+    if not isinstance(payload, dict):
+        raise MigrationError(f"{target.provider} current-user API returned a non-object response")
+    login = str(payload.get("login") or payload.get("username") or "").strip()
+    if not login:
+        raise MigrationError(f"{target.provider} current-user API response is missing login/username")
+    return login
+
+
+def gitlab_namespace_id(target: ApiTarget, namespace_path: str) -> str:
+    for page in range(1, 101):
+        payload = api_request(
+            target,
+            "GET",
+            "namespaces",
+            query={"search": namespace_path, "per_page": 100, "page": page},
+            expected=(200,),
+        )
+        if not isinstance(payload, list):
+            raise MigrationError("gitlab namespaces API returned a non-list response")
+        for namespace in payload:
+            if not isinstance(namespace, dict):
+                continue
+            candidates = {
+                str(namespace.get("full_path") or "").strip().casefold(),
+                str(namespace.get("path") or "").strip().casefold(),
+            }
+            if namespace_path.casefold() in candidates and namespace.get("id") is not None:
+                return str(namespace["id"])
+        if len(payload) < 100:
+            break
+    raise MigrationError(
+        f"gitlab destination namespace {namespace_path!r} was not found; "
+        "set destination.namespace_id explicitly when the token cannot list namespaces"
+    )
+
+
+def create_destination_repository(repo: RepoPlan, target: ApiTarget) -> dict[str, Any]:
+    parts = [part for part in target.repository.strip("/").split("/") if part]
+    if not parts:
+        raise MigrationError(f"{repo.name}: destination.api_repository is empty")
+    repository_name = parts[-1]
+    if target.provider == "gitlab":
+        payload: dict[str, Any] = {
+            "name": repository_name,
+            "path": repository_name,
+            "description": repo.destination_description,
+            "visibility": "private" if repo.destination_private else "public",
+            "initialize_with_readme": False,
+        }
+        namespace_path = "/".join(parts[:-1])
+        namespace_id = repo.destination_namespace_id
+        if namespace_path and not namespace_id:
+            namespace_id = gitlab_namespace_id(target, namespace_path)
+        if namespace_id:
+            payload["namespace_id"] = namespace_id
+        created = api_request(target, "POST", "projects", body=payload, expected=(201,))
+    else:
+        if len(parts) != 2:
+            raise MigrationError(
+                f"{target.provider} destination creation requires api_repository as owner/repo, "
+                f"got {target.repository!r}"
+            )
+        owner, repository_name = parts
+        login = authenticated_login(target)
+        create_path = "user/repos" if owner.casefold() == login.casefold() else (
+            f"orgs/{quote(owner, safe='')}/repos"
+        )
+        created = api_request(
+            target,
+            "POST",
+            create_path,
+            body={
+                "name": repository_name,
+                "description": repo.destination_description,
+                "private": repo.destination_private,
+                "auto_init": False,
+            },
+            expected=(201,),
+        )
+    if not isinstance(created, dict):
+        raise MigrationError(f"{target.provider} repository create API returned a non-object response")
+    return created
+
+
+def ensure_destination_repository(repo: RepoPlan) -> dict[str, Any]:
+    mode = repo.destination_create
+    if mode == "false":
+        return {"mode": mode, "status": "not-managed", "verified": True}
+    target = api_target(repo, "destination")
+    status, _payload = repository_probe(target)
+    created = False
+    if status == 404:
+        create_destination_repository(repo, target)
+        created = True
+        status, _payload = repository_probe(target)
+    verified = status == 200
+    if not verified and mode == "required":
+        raise MigrationError(
+            f"{repo.name}: destination repository {target.repository!r} was not available after creation"
+        )
+    return {
+        "mode": mode,
+        "status": "created" if created else "existing",
+        "provider": target.provider,
+        "repository": target.repository,
+        "private": repo.destination_private,
+        "verified": verified,
+    }
+
+
+def verify_destination_repository(repo: RepoPlan) -> dict[str, Any]:
+    mode = repo.destination_create
+    if mode == "false":
+        return {"mode": mode, "status": "not-managed", "verified": True}
+    target = api_target(repo, "destination")
+    status, _payload = repository_probe(target)
+    return {
+        "mode": mode,
+        "status": "existing" if status == 200 else "missing",
+        "provider": target.provider,
+        "repository": target.repository,
+        "private": repo.destination_private,
+        "verified": status == 200,
+    }
+
+
+def reconcile_destination_default_branch(
+    repo: RepoPlan,
+    lifecycle: dict[str, Any],
+) -> dict[str, Any]:
+    if repo.destination_create == "false":
+        return lifecycle
+    source_default_ref, source_error = ls_remote_default_branch(repo.source_url)
+    if source_error:
+        raise MigrationError(
+            f"{repo.name}: cannot read source default branch: {source_error}"
+        )
+    if source_default_ref is None:
+        return {**lifecycle, "default_branch": None, "default_branch_verified": True}
+    source_default_branch = source_default_ref.removeprefix("refs/heads/")
+    target = api_target(repo, "destination")
+    status, payload = repository_probe(target)
+    if status != 200:
+        raise MigrationError(f"{repo.name}: destination repository disappeared before default-branch update")
+    current_default_branch = str(payload.get("default_branch") or "").strip()
+    updated = False
+    if current_default_branch != source_default_branch:
+        method = "PUT" if target.provider == "gitlab" else "PATCH"
+        api_request(
+            target,
+            method,
+            repo_api_base(target),
+            body={"default_branch": source_default_branch},
+            expected=(200,),
+        )
+        updated = True
+        status, payload = repository_probe(target)
+        current_default_branch = str(payload.get("default_branch") or "").strip()
+    verified = status == 200 and current_default_branch == source_default_branch
+    if not verified and repo.destination_create == "required":
+        raise MigrationError(
+            f"{repo.name}: destination default branch is {current_default_branch!r}, "
+            f"expected {source_default_branch!r}"
+        )
+    return {
+        **lifecycle,
+        "default_branch": source_default_branch,
+        "default_branch_updated": updated,
+        "default_branch_verified": verified,
+        "verified": lifecycle.get("verified", False) and verified,
+    }
 
 
 def list_labels(target: ApiTarget) -> list[dict[str, Any]]:
@@ -874,6 +1173,191 @@ def verify_milestones(repo: RepoPlan) -> dict[str, Any]:
     comparison = compare_milestone_sets(
         normalized_milestones(list_milestones(source)),
         normalized_milestones(list_milestones(destination)),
+    )
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        **comparison,
+    }
+
+
+def list_releases(target: ApiTarget) -> list[dict[str, Any]]:
+    releases: list[dict[str, Any]] = []
+    base = repo_api_base(target)
+    for page in range(1, 1001):
+        payload = api_request(
+            target,
+            "GET",
+            f"{base}/releases",
+            query={"per_page": 100, "page": page},
+            expected=(200,),
+        )
+        if not isinstance(payload, list):
+            raise MigrationError(f"{target.provider} releases API returned a non-list response")
+        releases.extend(payload)
+        if len(payload) < 100:
+            break
+    return releases
+
+
+def normalize_release(release: dict[str, Any]) -> dict[str, str]:
+    tag_name = str(release.get("tag_name") or "").strip()
+    if not tag_name:
+        raise MigrationError("release is missing a tag_name")
+    name = release.get("name")
+    if name is None:
+        name = release.get("title")
+    body = release.get("body")
+    if body is None:
+        body = release.get("description")
+    return {
+        "tag_name": tag_name,
+        "name": str(name or tag_name),
+        "body": "" if body is None else str(body),
+    }
+
+
+def normalized_releases(releases: list[dict[str, Any]]) -> list[dict[str, str]]:
+    normalized = [normalize_release(release) for release in releases]
+    return sorted(normalized, key=lambda item: item["tag_name"].casefold())
+
+
+def release_digest(releases: list[dict[str, str]]) -> str:
+    payload = json.dumps(releases, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def provider_release_payload(target: ApiTarget, release: dict[str, str], create: bool) -> dict[str, Any]:
+    if target.provider == "gitlab":
+        payload: dict[str, Any] = {
+            "name": release["name"],
+            "description": release["body"],
+        }
+        if create:
+            payload["tag_name"] = release["tag_name"]
+        return payload
+    return {
+        "tag_name": release["tag_name"],
+        "name": release["name"],
+        "body": release["body"],
+        "draft": False,
+        "prerelease": False,
+    }
+
+
+def release_update_path(target: ApiTarget, existing_release: dict[str, Any], release: dict[str, str]) -> str:
+    base = repo_api_base(target)
+    if target.provider == "gitlab":
+        release_id = release["tag_name"]
+    else:
+        release_id = existing_release.get("id")
+        if release_id is None:
+            raise MigrationError(
+                f"{target.provider} release {release['tag_name']!r} is missing its API id"
+            )
+    return f"{base}/releases/{quote(str(release_id), safe='')}"
+
+
+def create_release(target: ApiTarget, release: dict[str, str]) -> dict[str, Any]:
+    created = api_request(
+        target,
+        "POST",
+        f"{repo_api_base(target)}/releases",
+        body=provider_release_payload(target, release, create=True),
+        expected=(200, 201),
+    )
+    if not isinstance(created, dict):
+        raise MigrationError(f"{target.provider} release create API returned a non-object response")
+    return created
+
+
+def update_release(target: ApiTarget, existing_release: dict[str, Any], release: dict[str, str]) -> None:
+    method = "PUT" if target.provider == "gitlab" else "PATCH"
+    api_request(
+        target,
+        method,
+        release_update_path(target, existing_release, release),
+        body=provider_release_payload(target, release, create=False),
+        expected=(200,),
+    )
+
+
+def compare_release_sets(
+    source_releases: list[dict[str, str]],
+    destination_releases: list[dict[str, str]],
+) -> dict[str, Any]:
+    source_by_tag = {release["tag_name"]: release for release in source_releases}
+    destination_by_tag = {release["tag_name"]: release for release in destination_releases}
+    missing = sorted(set(source_by_tag) - set(destination_by_tag), key=str.casefold)
+    mismatched = sorted(
+        tag_name
+        for tag_name in set(source_by_tag) & set(destination_by_tag)
+        if source_by_tag[tag_name] != destination_by_tag[tag_name]
+    )
+    extra = sorted(set(destination_by_tag) - set(source_by_tag), key=str.casefold)
+    replicated_destination_releases = sorted(
+        (destination_by_tag[tag_name] for tag_name in source_by_tag if tag_name in destination_by_tag),
+        key=lambda item: item["tag_name"].casefold(),
+    )
+    return {
+        "verified": not missing and not mismatched,
+        "source_count": len(source_releases),
+        "destination_count": len(destination_releases),
+        "source_digest": release_digest(source_releases),
+        "destination_digest": release_digest(replicated_destination_releases),
+        "missing": missing,
+        "mismatched": mismatched,
+        "extra": extra,
+    }
+
+
+def migrate_releases(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "releases")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    source = api_target(repo, "source")
+    destination = api_target(repo, "destination")
+    source_releases = normalized_releases(list_releases(source))
+    destination_before_raw = list_releases(destination)
+    destination_before = normalized_releases(destination_before_raw)
+    raw_by_tag = {
+        normalize_release(release)["tag_name"]: release for release in destination_before_raw
+    }
+    destination_by_tag = {release["tag_name"]: release for release in destination_before}
+    created = 0
+    updated = 0
+    for release in source_releases:
+        existing = destination_by_tag.get(release["tag_name"])
+        if existing is None:
+            create_release(destination, release)
+            created += 1
+        elif existing != release:
+            update_release(destination, raw_by_tag[release["tag_name"]], release)
+            updated += 1
+    destination_after = normalized_releases(list_releases(destination))
+    comparison = compare_release_sets(source_releases, destination_after)
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        "created": created,
+        "updated": updated,
+        **comparison,
+    }
+
+
+def verify_releases(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "releases")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    source = api_target(repo, "source")
+    destination = api_target(repo, "destination")
+    comparison = compare_release_sets(
+        normalized_releases(list_releases(source)),
+        normalized_releases(list_releases(destination)),
     )
     return {
         "mode": mode,
@@ -1323,13 +1807,16 @@ def verify_issues(repo: RepoPlan) -> dict[str, Any]:
 def migrate_metadata(repo: RepoPlan) -> dict[str, Any]:
     labels = migrate_labels(repo)
     milestones = migrate_milestones(repo)
+    releases = migrate_releases(repo)
     issues = migrate_issues(repo)
     return {
         "labels": labels,
         "milestones": milestones,
+        "releases": releases,
         "issues": issues,
         "verified": labels.get("verified", False)
         and milestones.get("verified", False)
+        and releases.get("verified", False)
         and issues.get("verified", False),
     }
 
@@ -1337,21 +1824,35 @@ def migrate_metadata(repo: RepoPlan) -> dict[str, Any]:
 def verify_metadata(repo: RepoPlan) -> dict[str, Any]:
     labels = verify_labels(repo)
     milestones = verify_milestones(repo)
+    releases = verify_releases(repo)
     issues = verify_issues(repo)
     return {
         "labels": labels,
         "milestones": milestones,
+        "releases": releases,
         "issues": issues,
         "verified": labels.get("verified", False)
         and milestones.get("verified", False)
+        and releases.get("verified", False)
         and issues.get("verified", False),
     }
 
 
 def ls_remote_refs(url: str) -> tuple[dict[str, str], str | None]:
-    result = git(["ls-remote", "--refs", "--heads", "--tags", url], check=False)
+    result = git(
+        [
+            "ls-remote",
+            "--refs",
+            url,
+            "refs/heads/*",
+            "refs/tags/*",
+            "refs/notes/*",
+        ],
+        check=False,
+    )
     if result.returncode != 0:
-        return {}, result.stderr.strip() or result.stdout.strip() or f"git ls-remote failed for {redact_url(url)}"
+        error = result.stderr.strip() or result.stdout.strip() or f"git ls-remote failed for {redact_url(url)}"
+        return {}, error.replace(url, redact_url(url))
     refs: dict[str, str] = {}
     for line in result.stdout.splitlines():
         parts = line.split()
@@ -1359,6 +1860,20 @@ def ls_remote_refs(url: str) -> tuple[dict[str, str], str | None]:
             sha, ref = parts
             refs[ref] = sha
     return refs, None
+
+
+def ls_remote_default_branch(url: str) -> tuple[str | None, str | None]:
+    result = git(["ls-remote", "--symref", url, "HEAD"], check=False)
+    if result.returncode != 0:
+        error = result.stderr.strip() or result.stdout.strip() or (
+            f"git ls-remote --symref failed for {redact_url(url)}"
+        )
+        return None, error.replace(url, redact_url(url))
+    for line in result.stdout.splitlines():
+        match = re.match(r"^ref:\s+(refs/heads/\S+)\s+HEAD$", line.strip())
+        if match:
+            return match.group(1), None
+    return None, None
 
 
 def compare_refs(source_url: str, destination_url: str) -> dict[str, Any]:
@@ -1373,14 +1888,41 @@ def compare_refs(source_url: str, destination_url: str) -> dict[str, Any]:
     mismatched = sorted(
         ref for ref in set(source_refs) & set(destination_refs) if source_refs[ref] != destination_refs[ref]
     )
+    source_default_branch, source_default_error = ls_remote_default_branch(source_url)
+    if source_default_error:
+        raise MigrationError(
+            f"cannot read source default branch {redact_url(source_url)}: {source_default_error}"
+        )
+    destination_default_branch, destination_default_error = ls_remote_default_branch(destination_url)
+    if destination_default_error:
+        raise MigrationError(
+            f"cannot read destination default branch {redact_url(destination_url)}: "
+            f"{destination_default_error}"
+        )
+    default_branch_verified = (
+        source_default_branch is None or source_default_branch == destination_default_branch
+    )
     branches = [ref for ref in source_refs if ref.startswith("refs/heads/")]
     tags = [ref for ref in source_refs if ref.startswith("refs/tags/")]
+    notes = [ref for ref in source_refs if ref.startswith("refs/notes/")]
+    source_ref_digest = hashlib.sha256(
+        json.dumps(source_refs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    destination_ref_digest = hashlib.sha256(
+        json.dumps(destination_refs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     return {
-        "verified": not missing and not extra and not mismatched,
+        "verified": not missing and not extra and not mismatched and default_branch_verified,
         "source_ref_count": len(source_refs),
         "destination_ref_count": len(destination_refs),
         "branch_count": len(branches),
         "tag_count": len(tags),
+        "note_ref_count": len(notes),
+        "source_ref_digest": source_ref_digest,
+        "destination_ref_digest": destination_ref_digest,
+        "source_default_branch": source_default_branch,
+        "destination_default_branch": destination_default_branch,
+        "default_branch_verified": default_branch_verified,
         "missing_refs": missing,
         "extra_refs": extra,
         "mismatched_refs": mismatched,
@@ -1403,31 +1945,118 @@ def prepare_mirror(repo: RepoPlan, work_dir: Path) -> Path:
 
 
 def push_mirror(mirror: Path, destination_url: str) -> None:
-    git(["push", "--mirror", destination_url], cwd=mirror)
+    git(
+        [
+            "push",
+            "--prune",
+            destination_url,
+            "+refs/heads/*:refs/heads/*",
+            "+refs/tags/*:refs/tags/*",
+            "+refs/notes/*:refs/notes/*",
+        ],
+        cwd=mirror,
+    )
 
 
 def migrate_lfs(repo: RepoPlan, mirror: Path) -> dict[str, Any]:
     if repo.lfs == "false":
-        return {"mode": "false", "status": "skipped"}
+        return {"mode": "false", "transfer_status": "skipped"}
     if not command_exists("git-lfs"):
         if repo.lfs == "required":
             raise MigrationError(f"{repo.name}: git-lfs is required but not installed")
-        return {"mode": repo.lfs, "status": "skipped-no-git-lfs"}
+        return {"mode": repo.lfs, "transfer_status": "skipped-no-git-lfs"}
     git(["lfs", "fetch", "--all"], cwd=mirror)
     git(["lfs", "push", "--all", repo.destination_url], cwd=mirror)
-    return {"mode": repo.lfs, "status": "pushed"}
+    return {"mode": repo.lfs, "transfer_status": "pushed"}
+
+
+def lfs_object_ids(mirror: Path) -> list[str]:
+    result = git(["lfs", "ls-files", "--all", "--long"], cwd=mirror)
+    object_ids: set[str] = set()
+    for line in result.stdout.splitlines():
+        match = re.match(r"^([0-9a-fA-F]{64})\b", line.strip())
+        if match:
+            object_ids.add(match.group(1).lower())
+    return sorted(object_ids)
+
+
+def lfs_object_digest(object_ids: list[str]) -> str:
+    payload = json.dumps(object_ids, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def clone_mirror_for_verification(url: str, path: Path, work_dir: Path) -> Path:
+    if path.exists():
+        resolved_work = work_dir.resolve()
+        resolved_path = path.resolve()
+        if resolved_work not in (resolved_path, *resolved_path.parents):
+            raise MigrationError(f"refusing to remove verification mirror outside work dir: {path}")
+        shutil.rmtree(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    git(["clone", "--mirror", url, str(path)])
+    return path
+
+
+def verify_lfs(
+    repo: RepoPlan,
+    work_dir: Path,
+    source_mirror: Path | None = None,
+) -> dict[str, Any]:
+    if repo.lfs == "false":
+        return {"mode": "false", "status": "skipped", "verified": True}
+    if not command_exists("git-lfs"):
+        if repo.lfs == "required":
+            raise MigrationError(f"{repo.name}: git-lfs is required but not installed")
+        return {
+            "mode": repo.lfs,
+            "status": "skipped-no-git-lfs",
+            "verified": True,
+            "accepted_skip": True,
+        }
+    verification_root = work_dir / safe_name(repo.name) / "lfs-verification"
+    if source_mirror is None:
+        source_mirror = clone_mirror_for_verification(
+            repo.source_url,
+            verification_root / "source.git",
+            work_dir,
+        )
+    destination_mirror = clone_mirror_for_verification(
+        repo.destination_url,
+        verification_root / "destination.git",
+        work_dir,
+    )
+    git(["lfs", "fetch", "--all"], cwd=source_mirror)
+    git(["lfs", "fsck"], cwd=source_mirror)
+    git(["lfs", "fetch", "--all"], cwd=destination_mirror)
+    git(["lfs", "fsck"], cwd=destination_mirror)
+    source_objects = lfs_object_ids(source_mirror)
+    destination_objects = lfs_object_ids(destination_mirror)
+    missing = sorted(set(source_objects) - set(destination_objects))
+    extra = sorted(set(destination_objects) - set(source_objects))
+    verified = not missing and not extra
+    return {
+        "mode": repo.lfs,
+        "status": "verified" if verified else "failed",
+        "source_object_count": len(source_objects),
+        "destination_object_count": len(destination_objects),
+        "source_object_digest": lfs_object_digest(source_objects),
+        "destination_object_digest": lfs_object_digest(destination_objects),
+        "missing_object_ids": missing,
+        "extra_object_ids": extra,
+        "verified": verified,
+    }
 
 
 def migrate_wiki(repo: RepoPlan, work_dir: Path) -> dict[str, Any]:
     if repo.wiki == "false":
-        return {"mode": "false", "status": "skipped"}
+        return {"mode": "false", "status": "skipped", "verified": True}
     source_wiki = repo.source_wiki_url or derive_wiki_url(repo.source_url)
     destination_wiki = repo.destination_wiki_url or derive_wiki_url(repo.destination_url)
     refs, error = ls_remote_refs(source_wiki)
     if error or not refs:
         if repo.wiki == "required":
             raise MigrationError(f"{repo.name}: required wiki source is not readable: {error or 'no refs'}")
-        return {"mode": repo.wiki, "status": "skipped-no-source-wiki"}
+        return {"mode": repo.wiki, "status": "skipped-no-source-wiki", "verified": True}
 
     wiki_repo = RepoPlan(
         name=f"{repo.name}-wiki",
@@ -1443,6 +2072,10 @@ def migrate_wiki(repo: RepoPlan, work_dir: Path) -> dict[str, Any]:
         destination_api_repository=None,
         source_token_env=None,
         destination_token_env=None,
+        destination_create="false",
+        destination_private=True,
+        destination_description="",
+        destination_namespace_id=None,
         wiki="false",
         lfs="false",
         metadata={},
@@ -1455,49 +2088,87 @@ def migrate_wiki(repo: RepoPlan, work_dir: Path) -> dict[str, Any]:
     return {"mode": repo.wiki, "status": "verified", "source_url": redact_url(source_wiki), **verification}
 
 
+def verify_wiki(repo: RepoPlan) -> dict[str, Any]:
+    if repo.wiki == "false":
+        return {"mode": "false", "status": "skipped", "verified": True}
+    source_wiki = repo.source_wiki_url or derive_wiki_url(repo.source_url)
+    destination_wiki = repo.destination_wiki_url or derive_wiki_url(repo.destination_url)
+    refs, error = ls_remote_refs(source_wiki)
+    if error or not refs:
+        if repo.wiki == "required":
+            raise MigrationError(f"{repo.name}: required wiki source is not readable: {error or 'no refs'}")
+        return {"mode": repo.wiki, "status": "skipped-no-source-wiki", "verified": True}
+    verification = compare_refs(source_wiki, destination_wiki)
+    return {
+        "mode": repo.wiki,
+        "status": "verified" if verification["verified"] else "failed",
+        "source_url": redact_url(source_wiki),
+        "destination_url": redact_url(destination_wiki),
+        **verification,
+    }
+
+
 def verify_repo(repo: RepoPlan) -> dict[str, Any]:
     require_supported_metadata(repo)
+    destination_repository = verify_destination_repository(repo)
     verification = compare_refs(repo.source_url, repo.destination_url)
+    wiki = verify_wiki(repo)
+    with tempfile.TemporaryDirectory(prefix="forge-migration-lfs-verify-") as temp:
+        lfs = verify_lfs(repo, Path(temp))
     metadata = verify_metadata(repo)
     return {
         "name": repo.name,
         "source_url": redact_url(repo.source_url),
         "destination_url": redact_url(repo.destination_url),
+        "destination_repository": destination_repository,
         "git": verification,
-        "wiki": {"mode": repo.wiki, "status": "not-verified-by-verify-command"},
-        "lfs": {"mode": repo.lfs, "status": "not-verified-by-verify-command"},
+        "wiki": wiki,
+        "lfs": lfs,
         "metadata": metadata,
-        "verified": verification["verified"] and metadata["verified"],
+        "verified": destination_repository["verified"]
+        and verification["verified"]
+        and wiki["verified"]
+        and lfs["verified"]
+        and metadata["verified"],
     }
 
 
 def migrate_repo(repo: RepoPlan, work_dir: Path) -> dict[str, Any]:
     require_supported_metadata(repo)
+    destination_repository = ensure_destination_repository(repo)
     mirror = prepare_mirror(repo, work_dir)
-    lfs_result = migrate_lfs(repo, mirror)
+    lfs_transfer = migrate_lfs(repo, mirror)
     push_mirror(mirror, repo.destination_url)
+    destination_repository = reconcile_destination_default_branch(repo, destination_repository)
     verification = compare_refs(repo.source_url, repo.destination_url)
     if not verification["verified"]:
         raise MigrationError(f"{repo.name}: repository refs did not verify after push")
+    lfs_result = {**lfs_transfer, **verify_lfs(repo, work_dir, source_mirror=mirror)}
     wiki_result = migrate_wiki(repo, work_dir)
     metadata = migrate_metadata(repo)
     return {
         "name": repo.name,
         "source_url": redact_url(repo.source_url),
         "destination_url": redact_url(repo.destination_url),
+        "destination_repository": destination_repository,
         "git": verification,
         "wiki": wiki_result,
         "lfs": lfs_result,
         "metadata": metadata,
-        "verified": verification["verified"] and wiki_result.get("status") != "failed" and metadata["verified"],
+        "verified": destination_repository["verified"]
+        and verification["verified"]
+        and wiki_result["verified"]
+        and lfs_result["verified"]
+        and metadata["verified"],
     }
 
 
 def build_proof(direction: str, command: str, repositories: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "tool": "scripts/forge_migration.py",
         "command": command,
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "direction": direction,
         "supported_directions": sorted(SUPPORTED_DIRECTIONS),
         "repositories": repositories,
@@ -1505,7 +2176,32 @@ def build_proof(direction: str, command: str, repositories: list[dict[str, Any]]
     }
 
 
+def failed_repository_result(repo: RepoPlan, error: MigrationError) -> dict[str, Any]:
+    message = str(error)
+    for url in (repo.source_url, repo.destination_url):
+        message = message.replace(url, redact_url(url))
+    for token_env in (repo.source_token_env, repo.destination_token_env):
+        token = os.environ.get(token_env, "") if token_env else ""
+        if token:
+            message = message.replace(token, "<redacted>")
+    return {
+        "name": repo.name,
+        "source_url": redact_url(repo.source_url),
+        "destination_url": redact_url(repo.destination_url),
+        "status": "failed",
+        "error": message,
+        "verified": False,
+    }
+
+
+def proof_digest(proof: dict[str, Any]) -> str:
+    digest_payload = {key: value for key, value in proof.items() if key != "proof_sha256"}
+    canonical = json.dumps(digest_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def write_proof(path: Path | None, proof: dict[str, Any]) -> None:
+    proof["proof_sha256"] = proof_digest(proof)
     text = json.dumps(proof, indent=2, sort_keys=True) + "\n"
     if path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1518,6 +2214,7 @@ def command_validate_plan(args: argparse.Namespace) -> int:
     direction, repos = parse_plan(load_plan(args.plan))
     for repo in repos:
         validate_metadata_requirements(repo)
+        destination_repository_plan(repo)
     proof = build_proof(
         direction,
         "validate-plan",
@@ -1526,6 +2223,7 @@ def command_validate_plan(args: argparse.Namespace) -> int:
                 "name": repo.name,
                 "source_url": redact_url(repo.source_url),
                 "destination_url": redact_url(repo.destination_url),
+                "destination_repository": destination_repository_plan(repo),
                 "wiki": repo.wiki,
                 "lfs": repo.lfs,
                 "metadata": validate_metadata_requirements(repo),
@@ -1540,7 +2238,12 @@ def command_validate_plan(args: argparse.Namespace) -> int:
 
 def command_verify(args: argparse.Namespace) -> int:
     direction, repos = parse_plan(load_plan(args.plan))
-    results = [verify_repo(repo) for repo in repos]
+    results: list[dict[str, Any]] = []
+    for repo in repos:
+        try:
+            results.append(verify_repo(repo))
+        except MigrationError as exc:
+            results.append(failed_repository_result(repo, exc))
     proof = build_proof(direction, "verify", results)
     write_proof(args.proof, proof)
     return 0 if proof["verified"] else 1
@@ -1554,14 +2257,37 @@ def command_migrate(args: argparse.Namespace) -> int:
         temporary = tempfile.TemporaryDirectory(prefix="forge-migration-")
         work_dir = Path(temporary.name)
     work_dir.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
     try:
-        results = [migrate_repo(repo, work_dir) for repo in repos]
+        for repo in repos:
+            try:
+                results.append(migrate_repo(repo, work_dir))
+            except MigrationError as exc:
+                results.append(failed_repository_result(repo, exc))
     finally:
         if temporary is not None:
             temporary.cleanup()
     proof = build_proof(direction, "migrate", results)
     write_proof(args.proof, proof)
     return 0 if proof["verified"] else 1
+
+
+def command_verify_proof(args: argparse.Namespace) -> int:
+    proof = load_plan(args.proof_file)
+    claimed_digest = str(proof.get("proof_sha256") or "")
+    actual_digest = proof_digest(proof)
+    integrity_verified = bool(claimed_digest) and claimed_digest == actual_digest
+    accepted = integrity_verified and proof.get("verified") is True
+    result = {
+        "proof_file": str(args.proof_file),
+        "proof_sha256": claimed_digest,
+        "actual_sha256": actual_digest,
+        "integrity_verified": integrity_verified,
+        "migration_verified": proof.get("verified") is True,
+        "accepted": accepted,
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if accepted else 1
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -1579,6 +2305,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         sub.set_defaults(handler=handler)
         if name == "migrate":
             sub.add_argument("--work-dir", type=Path, help="Scratch directory for mirror clones")
+    verify_proof = subparsers.add_parser("verify-proof")
+    verify_proof.add_argument("proof_file", type=Path, help="Proof JSON to verify for integrity and acceptance")
+    verify_proof.set_defaults(handler=command_verify_proof)
     return parser.parse_args(argv)
 
 

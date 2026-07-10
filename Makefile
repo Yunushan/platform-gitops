@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets security-scan supply-chain-posture bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -12,6 +12,10 @@ help:
 	@echo "  no-secrets      Scan repository for obvious secrets/private data"
 	@echo "  security-scan   Run Trivy, Gitleaks, and Semgrep security scanners"
 	@echo "  supply-chain-posture  Generate SBOM and optional Scorecard/Cosign evidence"
+	@echo "  forge-migration-validate  Validate PLAN and its fail-closed migration surface policy"
+	@echo "  forge-migration-run  Migrate PLAN and write optional PROOF using optional WORK_DIR"
+	@echo "  forge-migration-verify  Re-read source/destination from PLAN and write optional PROOF"
+	@echo "  forge-migration-proof-verify  Verify stored PROOF integrity and acceptance"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env or inventory"
 	@echo "  platform-profile-check  Verify selected GitOps profile has no unresolved placeholders"
@@ -69,6 +73,22 @@ init-local:
 
 validate:
 	@$(PYTHON) scripts/run_validation.py
+
+forge-migration-validate:
+	@test -n "$(PLAN)" || (echo "PLAN=/path/to/migration-plan.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_migration.py validate-plan "$(PLAN)" $(if $(PROOF),--proof "$(PROOF)",)
+
+forge-migration-run:
+	@test -n "$(PLAN)" || (echo "PLAN=/path/to/migration-plan.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_migration.py migrate "$(PLAN)" $(if $(WORK_DIR),--work-dir "$(WORK_DIR)",) $(if $(PROOF),--proof "$(PROOF)",)
+
+forge-migration-verify:
+	@test -n "$(PLAN)" || (echo "PLAN=/path/to/migration-plan.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_migration.py verify "$(PLAN)" $(if $(PROOF),--proof "$(PROOF)",)
+
+forge-migration-proof-verify:
+	@test -n "$(PROOF)" || (echo "PROOF=/path/to/migration-proof.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_migration.py verify-proof "$(PROOF)"
 
 no-secrets:
 	@$(PYTHON) scripts/validate_no_secrets.py

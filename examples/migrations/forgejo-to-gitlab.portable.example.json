@@ -1,0 +1,41 @@
+{
+  "direction": "forgejo-to-gitlab",
+  "repositories": [
+    {
+      "name": "repository",
+      "source": {
+        "url": "https://forgejo.example.invalid/source-owner/repository.git",
+        "api_url": "https://forgejo.example.invalid/api/v1",
+        "api_repository": "source-owner/repository",
+        "token_env": "FORGEJO_SOURCE_TOKEN"
+      },
+      "destination": {
+        "url": "https://gitlab.example.invalid/destination-group/repository.git",
+        "api_url": "https://gitlab.example.invalid/api/v4",
+        "api_repository": "destination-group/repository",
+        "token_env": "GITLAB_DESTINATION_TOKEN",
+        "create": "required",
+        "private": true
+      },
+      "wiki": "auto",
+      "lfs": "auto",
+        "metadata": {
+          "labels": "required",
+          "milestones": "required",
+          "releases": "required",
+          "issues": "required",
+          "pull_requests": "skip",
+          "merge_requests": "skip",
+          "release_assets": "skip",
+          "packages": "skip",
+          "project_boards": "skip",
+          "wikis_metadata": "skip",
+          "users": "skip",
+          "teams": "skip",
+          "permissions": "skip",
+          "branch_protection": "skip",
+          "webhooks": "skip"
+        }
+    }
+  ]
+}
