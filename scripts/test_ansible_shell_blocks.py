@@ -19,6 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOK_DIR = ROOT / "ansible" / "playbooks"
+ARGOCD_REPAIR_PLAYBOOK = PLAYBOOK_DIR / "repair-argocd-service-path.yml"
 SHELL_BLOCK_RE = re.compile(
     r"^(?P<indent>\s*)(?:ansible\.builtin\.)?(?:shell|command):\s*(?P<style>[|>])(?:[-+])?\s*(?:#.*)?$"
 )
@@ -90,10 +91,34 @@ def playbooks() -> list[Path]:
     return [path for path in sorted(PLAYBOOK_DIR.glob("*.yml")) if not should_skip(path)]
 
 
+def validate_argocd_cleanup_contract() -> list[str]:
+    text = ARGOCD_REPAIR_PLAYBOOK.read_text(encoding="utf-8")
+    errors: list[str] = []
+    if 'grep -E "/argocd-" |' in text or 'grep -E "^pod/argocd-" |' in text:
+        errors.append("stale Argo CD cleanup must not fail on empty grep results under pipefail")
+    required_fragments = (
+        '*/argocd-*)',
+        'pod/argocd-*)',
+        'done < <("$K" --kubeconfig "$C" -n argocd get "${kind}" -o name 2>/dev/null || true)',
+        'done < <("$K" --kubeconfig "$C" -n argocd get pod -o name 2>/dev/null || true)',
+    )
+    for fragment in required_fragments:
+        if fragment not in text:
+            errors.append(f"stale Argo CD cleanup is missing idempotent fragment: {fragment}")
+    return errors
+
+
 def main() -> int:
     bash = shutil.which("bash")
     if not bash:
         print("bash is required for Ansible inline shell syntax validation.")
+        return 1
+
+    cleanup_contract_errors = validate_argocd_cleanup_contract()
+    if cleanup_contract_errors:
+        print("Argo CD stale bootstrap cleanup contract validation failed:")
+        for error in cleanup_contract_errors:
+            print(f" - {error}")
         return 1
 
     failures: list[tuple[Path, int, str]] = []
