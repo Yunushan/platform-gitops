@@ -2464,9 +2464,16 @@ def main() -> None:
         "PLATFORM_WOODPECKER_REPAIR_EXPECTED_IMAGE_TAG",
         "PLATFORM_WOODPECKER_REPAIR_TIMEOUT",
         "PLATFORM_WOODPECKER_REPAIR_CHECK_IMAGE",
+        "PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH",
+        "PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT",
         "Verify PostgreSQL service path from the Woodpecker server node",
         "platform-woodpecker-postgres-check-${CHECK_ID}",
         "woodpecker-postgres-check-pod-create-failed",
+        "postgres_ready_endpoint_records=",
+        'for endpoint in item.get("endpoints", [])',
+        "postgres_service_path_probe_attempt=",
+        "service_path_component=${component}",
+        "woodpecker-postgres-service-path-components-refreshed",
         "tool=bash-dev-tcp",
         "postgres-service-dns-unreachable",
         "postgres-clusterip-service-path-unreachable",
@@ -2483,6 +2490,8 @@ def main() -> None:
         )
     if 'timeout 10 sh -c ":</dev/tcp/' in woodpecker_repair_text:
         fail("Woodpecker PostgreSQL probe must use Bash, not POSIX sh, for /dev/tcp")
+    if "{range .items[*].endpoints[*].addresses[*]}" in woodpecker_repair_text:
+        fail("Woodpecker PostgreSQL endpoint discovery must flatten nested EndpointSlice arrays structurally")
     gitignore_text = read(gitignore_file)
     for needle in ("__pycache__/", ".shell-syntax-*/", ".ansible-shell-syntax-*/", ".venv/", ".pytest_cache/", "*.pyc"):
         require_text(gitignore_text, needle, f".gitignore must ignore generated validation/cache artifacts: {needle}")

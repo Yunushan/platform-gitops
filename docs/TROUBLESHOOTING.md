@@ -82,6 +82,14 @@ It hard-refreshes and syncs the Woodpecker application first, waits for the
 server and agents, verifies the runtime server and agent image tags, refreshes
 service-path consumers, and then runs `make platform-ci-health`.
 
+For PostgreSQL-backed Woodpecker, the repair also resolves ready EndpointSlice
+addresses and probes DNS, ClusterIP, and direct pod endpoints from the
+Woodpecker server node. A ClusterIP or direct-endpoint timeout triggers one
+bounded refresh of kube-proxy and Cilium on only the affected source/endpoint
+nodes, followed by an automatic second probe. Disable that recovery with
+`PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=false`, or adjust its per-node
+wait with `PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT`.
+
 If `make platform-status` shows a published GUI host returning `502` or `504`
 through the app VIP from either the cluster-side probe or the controller/client
 probe, the DNS/VIP reached Traefik but Traefik could not complete the backend
