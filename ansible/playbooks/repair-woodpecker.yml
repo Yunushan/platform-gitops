@@ -699,7 +699,8 @@
         set -u
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
-        CHECK_NAME=platform-woodpecker-postgres-check
+        CHECK_ID="$(date +%s)-$$"
+        CHECK_NAME="platform-woodpecker-postgres-check-${CHECK_ID}"
         CHECK_IMAGE="{{ platform_woodpecker_repair_check_image_effective }}"
         TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
 
@@ -734,13 +735,15 @@
             -o jsonpath='{range .items[?(@.metadata.name=="woodpecker-server-0")]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null || true)"
         fi
 
-        "$K" --kubeconfig "$C" -n woodpecker delete "pod/${CHECK_NAME}" \
+        "$K" --kubeconfig "$C" -n woodpecker delete pod \
+          -l platform.gitops/check=woodpecker-postgres \
           --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
         node_line=""
         if [ -n "${server_node}" ]; then
           node_line="  nodeName: ${server_node}"
         fi
-        cat <<YAML | "$K" --kubeconfig "$C" apply -f - >/dev/null
+        manifest="$(mktemp)"
+        cat >"${manifest}" <<YAML
         apiVersion: v1
         kind: Pod
         metadata:
@@ -751,6 +754,8 @@
         spec:
         ${node_line}
           restartPolicy: Never
+          tolerations:
+            - operator: Exists
           containers:
             - name: check
               image: ${CHECK_IMAGE}
@@ -770,6 +775,14 @@
                   fi
                   echo "result=ok target=platform-databases/platform-postgres-rw:5432"
         YAML
+        if ! create_output="$("$K" --kubeconfig "$C" create -f "${manifest}" 2>&1)"; then
+          printf '%s\n' "${create_output}"
+          rm -f "${manifest}"
+          echo "result=fail reason=woodpecker-postgres-check-pod-create-failed node=${server_node:-unscheduled}"
+          exit 1
+        fi
+        rm -f "${manifest}"
+        printf '%s\n' "${create_output}"
 
         deadline=$(( $(date +%s) + TIMEOUT ))
         result=1
@@ -799,16 +812,21 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Stop when Woodpecker cannot reach PostgreSQL from its server node
+    - name: Stop when Woodpecker PostgreSQL service-path preflight fails
       ansible.builtin.fail:
         msg: |
-          Woodpecker's PostgreSQL Service has ready endpoints, but a pod on the
-          Woodpecker server node cannot open the database service path.
+          Woodpecker's PostgreSQL Service has ready endpoints, but the
+          in-cluster preflight did not complete successfully. The output now
+          distinguishes a check-pod admission/create failure from a real
+          PostgreSQL service-path failure.
 
           The repair target already ran the shared DNS, kube-proxy, Cilium,
           firewalld, and reverse-path-filter repair before this test. Review:
 
           {{ platform_woodpecker_postgres_service_path_check.stdout | default('not run') }}
+
+          stderr:
+          {{ platform_woodpecker_postgres_service_path_check.stderr | default('none') }}
 
           Rerun `make platform-dns-repair` after correcting any node-level
           network error, then rerun `make platform-woodpecker-repair`.

@@ -2461,6 +2461,8 @@ def main() -> None:
         "PLATFORM_WOODPECKER_REPAIR_TIMEOUT",
         "PLATFORM_WOODPECKER_REPAIR_CHECK_IMAGE",
         "Verify PostgreSQL service path from the Woodpecker server node",
+        "platform-woodpecker-postgres-check-${CHECK_ID}",
+        "woodpecker-postgres-check-pod-create-failed",
         "Reconcile and verify Woodpecker PostgreSQL role credentials",
         "woodpecker-to-postgres-service-path-unreachable",
         "make platform-woodpecker-repair",
