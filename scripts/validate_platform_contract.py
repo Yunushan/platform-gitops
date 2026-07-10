@@ -2467,6 +2467,11 @@ def main() -> None:
         "Verify PostgreSQL service path from the Woodpecker server node",
         "platform-woodpecker-postgres-check-${CHECK_ID}",
         "woodpecker-postgres-check-pod-create-failed",
+        "tool=bash-dev-tcp",
+        "postgres-service-dns-unreachable",
+        "postgres-clusterip-service-path-unreachable",
+        "postgres-endpoint-path-unreachable",
+        "postgres-service-internal-traffic-policy",
         "Reconcile and verify Woodpecker PostgreSQL role credentials",
         "woodpecker-to-postgres-service-path-unreachable",
         "make platform-woodpecker-repair",
@@ -2476,6 +2481,8 @@ def main() -> None:
             needle,
             f"Woodpecker repair playbook must cover {needle}",
         )
+    if 'timeout 10 sh -c ":</dev/tcp/' in woodpecker_repair_text:
+        fail("Woodpecker PostgreSQL probe must use Bash, not POSIX sh, for /dev/tcp")
     gitignore_text = read(gitignore_file)
     for needle in ("__pycache__/", ".shell-syntax-*/", ".ansible-shell-syntax-*/", ".venv/", ".pytest_cache/", "*.pyc"):
         require_text(gitignore_text, needle, f".gitignore must ignore generated validation/cache artifacts: {needle}")

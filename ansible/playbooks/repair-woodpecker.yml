@@ -735,6 +735,23 @@
             -o jsonpath='{range .items[?(@.metadata.name=="woodpecker-server-0")]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null || true)"
         fi
 
+        service_ip="$("$K" --kubeconfig "$C" -n platform-databases get \
+          service/platform-postgres-rw -o jsonpath='{.spec.clusterIP}')"
+        internal_policy="$("$K" --kubeconfig "$C" -n platform-databases get \
+          service/platform-postgres-rw -o jsonpath='{.spec.internalTrafficPolicy}' 2>/dev/null || true)"
+        endpoint_ips="$("$K" --kubeconfig "$C" -n platform-databases get endpointslice \
+          -l kubernetes.io/service-name=platform-postgres-rw \
+          -o jsonpath='{range .items[*].endpoints[*].addresses[*]}{.}{" "}{end}' 2>/dev/null | xargs || true)"
+        echo "woodpecker_server_node=${server_node:-unscheduled}"
+        echo "postgres_service_ip=${service_ip:-missing} internal_traffic_policy=${internal_policy:-Cluster}"
+        echo "postgres_ready_endpoint_ips=${endpoint_ips:-none}"
+        if [ "${internal_policy:-Cluster}" = "Local" ]; then
+          "$K" --kubeconfig "$C" -n platform-databases patch \
+            service/platform-postgres-rw --type merge \
+            -p '{"spec":{"internalTrafficPolicy":"Cluster"}}'
+          echo "result=repaired reason=postgres-service-internal-traffic-policy value=Cluster"
+        fi
+
         "$K" --kubeconfig "$C" -n woodpecker delete pod \
           -l platform.gitops/check=woodpecker-postgres \
           --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
@@ -760,20 +777,93 @@
             - name: check
               image: ${CHECK_IMAGE}
               imagePullPolicy: IfNotPresent
+              env:
+                - name: SERVICE_IP
+                  value: "${service_ip}"
+                - name: ENDPOINT_IPS
+                  value: "${endpoint_ips}"
               command: ["/bin/sh", "-ec"]
               args:
                 - |
                   host=platform-postgres-rw.platform-databases.svc.cluster.local
                   port=5432
-                  if command -v nc >/dev/null 2>&1; then
-                    nc -z -w 10 "\${host}" "\${port}"
-                  elif command -v curl >/dev/null 2>&1; then
-                    curl --silent --show-error --connect-timeout 10 --max-time 10 \
-                      "telnet://\${host}:\${port}" </dev/null >/dev/null
-                  else
-                    timeout 10 sh -c ":</dev/tcp/\${host}/\${port}"
+                  probe_tcp() {
+                    label="\$1"
+                    target="\$2"
+                    tool=none
+                    rc=127
+                    : >/tmp/platform-postgres-probe-error
+                    if command -v bash >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+                      tool=bash-dev-tcp
+                      if timeout 10 bash -c 'exec 3<>/dev/tcp/\$1/\$2' _ \
+                        "\${target}" "\${port}" 2>/tmp/platform-postgres-probe-error; then
+                        rc=0
+                      else
+                        rc=\$?
+                      fi
+                    elif command -v nc >/dev/null 2>&1; then
+                      tool=netcat
+                      if nc -z -v -w 10 "\${target}" "\${port}" \
+                        2>/tmp/platform-postgres-probe-error; then
+                        rc=0
+                      else
+                        rc=\$?
+                      fi
+                    elif command -v curl >/dev/null 2>&1; then
+                      tool=curl-connect-only
+                      if curl --connect-only --silent --show-error \
+                        --connect-timeout 10 --max-time 10 \
+                        "telnet://\${target}:\${port}" \
+                        2>/tmp/platform-postgres-probe-error; then
+                        rc=0
+                      else
+                        rc=\$?
+                      fi
+                    fi
+                    detail="\$(tr '\n' ' ' </tmp/platform-postgres-probe-error 2>/dev/null || true)"
+                    echo "probe=\${label} target=\${target}:\${port} tool=\${tool} rc=\${rc} detail=\${detail:-none}"
+                    return "\${rc}"
+                  }
+
+                  echo "===== PostgreSQL probe resolver ====="
+                  cat /etc/resolv.conf || true
+                  if command -v getent >/dev/null 2>&1; then
+                    getent hosts "\${host}" || true
+                  elif command -v nslookup >/dev/null 2>&1; then
+                    nslookup "\${host}" || true
                   fi
-                  echo "result=ok target=platform-databases/platform-postgres-rw:5432"
+
+                  dns_service_ok=false
+                  cluster_ip_ok=false
+                  endpoint_ok=false
+                  if probe_tcp service-dns "\${host}"; then
+                    dns_service_ok=true
+                  fi
+                  if [ -n "\${SERVICE_IP:-}" ] && probe_tcp service-cluster-ip "\${SERVICE_IP}"; then
+                    cluster_ip_ok=true
+                  fi
+                  for endpoint in \${ENDPOINT_IPS:-}; do
+                    if probe_tcp direct-endpoint "\${endpoint}"; then
+                      endpoint_ok=true
+                    fi
+                  done
+
+                  if [ "\${dns_service_ok}" = "true" ]; then
+                    echo "result=ok target=platform-databases/platform-postgres-rw:5432"
+                    exit 0
+                  fi
+                  if [ "\${cluster_ip_ok}" = "true" ]; then
+                    echo "result=fail reason=postgres-service-dns-unreachable"
+                  elif [ "\${endpoint_ok}" = "true" ]; then
+                    echo "result=fail reason=postgres-clusterip-service-path-unreachable"
+                  elif ! command -v bash >/dev/null 2>&1 &&
+                    ! command -v nc >/dev/null 2>&1 &&
+                    ! command -v curl >/dev/null 2>&1; then
+                    echo "result=fail reason=postgres-probe-tool-unavailable"
+                  else
+                    echo "result=fail reason=postgres-endpoint-path-unreachable"
+                  fi
+                  exit 1
         YAML
         if ! create_output="$("$K" --kubeconfig "$C" create -f "${manifest}" 2>&1)"; then
           printf '%s\n' "${create_output}"
@@ -807,7 +897,9 @@
       args:
         executable: /bin/bash
       register: platform_woodpecker_postgres_service_path_check
-      changed_when: false
+      changed_when: >-
+        'result=repaired reason=postgres-service-internal-traffic-policy'
+        in platform_woodpecker_postgres_service_path_check.stdout
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
@@ -828,8 +920,18 @@
           stderr:
           {{ platform_woodpecker_postgres_service_path_check.stderr | default('none') }}
 
-          Rerun `make platform-dns-repair` after correcting any node-level
-          network error, then rerun `make platform-woodpecker-repair`.
+          Probe classifications:
+          - postgres-service-dns-unreachable: DNS name failed but ClusterIP worked.
+          - postgres-clusterip-service-path-unreachable: direct endpoint worked
+            but the Kubernetes Service path failed.
+          - postgres-endpoint-path-unreachable: the direct pod endpoint also failed.
+          - postgres-probe-tool-unavailable: the configured check image has no
+            supported bounded TCP probe.
+
+          The repair automatically normalizes the PostgreSQL Service to
+          internalTrafficPolicy=Cluster. Use the classification above for any
+          remaining CNI or endpoint fault before rerunning
+          `make platform-woodpecker-repair`.
       when: platform_woodpecker_postgres_service_path_check.rc | int != 0
       run_once: true
 
