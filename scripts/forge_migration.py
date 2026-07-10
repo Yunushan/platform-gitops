@@ -2181,9 +2181,9 @@ def failed_repository_result(repo: RepoPlan, error: MigrationError) -> dict[str,
     for url in (repo.source_url, repo.destination_url):
         message = message.replace(url, redact_url(url))
     for token_env in (repo.source_token_env, repo.destination_token_env):
-        token = os.environ.get(token_env, "") if token_env else ""
-        if token:
-            message = message.replace(token, "<redacted>")
+        credential_value = os.environ.get(token_env, "") if token_env else ""
+        if credential_value:
+            message = message.replace(credential_value, "<redacted>")
     return {
         "name": repo.name,
         "source_url": redact_url(repo.source_url),
