@@ -269,6 +269,20 @@ Kubernetes Secrets. OpenBao is deployed internally in HA Raft mode with
 retained Longhorn data and audit PVCs, but it is not exposed through public
 ingress by default.
 
+OpenBao agent injection is fail-closed and namespace opt-in. Enable it only
+after the injector has ready endpoints by labeling an application namespace:
+
+```bash
+kubectl label namespace APPLICATION_NAMESPACE \
+  platform.gitops/openbao-injection=enabled
+```
+
+The `kube-system`, `kube-public`, `kube-node-lease`, and `openbao` namespaces
+are always excluded so an unavailable optional injector cannot block cluster
+DNS, admission recovery, or its own pods. Pods in an opted-in namespace remain
+blocked when the injector is unavailable, which prevents workloads from
+starting without their requested secrets.
+
 Before production use, complete the private OpenBao ceremony outside this
 public template: initialize and unseal, store recovery material in an approved
 offline/HSM/KMS process, enable Kubernetes auth, create least-privilege

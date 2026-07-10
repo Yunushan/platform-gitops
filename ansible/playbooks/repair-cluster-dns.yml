@@ -21,6 +21,7 @@
     platform_dns_pod_cidrs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_POD_CIDRS') }}"
     platform_dns_coredns_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_REPLICAS') }}"
     platform_dns_coredns_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_ROLLOUT_TIMEOUT') }}"
+    platform_dns_openbao_webhook_guard_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_OPENBAO_WEBHOOK_GUARD') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
@@ -40,6 +41,7 @@
     platform_dns_coredns_replicas_effective: "{{ platform_dns_coredns_replicas | default(platform_dns_coredns_replicas_from_env, true) | default(groups['rke2_servers'] | length, true) | int }}"
     platform_dns_coredns_rollout_timeout_effective: "{{ platform_dns_coredns_rollout_timeout | default(platform_dns_coredns_rollout_timeout_from_env, true) | default(300, true) | int }}"
     platform_dns_coredns_progress_deadline_effective: "{{ [((platform_dns_coredns_rollout_timeout_effective | int) * 2), 600] | max }}"
+    platform_dns_openbao_webhook_guard_effective: "{{ platform_dns_openbao_webhook_guard | default(platform_dns_openbao_webhook_guard_from_env, true) | default(true, true) | bool }}"
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
@@ -164,6 +166,156 @@
           Set PLATFORM_DNS_UPSTREAMS, for example:
           PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
       run_once: true
+
+    - name: Guard platform workloads from unavailable OpenBao injector admission
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        state_file="$(mktemp)"
+        patches_file="$(mktemp)"
+        patch_file="$(mktemp)"
+        trap 'rm -f "${state_file}" "${patches_file}" "${patch_file}"' EXIT
+
+        "$K" --kubeconfig "$C" get mutatingwebhookconfigurations -o json >"${state_file}"
+        python3 - "${state_file}" >"${patches_file}" <<'PY'
+        import base64
+        import json
+        import sys
+
+        label_key = "platform.gitops/openbao-injection"
+        label_value = "enabled"
+        protected_namespaces = {"kube-system", "kube-public", "kube-node-lease", "openbao"}
+        state = json.load(open(sys.argv[1], encoding="utf-8"))
+
+        for item in state.get("items", []):
+            changed = False
+            webhooks = item.get("webhooks", [])
+            for webhook in webhooks:
+                service = webhook.get("clientConfig", {}).get("service", {})
+                service_name = service.get("name", "")
+                if service.get("namespace") != "openbao" and "openbao-agent-injector" not in service_name:
+                    continue
+
+                selector = webhook.get("namespaceSelector") or {}
+                webhook["namespaceSelector"] = selector
+                labels = selector.get("matchLabels") or {}
+                selector["matchLabels"] = labels
+                if labels.get(label_key) != label_value:
+                    labels[label_key] = label_value
+                    changed = True
+
+                expressions = selector.get("matchExpressions") or []
+                selector["matchExpressions"] = expressions
+                exclusion = next(
+                    (
+                        expression
+                        for expression in expressions
+                        if expression.get("key") == "kubernetes.io/metadata.name"
+                        and expression.get("operator") == "NotIn"
+                    ),
+                    None,
+                )
+                if exclusion is None:
+                    expressions.append(
+                        {
+                            "key": "kubernetes.io/metadata.name",
+                            "operator": "NotIn",
+                            "values": sorted(protected_namespaces),
+                        }
+                    )
+                    changed = True
+                else:
+                    values = set(exclusion.get("values") or [])
+                    if not protected_namespaces.issubset(values):
+                        exclusion["values"] = sorted(values | protected_namespaces)
+                        changed = True
+
+            if changed:
+                payload = json.dumps({"webhooks": webhooks}, separators=(",", ":")).encode()
+                encoded = base64.b64encode(payload).decode()
+                print(f"{item['metadata']['name']}\t{encoded}")
+        PY
+
+        changed=false
+        while IFS=$'\t' read -r configuration encoded_patch; do
+          [ -n "${configuration}" ] || continue
+          printf '%s' "${encoded_patch}" | base64 --decode >"${patch_file}"
+          "$K" --kubeconfig "$C" patch "mutatingwebhookconfiguration/${configuration}" \
+            --type merge --patch-file "${patch_file}"
+          echo "openbao_injector_guard state=patched configuration=${configuration}"
+          changed=true
+        done <"${patches_file}"
+        if [ "${changed}" = "false" ]; then
+          echo "openbao_injector_guard state=absent-or-current"
+        fi
+
+        "$K" --kubeconfig "$C" --request-timeout={{ platform_dns_probe_timeout_effective }}s \
+          -n kube-system run platform-openbao-admission-guard-check \
+          --image={{ platform_dns_check_image_effective }} --restart=Never \
+          --dry-run=server --command -o name -- /bin/true
+        echo "openbao_injector_guard admission_dry_run=ok namespace=kube-system"
+        if [ "${changed}" = "true" ] &&
+          "$K" --kubeconfig "$C" -n kube-system get \
+            deployment/{{ platform_coredns_deployment }} >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n kube-system patch \
+            deployment/{{ platform_coredns_deployment }} --type merge \
+            -p '{"spec":{"progressDeadlineSeconds":{{ platform_dns_coredns_progress_deadline_effective }},"strategy":{"type":"RollingUpdate","rollingUpdate":{"maxUnavailable":1,"maxSurge":0}}}}'
+          "$K" --kubeconfig "$C" -n kube-system rollout restart \
+            deployment/{{ platform_coredns_deployment }}
+          echo "openbao_injector_guard coredns_restart=triggered"
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_dns_openbao_webhook_guard
+      changed_when: "'state=patched' in platform_dns_openbao_webhook_guard.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_dns_openbao_webhook_guard_effective | bool
+
+    - name: Wait for CoreDNS after OpenBao admission guard
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        deployment={{ platform_coredns_deployment }}
+        deadline=$((SECONDS + {{ platform_dns_coredns_rollout_timeout_effective }}))
+        while [ "${SECONDS}" -lt "${deadline}" ]; do
+          desired="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+            -o jsonpath='{.spec.replicas}')"
+          ready="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+            -o jsonpath='{.status.readyReplicas}')"
+          updated="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+            -o jsonpath='{.status.updatedReplicas}')"
+          desired=${desired:-0}
+          ready=${ready:-0}
+          updated=${updated:-0}
+          echo "admission_recovery deployment=${deployment} desired=${desired} updated=${updated} ready=${ready}"
+          if [ "${desired}" -gt 0 ] &&
+            [ "${updated}" -ge "${desired}" ] &&
+            [ "${ready}" -ge "${desired}" ]; then
+            echo "openbao_injector_guard coredns_recovery=ready"
+            exit 0
+          fi
+          sleep {{ platform_dns_service_path_poll_interval_effective }}
+        done
+        echo "CoreDNS did not recover after the OpenBao admission guard was applied." >&2
+        "$K" --kubeconfig "$C" -n kube-system get \
+          deployment/{{ platform_coredns_deployment }} -o wide >&2 || true
+        "$K" --kubeconfig "$C" -n kube-system get pods \
+          -l k8s-app=kube-dns -o wide >&2 || true
+        "$K" --kubeconfig "$C" -n kube-system get events --sort-by=.lastTimestamp 2>/dev/null |
+          grep -E 'coredns|webhook|FailedCreate|NAME' | tail -n 40 >&2 || true
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_dns_coredns_after_openbao_guard
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_dns_openbao_webhook_guard_effective | bool
+        - platform_dns_openbao_webhook_guard is changed
 
     - name: Select reachable DNS upstreams from inside the cluster
       ansible.builtin.shell: |
@@ -702,10 +854,10 @@
                 echo "===== CoreDNS replica sets and pods =====" >&2
                 "$K" --kubeconfig "$C" -n kube-system get replicasets,pods -l k8s-app=kube-dns -o wide >&2 || true
                 echo "===== CoreDNS events =====" >&2
-                "$K" --kubeconfig "$C" -n kube-system get events --sort-by=.lastTimestamp 2>/dev/null | tail -n 80 >&2 || true
+                "$K" --kubeconfig "$C" -n kube-system get events --sort-by=.lastTimestamp 2>/dev/null | tail -n 50 >&2 || true
                 echo "===== CoreDNS logs =====" >&2
                 "$K" --kubeconfig "$C" -n kube-system logs -l k8s-app=kube-dns \
-                  --all-containers=true --prefix --tail=100 >&2 || true
+                  --all-containers=true --prefix --tail=30 >&2 || true
                 exit 1
               args:
                 executable: /bin/bash
@@ -754,7 +906,9 @@
                     sleep {{ platform_dns_service_path_poll_interval_effective }}
                   done
                   if [ "${rollback_rc}" -ne 0 ]; then
-                    "$K" --kubeconfig "$C" -n kube-system get deployment/{{ platform_coredns_deployment }},pods \
+                    "$K" --kubeconfig "$C" -n kube-system get \
+                      deployment/{{ platform_coredns_deployment }} -o wide >&2 || true
+                    "$K" --kubeconfig "$C" -n kube-system get pods \
                       -l k8s-app=kube-dns -o wide >&2 || true
                   fi
                 fi
@@ -774,17 +928,17 @@
                   CoreDNS repair did not roll out cleanly. The previous CoreDNS
                   ConfigMap restoration was attempted automatically.
 
-                  Repair rollout output:
-                  {{ platform_coredns_rollout.stdout | default('not run') }}
+                  Repair rollout state tail:
+                  {{ (platform_coredns_rollout.stdout_lines | default(['not run'], true))[-12:] | join('\n') }}
 
-                  Repair rollout diagnostics:
-                  {{ platform_coredns_rollout.stderr | default('not run') }}
+                  OpenBao injector admission blocker detected:
+                  {{ 'yes' if 'failed calling webhook "vault.hashicorp.com"' in (platform_coredns_rollout.stderr | default('', true)) else 'no' }}
 
-                  ConfigMap rollback output:
-                  {{ platform_coredns_rollback.stdout | default('not run') }}
+                  ConfigMap rollback state tail:
+                  {{ (platform_coredns_rollback.stdout_lines | default(['not run'], true))[-12:] | join('\n') }}
 
-                  ConfigMap rollback diagnostics:
-                  {{ platform_coredns_rollback.stderr | default('not run') }}
+                  The failed rollout task above contains the bounded deployment,
+                  ReplicaSet, event, and CoreDNS log diagnostics.
               run_once: true
 
         - name: Ensure CoreDNS HA local service routing after CoreDNS repair

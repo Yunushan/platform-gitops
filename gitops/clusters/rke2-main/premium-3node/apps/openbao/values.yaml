@@ -10,7 +10,21 @@ injector:
   metrics:
     enabled: true
   webhook:
+    # Injection is fail-closed only for namespaces that explicitly opt in.
+    # This prevents an unavailable optional injector from blocking platform
+    # control-plane and application pod creation.
     failurePolicy: Fail
+    namespaceSelector:
+      matchLabels:
+        platform.gitops/openbao-injection: "enabled"
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-node-lease
+            - kube-public
+            - kube-system
+            - openbao
   podDisruptionBudget:
     minAvailable: 1
   resources:

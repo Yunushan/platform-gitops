@@ -1307,6 +1307,10 @@ def main() -> None:
 
     premium_openbao_text = read(premium_openbao_values)
     for needle in (
+        "failurePolicy: Fail",
+        "namespaceSelector:\n      matchLabels:",
+        'platform.gitops/openbao-injection: "enabled"',
+        "key: kubernetes.io/metadata.name\n          operator: NotIn",
         "server:\n  enabled: true",
         "dataStorage:\n    enabled: true\n    size: 20Gi\n    storageClass: longhorn-critical",
         "persistentVolumeClaimRetentionPolicy:\n      whenDeleted: Retain\n      whenScaled: Retain",

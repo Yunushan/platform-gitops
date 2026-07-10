@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -124,6 +125,10 @@ def validate_coredns_rollout_contract() -> list[str]:
         "ProgressDeadlineExceeded",
         "platform.gitops/coredns-recovery-at",
         "CoreDNS rollout did not converge within",
+        "Guard platform workloads from unavailable OpenBao injector admission",
+        "Wait for CoreDNS after OpenBao admission guard",
+        "platform.gitops/openbao-injection",
+        "openbao_injector_guard admission_dry_run=ok",
     )
     for fragment in required_fragments:
         if fragment not in text:
@@ -134,6 +139,18 @@ def validate_coredns_rollout_contract() -> list[str]:
         errors.append("CoreDNS repair and HA placement must both retain maxSurge=0")
     if re.search(r"(?m)^\s+- name: Wait for CoreDNS rollout\s*$", text):
         errors.append("CoreDNS must not retry rollout status after ProgressDeadlineExceeded")
+    guard_script = re.search(
+        r'''(?ms)^\s*python3 - "\$\{state_file\}" >"\$\{patches_file\}" <<'PY'\s*$\n'''
+        r"(?P<body>.*?)^\s*PY\s*$",
+        text,
+    )
+    if guard_script is None:
+        errors.append("CoreDNS repair is missing the structured OpenBao webhook guard")
+    else:
+        try:
+            compile(textwrap.dedent(guard_script.group("body")), str(COREDNS_REPAIR_PLAYBOOK), "exec")
+        except SyntaxError as exc:
+            errors.append(f"OpenBao webhook guard Python is invalid: {exc}")
     return errors
 
 
