@@ -20,6 +20,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOK_DIR = ROOT / "ansible" / "playbooks"
 ARGOCD_REPAIR_PLAYBOOK = PLAYBOOK_DIR / "repair-argocd-service-path.yml"
+COREDNS_REPAIR_PLAYBOOK = PLAYBOOK_DIR / "repair-cluster-dns.yml"
 SHELL_BLOCK_RE = re.compile(
     r"^(?P<indent>\s*)(?:ansible\.builtin\.)?(?:shell|command):\s*(?P<style>[|>])(?:[-+])?\s*(?:#.*)?$"
 )
@@ -113,16 +114,39 @@ def validate_argocd_cleanup_contract() -> list[str]:
     return errors
 
 
+def validate_coredns_rollout_contract() -> list[str]:
+    text = COREDNS_REPAIR_PLAYBOOK.read_text(encoding="utf-8")
+    errors: list[str] = []
+    required_fragments = (
+        "Configure CoreDNS rollout strategy for strict node spreading",
+        "Wait for CoreDNS rollout with one stuck rollout recovery",
+        "PLATFORM_DNS_COREDNS_ROLLOUT_TIMEOUT",
+        "ProgressDeadlineExceeded",
+        "platform.gitops/coredns-recovery-at",
+        "CoreDNS rollout did not converge within",
+    )
+    for fragment in required_fragments:
+        if fragment not in text:
+            errors.append(f"CoreDNS repair is missing rollout recovery fragment: {fragment}")
+    if text.count('"maxUnavailable": 1') < 2:
+        errors.append("CoreDNS repair and HA placement must both retain maxUnavailable=1")
+    if text.count('"maxSurge": 0') < 2:
+        errors.append("CoreDNS repair and HA placement must both retain maxSurge=0")
+    if re.search(r"(?m)^\s+- name: Wait for CoreDNS rollout\s*$", text):
+        errors.append("CoreDNS must not retry rollout status after ProgressDeadlineExceeded")
+    return errors
+
+
 def main() -> int:
     bash = shutil.which("bash")
     if not bash:
         print("bash is required for Ansible inline shell syntax validation.")
         return 1
 
-    cleanup_contract_errors = validate_argocd_cleanup_contract()
-    if cleanup_contract_errors:
-        print("Argo CD stale bootstrap cleanup contract validation failed:")
-        for error in cleanup_contract_errors:
+    playbook_contract_errors = validate_argocd_cleanup_contract() + validate_coredns_rollout_contract()
+    if playbook_contract_errors:
+        print("Ansible repair contract validation failed:")
+        for error in playbook_contract_errors:
             print(f" - {error}")
         return 1
 

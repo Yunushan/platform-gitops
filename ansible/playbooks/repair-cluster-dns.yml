@@ -20,6 +20,7 @@
     platform_dns_kube_proxy_delete_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT') }}"
     platform_dns_pod_cidrs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_POD_CIDRS') }}"
     platform_dns_coredns_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_REPLICAS') }}"
+    platform_dns_coredns_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_ROLLOUT_TIMEOUT') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
@@ -37,6 +38,8 @@
     platform_dns_kube_proxy_delete_timeout_effective: "{{ platform_dns_kube_proxy_delete_timeout | default(platform_dns_kube_proxy_delete_timeout_from_env, true) | default(30, true) | int }}"
     platform_dns_pod_cidrs_raw: "{{ platform_dns_pod_cidrs | default(platform_dns_pod_cidrs_from_env, true) | default('', true) }}"
     platform_dns_coredns_replicas_effective: "{{ platform_dns_coredns_replicas | default(platform_dns_coredns_replicas_from_env, true) | default(groups['rke2_servers'] | length, true) | int }}"
+    platform_dns_coredns_rollout_timeout_effective: "{{ platform_dns_coredns_rollout_timeout | default(platform_dns_coredns_rollout_timeout_from_env, true) | default(300, true) | int }}"
+    platform_dns_coredns_progress_deadline_effective: "{{ [((platform_dns_coredns_rollout_timeout_effective | int) * 2), 600] | max }}"
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
@@ -148,6 +151,7 @@
           - (platform_dns_service_path_poll_interval_effective | int) > 0
           - (platform_dns_kube_proxy_delete_timeout_effective | int) > 0
           - (platform_dns_coredns_replicas_effective | int) > 0
+          - (platform_dns_coredns_rollout_timeout_effective | int) > 0
           - (platform_dns_probe_timeout_effective | int) < (platform_dns_check_timeout_effective | int)
           - platform_dns_check_image_effective | length > 0
           - platform_dns_check_repo_effective | length > 0
@@ -596,6 +600,40 @@
               delegate_to: "{{ rke2_first_server }}"
               run_once: true
 
+            - name: Configure CoreDNS rollout strategy for strict node spreading
+              ansible.builtin.shell: |
+                set -euo pipefail
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+                deployment={{ platform_coredns_deployment }}
+                cat >/tmp/platform-coredns-rollout-strategy-patch.json <<EOF
+                {
+                  "spec": {
+                    "progressDeadlineSeconds": {{ platform_dns_coredns_progress_deadline_effective }},
+                    "strategy": {
+                      "type": "RollingUpdate",
+                      "rollingUpdate": {
+                        "maxUnavailable": 1,
+                        "maxSurge": 0
+                      }
+                    }
+                  }
+                }
+                EOF
+                "$K" --kubeconfig "$C" -n kube-system patch "deployment/${deployment}" \
+                  --type merge --patch-file /tmp/platform-coredns-rollout-strategy-patch.json
+                replicas="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+                  -o jsonpath='{.spec.replicas}')"
+                echo "deployment=${deployment} replicas=${replicas:-0} maxUnavailable=1 maxSurge=0"
+              args:
+                executable: /bin/bash
+              register: platform_coredns_rollout_strategy
+              changed_when: >-
+                'patched' in platform_coredns_rollout_strategy.stdout
+                and 'patched (no change)' not in platform_coredns_rollout_strategy.stdout
+              delegate_to: "{{ rke2_first_server }}"
+              run_once: true
+
             - name: Restart CoreDNS
               ansible.builtin.command: >-
                 /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
@@ -605,39 +643,148 @@
               delegate_to: "{{ rke2_first_server }}"
               run_once: true
 
-            - name: Wait for CoreDNS rollout
-              ansible.builtin.command: >-
-                /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-                -n kube-system rollout status deployment/{{ platform_coredns_deployment }} --timeout=10s
+            - name: Wait for CoreDNS rollout with one stuck rollout recovery
+              ansible.builtin.shell: |
+                set -euo pipefail
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+                deployment={{ platform_coredns_deployment }}
+                deadline=$((SECONDS + {{ platform_dns_coredns_rollout_timeout_effective }}))
+                recovery_attempted=false
+
+                while [ "${SECONDS}" -lt "${deadline}" ]; do
+                  generation="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+                    -o jsonpath='{.metadata.generation}')"
+                  observed="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+                    -o jsonpath='{.status.observedGeneration}')"
+                  desired="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+                    -o jsonpath='{.spec.replicas}')"
+                  updated="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+                    -o jsonpath='{.status.updatedReplicas}')"
+                  ready="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+                    -o jsonpath='{.status.readyReplicas}')"
+                  available="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+                    -o jsonpath='{.status.availableReplicas}')"
+                  progressing_reason="$("$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" \
+                    -o jsonpath='{range .status.conditions[?(@.type=="Progressing")]}{.reason}{end}')"
+                  observed=${observed:-0}
+                  desired=${desired:-0}
+                  updated=${updated:-0}
+                  ready=${ready:-0}
+                  available=${available:-0}
+                  echo "deployment=${deployment} generation=${generation} observed=${observed} desired=${desired} updated=${updated} ready=${ready} available=${available} progressing=${progressing_reason:-none}"
+
+                  if [ "${desired}" -gt 0 ] &&
+                    [ "${observed}" -ge "${generation}" ] &&
+                    [ "${updated}" -ge "${desired}" ] &&
+                    [ "${ready}" -ge "${desired}" ] &&
+                    [ "${available}" -ge "${desired}" ]; then
+                    echo "result=ready recovery_attempted=${recovery_attempted}"
+                    exit 0
+                  fi
+
+                  if [ "${observed}" -ge "${generation}" ] &&
+                    [ "${progressing_reason}" = "ProgressDeadlineExceeded" ] &&
+                    [ "${recovery_attempted}" = "false" ]; then
+                    recovery_at="$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"
+                    "$K" --kubeconfig "$C" -n kube-system patch "deployment/${deployment}" --type merge \
+                      -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"platform.gitops/coredns-recovery-at\":\"${recovery_at}\"}}}}}"
+                    recovery_attempted=true
+                    echo "result=recovered reason=ProgressDeadlineExceeded recovery_at=${recovery_at}"
+                  fi
+                  sleep {{ platform_dns_service_path_poll_interval_effective }}
+                done
+
+                echo "CoreDNS rollout did not converge within {{ platform_dns_coredns_rollout_timeout_effective }}s." >&2
+                echo "===== CoreDNS deployment =====" >&2
+                "$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" -o wide >&2 || true
+                "$K" --kubeconfig "$C" -n kube-system describe "deployment/${deployment}" >&2 || true
+                echo "===== CoreDNS replica sets and pods =====" >&2
+                "$K" --kubeconfig "$C" -n kube-system get replicasets,pods -l k8s-app=kube-dns -o wide >&2 || true
+                echo "===== CoreDNS events =====" >&2
+                "$K" --kubeconfig "$C" -n kube-system get events --sort-by=.lastTimestamp 2>/dev/null | tail -n 80 >&2 || true
+                echo "===== CoreDNS logs =====" >&2
+                "$K" --kubeconfig "$C" -n kube-system logs -l k8s-app=kube-dns \
+                  --all-containers=true --prefix --tail=100 >&2 || true
+                exit 1
+              args:
+                executable: /bin/bash
               register: platform_coredns_rollout
-              retries: 30
-              delay: 10
-              until: platform_coredns_rollout.rc == 0
-              changed_when: false
+              changed_when: "'result=recovered' in platform_coredns_rollout.stdout"
               delegate_to: "{{ rke2_first_server }}"
               run_once: true
           rescue:
             - name: Roll back CoreDNS ConfigMap after failed repair rollout
               ansible.builtin.shell: |
+                set -uo pipefail
                 K=/var/lib/rancher/rke2/bin/kubectl
                 C=/etc/rancher/rke2/rke2.yaml
+                apply_rc=1
+                restart_rc=1
+                rollback_rc=1
                 if [ -f /tmp/platform-coredns-before-repair.yaml ]; then
-                  "$K" --kubeconfig "$C" apply -f /tmp/platform-coredns-before-repair.yaml || true
-                  "$K" --kubeconfig "$C" -n kube-system rollout restart deployment/{{ platform_coredns_deployment }} || true
-                  "$K" --kubeconfig "$C" -n kube-system rollout status deployment/{{ platform_coredns_deployment }} --timeout=120s || true
+                  if "$K" --kubeconfig "$C" apply -f /tmp/platform-coredns-before-repair.yaml; then
+                    apply_rc=0
+                  fi
+                  if [ "${apply_rc}" -eq 0 ] &&
+                    "$K" --kubeconfig "$C" -n kube-system rollout restart \
+                      deployment/{{ platform_coredns_deployment }}; then
+                    restart_rc=0
+                  fi
+                  deadline=$((SECONDS + {{ platform_dns_coredns_rollout_timeout_effective }}))
+                  while [ "${restart_rc}" -eq 0 ] && [ "${SECONDS}" -lt "${deadline}" ]; do
+                    state="$("$K" --kubeconfig "$C" -n kube-system get \
+                      deployment/{{ platform_coredns_deployment }} \
+                      -o jsonpath='{.metadata.generation}{"|"}{.status.observedGeneration}{"|"}{.spec.replicas}{"|"}{.status.updatedReplicas}{"|"}{.status.readyReplicas}{"|"}{.status.availableReplicas}')"
+                    IFS='|' read -r generation observed desired updated ready available <<<"${state}"
+                    observed=${observed:-0}
+                    desired=${desired:-0}
+                    updated=${updated:-0}
+                    ready=${ready:-0}
+                    available=${available:-0}
+                    echo "rollback generation=${generation} observed=${observed} desired=${desired} updated=${updated} ready=${ready} available=${available}"
+                    if [ "${desired}" -gt 0 ] &&
+                      [ "${observed}" -ge "${generation}" ] &&
+                      [ "${updated}" -ge "${desired}" ] &&
+                      [ "${ready}" -ge "${desired}" ] &&
+                      [ "${available}" -ge "${desired}" ]; then
+                      rollback_rc=0
+                      break
+                    fi
+                    sleep {{ platform_dns_service_path_poll_interval_effective }}
+                  done
+                  if [ "${rollback_rc}" -ne 0 ]; then
+                    "$K" --kubeconfig "$C" -n kube-system get deployment/{{ platform_coredns_deployment }},pods \
+                      -l k8s-app=kube-dns -o wide >&2 || true
+                  fi
                 fi
+                echo "coredns_configmap_apply_rc=${apply_rc} restart_rc=${restart_rc} rollback_rc=${rollback_rc}"
+                exit "${rollback_rc}"
               args:
                 executable: /bin/bash
-              changed_when: true
+              register: platform_coredns_rollback
+              changed_when: platform_coredns_rollback.rc == 0
+              failed_when: false
               delegate_to: "{{ rke2_first_server }}"
               run_once: true
 
             - name: Stop after failed CoreDNS repair rollout
               ansible.builtin.fail:
-                msg: >-
-                  CoreDNS repair did not roll out cleanly, so the previous
-                  CoreDNS ConfigMap was restored. Review CoreDNS diagnostics
-                  above before retrying.
+                msg: |
+                  CoreDNS repair did not roll out cleanly. The previous CoreDNS
+                  ConfigMap restoration was attempted automatically.
+
+                  Repair rollout output:
+                  {{ platform_coredns_rollout.stdout | default('not run') }}
+
+                  Repair rollout diagnostics:
+                  {{ platform_coredns_rollout.stderr | default('not run') }}
+
+                  ConfigMap rollback output:
+                  {{ platform_coredns_rollback.stdout | default('not run') }}
+
+                  ConfigMap rollback diagnostics:
+                  {{ platform_coredns_rollback.stderr | default('not run') }}
               run_once: true
 
         - name: Ensure CoreDNS HA local service routing after CoreDNS repair
@@ -671,6 +818,14 @@
             {
               "spec": {
                 "replicas": ${replicas},
+                "progressDeadlineSeconds": {{ platform_dns_coredns_progress_deadline_effective }},
+                "strategy": {
+                  "type": "RollingUpdate",
+                  "rollingUpdate": {
+                    "maxUnavailable": 1,
+                    "maxSurge": 0
+                  }
+                },
                 "template": {
                   "spec": {
                     "topologySpreadConstraints": [
@@ -722,7 +877,8 @@
               echo "patched ${service} with internalTrafficPolicy=Local."
             done
 
-            "$K" --kubeconfig "$C" -n kube-system rollout status "deployment/${deployment}" --timeout={{ platform_dns_service_path_poll_interval_effective }}s
+            "$K" --kubeconfig "$C" -n kube-system rollout status "deployment/${deployment}" \
+              --timeout={{ platform_dns_coredns_rollout_timeout_effective }}s
             echo "===== CoreDNS deployment ====="
             "$K" --kubeconfig "$C" -n kube-system get "deployment/${deployment}" -o wide
             echo "===== CoreDNS autoscaler ====="
@@ -756,9 +912,6 @@
             'patched' in (platform_dns_coredns_ha_local_routing.stdout | lower)
             or 'scaled' in (platform_dns_coredns_ha_local_routing.stdout | lower)
           failed_when: platform_dns_coredns_ha_local_routing.rc != 0
-          retries: "{{ platform_dns_service_path_rollout_retries_effective }}"
-          delay: "{{ platform_dns_service_path_poll_interval_effective }}"
-          until: platform_dns_coredns_ha_local_routing.rc == 0
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
