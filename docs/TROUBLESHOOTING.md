@@ -186,6 +186,17 @@ a temporary debug run:
 PLATFORM_APP_HEALTH_MONITORING_API=false make platform-app-health
 ```
 
+When Grafana or Prometheus returns `no available server`, repair the shared
+service path and storage prerequisites, reconcile the monitoring application,
+and wait for real backend endpoints with:
+
+```bash
+make platform-monitoring-repair
+```
+
+The repair stops with pod, PVC, and Longhorn diagnostics when capacity or a
+volume attachment still prevents either backend from becoming Ready.
+
 To skip only Loki `/ready`, Velero `BackupStorageLocation`, or Velero backup
 schedule enforcement during a temporary debug run:
 

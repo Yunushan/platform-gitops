@@ -364,8 +364,11 @@
             fi
             "$K" --kubeconfig "$C" -n argocd annotate application/forgejo \
               argocd.argoproj.io/refresh=hard --overwrite
+            revision="$("$K" --kubeconfig "$C" -n argocd get application/forgejo \
+              -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+            revision="${revision:-main}"
             "$K" --kubeconfig "$C" -n argocd patch application/forgejo --type merge \
-              -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' || true
+              -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")" || true
           args:
             executable: /bin/bash
           register: forgejo_argocd_refresh
@@ -412,8 +415,11 @@
             fi
             "$K" --kubeconfig "$C" -n argocd annotate application/forgejo \
               argocd.argoproj.io/refresh=hard --overwrite
+            revision="$("$K" --kubeconfig "$C" -n argocd get application/forgejo \
+              -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+            revision="${revision:-main}"
             "$K" --kubeconfig "$C" -n argocd patch application/forgejo --type merge \
-              -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' || true
+              -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")" || true
           args:
             executable: /bin/bash
           register: forgejo_absent_pvc_argocd_refresh

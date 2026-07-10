@@ -8,3 +8,26 @@ helmCharts:
     releaseName: argo-cd
     namespace: argocd
     valuesFile: values.yaml
+patches:
+  - target:
+      version: v1
+      kind: Service
+      name: argo-cd-argocd-repo-server
+    patch: |-
+      - op: add
+        path: /spec/clusterIP
+        value: "None"
+      - op: add
+        path: /spec/publishNotReadyAddresses
+        value: false
+  - target:
+      version: v1
+      kind: Service
+      name: argo-cd-redis-ha-haproxy
+    patch: |-
+      - op: add
+        path: /spec/clusterIP
+        value: "None"
+      - op: add
+        path: /spec/publishNotReadyAddresses
+        value: false

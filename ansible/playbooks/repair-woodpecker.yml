@@ -11,12 +11,14 @@
     platform_woodpecker_repair_auto_prerequisites_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_PREREQUISITES') }}"
     platform_woodpecker_repair_reset_failed_replica_pvcs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_FAILED_REPLICA_PVCS') }}"
     platform_woodpecker_repair_reset_unrecoverable_postgres_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES') }}"
+    platform_woodpecker_repair_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_CHECK_IMAGE') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_repair_timeout_effective: "{{ platform_woodpecker_repair_timeout | default(platform_woodpecker_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_woodpecker_repair_expected_image_tag_effective: "{{ platform_woodpecker_repair_expected_image_tag | default(platform_woodpecker_repair_expected_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
     platform_woodpecker_repair_auto_prerequisites_effective: "{{ platform_woodpecker_repair_auto_prerequisites | default(platform_woodpecker_repair_auto_prerequisites_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_reset_failed_replica_pvcs_effective: "{{ platform_woodpecker_repair_reset_failed_replica_pvcs | default(platform_woodpecker_repair_reset_failed_replica_pvcs_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_reset_unrecoverable_postgres_effective: "{{ platform_woodpecker_repair_reset_unrecoverable_postgres | default(platform_woodpecker_repair_reset_unrecoverable_postgres_from_env, true) | default(false, true) | bool }}"
+    platform_woodpecker_repair_check_image_effective: "{{ platform_woodpecker_repair_check_image | default(platform_woodpecker_repair_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
   tasks:
     - name: Show Woodpecker state before repair
       ansible.builtin.shell: |
@@ -151,8 +153,11 @@
             fi
             "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
               argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+            revision="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+              -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+            revision="${revision:-main}"
             "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
-              -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' >/dev/null 2>&1 || true
+              -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")" >/dev/null 2>&1 || true
           done
 
           sync_deadline=$(( $(date +%s) + TIMEOUT ))
@@ -471,8 +476,11 @@
             if "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
               "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
                 argocd.argoproj.io/refresh=hard --overwrite >/dev/null || true
+              revision="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+                -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+              revision="${revision:-main}"
               "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
-                -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' >/dev/null 2>&1 || true
+                -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")" >/dev/null 2>&1 || true
               echo "argocd_application_${app}=refresh-sync-requested"
             else
               echo "argocd_application_${app}=absent"
@@ -686,6 +694,205 @@
         platform_woodpecker_postgres_backend_check.rc | int != 0 and
         ((platform_woodpecker_postgres_backend_recheck | default({})).rc | default(1) | int != 0)
 
+    - name: Verify PostgreSQL service path from the Woodpecker server node
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        CHECK_NAME=platform-woodpecker-postgres-check
+        CHECK_IMAGE="{{ platform_woodpecker_repair_check_image_effective }}"
+        TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
+
+        workload=""
+        for candidate in statefulset/woodpecker-server deployment/woodpecker-server; do
+          if "$K" --kubeconfig "$C" -n woodpecker get "${candidate}" >/dev/null 2>&1; then
+            workload="${candidate}"
+            break
+          fi
+        done
+        if [ -z "${workload}" ]; then
+          echo "woodpecker_server_workload=absent postgres_service_path_check=skipped"
+          exit 0
+        fi
+        driver="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
+          -o jsonpath='{range .spec.template.spec.containers[*].env[?(@.name=="WOODPECKER_DATABASE_DRIVER")]}{.value}{"\n"}{end}' 2>/dev/null |
+          tail -n 1 || true)"
+        case "${driver}" in
+          postgres|postgresql) ;;
+          *)
+            echo "woodpecker_database_driver=${driver:-unset} postgres_service_path_check=skipped"
+            exit 0
+            ;;
+        esac
+
+        server_node="$("$K" --kubeconfig "$C" -n woodpecker get pods \
+          -l app.kubernetes.io/name=server \
+          -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null |
+          awk 'NF { print; exit }')"
+        if [ -z "${server_node}" ]; then
+          server_node="$("$K" --kubeconfig "$C" -n woodpecker get pods \
+            -o jsonpath='{range .items[?(@.metadata.name=="woodpecker-server-0")]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null || true)"
+        fi
+
+        "$K" --kubeconfig "$C" -n woodpecker delete "pod/${CHECK_NAME}" \
+          --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+        node_line=""
+        if [ -n "${server_node}" ]; then
+          node_line="  nodeName: ${server_node}"
+        fi
+        cat <<YAML | "$K" --kubeconfig "$C" apply -f - >/dev/null
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: ${CHECK_NAME}
+          namespace: woodpecker
+          labels:
+            platform.gitops/check: woodpecker-postgres
+        spec:
+        ${node_line}
+          restartPolicy: Never
+          containers:
+            - name: check
+              image: ${CHECK_IMAGE}
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  host=platform-postgres-rw.platform-databases.svc.cluster.local
+                  port=5432
+                  if command -v nc >/dev/null 2>&1; then
+                    nc -z -w 10 "\${host}" "\${port}"
+                  elif command -v curl >/dev/null 2>&1; then
+                    curl --silent --show-error --connect-timeout 10 --max-time 10 \
+                      "telnet://\${host}:\${port}" </dev/null >/dev/null
+                  else
+                    timeout 10 sh -c ":</dev/tcp/\${host}/\${port}"
+                  fi
+                  echo "result=ok target=platform-databases/platform-postgres-rw:5432"
+        YAML
+
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        result=1
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          phase="$("$K" --kubeconfig "$C" -n woodpecker get "pod/${CHECK_NAME}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          case "${phase}" in
+            Succeeded) result=0; break ;;
+            Failed) break ;;
+          esac
+          sleep 3
+        done
+        "$K" --kubeconfig "$C" -n woodpecker logs "pod/${CHECK_NAME}" 2>&1 || true
+        if [ "${result}" -ne 0 ]; then
+          echo "result=fail reason=woodpecker-to-postgres-service-path-unreachable node=${server_node:-unscheduled}"
+          "$K" --kubeconfig "$C" -n woodpecker describe "pod/${CHECK_NAME}" 2>&1 |
+            sed -n '/Events:/,$p' || true
+        fi
+        "$K" --kubeconfig "$C" -n woodpecker delete "pod/${CHECK_NAME}" \
+          --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+        exit "${result}"
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_postgres_service_path_check
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Stop when Woodpecker cannot reach PostgreSQL from its server node
+      ansible.builtin.fail:
+        msg: |
+          Woodpecker's PostgreSQL Service has ready endpoints, but a pod on the
+          Woodpecker server node cannot open the database service path.
+
+          The repair target already ran the shared DNS, kube-proxy, Cilium,
+          firewalld, and reverse-path-filter repair before this test. Review:
+
+          {{ platform_woodpecker_postgres_service_path_check.stdout | default('not run') }}
+
+          Rerun `make platform-dns-repair` after correcting any node-level
+          network error, then rerun `make platform-woodpecker-repair`.
+      when: platform_woodpecker_postgres_service_path_check.rc | int != 0
+      run_once: true
+
+    - name: Reconcile and verify Woodpecker PostgreSQL role credentials
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        workload=""
+        for candidate in statefulset/woodpecker-server deployment/woodpecker-server; do
+          if "$K" --kubeconfig "$C" -n woodpecker get "${candidate}" >/dev/null 2>&1; then
+            workload="${candidate}"
+            break
+          fi
+        done
+        [ -n "${workload}" ] || exit 0
+        driver="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
+          -o jsonpath='{range .spec.template.spec.containers[*].env[?(@.name=="WOODPECKER_DATABASE_DRIVER")]}{.value}{"\n"}{end}' 2>/dev/null |
+          tail -n 1 || true)"
+        case "${driver}" in postgres|postgresql) ;; *) exit 0 ;; esac
+
+        username="$("$K" --kubeconfig "$C" -n platform-databases get secret/woodpecker-database \
+          -o jsonpath='{.data.username}' | base64 -d)"
+        password="$("$K" --kubeconfig "$C" -n platform-databases get secret/woodpecker-database \
+          -o jsonpath='{.data.password}' | base64 -d)"
+
+        verify_login() {
+          primary="$("$K" --kubeconfig "$C" -n platform-databases get pods \
+            -l cnpg.io/cluster=platform-postgres,cnpg.io/instanceRole=primary \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null |
+            head -n 1)"
+          [ -n "${primary}" ] || return 1
+          printf '%s\n' "${password}" |
+            "$K" --kubeconfig "$C" -n platform-databases exec -i "pod/${primary}" -- \
+              sh -ceu 'IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql -h 127.0.0.1 -U "$1" -d woodpecker -qAt -c "select 1"' sh "${username}" |
+            grep -qx '1'
+        }
+
+        if verify_login; then
+          exit 0
+        fi
+
+        if "$K" --kubeconfig "$C" -n cnpg-system get deployment/cloudnative-pg >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n cnpg-system rollout restart deployment/cloudnative-pg >/dev/null
+          "$K" --kubeconfig "$C" -n cnpg-system rollout status deployment/cloudnative-pg --timeout=180s >/dev/null
+        fi
+        if "$K" --kubeconfig "$C" -n argocd get application/platform-postgres >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n argocd annotate application/platform-postgres \
+            argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+        fi
+        for _ in $(seq 1 24); do
+          if verify_login; then
+            exit 0
+          fi
+          sleep 5
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_postgres_credentials_check
+      changed_when: false
+      failed_when: false
+      no_log: true
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Stop when Woodpecker PostgreSQL credentials are not usable
+      ansible.builtin.fail:
+        msg: |
+          The Woodpecker database Secret exists and PostgreSQL is reachable,
+          but the managed `woodpecker` role cannot log in to database
+          `woodpecker`. The repair restarted CloudNativePG and allowed it to
+          reconcile the managed role, but the credential test still failed.
+
+          Do not expose the Secret values. Inspect the CloudNativePG operator
+          and Cluster conditions, then rerun `make platform-app-secrets` and
+          `make platform-woodpecker-repair`.
+      when: platform_woodpecker_postgres_credentials_check.rc | int != 0
+      run_once: true
+
     - name: Refresh and sync Woodpecker Argo CD application
       ansible.builtin.shell: |
         set -o pipefail
@@ -701,8 +908,11 @@
         fi
         "$K" --kubeconfig "$C" -n argocd annotate application/woodpecker \
           argocd.argoproj.io/refresh=hard --overwrite
+        revision="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker \
+          -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+        revision="${revision:-main}"
         "$K" --kubeconfig "$C" -n argocd patch application/woodpecker --type merge \
-          -p '{"operation":{"sync":{"revision":"HEAD","prune":false}}}' || true
+          -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")" || true
       args:
         executable: /bin/bash
       register: platform_woodpecker_argocd_refresh

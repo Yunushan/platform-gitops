@@ -35,6 +35,7 @@ ALLOWED_NO_LOG_TASKS = {
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Velero cloud credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Woodpecker database datasource secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Configure Forgejo OAuth application for Woodpecker"),
+    ("ansible/playbooks/repair-woodpecker.yml", "Reconcile and verify Woodpecker PostgreSQL role credentials"),
     ("ansible/playbooks/install-rke2.yml", "Resolve RKE2 token candidate"),
     ("ansible/playbooks/install-rke2.yml", "Generate or load local RKE2 token"),
     ("ansible/playbooks/install-rke2.yml", "Read existing first server RKE2 token when present"),

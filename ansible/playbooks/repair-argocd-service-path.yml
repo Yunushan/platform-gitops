@@ -12,6 +12,7 @@
     platform_argocd_service_repair_host_network_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_HOST_NETWORK') }}"
     platform_argocd_service_repair_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_ROLLOUT_TIMEOUT') }}"
     platform_argocd_service_repair_rollout_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_ROLLOUT_STRICT') }}"
+    platform_argocd_service_repair_headless_internals_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_HEADLESS_INTERNALS') }}"
     platform_argocd_cleanup_stale_bootstrap_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CLEAN_STALE_BOOTSTRAP') }}"
     platform_argocd_controller_readiness_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_TIMEOUT') }}"
     platform_argocd_controller_readiness_failure_threshold_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_FAILURE_THRESHOLD') }}"
@@ -21,6 +22,7 @@
     platform_argocd_service_repair_host_network_effective: "{{ platform_argocd_service_repair_host_network | default(platform_argocd_service_repair_host_network_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_rollout_timeout_effective: "{{ platform_argocd_service_repair_rollout_timeout | default(platform_argocd_service_repair_rollout_timeout_from_env, true) | default(60, true) | int }}"
     platform_argocd_service_repair_rollout_strict_effective: "{{ platform_argocd_service_repair_rollout_strict | default(platform_argocd_service_repair_rollout_strict_from_env, true) | default(false, true) | bool }}"
+    platform_argocd_service_repair_headless_internals_effective: "{{ platform_argocd_service_repair_headless_internals | default(platform_argocd_service_repair_headless_internals_from_env, true) | default(true, true) | bool }}"
     platform_argocd_cleanup_stale_bootstrap_effective: "{{ platform_argocd_cleanup_stale_bootstrap | default(platform_argocd_cleanup_stale_bootstrap_from_env, true) | default(true, true) | bool }}"
     platform_argocd_controller_readiness_timeout_effective: "{{ platform_argocd_controller_readiness_timeout | default(platform_argocd_controller_readiness_timeout_from_env, true) | default(10, true) | int }}"
     platform_argocd_controller_readiness_failure_threshold_effective: "{{ platform_argocd_controller_readiness_failure_threshold | default(platform_argocd_controller_readiness_failure_threshold_from_env, true) | default(18, true) | int }}"
@@ -61,6 +63,97 @@
     - name: Print current Argo CD service path state
       ansible.builtin.debug:
         var: platform_argocd_service_path_before.stdout_lines
+      run_once: true
+
+    - name: Convert active Argo CD HA internal services to headless services
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        HEADLESS="{{ platform_argocd_service_repair_headless_internals_effective | bool | lower }}"
+
+        if [ "${HEADLESS}" != "true" ]; then
+          echo "argocd_headless_internals=disabled"
+          exit 0
+        fi
+        if ! "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 &&
+          ! "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          echo "argocd_active_stack=bootstrap headless_internal_conversion=skipped"
+          exit 0
+        fi
+
+        make_headless() {
+          service="$1"
+          current_ip="$("$K" --kubeconfig "$C" -n argocd get "service/${service}" \
+            -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+          if [ -z "${current_ip}" ]; then
+            echo "service=${service} state=absent"
+            return 1
+          fi
+          if [ "${current_ip}" = "None" ]; then
+            "$K" --kubeconfig "$C" -n argocd patch "service/${service}" --type merge \
+              -p '{"spec":{"publishNotReadyAddresses":false}}' >/dev/null
+            echo "service=${service} state=headless"
+            return 0
+          fi
+
+          source_json="$(mktemp)"
+          headless_json="$(mktemp)"
+          "$K" --kubeconfig "$C" -n argocd get "service/${service}" -o json >"${source_json}"
+          python3 - "${source_json}" "${headless_json}" <<'PY'
+        import json
+        import sys
+
+        source_path, output_path = sys.argv[1:]
+        with open(source_path, encoding="utf-8") as handle:
+            source = json.load(handle)
+
+        ports = []
+        for source_port in source["spec"].get("ports", []):
+            port = {
+                "name": source_port.get("name"),
+                "port": source_port["port"],
+                "protocol": source_port.get("protocol", "TCP"),
+                "targetPort": source_port.get("targetPort", source_port["port"]),
+            }
+            if source_port.get("appProtocol"):
+                port["appProtocol"] = source_port["appProtocol"]
+            ports.append({key: value for key, value in port.items() if value is not None})
+
+        manifest = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "name": source["metadata"]["name"],
+                "namespace": source["metadata"].get("namespace", "argocd"),
+                "labels": source["metadata"].get("labels", {}),
+            },
+            "spec": {
+                "clusterIP": "None",
+                "publishNotReadyAddresses": False,
+                "selector": source["spec"].get("selector", {}),
+                "ports": ports,
+            },
+        }
+        manifest["metadata"]["labels"]["platform.gitops/internal-service"] = "headless"
+        with open(output_path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle)
+        PY
+          "$K" --kubeconfig "$C" -n argocd delete "service/${service}" --wait=true --timeout=60s
+          "$K" --kubeconfig "$C" apply -f "${headless_json}"
+          rm -f "${source_json}" "${headless_json}"
+          echo "service=${service} converted=headless previous_cluster_ip=${current_ip}"
+        }
+
+        make_headless argo-cd-argocd-repo-server
+        make_headless argo-cd-redis-ha-haproxy
+      args:
+        executable: /bin/bash
+      register: platform_argocd_headless_internal_services
+      changed_when: >-
+        'converted=headless' in platform_argocd_headless_internal_services.stdout or
+        'patched' in platform_argocd_headless_internal_services.stdout
+      delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
     - name: Patch active Argo CD command parameters and restart active workloads

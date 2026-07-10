@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -37,6 +37,8 @@ help:
 	@echo "  platform-app-health  Verify platform app sync, storage, pod readiness, ingress, and service paths"
 	@echo "  platform-ci-health  Verify Argo CD runtime plus Woodpecker CI ingress, agents, and service paths"
 	@echo "  platform-woodpecker-repair  Hard-refresh/sync Woodpecker, verify runtime image tags, and run focused CI health"
+	@echo "  platform-monitoring-health  Verify focused Grafana and Prometheus readiness and ingress APIs"
+	@echo "  platform-monitoring-repair  Repair monitoring reconciliation, storage prerequisites, and ready backends"
 	@echo "  platform-production-check  Run read-only repo, RKE2, status, and platform app readiness gates"
 	@echo "  platform-longhorn-bootstrap  Bootstrap Longhorn storage, pre-pull images on nodes, and verify CSI/PVC readiness"
 	@echo "  platform-longhorn-crd-repair  Restore missing Longhorn CRDs and restart Longhorn manager"
@@ -199,12 +201,38 @@ platform-ci-health:
 	ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-app-health.yml
 
 platform-woodpecker-repair:
+	@$(MAKE) platform-dns-repair
 	@$(MAKE) platform-argocd-service-repair
 	@$(MAKE) platform-longhorn-bootstrap
 	@$(MAKE) platform-app-secrets
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml
 	@$(MAKE) platform-service-path-consumers-repair
 	@$(MAKE) platform-ci-health
+
+platform-monitoring-health:
+	@PLATFORM_APP_HEALTH_REQUIRED_APPS="traefik monitoring" \
+	PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS=false \
+	PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false \
+	PLATFORM_APP_HEALTH_NAMESPACES="argocd traefik monitoring" \
+	PLATFORM_APP_HEALTH_GUI_APPS="grafana prometheus" \
+	PLATFORM_APP_HEALTH_STORAGE_CLASSES=skip \
+	PLATFORM_APP_HEALTH_LONGHORN_RUNTIME=false \
+	PLATFORM_APP_HEALTH_CNPG_CLUSTERS=skip \
+	PLATFORM_APP_HEALTH_STEP_CA_API=false \
+	PLATFORM_APP_HEALTH_REGISTRY_API=false \
+	PLATFORM_APP_HEALTH_LOKI_API=false \
+	PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE=false \
+	PLATFORM_APP_HEALTH_VELERO_SCHEDULES=false \
+	ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} \
+	ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-app-health.yml
+
+platform-monitoring-repair:
+	@$(MAKE) platform-dns-repair
+	@$(MAKE) platform-argocd-service-repair
+	@$(MAKE) platform-longhorn-bootstrap
+	@$(MAKE) platform-app-secrets
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-monitoring.yml
+	@$(MAKE) platform-monitoring-health
 
 platform-production-check: validate platform-profile-check rke2-verify platform-status platform-app-health
 

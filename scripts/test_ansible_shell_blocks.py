@@ -101,6 +101,11 @@ def validate_argocd_cleanup_contract() -> list[str]:
         'pod/argocd-*)',
         'done < <("$K" --kubeconfig "$C" -n argocd get "${kind}" -o name 2>/dev/null || true)',
         'done < <("$K" --kubeconfig "$C" -n argocd get pod -o name 2>/dev/null || true)',
+        "Convert active Argo CD HA internal services to headless services",
+        "make_headless argo-cd-argocd-repo-server",
+        "make_headless argo-cd-redis-ha-haproxy",
+        '"clusterIP": "None"',
+        "PLATFORM_ARGOCD_SERVICE_REPAIR_HEADLESS_INTERNALS",
     )
     for fragment in required_fragments:
         if fragment not in text:

@@ -1,0 +1,247 @@
+---
+- name: Repair Grafana and Prometheus rollout and ingress backends
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_monitoring_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_MONITORING_REPAIR_TIMEOUT') }}"
+    platform_monitoring_repair_timeout_effective: "{{ platform_monitoring_repair_timeout | default(platform_monitoring_repair_timeout_from_env, true) | default(600, true) | int }}"
+  tasks:
+    - name: Show monitoring state before repair
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        echo "===== monitoring application ====="
+        "$K" --kubeconfig "$C" -n argocd get application/monitoring -o wide || true
+        echo "===== monitoring workloads ====="
+        "$K" --kubeconfig "$C" -n monitoring get deploy,statefulset,pods -o wide || true
+        echo "===== monitoring services and endpoints ====="
+        "$K" --kubeconfig "$C" -n monitoring get svc,endpointslice,ingress -o wide || true
+        echo "===== monitoring storage ====="
+        "$K" --kubeconfig "$C" -n monitoring get pvc -o wide || true
+      args:
+        executable: /bin/bash
+      register: platform_monitoring_state_before
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print monitoring state before repair
+      ansible.builtin.debug:
+        var: platform_monitoring_state_before.stdout_lines
+      run_once: true
+
+    - name: Require monitoring Argo CD application
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" -n argocd get application/monitoring >/dev/null
+      args:
+        executable: /bin/bash
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Hard refresh and sync monitoring application
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" -n argocd annotate application/monitoring \
+          argocd.argoproj.io/refresh=hard --overwrite
+        revision="$("$K" --kubeconfig "$C" -n argocd get application/monitoring \
+          -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+        revision="${revision:-main}"
+        "$K" --kubeconfig "$C" -n argocd patch application/monitoring --type merge \
+          -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")"
+      args:
+        executable: /bin/bash
+      register: platform_monitoring_refresh
+      changed_when: >-
+        'annotated' in platform_monitoring_refresh.stdout or
+        'patched' in platform_monitoring_refresh.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for monitoring application reconciliation
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_monitoring_repair_timeout_effective }}
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          sync="$($K --kubeconfig "$C" -n argocd get application/monitoring -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
+          health="$($K --kubeconfig "$C" -n argocd get application/monitoring -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
+          operation="$($K --kubeconfig "$C" -n argocd get application/monitoring -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
+          conditions="$($K --kubeconfig "$C" -n argocd get application/monitoring -o jsonpath='{range .status.conditions[*]}{.type}{":"}{.message}{";"}{end}' 2>/dev/null || true)"
+          echo "monitoring sync=${sync:-unknown} health=${health:-unknown} operation=${operation:-none} conditions=${conditions:-none}"
+          case "${operation}" in Error|Failed) exit 1 ;; esac
+          if [ "${sync}" = "Synced" ] && [ "${operation}" != "Running" ]; then
+            exit 0
+          fi
+          sleep 5
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_monitoring_sync_wait
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Restart active monitoring workloads
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        restarted=0
+        for workload in \
+          deployment/kube-prometheus-stack-operator \
+          deployment/kube-prometheus-stack-grafana \
+          statefulset/prometheus-kube-prometheus-stack-prometheus \
+          statefulset/alertmanager-kube-prometheus-stack-alertmanager; do
+          if "$K" --kubeconfig "$C" -n monitoring get "${workload}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n monitoring rollout restart "${workload}"
+            restarted=$((restarted + 1))
+          fi
+        done
+        echo "monitoring_workloads_restarted=${restarted}"
+      args:
+        executable: /bin/bash
+      register: platform_monitoring_restart
+      changed_when: "'monitoring_workloads_restarted=0' not in platform_monitoring_restart.stdout"
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Wait for Grafana and Prometheus ready service endpoints
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_monitoring_repair_timeout_effective }}
+        deadline=$(( $(date +%s) + TIMEOUT ))
+
+        ready_count() {
+          service="$1"
+          "$K" --kubeconfig "$C" -n monitoring get endpointslice \
+            -l "kubernetes.io/service-name=${service}" \
+            -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+            awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }'
+        }
+
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          grafana_ready="$(ready_count kube-prometheus-stack-grafana)"
+          prometheus_ready="$(ready_count kube-prometheus-stack-prometheus)"
+          echo "grafana_ready_endpoints=${grafana_ready} prometheus_ready_endpoints=${prometheus_ready}"
+          if [ "${grafana_ready}" -ge 1 ] && [ "${prometheus_ready}" -ge 1 ]; then
+            exit 0
+          fi
+          sleep 10
+        done
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_monitoring_endpoint_wait
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Probe Grafana and Prometheus ClusterIP APIs
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        failed=0
+
+        probe() {
+          service="$1"
+          path="$2"
+          cluster_ip="$($K --kubeconfig "$C" -n monitoring get "service/${service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+          port="$($K --kubeconfig "$C" -n monitoring get "service/${service}" -o jsonpath='{.spec.ports[0].port}' 2>/dev/null || true)"
+          if [ -z "${cluster_ip}" ] || [ "${cluster_ip}" = "None" ] || [ -z "${port}" ]; then
+            echo "service=${service} result=fail reason=service-address-missing"
+            failed=1
+            return
+          fi
+          code="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --connect-timeout 10 --max-time 15 "http://${cluster_ip}:${port}${path}" 2>/dev/null || true)"
+          echo "service=${service} cluster_ip=${cluster_ip} port=${port} http_code=${code:-000}"
+          case "${code}" in 2??|3??) ;; *) failed=1 ;; esac
+        }
+
+        probe kube-prometheus-stack-grafana /api/health
+        probe kube-prometheus-stack-prometheus /-/ready
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_monitoring_api_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Collect monitoring failure diagnostics
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        echo "===== monitoring application conditions ====="
+        "$K" --kubeconfig "$C" -n argocd get application/monitoring -o wide || true
+        "$K" --kubeconfig "$C" -n argocd get application/monitoring \
+          -o jsonpath='{range .status.conditions[*]}{.type}{": "}{.message}{"\n"}{end}' || true
+        echo "===== monitoring runtime ====="
+        "$K" --kubeconfig "$C" -n monitoring get deploy,statefulset,pods,svc,endpointslice,pvc,ingress -o wide || true
+        echo "===== monitoring pod events ====="
+        for pod in $($K --kubeconfig "$C" -n monitoring get pod -o name 2>/dev/null || true); do
+          echo "--- ${pod} ---"
+          "$K" --kubeconfig "$C" -n monitoring describe "${pod}" 2>&1 | sed -n '/Events:/,$p' | tail -80 || true
+        done
+        echo "===== Longhorn capacity and monitoring volumes ====="
+        "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o wide || true
+        "$K" --kubeconfig "$C" -n longhorn-system get volumes.longhorn.io -o wide || true
+      args:
+        executable: /bin/bash
+      register: platform_monitoring_failure_diagnostics
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: >-
+        platform_monitoring_sync_wait.rc | int != 0 or
+        platform_monitoring_endpoint_wait.rc | int != 0 or
+        platform_monitoring_api_probe.rc | int != 0
+
+    - name: Stop after monitoring repair failure
+      ansible.builtin.fail:
+        msg: |
+          Grafana and Prometheus did not become reconciled and reachable within
+          {{ platform_monitoring_repair_timeout_effective }}s.
+
+          Argo CD reconciliation:
+          {{ platform_monitoring_sync_wait.stdout | default('not run') }}
+
+          Endpoint wait:
+          {{ platform_monitoring_endpoint_wait.stdout | default('not run') }}
+
+          ClusterIP API probes:
+          {{ platform_monitoring_api_probe.stdout | default('not run') }}
+
+          Diagnostics:
+          {{ platform_monitoring_failure_diagnostics.stdout | default('not run') }}
+      when: >-
+        platform_monitoring_sync_wait.rc | int != 0 or
+        platform_monitoring_endpoint_wait.rc | int != 0 or
+        platform_monitoring_api_probe.rc | int != 0
+      run_once: true
+
+    - name: Show successful monitoring repair result
+      ansible.builtin.debug:
+        msg: |
+          Monitoring is reconciled. Grafana and Prometheus each have a ready
+          backend endpoint and their in-cluster readiness APIs responded.
+      run_once: true

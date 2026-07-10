@@ -27,6 +27,7 @@ alternative_rook_ceph_values = root / "gitops/clusters/rke2-main/alternatives/ro
 alternative_traefik_values = root / "gitops/clusters/rke2-main/alternatives/traefik/values.yaml"
 base_argocd_values = root / "gitops/clusters/rke2-main/apps/argocd-ha/values.yaml"
 premium_argocd_values = root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml"
+premium_argocd_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/kustomization.yaml"
 base_forgejo_values = root / "gitops/clusters/rke2-main/apps/forgejo/values.yaml"
 premium_forgejo_values = root / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml"
 base_woodpecker_values = root / "gitops/clusters/rke2-main/apps/woodpecker/values.yaml"
@@ -846,6 +847,19 @@ def main() -> None:
         ):
             require_text(argocd_text, needle, f"{label} must include {needle.splitlines()[0]}")
 
+    premium_argocd_kustomization_text = read(premium_argocd_kustomization)
+    for needle in (
+        "name: argo-cd-argocd-repo-server",
+        "name: argo-cd-redis-ha-haproxy",
+        'path: /spec/clusterIP\n        value: "None"',
+        "path: /spec/publishNotReadyAddresses\n        value: false",
+    ):
+        require_text(
+            premium_argocd_kustomization_text,
+            needle,
+            f"premium Argo CD HA internal service bypass must include {needle.splitlines()[0]}",
+        )
+
     base_forgejo_text = read(base_forgejo_values)
     premium_forgejo_text = read(premium_forgejo_values)
     for needle in (
@@ -897,6 +911,10 @@ def main() -> None:
         "WOODPECKER_OPEN: \"false\"",
         "WOODPECKER_FORGEJO: \"true\"",
         "WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>",
+        'WOODPECKER_SERVER_ADDR: ":8000"',
+        'WOODPECKER_GRPC_ADDR: ":9000"',
+        'WOODPECKER_LOG_LEVEL: "debug"',
+        "probes:\n    liveness:\n      timeoutSeconds: 10\n      periodSeconds: 10\n      successThreshold: 1\n      failureThreshold: 30",
         "ingressClassName: traefik",
         "traefik.ingress.kubernetes.io/router.entrypoints: websecure",
         "traefik.ingress.kubernetes.io/router.tls: \"true\"",
@@ -957,6 +975,10 @@ def main() -> None:
         "WOODPECKER_OPEN: \"false\"",
         "WOODPECKER_FORGEJO: \"true\"",
         "WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>",
+        'WOODPECKER_SERVER_ADDR: ":8000"',
+        'WOODPECKER_GRPC_ADDR: ":9000"',
+        'WOODPECKER_LOG_LEVEL: "debug"',
+        "probes:\n    liveness:\n      timeoutSeconds: 10\n      periodSeconds: 10\n      successThreshold: 1\n      failureThreshold: 30",
         "- woodpecker-forgejo-oauth",
         "createAgentSecret: true",
         "ingressClassName: traefik",
@@ -2355,14 +2377,42 @@ def main() -> None:
     if not woodpecker_repair_target:
         fail("could not parse platform-woodpecker-repair target body")
     woodpecker_repair_body = woodpecker_repair_target.group("body")
+    dns_repair = "@$(MAKE) platform-dns-repair"
+    argocd_repair = "@$(MAKE) platform-argocd-service-repair"
     consumer_refresh = "@$(MAKE) platform-service-path-consumers-repair"
     strict_repair = "ansible/playbooks/repair-woodpecker.yml"
     first_consumer_refresh = woodpecker_repair_body.find(consumer_refresh)
     strict_repair_index = woodpecker_repair_body.find(strict_repair)
+    dns_repair_index = woodpecker_repair_body.find(dns_repair)
+    argocd_repair_index = woodpecker_repair_body.find(argocd_repair)
+    if not (0 <= dns_repair_index < argocd_repair_index < strict_repair_index):
+        fail("platform-woodpecker-repair must repair shared service paths and Argo CD before Woodpecker")
     if woodpecker_repair_body.count(consumer_refresh) != 1:
         fail("platform-woodpecker-repair must refresh service-path consumers once after strict repair")
     if not (0 <= strict_repair_index < first_consumer_refresh):
         fail("platform-woodpecker-repair must run strict Woodpecker repair before service-path consumer refresh")
+    if "platform-monitoring-repair:" not in makefile_text:
+        fail("Makefile is missing platform-monitoring-repair target")
+    if "platform-monitoring-health:" not in makefile_text:
+        fail("Makefile is missing platform-monitoring-health target")
+    for needle in (
+        "ansible/playbooks/repair-monitoring.yml",
+        "@$(MAKE) platform-monitoring-health",
+        'PLATFORM_APP_HEALTH_REQUIRED_APPS="traefik monitoring"',
+        'PLATFORM_APP_HEALTH_GUI_APPS="grafana prometheus"',
+    ):
+        require_text(makefile_text, needle, f"monitoring repair targets must cover {needle}")
+    monitoring_repair_text = read(root / "ansible/playbooks/repair-monitoring.yml")
+    for needle in (
+        "Hard refresh and sync monitoring application",
+        "Wait for Grafana and Prometheus ready service endpoints",
+        "Probe Grafana and Prometheus ClusterIP APIs",
+        "kube-prometheus-stack-grafana",
+        "kube-prometheus-stack-prometheus",
+        "PLATFORM_MONITORING_REPAIR_TIMEOUT",
+        "Longhorn capacity and monitoring volumes",
+    ):
+        require_text(monitoring_repair_text, needle, f"monitoring repair playbook must cover {needle}")
     service_path_consumers_text = read(service_path_consumers_playbook)
     for needle in (
         "Refresh Woodpecker agents after service path repair",
@@ -2399,7 +2449,8 @@ def main() -> None:
         "Repair Woodpecker CI rollout and runtime drift",
         "Refresh and sync Woodpecker Argo CD application",
         "argocd.argoproj.io/refresh=hard",
-        '{"operation":{"sync":{"revision":"HEAD","prune":false}}}',
+        "{.spec.source.targetRevision}",
+        "revision\\\":\\\"%s",
         "Wait for Woodpecker server and agents after repair",
         "Verify Woodpecker runtime images and service endpoints after repair",
         "woodpeckerci/woodpecker-server",
@@ -2408,6 +2459,10 @@ def main() -> None:
         "woodpecker-server-has-no-ready-endpoints",
         "PLATFORM_WOODPECKER_REPAIR_EXPECTED_IMAGE_TAG",
         "PLATFORM_WOODPECKER_REPAIR_TIMEOUT",
+        "PLATFORM_WOODPECKER_REPAIR_CHECK_IMAGE",
+        "Verify PostgreSQL service path from the Woodpecker server node",
+        "Reconcile and verify Woodpecker PostgreSQL role credentials",
+        "woodpecker-to-postgres-service-path-unreachable",
         "make platform-woodpecker-repair",
     ):
         require_text(

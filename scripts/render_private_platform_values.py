@@ -772,6 +772,20 @@ server:
     WOODPECKER_FORGEJO: "true"
     WOODPECKER_FORGEJO_URL: {yaml_string(forgejo_url)}
 {database_env.rstrip()}
+    WOODPECKER_SERVER_ADDR: ":8000"
+    WOODPECKER_GRPC_ADDR: ":9000"
+    WOODPECKER_LOG_LEVEL: "debug"
+  probes:
+    liveness:
+      timeoutSeconds: 10
+      periodSeconds: 10
+      successThreshold: 1
+      failureThreshold: 30
+    readiness:
+      timeoutSeconds: 10
+      periodSeconds: 10
+      successThreshold: 1
+      failureThreshold: 3
   extraSecretNamesForEnvFrom:
     - {yaml_string(oauth_secret_name)}
 {database_secret.rstrip()}
