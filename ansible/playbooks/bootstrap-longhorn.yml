@@ -706,6 +706,16 @@
           changed_when: "'Adding automatic extra Longhorn disk' in platform_longhorn_auto_extra_disk_config.stdout"
           when: platform_longhorn_auto_extra_disk_enabled_effective | bool
 
+        - name: Show Longhorn automatic extra disk decisions
+          ansible.builtin.debug:
+            msg: |-
+              {% for node in groups['rke2_servers'] %}
+              ===== {{ node }} =====
+              {{ hostvars[node].platform_longhorn_auto_extra_disk_config.stdout | default('automatic extra disk check did not run') }}
+              {% endfor %}
+          run_once: true
+          when: platform_longhorn_auto_extra_disk_enabled_effective | bool
+
         - name: Repair duplicate Longhorn disk filesystem IDs when an empty duplicate disk exists
           ansible.builtin.shell: |
             set -o pipefail
@@ -869,6 +879,24 @@
                 spec_disks = item.get("spec", {}).get("disks") or {}
                 status_disks = item.get("status", {}).get("diskStatus") or {}
                 print(f"{name}: specDisks={list(spec_disks.keys())} statusDisks={list(status_disks.keys())}")
+                for disk_name, disk in status_disks.items():
+                    conditions = {
+                        condition.get("type"): condition
+                        for condition in disk.get("conditions", [])
+                    }
+                    ready = conditions.get("Ready", {})
+                    schedulable = conditions.get("Schedulable", {})
+                    scheduled = disk.get("scheduledReplica") or {}
+                    print(
+                        f"  {disk_name}: ready={ready.get('status', 'Unknown')} "
+                        f"readyReason={ready.get('reason', '') or 'none'} "
+                        f"schedulable={schedulable.get('status', 'Unknown')} "
+                        f"schedulableReason={schedulable.get('reason', '') or 'none'} "
+                        f"scheduledReplicas={len(scheduled)} "
+                        f"storageAvailable={disk.get('storageAvailable', 0)} "
+                        f"storageMaximum={disk.get('storageMaximum', 0)} "
+                        f"storageScheduled={disk.get('storageScheduled', 0)}"
+                    )
 
             problems = []
             if missing_spec:
@@ -969,6 +997,12 @@
 
               Diagnostic summary:
               {{ platform_longhorn_failure.stdout }}
+
+              Automatic extra disk decisions:
+              {% for node in groups['rke2_servers'] %}
+              ===== {{ node }} =====
+              {{ hostvars[node].platform_longhorn_auto_extra_disk_config.stdout | default('automatic extra disk check did not run') }}
+              {% endfor %}
 
               Common causes are blocked chart/image pulls, missing Longhorn host
               prerequisites, insufficient disk space, CNI pod networking problems,

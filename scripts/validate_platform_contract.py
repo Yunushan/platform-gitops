@@ -2398,6 +2398,8 @@ def main() -> None:
     argocd_repair_index = woodpecker_repair_body.find(argocd_repair)
     if not (0 <= dns_repair_index < argocd_repair_index < strict_repair_index):
         fail("platform-woodpecker-repair must repair shared service paths and Argo CD before Woodpecker")
+    if "@$(MAKE) platform-longhorn-bootstrap" in woodpecker_repair_body:
+        fail("platform-woodpecker-repair must not gate focused CI repair on cluster-wide Longhorn capacity")
     if woodpecker_repair_body.count(consumer_refresh) != 1:
         fail("platform-woodpecker-repair must refresh service-path consumers once after strict repair")
     if not (0 <= strict_repair_index < first_consumer_refresh):

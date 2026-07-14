@@ -203,7 +203,6 @@ platform-ci-health:
 platform-woodpecker-repair:
 	@$(MAKE) platform-dns-repair
 	@$(MAKE) platform-argocd-service-repair
-	@$(MAKE) platform-longhorn-bootstrap
 	@$(MAKE) platform-app-secrets
 	@set -o pipefail; \
 		repair_log="$$(mktemp)"; \

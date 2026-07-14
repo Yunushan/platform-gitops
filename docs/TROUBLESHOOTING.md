@@ -93,6 +93,12 @@ the first targeted recovery with `PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=f
 or adjust its per-node wait with
 `PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT`.
 
+The focused Woodpecker repair validates the PostgreSQL service, ready endpoint,
+credentials, and backing PVC directly. It does not run the full Longhorn
+bootstrap or require every storage node to have capacity for new replicas.
+Use `make platform-longhorn-bootstrap` separately when repairing cluster-wide
+storage capacity or Longhorn installation state.
+
 If `make platform-status` shows a published GUI host returning `502` or `504`
 through the app VIP from either the cluster-side probe or the controller/client
 probe, the DNS/VIP reached Traefik but Traefik could not complete the backend
