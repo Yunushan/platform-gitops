@@ -65,6 +65,7 @@ stale_premium_root_app = root / "gitops/bootstrap/root-app-premium-3node.yaml"
 health_playbook = root / "ansible/playbooks/verify-platform-app-health.yml"
 service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-service-path-consumers.yml"
 woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
+dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
 verify_rke2_playbook = root / "ansible/playbooks/verify-rke2.yml"
 status_playbook = root / "ansible/playbooks/platform-status.yml"
 profile_check_script = root / "scripts/check_gitops_profile.py"
@@ -2372,6 +2373,9 @@ def main() -> None:
         "ansible/playbooks/repair-woodpecker.yml",
         "@$(MAKE) platform-service-path-consumers-repair",
         "@$(MAKE) platform-ci-health",
+        "PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true",
+        "reason=postgres-endpoint-path-unreachable",
+        "all-node CNI/firewalld recovery",
     ):
         require_text(makefile_text, needle, f"platform-woodpecker-repair must cover {needle}")
     woodpecker_repair_target = re.search(
@@ -2395,6 +2399,14 @@ def main() -> None:
         fail("platform-woodpecker-repair must refresh service-path consumers once after strict repair")
     if not (0 <= strict_repair_index < first_consumer_refresh):
         fail("platform-woodpecker-repair must run strict Woodpecker repair before service-path consumer refresh")
+    dns_repair_text = read(dns_repair_playbook)
+    for needle in (
+        "PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR",
+        "platform_dns_force_service_path_repair_effective",
+        "platform_dns_service_path_repair_required",
+        "platform_dns_force_service_path_repair_effective | bool",
+    ):
+        require_text(dns_repair_text, needle, f"DNS repair must support forced CNI service-path recovery: {needle}")
     if "platform-monitoring-repair:" not in makefile_text:
         fail("Makefile is missing platform-monitoring-repair target")
     if "platform-monitoring-health:" not in makefile_text:

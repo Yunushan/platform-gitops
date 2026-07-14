@@ -15,6 +15,7 @@
     platform_dns_helm_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_HELM_TIMEOUT') }}"
     platform_dns_job_cleanup_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_JOB_CLEANUP_TIMEOUT') }}"
     platform_dns_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_REPAIR') }}"
+    platform_dns_force_service_path_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR') }}"
     platform_dns_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
     platform_dns_service_path_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL') }}"
     platform_dns_kube_proxy_delete_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT') }}"
@@ -33,6 +34,7 @@
     platform_dns_check_repo_effective: "{{ platform_dns_check_repo | default(platform_dns_check_repo_from_env, true) | default('https://metallb.github.io/metallb', true) }}"
     platform_dns_ipv4_only_effective: "{{ platform_dns_ipv4_only | default(platform_dns_ipv4_only_from_env, true) | default(true, true) | bool }}"
     platform_dns_service_path_repair_effective: "{{ platform_dns_service_path_repair | default(platform_dns_service_path_repair_from_env, true) | default(true, true) | bool }}"
+    platform_dns_force_service_path_repair_effective: "{{ platform_dns_force_service_path_repair | default(platform_dns_force_service_path_repair_from_env, true) | default(false, true) | bool }}"
     platform_dns_service_path_rollout_timeout_effective: "{{ platform_dns_service_path_rollout_timeout | default(platform_dns_service_path_rollout_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_service_path_poll_interval_effective: "{{ platform_dns_service_path_poll_interval | default(platform_dns_service_path_poll_interval_from_env, true) | default(5, true) | int }}"
     platform_dns_service_path_rollout_retries_effective: "{{ (((platform_dns_service_path_rollout_timeout_effective | int) / (platform_dns_service_path_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
@@ -654,11 +656,15 @@
     - name: Show healthy cluster DNS
       ansible.builtin.debug:
         msg: "Cluster DNS already resolves external chart repositories from pods."
-      when: platform_dns_check_before.rc == 0
+      when:
+        - platform_dns_check_before.rc == 0
+        - not (platform_dns_force_service_path_repair_effective | bool)
       run_once: true
 
     - name: Repair CoreDNS upstreams when pod DNS check fails
-      when: platform_dns_check_before.rc != 0
+      when: >-
+        (platform_dns_force_service_path_repair_effective | bool) or
+        platform_dns_check_before.rc != 0
       block:
         - name: Collect cluster DNS diagnostics before repair
           ansible.builtin.shell: |
@@ -940,6 +946,7 @@
                   The failed rollout task above contains the bounded deployment,
                   ReplicaSet, event, and CoreDNS log diagnostics.
               run_once: true
+          when: not (platform_dns_force_service_path_repair_effective | bool)
 
         - name: Ensure CoreDNS HA local service routing after CoreDNS repair
           ansible.builtin.shell: |
@@ -1068,6 +1075,7 @@
           failed_when: platform_dns_coredns_ha_local_routing.rc != 0
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
+          when: not (platform_dns_force_service_path_repair_effective | bool)
 
         - name: Detect CoreDNS endpoint IPs after CoreDNS repair
           ansible.builtin.shell: |
@@ -1213,6 +1221,15 @@
             platform_dns_direct_upstream_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=true') }}"
           run_once: true
 
+        - name: Determine whether CNI service-path repair is required
+          ansible.builtin.set_fact:
+            platform_dns_service_path_repair_required: >-
+              {{
+                (platform_dns_force_service_path_repair_effective | bool) or
+                not (platform_dns_default_resolution_ok | bool)
+              }}
+          run_once: true
+
         - name: Detect Kubernetes pod CIDRs for DNS service path repair
           ansible.builtin.shell: |
             K=/var/lib/rancher/rke2/bin/kubectl
@@ -1232,7 +1249,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
 
         - name: Select Kubernetes pod CIDRs for DNS service path repair
           ansible.builtin.set_fact:
@@ -1246,7 +1263,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
 
         - name: Write CNI DNS service path sysctl repair on all nodes
           ansible.builtin.copy:
@@ -1260,14 +1277,14 @@
               net.ipv4.conf.default.rp_filter=0
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
 
         - name: Apply CNI DNS service path sysctl repair on all nodes
           ansible.builtin.command: sysctl --system
           changed_when: false
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
 
         - name: Repair CNI DNS service path kernel modules and interface rp_filter
           ansible.builtin.shell: |
@@ -1289,7 +1306,7 @@
           changed_when: false
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
 
         - name: Check firewalld state for DNS service path repair
           ansible.builtin.command: firewall-cmd --state
@@ -1298,7 +1315,7 @@
           failed_when: false
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
 
         - name: Query CNI DNS service path firewalld ports
           ansible.builtin.command: "firewall-cmd --permanent --query-port={{ item }}"
@@ -1308,7 +1325,7 @@
           loop: "{{ platform_dns_service_path_firewalld_ports }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
 
         - name: Open CNI DNS service path firewalld ports
@@ -1318,7 +1335,7 @@
           loop: "{{ platform_dns_service_path_firewalld_port_queries.results | default([]) }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - item.rc != 0
 
@@ -1330,7 +1347,7 @@
           loop: "{{ (hostvars[rke2_first_server].platform_dns_pod_cidrs_effective | default('')).split() }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - (hostvars[rke2_first_server].platform_dns_pod_cidrs_effective | default('') | trim | length) > 0
 
@@ -1342,7 +1359,7 @@
           loop: "{{ platform_dns_service_path_firewalld_source_queries.results | default([]) }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - item.rc != 0
 
@@ -1354,7 +1371,7 @@
           loop: "{{ groups['rke2_servers'] | default([]) }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - (hostvars[item].ansible_host | default(item)) is match('^([0-9]{1,3}\.){3}[0-9]{1,3}$')
 
@@ -1366,7 +1383,7 @@
           loop: "{{ platform_dns_service_path_firewalld_node_source_queries.results | default([]) }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - (item.rc | default(0)) != 0
 
@@ -1378,7 +1395,7 @@
           loop: "{{ platform_dns_service_path_firewalld_trusted_interfaces }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
 
         - name: Trust CNI DNS service path interfaces in firewalld
@@ -1389,7 +1406,7 @@
           loop: "{{ platform_dns_service_path_firewalld_interface_queries.results | default([]) }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
             - item.rc != 0
 
@@ -1445,7 +1462,7 @@
           failed_when: false
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
 
         - name: Reload firewalld after CNI DNS service path repair
@@ -1453,7 +1470,7 @@
           changed_when: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (hostvars[rke2_first_server].platform_dns_default_resolution_ok | default(false) | bool)
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_open.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
               or (platform_dns_service_path_firewalld_trust_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
               or (platform_dns_service_path_firewalld_trust_node_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
@@ -1492,7 +1509,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
 
         - name: Print Kubernetes DNS service path state before component repair
           ansible.builtin.debug:
@@ -1520,7 +1537,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
 
         - name: Restart kube-proxy DNS service path component
           ansible.builtin.command: >-
@@ -1533,7 +1550,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
             - platform_dns_kube_proxy_workload.stdout | default('none') != 'none'
 
         - name: Poll kube-proxy DNS service path component
@@ -1551,7 +1568,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
             - platform_dns_kube_proxy_workload.stdout | default('none') != 'none'
 
         - name: Delete kube-proxy pods when no DaemonSet exists
@@ -1577,7 +1594,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
             - platform_dns_kube_proxy_workload.stdout | default('none') == 'none'
 
         - name: Poll static kube-proxy pods after delete
@@ -1608,7 +1625,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
             - platform_dns_kube_proxy_workload.stdout | default('none') == 'none'
 
         - name: Restart Cilium DNS service path component
@@ -1622,7 +1639,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
 
         - name: Poll Cilium DNS service path component
           ansible.builtin.command: >-
@@ -1639,7 +1656,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
             - platform_dns_service_path_cilium_restart.rc | default(1) == 0
 
         - name: Show Cilium DNS service path component
@@ -1657,7 +1674,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
 
         - name: Restart CoreDNS DNS service path component
           ansible.builtin.command: >-
@@ -1706,7 +1723,7 @@
           run_once: true
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
 
         - name: Print Kubernetes DNS service path repair output
           ansible.builtin.debug:
@@ -1723,7 +1740,7 @@
               - "{{ platform_dns_service_path_state_after_repair.stdout_lines | default(['not collected']) }}"
           when:
             - platform_dns_service_path_repair_effective | bool
-            - not (platform_dns_default_resolution_ok | bool)
+            - platform_dns_service_path_repair_required | bool
           run_once: true
 
         - name: Detect CoreDNS endpoint IPs after DNS service path component repair
@@ -2056,6 +2073,7 @@
           failed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
+          when: not (platform_dns_force_service_path_repair_effective | bool)
 
         - name: Collect cluster DNS diagnostics after failed repair
           ansible.builtin.shell: |
@@ -2126,7 +2144,9 @@
           failed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
-          when: platform_dns_check_after.rc != 0
+          when: >-
+            not (platform_dns_force_service_path_repair_effective | bool) and
+            platform_dns_check_after.rc != 0
 
         - name: Stop when cluster chart repository access still fails after repair
           ansible.builtin.fail:
@@ -2196,11 +2216,25 @@
               do not choose unreachable public IPv6 addresses on IPv4-only networks.
               If your environment has working IPv6 egress, disable that mode with:
               PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
-          when: platform_dns_check_after.rc != 0
+          when: >-
+            not (platform_dns_force_service_path_repair_effective | bool) and
+            platform_dns_check_after.rc != 0
           run_once: true
 
         - name: Show repaired cluster DNS
           ansible.builtin.debug:
             msg: "Cluster DNS repair succeeded. Continuing with platform ingress."
-          when: platform_dns_check_after.rc == 0
+          when: >-
+            not (platform_dns_force_service_path_repair_effective | bool) and
+            platform_dns_check_after.rc == 0
+          run_once: true
+
+        - name: Show forced CNI service-path recovery result
+          ansible.builtin.debug:
+            msg: >-
+              Forced CNI service-path recovery completed: host sysctls,
+              reverse-path filtering, firewalld rules, kube-proxy, and Cilium
+              were reconciled without restarting CoreDNS or running the chart
+              repository check.
+          when: platform_dns_force_service_path_repair_effective | bool
           run_once: true

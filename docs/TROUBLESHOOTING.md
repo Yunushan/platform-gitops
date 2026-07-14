@@ -86,9 +86,12 @@ For PostgreSQL-backed Woodpecker, the repair also resolves ready EndpointSlice
 addresses and probes DNS, ClusterIP, and direct pod endpoints from the
 Woodpecker server node. A ClusterIP or direct-endpoint timeout triggers one
 bounded refresh of kube-proxy and Cilium on only the affected source/endpoint
-nodes, followed by an automatic second probe. Disable that recovery with
-`PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=false`, or adjust its per-node
-wait with `PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT`.
+nodes, followed by an automatic second probe. If the direct endpoint still
+times out, the Make target applies the existing all-node CNI, reverse-path
+filter, and firewalld recovery once, then reruns the Woodpecker repair. Disable
+the first targeted recovery with `PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=false`,
+or adjust its per-node wait with
+`PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT`.
 
 If `make platform-status` shows a published GUI host returning `502` or `504`
 through the app VIP from either the cluster-side probe or the controller/client

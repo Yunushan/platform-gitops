@@ -205,7 +205,20 @@ platform-woodpecker-repair:
 	@$(MAKE) platform-argocd-service-repair
 	@$(MAKE) platform-longhorn-bootstrap
 	@$(MAKE) platform-app-secrets
-	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml
+	@set -o pipefail; \
+		repair_log="$$(mktemp)"; \
+		trap 'rm -f "$$repair_log"' EXIT; \
+		if ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml 2>&1 | tee "$$repair_log"; then \
+			exit 0; \
+		else \
+			repair_rc="$$?"; \
+		fi; \
+		if ! grep -q 'reason=postgres-endpoint-path-unreachable' "$$repair_log"; then \
+			exit "$$repair_rc"; \
+		fi; \
+		echo "Woodpecker PostgreSQL direct endpoint failed; applying all-node CNI/firewalld recovery and retrying once."; \
+		PLATFORM_DNS_SERVICE_PATH_REPAIR=true PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true $(MAKE) platform-dns-repair; \
+		ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml
 	@$(MAKE) platform-service-path-consumers-repair
 	@$(MAKE) platform-ci-health
 
