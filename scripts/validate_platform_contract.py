@@ -2376,6 +2376,9 @@ def main() -> None:
         "PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true",
         "reason=postgres-endpoint-path-unreachable",
         "all-node CNI/firewalld recovery",
+        'repair_rc="$${PIPESTATUS[0]}"',
+        "grep -Fq 'reason=postgres-endpoint-path-unreachable'",
+        "all-node recovery skipped",
     ):
         require_text(makefile_text, needle, f"platform-woodpecker-repair must cover {needle}")
     woodpecker_repair_target = re.search(

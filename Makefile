@@ -208,12 +208,15 @@ platform-woodpecker-repair:
 	@set -o pipefail; \
 		repair_log="$$(mktemp)"; \
 		trap 'rm -f "$$repair_log"' EXIT; \
-		if ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml 2>&1 | tee "$$repair_log"; then \
+		set +e; \
+		ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml 2>&1 | tee "$$repair_log"; \
+		repair_rc="$${PIPESTATUS[0]}"; \
+		set -e; \
+		if [ "$$repair_rc" -eq 0 ]; then \
 			exit 0; \
-		else \
-			repair_rc="$$?"; \
 		fi; \
-		if ! grep -q 'reason=postgres-endpoint-path-unreachable' "$$repair_log"; then \
+		if ! grep -Fq 'reason=postgres-endpoint-path-unreachable' "$$repair_log"; then \
+			echo "Woodpecker repair failed without a direct PostgreSQL endpoint-path classification; all-node recovery skipped." >&2; \
 			exit "$$repair_rc"; \
 		fi; \
 		echo "Woodpecker PostgreSQL direct endpoint failed; applying all-node CNI/firewalld recovery and retrying once."; \
