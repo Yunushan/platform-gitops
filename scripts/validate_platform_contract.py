@@ -2410,6 +2410,13 @@ def main() -> None:
         "platform_dns_force_service_path_repair_effective",
         "platform_dns_service_path_repair_required",
         "platform_dns_force_service_path_repair_effective | bool",
+        "Reload and recover firewalld after CNI DNS service path repair",
+        "firewalld_reload_action=rolling-restart",
+        "firewalld_reload_result=recovered",
+        "firewalld_reload_result=completed-after-dbus-timeout",
+        "verify_firewalld_runtime",
+        "platform_dns_service_path_firewalld_state.rc | default(1)",
+        "throttle: 1",
     ):
         require_text(dns_repair_text, needle, f"DNS repair must support forced CNI service-path recovery: {needle}")
     if "platform-monitoring-repair:" not in makefile_text:

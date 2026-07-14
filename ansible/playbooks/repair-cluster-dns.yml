@@ -1465,17 +1465,130 @@
             - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
 
-        - name: Reload firewalld after CNI DNS service path repair
-          ansible.builtin.command: firewall-cmd --reload
+        - name: Reload and recover firewalld after CNI DNS service path repair
+          ansible.builtin.shell: |
+            set -o pipefail
+            set -u
+
+            run_bounded() {
+              seconds="$1"
+              shift
+              if command -v timeout >/dev/null 2>&1; then
+                timeout --foreground "${seconds}s" "$@"
+              else
+                "$@"
+              fi
+            }
+
+            wait_for_firewalld() {
+              attempt=1
+              while [ "${attempt}" -le 12 ]; do
+                state="$(run_bounded 10 firewall-cmd --state 2>/dev/null || true)"
+                if [ "${state}" = "running" ]; then
+                  echo "firewalld_state=running attempt=${attempt}"
+                  return 0
+                fi
+                sleep 2
+                attempt=$((attempt + 1))
+              done
+              return 1
+            }
+
+            verify_firewalld_runtime() {
+              missing=false
+              ports="{{ platform_dns_service_path_firewalld_ports | join(' ') }}"
+              pod_cidrs="{{ hostvars[rke2_first_server].platform_dns_pod_cidrs_effective | default('') }}"
+              node_ips="{% for node in groups['rke2_servers'] | default([]) %}{{ hostvars[node].ansible_host | default(node) }} {% endfor %}"
+              trusted_interfaces="{{ platform_dns_service_path_firewalld_trusted_interfaces | join(' ') }}"
+
+              for port in ${ports}; do
+                if ! run_bounded 10 firewall-cmd --query-port="${port}" >/dev/null 2>&1; then
+                  echo "firewalld_runtime_missing=port:${port}"
+                  missing=true
+                fi
+              done
+
+              for source in ${pod_cidrs}; do
+                if ! run_bounded 10 firewall-cmd --zone=trusted --query-source="${source}" >/dev/null 2>&1; then
+                  echo "firewalld_runtime_missing=trusted-source:${source}"
+                  missing=true
+                fi
+              done
+
+              for node_ip in ${node_ips}; do
+                case "${node_ip}" in
+                  ''|*[!0-9.]*) continue ;;
+                esac
+                source="${node_ip}/32"
+                if ! run_bounded 10 firewall-cmd --zone=trusted --query-source="${source}" >/dev/null 2>&1; then
+                  echo "firewalld_runtime_missing=trusted-source:${source}"
+                  missing=true
+                fi
+              done
+
+              for interface in ${trusted_interfaces}; do
+                if ! ip link show "${interface}" >/dev/null 2>&1; then
+                  continue
+                fi
+                if ! run_bounded 10 firewall-cmd --zone=trusted --query-interface="${interface}" >/dev/null 2>&1; then
+                  echo "firewalld_runtime_missing=trusted-interface:${interface}"
+                  missing=true
+                fi
+              done
+
+              [ "${missing}" = "false" ]
+            }
+
+            reload_rc=0
+            reload_output="$(run_bounded 40 firewall-cmd --reload 2>&1)" || reload_rc=$?
+            printf 'firewalld_reload_rc=%s\n%s\n' "${reload_rc}" "${reload_output}"
+
+            runtime_ready=false
+            if wait_for_firewalld && verify_firewalld_runtime; then
+              runtime_ready=true
+            fi
+
+            if [ "${runtime_ready}" != "true" ]; then
+              echo "firewalld_reload_action=rolling-restart"
+              restart_rc=0
+              restart_output="$(run_bounded 90 systemctl restart firewalld 2>&1)" || restart_rc=$?
+              printf 'firewalld_restart_rc=%s\n%s\n' "${restart_rc}" "${restart_output}"
+
+              if ! wait_for_firewalld; then
+                echo "firewalld_reload_result=failed" >&2
+                run_bounded 15 systemctl --no-pager --full status firewalld >&2 || true
+                run_bounded 15 journalctl --no-pager -u firewalld -n 80 >&2 || true
+                exit 1
+              fi
+              if ! verify_firewalld_runtime; then
+                echo "firewalld_reload_result=failed-runtime-verification" >&2
+                run_bounded 15 firewall-cmd --get-active-zones >&2 || true
+                run_bounded 15 firewall-cmd --zone=trusted --list-all >&2 || true
+                run_bounded 15 firewall-cmd --direct --get-all-rules >&2 || true
+                exit 1
+              fi
+              echo "firewalld_reload_result=recovered"
+            elif [ "${reload_rc}" -ne 0 ]; then
+              echo "firewalld_reload_result=completed-after-dbus-timeout"
+            else
+              echo "firewalld_reload_result=success"
+            fi
+
+            echo "===== active firewalld zones after CNI repair ====="
+            run_bounded 15 firewall-cmd --get-active-zones || true
+            echo "===== trusted firewalld zone after CNI repair ====="
+            run_bounded 15 firewall-cmd --zone=trusted --list-all || true
+            echo "===== direct firewalld rules after CNI repair ====="
+            run_bounded 15 firewall-cmd --direct --get-all-rules || true
+          args:
+            executable: /bin/bash
+          register: platform_dns_service_path_firewalld_reload
           changed_when: true
+          throttle: 1
           when:
             - platform_dns_service_path_repair_effective | bool
             - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
-            - (platform_dns_service_path_firewalld_open.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
-              or (platform_dns_service_path_firewalld_trust_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
-              or (platform_dns_service_path_firewalld_trust_node_sources.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
-              or (platform_dns_service_path_firewalld_trust_interfaces.results | default([]) | selectattr('changed', 'defined') | selectattr('changed') | list | length) > 0
-              or (platform_dns_service_path_firewalld_direct_cni_rules.changed | default(false) | bool)
+            - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
 
         - name: Collect Kubernetes DNS service path state before component repair
           ansible.builtin.shell: |
