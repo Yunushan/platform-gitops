@@ -1308,11 +1308,103 @@
             - platform_dns_service_path_repair_effective | bool
             - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
 
-        - name: Check firewalld state for DNS service path repair
-          ansible.builtin.command: firewall-cmd --state
-          register: platform_dns_service_path_firewalld_state
+        - name: Prune transient CNI interfaces from permanent firewalld trust
+          ansible.builtin.script:
+            cmd: "{{ playbook_dir }}/../../scripts/cleanup_firewalld_cni_interfaces.py --path /etc/firewalld/zones/trusted.xml"
+            executable: /usr/bin/python3
+          register: platform_dns_service_path_firewalld_interface_cleanup
+          changed_when: >-
+            'firewalld_ephemeral_interface_cleanup=changed' in
+            (platform_dns_service_path_firewalld_interface_cleanup.stdout | default(''))
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
+
+        - name: Restore firewalld trusted zone SELinux context after cleanup
+          ansible.builtin.command: restorecon -F /etc/firewalld/zones/trusted.xml
+          register: platform_dns_service_path_firewalld_interface_cleanup_restorecon
           changed_when: false
           failed_when: false
+          when:
+            - platform_dns_service_path_firewalld_interface_cleanup is changed
+
+        - name: Check and recover firewalld state for DNS service path repair
+          ansible.builtin.shell: |
+            set -o pipefail
+            set -u
+
+            run_bounded() {
+              seconds="$1"
+              shift
+              if command -v timeout >/dev/null 2>&1; then
+                timeout --foreground "${seconds}s" "$@"
+              else
+                "$@"
+              fi
+            }
+
+            wait_for_firewalld() {
+              timeout_seconds="${1:-120}"
+              deadline=$(( $(date +%s) + timeout_seconds ))
+              attempt=1
+              while [ "$(date +%s)" -lt "${deadline}" ]; do
+                state="$(run_bounded 10 firewall-cmd --state 2>/dev/null || true)"
+                if [ "${state}" = "running" ]; then
+                  echo "firewalld_state=running attempt=${attempt}"
+                  return 0
+                fi
+                sleep 2
+                attempt=$((attempt + 1))
+              done
+              return 1
+            }
+
+            if ! command -v firewall-cmd >/dev/null 2>&1; then
+              echo "firewalld_state_recovery=skipped-unavailable"
+              exit 3
+            fi
+
+            state="$(run_bounded 15 firewall-cmd --state 2>/dev/null || true)"
+            if [ "${state}" = "running" ]; then
+              echo "firewalld_state_recovery=already-running"
+              exit 0
+            fi
+
+            if ! run_bounded 10 systemctl is-enabled --quiet firewalld; then
+              echo "firewalld_state_recovery=skipped-disabled"
+              exit 3
+            fi
+
+            echo "firewalld_state_recovery_action=restart-after-interface-cleanup"
+            stop_rc=0
+            run_bounded 45 systemctl stop firewalld || stop_rc=$?
+            if [ "${stop_rc}" -ne 0 ]; then
+              echo "firewalld_stop_rc=${stop_rc} action=force-stop"
+              run_bounded 10 systemctl kill --kill-who=all --signal=KILL firewalld || true
+              run_bounded 15 systemctl stop firewalld || true
+            fi
+            run_bounded 10 systemctl reset-failed firewalld || true
+
+            start_rc=0
+            start_output="$(run_bounded 120 systemctl start firewalld 2>&1)" || start_rc=$?
+            printf 'firewalld_start_rc=%s\n%s\n' "${start_rc}" "${start_output}"
+            if wait_for_firewalld 120; then
+              echo "firewalld_state_recovery_result=recovered"
+              exit 0
+            fi
+
+            echo "firewalld_state_recovery_result=failed" >&2
+            run_bounded 15 systemctl --no-pager --full status firewalld >&2 || true
+            run_bounded 15 journalctl --no-pager -u firewalld -n 80 >&2 || true
+            exit 1
+          args:
+            executable: /bin/bash
+          register: platform_dns_service_path_firewalld_state
+          changed_when: >-
+            'firewalld_state_recovery_action=restart-after-interface-cleanup' in
+            (platform_dns_service_path_firewalld_state.stdout | default(''))
+          failed_when: (platform_dns_service_path_firewalld_state.rc | default(1)) not in [0, 3]
+          throttle: 1
           when:
             - platform_dns_service_path_repair_effective | bool
             - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
@@ -1444,15 +1536,6 @@
               add_direct_rule ipv4 filter FORWARD 0 -o "${prefix}" -j ACCEPT
             done
 
-            for interface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(cilium|lxc|cni|veth)' | sort -u || true); do
-              if ! firewall-cmd --permanent --zone=trusted --query-interface="${interface}" >/dev/null 2>&1; then
-                if firewall-cmd --permanent --zone=trusted --change-interface="${interface}"; then
-                  changed=true
-                  echo "trusted active CNI interface ${interface}"
-                fi
-              fi
-            done
-
             firewall-cmd --direct --get-all-rules || true
             echo "changed=${changed}"
           args:
@@ -1481,8 +1564,10 @@
             }
 
             wait_for_firewalld() {
+              timeout_seconds="${1:-120}"
+              deadline=$(( $(date +%s) + timeout_seconds ))
               attempt=1
-              while [ "${attempt}" -le 12 ]; do
+              while [ "$(date +%s)" -lt "${deadline}" ]; do
                 state="$(run_bounded 10 firewall-cmd --state 2>/dev/null || true)"
                 if [ "${state}" = "running" ]; then
                   echo "firewalld_state=running attempt=${attempt}"
@@ -1492,6 +1577,18 @@
                 attempt=$((attempt + 1))
               done
               return 1
+            }
+
+            recover_firewalld() {
+              stop_rc=0
+              run_bounded 45 systemctl stop firewalld || stop_rc=$?
+              if [ "${stop_rc}" -ne 0 ]; then
+                echo "firewalld_stop_rc=${stop_rc} action=force-stop"
+                run_bounded 10 systemctl kill --kill-who=all --signal=KILL firewalld || true
+                run_bounded 15 systemctl stop firewalld || true
+              fi
+              run_bounded 10 systemctl reset-failed firewalld || true
+              run_bounded 120 systemctl start firewalld
             }
 
             verify_firewalld_runtime() {
@@ -1544,17 +1641,17 @@
             printf 'firewalld_reload_rc=%s\n%s\n' "${reload_rc}" "${reload_output}"
 
             runtime_ready=false
-            if wait_for_firewalld && verify_firewalld_runtime; then
+            if wait_for_firewalld 120 && verify_firewalld_runtime; then
               runtime_ready=true
             fi
 
             if [ "${runtime_ready}" != "true" ]; then
               echo "firewalld_reload_action=rolling-restart"
               restart_rc=0
-              restart_output="$(run_bounded 90 systemctl restart firewalld 2>&1)" || restart_rc=$?
+              restart_output="$(recover_firewalld 2>&1)" || restart_rc=$?
               printf 'firewalld_restart_rc=%s\n%s\n' "${restart_rc}" "${restart_output}"
 
-              if ! wait_for_firewalld; then
+              if ! wait_for_firewalld 120; then
                 echo "firewalld_reload_result=failed" >&2
                 run_bounded 15 systemctl --no-pager --full status firewalld >&2 || true
                 run_bounded 15 journalctl --no-pager -u firewalld -n 80 >&2 || true

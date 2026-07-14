@@ -211,6 +211,22 @@
         executable: /bin/bash
       changed_when: false
 
+    - name: Prune transient CNI interfaces from permanent firewalld trust
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/../../scripts/cleanup_firewalld_cni_interfaces.py --path /etc/firewalld/zones/trusted.xml"
+        executable: /usr/bin/python3
+      register: rke2_firewalld_interface_cleanup
+      changed_when: >-
+        'firewalld_ephemeral_interface_cleanup=changed' in
+        (rke2_firewalld_interface_cleanup.stdout | default(''))
+
+    - name: Restore firewalld trusted zone SELinux context after cleanup
+      ansible.builtin.command: restorecon -F /etc/firewalld/zones/trusted.xml
+      register: rke2_firewalld_interface_cleanup_restorecon
+      changed_when: false
+      failed_when: false
+      when: rke2_firewalld_interface_cleanup is changed
+
     - name: Check firewalld state
       ansible.builtin.command: firewall-cmd --state
       register: rke2_firewalld_state
@@ -325,15 +341,6 @@
         for prefix in cilium+ lxc+ cni+ veth+; do
           add_direct_rule ipv4 filter FORWARD 0 -i "${prefix}" -j ACCEPT
           add_direct_rule ipv4 filter FORWARD 0 -o "${prefix}" -j ACCEPT
-        done
-
-        for interface in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1 | grep -E '^(cilium|lxc|cni|veth)' | sort -u || true); do
-          if ! firewall-cmd --permanent --zone=trusted --query-interface="${interface}" >/dev/null 2>&1; then
-            if firewall-cmd --permanent --zone=trusted --change-interface="${interface}"; then
-              changed=true
-              echo "trusted active CNI interface ${interface}"
-            fi
-          fi
         done
 
         firewall-cmd --direct --get-all-rules || true

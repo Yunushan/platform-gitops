@@ -9,6 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import sys
+import tempfile
+
+from cleanup_firewalld_cni_interfaces import cleanup_zone_file
 
 root = Path(__file__).resolve().parents[1]
 SOURCE_PATH_RE = re.compile(
@@ -67,6 +70,7 @@ service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-serv
 woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
+firewalld_cleanup_script = root / "scripts/cleanup_firewalld_cni_interfaces.py"
 verify_rke2_playbook = root / "ansible/playbooks/verify-rke2.yml"
 status_playbook = root / "ansible/playbooks/platform-status.yml"
 profile_check_script = root / "scripts/check_gitops_profile.py"
@@ -235,6 +239,42 @@ def read(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except FileNotFoundError:
         fail(f"missing required file {path.relative_to(root)}")
+
+
+def assert_firewalld_cleanup_behavior() -> None:
+    zone_xml = """<zone target="ACCEPT">
+  <short>Trusted</short>
+  <interface name="cilium_host"/>
+  <interface name="cilium_geneve"/>
+  <interface name="cilium_wg0"/>
+  <interface name="cni0"/>
+  <interface name="lxc0123456789ab"/>
+  <interface name="vethdeadbeef"/>
+  <interface name="cni-deadbeef"/>
+  <interface name="ciliumdeadbeef"/>
+  <source address="192.0.2.0/24"/>
+  <port protocol="tcp" port="10250"/>
+</zone>
+"""
+    with tempfile.TemporaryDirectory(prefix="platform-firewalld-cleanup-") as temporary_dir:
+        zone_path = Path(temporary_dir) / "trusted.xml"
+        zone_path.write_text(zone_xml, encoding="utf-8")
+        result = cleanup_zone_file(zone_path)
+        if not result.changed or result.removed != 4:
+            fail("firewalld CNI cleanup must remove every transient interface binding")
+        cleaned = zone_path.read_text(encoding="utf-8")
+        for stable in ("cilium_host", "cilium_geneve", "cilium_wg0", "cni0"):
+            if f'name="{stable}"' not in cleaned:
+                fail(f"firewalld CNI cleanup removed stable interface {stable}")
+        for transient in ("lxc0123456789ab", "vethdeadbeef", "cni-deadbeef", "ciliumdeadbeef"):
+            if transient in cleaned:
+                fail(f"firewalld CNI cleanup retained transient interface {transient}")
+        for retained in ("192.0.2.0/24", 'protocol="tcp" port="10250"'):
+            if retained not in cleaned:
+                fail(f"firewalld CNI cleanup removed unrelated zone configuration {retained}")
+        second_result = cleanup_zone_file(zone_path)
+        if second_result.changed or second_result.removed != 0:
+            fail("firewalld CNI cleanup must be idempotent")
 
 
 def application_documents(path: Path) -> list[dict[str, str]]:
@@ -731,6 +771,7 @@ def main() -> None:
         fail(f"stale premium root app file still exists: {stale_premium_root_app.relative_to(root)}")
 
     assert_profile_catalog()
+    assert_firewalld_cleanup_behavior()
 
     assert_app_file(base_apps, required_base_apps)
     assert_app_file(premium_apps, required_premium_apps)
@@ -2456,8 +2497,34 @@ def main() -> None:
         "verify_firewalld_runtime",
         "platform_dns_service_path_firewalld_state.rc | default(1)",
         "throttle: 1",
+        "cleanup_firewalld_cni_interfaces.py",
+        "firewalld_ephemeral_interface_cleanup=changed",
+        "firewalld_state_recovery_action=restart-after-interface-cleanup",
+        "systemctl reset-failed firewalld",
     ):
         require_text(dns_repair_text, needle, f"DNS repair must support forced CNI service-path recovery: {needle}")
+    cleanup_script_text = read(firewalld_cleanup_script)
+    for needle in (
+        "TRANSIENT_INTERFACE_RE",
+        "STABLE_INTERFACES",
+        "os.replace",
+        "firewalld_ephemeral_interface_cleanup",
+    ):
+        require_text(cleanup_script_text, needle, f"firewalld CNI cleanup must preserve its safety contract: {needle}")
+    for playbook in (
+        root / "ansible/playbooks/prepare-nodes.yml",
+        root / "ansible/playbooks/recover-rke2.yml",
+        root / "ansible/playbooks/repair-cluster-dns.yml",
+        root / "ansible/playbooks/deploy-platform-ingress.yml",
+    ):
+        playbook_text = read(playbook)
+        require_text(
+            playbook_text,
+            "cleanup_firewalld_cni_interfaces.py",
+            f"{playbook.relative_to(root)} must prune stale CNI firewalld bindings",
+        )
+        if "trusted active CNI interface" in playbook_text:
+            fail(f"{playbook.relative_to(root)} must not persist transient CNI interfaces")
     if "platform-monitoring-repair:" not in makefile_text:
         fail("Makefile is missing platform-monitoring-repair target")
     if "platform-monitoring-health:" not in makefile_text:
