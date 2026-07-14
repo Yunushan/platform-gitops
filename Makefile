@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -41,6 +41,7 @@ help:
 	@echo "  platform-monitoring-repair  Repair monitoring reconciliation, storage prerequisites, and ready backends"
 	@echo "  platform-production-check  Run read-only repo, RKE2, status, and platform app readiness gates"
 	@echo "  platform-longhorn-bootstrap  Bootstrap Longhorn storage, pre-pull images on nodes, and verify CSI/PVC readiness"
+	@echo "  platform-longhorn-runtime-repair  Repair Longhorn manager/CSI registration without blocking on storage capacity"
 	@echo "  platform-longhorn-crd-repair  Restore missing Longhorn CRDs and restart Longhorn manager"
 	@echo "  platform-forgejo-diagnose  Show Forgejo init, logs, PVC/PV, Longhorn volume, service, and ingress diagnostics"
 	@echo "  platform-forgejo-storage-repair  Repair first-deploy Forgejo PVC, Longhorn disk, and volume attach issues"
@@ -214,12 +215,27 @@ platform-woodpecker-repair:
 		if [ "$$repair_rc" -eq 0 ]; then \
 			exit 0; \
 		fi; \
-		if ! grep -Fq 'reason=postgres-endpoint-path-unreachable' "$$repair_log"; then \
-			echo "Woodpecker repair failed without a direct PostgreSQL endpoint-path classification; all-node recovery skipped." >&2; \
+		service_path_repair=false; \
+		longhorn_runtime_repair=false; \
+		if grep -Eq 'reason=postgres-endpoint-path-unreachable|cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)|failed calling webhook.*(cnpg|mcluster)|mcluster\.cnpg\.io.*context deadline exceeded|Instance Status Extraction Error: HTTP communication issue|:8000/(readyz|healthz|startupz).*(i/o timeout|context deadline exceeded|Client\.Timeout exceeded)' "$$repair_log"; then \
+			service_path_repair=true; \
+		fi; \
+		if grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
+			longhorn_runtime_repair=true; \
+		fi; \
+		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ]; then \
+			echo "Woodpecker repair failed without a recognized PostgreSQL service-path or Longhorn CSI classification; automatic fallback skipped." >&2; \
 			exit "$$repair_rc"; \
 		fi; \
-		echo "Woodpecker PostgreSQL direct endpoint failed; applying all-node CNI/firewalld recovery and retrying once."; \
-		PLATFORM_DNS_SERVICE_PATH_REPAIR=true PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true $(MAKE) platform-dns-repair; \
+		if [ "$$service_path_repair" = "true" ]; then \
+			echo "Woodpecker PostgreSQL or CloudNativePG service path failed; applying all-node CNI/firewalld recovery."; \
+			PLATFORM_DNS_SERVICE_PATH_REPAIR=true PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true $(MAKE) platform-dns-repair; \
+		fi; \
+		if [ "$$longhorn_runtime_repair" = "true" ]; then \
+			echo "Longhorn CSI registration or duplicate-disk state failed; applying focused Longhorn runtime recovery."; \
+			$(MAKE) platform-longhorn-runtime-repair; \
+		fi; \
+		echo "Retrying Woodpecker repair once after classified prerequisite recovery."; \
 		ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml
 	@$(MAKE) platform-service-path-consumers-repair
 	@$(MAKE) platform-ci-health
@@ -253,6 +269,9 @@ platform-production-check: validate platform-profile-check rke2-verify platform-
 
 platform-longhorn-bootstrap:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/bootstrap-longhorn.yml
+
+platform-longhorn-runtime-repair:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-longhorn-runtime.yml
 
 platform-longhorn-crd-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-longhorn-crds.yml

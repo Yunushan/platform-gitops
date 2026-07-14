@@ -1,0 +1,279 @@
+---
+- name: Repair Longhorn manager and CSI runtime without storage capacity gates
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_longhorn_runtime_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_REPAIR_TIMEOUT') }}"
+    platform_longhorn_runtime_repair_timeout_effective: "{{ platform_longhorn_runtime_repair_timeout | default(platform_longhorn_runtime_repair_timeout_from_env, true) | default(300, true) | int }}"
+  tasks:
+    - name: Repair unhealthy Longhorn manager and CSI registration
+      ansible.builtin.shell: |
+        set -o pipefail
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_longhorn_runtime_repair_timeout_effective }}
+
+        diagnose() {
+          echo "===== Longhorn runtime diagnostics =====" >&2
+          "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-manager daemonset/longhorn-csi-plugin deployment/longhorn-driver-deployer -o wide >&2 || true
+          "$K" --kubeconfig "$C" -n longhorn-system get pods -o wide >&2 || true
+          "$K" --kubeconfig "$C" get csinode -o custom-columns='NAME:.metadata.name,DRIVERS:.spec.drivers[*].name' >&2 || true
+        }
+
+        daemonset_counts() {
+          "$K" --kubeconfig "$C" -n longhorn-system get "daemonset/$1" \
+            -o jsonpath='{.status.desiredNumberScheduled} {.status.numberReady}' 2>/dev/null || true
+        }
+
+        deployment_counts() {
+          "$K" --kubeconfig "$C" -n longhorn-system get "deployment/$1" \
+            -o jsonpath='{.spec.replicas} {.status.availableReplicas}' 2>/dev/null || true
+        }
+
+        missing_csi_nodes() {
+          for node in $("$K" --kubeconfig "$C" get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+            if ! "$K" --kubeconfig "$C" get "csinode/${node}" \
+                -o jsonpath='{range .spec.drivers[*]}{.name}{"\n"}{end}' 2>/dev/null |
+                grep -Fx 'driver.longhorn.io' >/dev/null; then
+              printf '%s\n' "${node}"
+            fi
+          done
+        }
+
+        wait_for_csi_daemonset() {
+          deadline=$(( $(date +%s) + TIMEOUT ))
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            if "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-csi-plugin >/dev/null 2>&1; then
+              return 0
+            fi
+            sleep 5
+          done
+          return 1
+        }
+
+        wait_for_csi_registration() {
+          deadline=$(( $(date +%s) + TIMEOUT ))
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            missing="$(missing_csi_nodes | xargs)"
+            if [ -z "${missing}" ]; then
+              return 0
+            fi
+            echo "longhorn_csi_registration=waiting missing_nodes=${missing}"
+            sleep 5
+          done
+          return 1
+        }
+
+        if ! "$K" --kubeconfig "$C" get namespace/longhorn-system >/dev/null 2>&1; then
+          echo "result=fail reason=longhorn-namespace-absent" >&2
+          exit 1
+        fi
+        if ! "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-manager >/dev/null 2>&1; then
+          echo "result=fail reason=longhorn-manager-daemonset-absent" >&2
+          diagnose
+          exit 1
+        fi
+
+        read -r manager_desired manager_ready <<<"$(daemonset_counts longhorn-manager)"
+        manager_desired="${manager_desired:-0}"
+        manager_ready="${manager_ready:-0}"
+        manager_restarted=false
+        if [ "${manager_desired}" -eq 0 ] || [ "${manager_ready}" -lt "${manager_desired}" ]; then
+          echo "action=rollout-restart-longhorn-manager ready=${manager_ready}/${manager_desired}"
+          "$K" --kubeconfig "$C" -n longhorn-system rollout restart daemonset/longhorn-manager
+          manager_restarted=true
+        fi
+
+        driver_restarted=false
+        if "$K" --kubeconfig "$C" -n longhorn-system get deployment/longhorn-driver-deployer >/dev/null 2>&1; then
+          read -r driver_desired driver_ready <<<"$(deployment_counts longhorn-driver-deployer)"
+          driver_desired="${driver_desired:-0}"
+          driver_ready="${driver_ready:-0}"
+          if [ "${driver_desired}" -eq 0 ] || [ "${driver_ready}" -lt "${driver_desired}" ] ||
+            ! "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-csi-plugin >/dev/null 2>&1; then
+            echo "action=rollout-restart-longhorn-driver-deployer ready=${driver_ready}/${driver_desired}"
+            "$K" --kubeconfig "$C" -n longhorn-system rollout restart deployment/longhorn-driver-deployer
+            driver_restarted=true
+          fi
+        fi
+
+        if [ "${manager_restarted}" = "true" ]; then
+          if ! "$K" --kubeconfig "$C" -n longhorn-system rollout status daemonset/longhorn-manager --timeout="${TIMEOUT}s"; then
+            echo "result=fail reason=longhorn-manager-rollout-timeout" >&2
+            diagnose
+            exit 1
+          fi
+        fi
+        if [ "${driver_restarted}" = "true" ]; then
+          if ! "$K" --kubeconfig "$C" -n longhorn-system rollout status deployment/longhorn-driver-deployer --timeout="${TIMEOUT}s"; then
+            echo "result=fail reason=longhorn-driver-deployer-rollout-timeout" >&2
+            diagnose
+            exit 1
+          fi
+        fi
+
+        if ! wait_for_csi_daemonset; then
+          echo "result=fail reason=longhorn-csi-plugin-daemonset-absent" >&2
+          diagnose
+          exit 1
+        fi
+
+        read -r csi_desired csi_ready <<<"$(daemonset_counts longhorn-csi-plugin)"
+        csi_desired="${csi_desired:-0}"
+        csi_ready="${csi_ready:-0}"
+        missing_nodes="$(missing_csi_nodes | xargs)"
+        if [ "${csi_desired}" -eq 0 ] || [ "${csi_ready}" -lt "${csi_desired}" ] || [ -n "${missing_nodes}" ]; then
+          echo "action=rollout-restart-longhorn-csi-plugin ready=${csi_ready}/${csi_desired} missing_registrations=${missing_nodes:-none}"
+          "$K" --kubeconfig "$C" -n longhorn-system rollout restart daemonset/longhorn-csi-plugin
+          if ! "$K" --kubeconfig "$C" -n longhorn-system rollout status daemonset/longhorn-csi-plugin --timeout="${TIMEOUT}s"; then
+            echo "result=fail reason=longhorn-csi-plugin-rollout-timeout" >&2
+            diagnose
+            exit 1
+          fi
+        fi
+
+        if ! wait_for_csi_registration; then
+          echo "result=fail reason=longhorn-csi-registration-timeout missing_nodes=$(missing_csi_nodes | xargs)" >&2
+          diagnose
+          exit 1
+        fi
+
+        read -r manager_desired manager_ready <<<"$(daemonset_counts longhorn-manager)"
+        read -r csi_desired csi_ready <<<"$(daemonset_counts longhorn-csi-plugin)"
+        if [ "${manager_desired:-0}" -eq 0 ] || [ "${manager_ready:-0}" -lt "${manager_desired:-0}" ] ||
+          [ "${csi_desired:-0}" -eq 0 ] || [ "${csi_ready:-0}" -lt "${csi_desired:-0}" ]; then
+          echo "result=fail reason=longhorn-runtime-not-ready manager=${manager_ready:-0}/${manager_desired:-0} csi=${csi_ready:-0}/${csi_desired:-0}" >&2
+          diagnose
+          exit 1
+        fi
+
+        echo "result=ok longhorn_manager=${manager_ready}/${manager_desired} longhorn_csi=${csi_ready}/${csi_desired} csi_registrations=all-nodes"
+      args:
+        executable: /bin/bash
+      register: platform_longhorn_runtime_repair
+      changed_when: "'action=rollout-restart-' in platform_longhorn_runtime_repair.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Remove only empty duplicate Longhorn disk registrations
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json |
+          python3 -c '
+        import json
+        import subprocess
+        import sys
+        import time
+
+        data = json.load(sys.stdin)
+
+        def kubectl_patch(node, patch):
+            return subprocess.run(
+                [
+                    "/var/lib/rancher/rke2/bin/kubectl",
+                    "--kubeconfig",
+                    "/etc/rancher/rke2/rke2.yaml",
+                    "-n",
+                    "longhorn-system",
+                    "patch",
+                    f"nodes.longhorn.io/{node}",
+                    "--type=merge",
+                    "-p",
+                    json.dumps(patch),
+                ],
+                text=True,
+                capture_output=True,
+            )
+
+        for item in data.get("items", []):
+            node = item.get("metadata", {}).get("name", "")
+            spec_disks = item.get("spec", {}).get("disks") or {}
+            status_disks = item.get("status", {}).get("diskStatus") or {}
+            if len(spec_disks) <= 1:
+                continue
+            for disk_name, status in status_disks.items():
+                conditions = status.get("conditions") or []
+                duplicate = any(
+                    condition.get("type") == "Ready"
+                    and condition.get("status") == "False"
+                    and (
+                        condition.get("reason") == "DiskFilesystemChanged"
+                        or "same file system ID" in (condition.get("message") or "")
+                    )
+                    for condition in conditions
+                )
+                scheduled = status.get("scheduledReplica") or {}
+                if not duplicate or disk_name not in spec_disks:
+                    continue
+                if scheduled:
+                    print(
+                        f"longhorn_duplicate_disk={node}/{disk_name} action=retain "
+                        f"reason=scheduled-replicas-present count={len(scheduled)}"
+                    )
+                    continue
+
+                path = spec_disks[disk_name].get("path", "")
+                if spec_disks[disk_name].get("allowScheduling", False):
+                    result = kubectl_patch(
+                        node,
+                        {"spec": {"disks": {disk_name: {"allowScheduling": False}}}},
+                    )
+                    if result.returncode != 0:
+                        sys.stderr.write((result.stderr or "") + (result.stdout or ""))
+                        raise SystemExit(result.returncode)
+                    print(
+                        f"longhorn_duplicate_disk={node}/{disk_name} path={path} "
+                        "action=disable-empty-duplicate"
+                    )
+                    time.sleep(3)
+
+                removed = False
+                last_error = ""
+                for _ in range(6):
+                    result = kubectl_patch(
+                        node,
+                        {"spec": {"disks": {disk_name: None}}},
+                    )
+                    if result.returncode == 0:
+                        removed = True
+                        break
+                    last_error = (result.stderr or "") + (result.stdout or "")
+                    if "Please disable the disk" not in last_error:
+                        break
+                    time.sleep(5)
+
+                if removed:
+                    print(
+                        f"longhorn_duplicate_disk={node}/{disk_name} path={path} "
+                        "action=remove-empty-duplicate"
+                    )
+                else:
+                    print(
+                        f"longhorn_duplicate_disk={node}/{disk_name} path={path} "
+                        "action=retain-disabled reason=admission-removal-pending"
+                    )
+                    if last_error:
+                        sys.stderr.write(last_error)
+        '
+      args:
+        executable: /bin/bash
+      register: platform_longhorn_duplicate_runtime_repair
+      changed_when: >-
+        'action=disable-empty-duplicate' in platform_longhorn_duplicate_runtime_repair.stdout or
+        'action=remove-empty-duplicate' in platform_longhorn_duplicate_runtime_repair.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Show focused Longhorn runtime repair result
+      ansible.builtin.debug:
+        msg:
+          - "{{ platform_longhorn_runtime_repair.stdout_lines | default(['runtime repair did not run']) }}"
+          - "{{ platform_longhorn_duplicate_runtime_repair.stdout_lines | default(['duplicate disk repair did not run']) }}"
+      run_once: true

@@ -409,6 +409,24 @@
             -l cnpg.io/cluster=platform-postgres --ignore-not-found=true --wait=false || true
         fi
 
+        cleaned_replica_instances=""
+
+        active_replica_pod() {
+          local instance="$1"
+          local pod_object
+          local pod_phase
+          for pod_object in $("$K" --kubeconfig "$C" -n platform-databases get pod -o name 2>/dev/null |
+            grep -E "^pod/${instance}($|-join)" || true); do
+            pod_phase="$("$K" --kubeconfig "$C" -n platform-databases get "${pod_object}" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            if [ -n "${pod_phase}" ] && [ "${pod_phase}" != "Failed" ] && [ "${pod_phase}" != "Succeeded" ]; then
+              printf '%s|%s\n' "${pod_object#pod/}" "${pod_phase}"
+              return 0
+            fi
+          done
+          return 1
+        }
+
         cleanup_failed_postgres_replica_pvcs() {
           [ "${RESET_FAILED_REPLICA_PVCS}" = "true" ] || return 0
           "$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres >/dev/null 2>&1 || return 0
@@ -417,38 +435,36 @@
             "$K" --kubeconfig "$C" -n platform-databases get pvc \
               -l cnpg.io/cluster=platform-postgres \
               -o json 2>/dev/null |
-              python3 -c 'import json,sys; data=json.load(sys.stdin); [print("|".join([((item.get("metadata") or {}).get("name") or ""), (((item.get("metadata") or {}).get("labels") or {}).get("role") or ""), (((item.get("metadata") or {}).get("labels") or {}).get("cnpg.io/instanceName") or ""), (((item.get("metadata") or {}).get("annotations") or {}).get("cnpg.io/pvcStatus") or ""), ((item.get("spec") or {}).get("volumeName") or "")])) for item in data.get("items", [])]' || true
+              python3 -c 'import json,sys; data=json.load(sys.stdin); [print("|".join([((item.get("metadata") or {}).get("name") or ""), (((item.get("metadata") or {}).get("labels") or {}).get("role") or ""), (((item.get("metadata") or {}).get("labels") or {}).get("cnpg.io/instanceName") or ""), (((item.get("metadata") or {}).get("annotations") or {}).get("cnpg.io/pvcStatus") or ""), ((item.get("spec") or {}).get("volumeName") or ""), ((item.get("metadata") or {}).get("uid") or "")])) for item in data.get("items", [])]' || true
           )"
-          printf '%s\n' "${replica_pvcs}" | while IFS='|' read -r pvc role instance pvc_status pv; do
+          while IFS='|' read -r pvc role instance pvc_status pv pvc_uid; do
             [ -n "${pvc}" ] || continue
             [ "${role}" = "replica" ] || continue
             [ "${pvc_status}" = "initializing" ] || continue
-
-            active_pod=false
-            if [ -n "${instance}" ]; then
-              for pod_object in $("$K" --kubeconfig "$C" -n platform-databases get pod -o name 2>/dev/null |
-                grep -E "^pod/${instance}($|-join)" || true); do
-                pod_phase="$("$K" --kubeconfig "$C" -n platform-databases get "${pod_object}" \
-                  -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-                if [ -n "${pod_phase}" ] && [ "${pod_phase}" != "Failed" ] && [ "${pod_phase}" != "Succeeded" ]; then
-                  echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-pod-active pod=${pod_object#pod/} phase=${pod_phase}"
-                  active_pod=true
-                  break
-                fi
-              done
+            if [ -z "${instance}" ] || [ -z "${pvc_uid}" ]; then
+              echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-identity-incomplete"
+              continue
             fi
-            if [ "${active_pod}" = "true" ]; then
+            case " ${cleaned_replica_instances} " in
+              *" ${instance} "*) continue ;;
+            esac
+
+            active_pod="$(active_replica_pod "${instance}" || true)"
+            if [ -n "${active_pod}" ]; then
+              echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-pod-active pod=${active_pod%%|*} phase=${active_pod#*|}"
               continue
             fi
 
             handle=""
             actual_size=0
             volume_state=""
+            volume_exists=false
             if [ -n "${pv}" ]; then
               handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
             fi
             if [ -n "${handle}" ] && "$K" --kubeconfig "$C" get crd/volumes.longhorn.io >/dev/null 2>&1 &&
               "$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" >/dev/null 2>&1; then
+              volume_exists=true
               actual_size="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
                 -o jsonpath='{.status.actualSize}' 2>/dev/null || echo 0)"
               volume_state="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
@@ -460,17 +476,109 @@
               echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-volume-has-data actual_size=${actual_size} state=${volume_state:-unknown}"
               continue
             fi
-
-            echo "platform_postgres_replica_pvc=${pvc} action=delete-failed-cnpg-replica-pvc instance=${instance:-unknown} pv=${pv:-none} longhornVolume=${handle:-none} state=${volume_state:-unknown}"
-            if [ -n "${instance}" ]; then
-              for object in $("$K" --kubeconfig "$C" -n platform-databases get job,pod -o name 2>/dev/null |
-                grep -E "^(.+/)?${instance}-join" || true); do
-                echo "platform_postgres_replica_init_object=${object} action=delete-failed-cnpg-replica-join"
-                "$K" --kubeconfig "$C" -n platform-databases delete "${object}" --ignore-not-found=true --wait=false || true
-              done
+            if [ "${volume_exists}" = "true" ] && [ "${volume_state}" != "detached" ]; then
+              echo "platform_postgres_replica_pvc=${pvc} action=retain reason=replica-volume-not-detached actual_size=${actual_size} state=${volume_state:-unknown}"
+              continue
             fi
+
+            echo "platform_postgres_replica_pvc=${pvc} action=delete-failed-cnpg-replica-pvc instance=${instance} uid=${pvc_uid} pv=${pv:-none} longhornVolume=${handle:-none} state=${volume_state:-absent}"
+            for object in $("$K" --kubeconfig "$C" -n platform-databases get job,pod -o name 2>/dev/null |
+              grep -E "^(.+/)?${instance}-join" || true); do
+              echo "platform_postgres_replica_init_object=${object} action=delete-failed-cnpg-replica-join"
+              "$K" --kubeconfig "$C" -n platform-databases delete "${object}" --ignore-not-found=true --wait=false || true
+            done
             "$K" --kubeconfig "$C" -n platform-databases delete "pvc/${pvc}" --ignore-not-found=true --wait=false || true
-          done
+
+            delete_deadline=$(( $(date +%s) + 20 ))
+            while [ "$(date +%s)" -lt "${delete_deadline}" ]; do
+              current_uid="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" \
+                -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+              if [ -z "${current_uid}" ] || [ "${current_uid}" != "${pvc_uid}" ]; then
+                break
+              fi
+              active_pod="$(active_replica_pod "${instance}" || true)"
+              if [ -n "${active_pod}" ]; then
+                echo "platform_postgres_replica_pvc=${pvc} action=retain-finalizer reason=replica-pod-became-active pod=${active_pod%%|*} phase=${active_pod#*|}"
+                break
+              fi
+              sleep 2
+            done
+
+            current_uid="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ "${current_uid}" = "${pvc_uid}" ]; then
+              deletion_timestamp="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" \
+                -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)"
+              active_pod="$(active_replica_pod "${instance}" || true)"
+              current_actual_size=0
+              current_volume_state=""
+              current_volume_exists=false
+              if [ -n "${handle}" ] && "$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" >/dev/null 2>&1; then
+                current_volume_exists=true
+                current_actual_size="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+                  -o jsonpath='{.status.actualSize}' 2>/dev/null || echo 0)"
+                current_volume_state="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+                  -o jsonpath='{.status.state}' 2>/dev/null || true)"
+              fi
+              case "${current_actual_size}" in ""|*[!0-9]*) current_actual_size=1 ;; esac
+              if [ -n "${deletion_timestamp}" ] && [ -z "${active_pod}" ] && [ "${current_actual_size}" -eq 0 ] &&
+                { [ "${current_volume_exists}" = "false" ] || [ "${current_volume_state}" = "detached" ]; }; then
+                echo "platform_postgres_replica_pvc=${pvc} action=clear-zero-byte-failed-replica-pvc-finalizer uid=${pvc_uid}"
+                "$K" --kubeconfig "$C" -n platform-databases patch "pvc/${pvc}" \
+                  --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+                "$K" --kubeconfig "$C" -n platform-databases delete "pvc/${pvc}" --ignore-not-found=true --wait=false || true
+                finalizer_deadline=$(( $(date +%s) + 15 ))
+                while [ "$(date +%s)" -lt "${finalizer_deadline}" ]; do
+                  current_uid="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" \
+                    -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+                  if [ -z "${current_uid}" ] || [ "${current_uid}" != "${pvc_uid}" ]; then
+                    break
+                  fi
+                  sleep 2
+                done
+              fi
+            fi
+
+            current_uid="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ "${current_uid}" = "${pvc_uid}" ]; then
+              echo "platform_postgres_replica_pvc=${pvc} action=retain reason=zero-byte-replica-cleanup-pending uid=${pvc_uid}"
+              cleaned_replica_instances="${cleaned_replica_instances} ${instance}"
+              continue
+            fi
+
+            longhorn_cleanup_allowed=false
+            if [ -n "${handle}" ] && "$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" >/dev/null 2>&1; then
+              cleanup_actual_size="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+                -o jsonpath='{.status.actualSize}' 2>/dev/null || echo 0)"
+              cleanup_volume_state="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+                -o jsonpath='{.status.state}' 2>/dev/null || true)"
+              cleanup_pvc="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+                -o jsonpath='{.status.kubernetesStatus.pvcName}' 2>/dev/null || true)"
+              cleanup_namespace="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+                -o jsonpath='{.status.kubernetesStatus.namespace}' 2>/dev/null || true)"
+              case "${cleanup_actual_size}" in ""|*[!0-9]*) cleanup_actual_size=1 ;; esac
+              if [ "${cleanup_actual_size}" -eq 0 ] && [ "${cleanup_volume_state}" = "detached" ] &&
+                [ "${cleanup_pvc}" = "${pvc}" ] && [ "${cleanup_namespace}" = "platform-databases" ]; then
+                longhorn_cleanup_allowed=true
+              fi
+            fi
+
+            if [ -n "${pv}" ] && "$K" --kubeconfig "$C" get "pv/${pv}" >/dev/null 2>&1; then
+              pv_claim_uid="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.claimRef.uid}' 2>/dev/null || true)"
+              pv_handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+              if [ "${pv_claim_uid}" = "${pvc_uid}" ] && { [ -z "${handle}" ] || [ "${pv_handle}" = "${handle}" ]; }; then
+                echo "platform_postgres_replica_pv=${pv} action=delete-zero-byte-failed-replica-pv claim_uid=${pvc_uid}"
+                "$K" --kubeconfig "$C" delete "pv/${pv}" --ignore-not-found=true --wait=false || true
+              fi
+            fi
+            if [ "${longhorn_cleanup_allowed}" = "true" ]; then
+              echo "platform_postgres_replica_longhorn_volume=${handle} action=delete-zero-byte-failed-replica-longhorn-volume"
+              "$K" --kubeconfig "$C" -n longhorn-system delete "volumes.longhorn.io/${handle}" \
+                --ignore-not-found=true --wait=false || true
+            fi
+            cleaned_replica_instances="${cleaned_replica_instances} ${instance}"
+          done <<< "${replica_pvcs}"
         }
 
         cleanup_failed_postgres_replica_pvcs
@@ -527,6 +635,10 @@
         'action=restart-cloudnativepg-operator' in platform_woodpecker_postgres_auto_repair.stdout or
         'action=reset-empty-cnpg-cluster' in platform_woodpecker_postgres_auto_repair.stdout or
         'action=destructive-reset-enabled' in platform_woodpecker_postgres_auto_repair.stdout or
+        'action=delete-failed-cnpg-replica-pvc' in platform_woodpecker_postgres_auto_repair.stdout or
+        'action=clear-zero-byte-failed-replica-pvc-finalizer' in platform_woodpecker_postgres_auto_repair.stdout or
+        'action=delete-zero-byte-failed-replica-pv' in platform_woodpecker_postgres_auto_repair.stdout or
+        'action=delete-zero-byte-failed-replica-longhorn-volume' in platform_woodpecker_postgres_auto_repair.stdout or
         'refresh-sync-requested' in platform_woodpecker_postgres_auto_repair.stdout
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
@@ -597,7 +709,11 @@
     - name: Stop when Woodpecker PostgreSQL backend is missing
       ansible.builtin.fail:
         msg: |
-          {% set backend_output = (platform_woodpecker_postgres_backend_recheck.stdout | default('', true)) or (platform_woodpecker_postgres_backend_check.stdout | default('', true)) %}
+          {% set backend_output = [
+            (platform_woodpecker_postgres_backend_check | default({})).stdout | default('', true),
+            (platform_woodpecker_postgres_auto_repair | default({})).stdout | default('', true),
+            (platform_woodpecker_postgres_backend_recheck | default({})).stdout | default('', true)
+          ] | join('\n') %}
           {% if (platform_woodpecker_postgres_auto_repair | default({})).stdout | default('', true) %}
           Automatic prerequisite repair output:
           {{ platform_woodpecker_postgres_auto_repair.stdout | default('not run') }}
@@ -614,18 +730,20 @@
           {% endif %}
           {% if backend_output | regex_search('cnpg-webhook-service|mcluster\\.cnpg\\.io|failed calling webhook.*cnpg|context deadline exceeded') %}
           CloudNativePG webhook calls are timing out while applying
-          platform-postgres. Restart/verify the CloudNativePG operator and
-          service endpoints before rerunning Woodpecker repair:
+          platform-postgres. The parent Make target classifies this as a
+          service-path fault, forces one all-node CNI/firewalld recovery, and
+          retries the Woodpecker repair once. To run that recovery separately:
 
-          ansible -i inventory/hosts.local.ini node-1 -b -m shell -a '
-          K=/var/lib/rancher/rke2/bin/kubectl
-          C=/etc/rancher/rke2/rke2.yaml
-          $K --kubeconfig "$C" -n cnpg-system rollout restart deployment/cloudnative-pg
-          $K --kubeconfig "$C" -n cnpg-system rollout status deployment/cloudnative-pg --timeout=300s
-          $K --kubeconfig "$C" -n cnpg-system get pods,svc,endpointslice -o wide
-          '
+          PLATFORM_DNS_SERVICE_PATH_REPAIR=true PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true make platform-dns-repair
 
-          make platform-woodpecker-repair
+          {% endif %}
+          {% if backend_output | regex_search('driver name driver\\.longhorn\\.io not found in the list of registered CSI drivers|MountVolume\\.(MountDevice|SetUp) failed.*driver\\.longhorn\\.io|longhorn-csi-(plugin|registration)') %}
+          Longhorn CSI is not registered on one or more RKE2 nodes. The parent
+          Make target runs a focused manager/CSI recovery before its one
+          Woodpecker retry. This target does not wait for cluster-wide storage
+          capacity and does not delete the active PostgreSQL volume:
+
+          make platform-longhorn-runtime-repair
 
           {% endif %}
           {% if backend_output | regex_search('blocked-needs-PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES') %}
@@ -636,18 +754,19 @@
           PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES=true make platform-woodpecker-repair
 
           {% endif %}
-          {% if backend_output | regex_search('AttachVolume\\.Attach failed|not ready for workloads|longhornVolume=') %}
+          {% if backend_output | regex_search('AttachVolume\\.Attach failed|not ready for workloads|MountVolume\\.(MountDevice|SetUp) failed') %}
           The platform PostgreSQL PVC is blocked by a Longhorn attach/volume
           readiness problem. PostgreSQL init cannot start until the Longhorn
           volume backing platform-databases/platform-postgres-1 is healthy.
 
-          For an empty first deployment where platform-postgres has never
-          initialized, the fastest recovery is to delete and recreate only the
-          stuck platform PostgreSQL PVC/PV/Longhorn volume, then rerun:
+          Run the focused Longhorn runtime repair, then rerun Woodpecker:
 
+          make platform-longhorn-runtime-repair
           make platform-woodpecker-repair
 
-          Do not delete this PVC if the database already contains real data.
+          The active primary PVC is never reset automatically. Only a failed
+          initializing replica whose Longhorn volume is detached and contains
+          zero bytes is eligible for automatic cleanup.
 
           {% endif %}
           {% if backend_output | regex_search('ReplicaSchedulingFailure|insufficient storage|disks are unavailable') %}
@@ -683,6 +802,9 @@
 
           Backend check output:
           {{ platform_woodpecker_postgres_backend_check.stdout | default('not run') }}
+
+          Backend re-check output:
+          {{ (platform_woodpecker_postgres_backend_recheck | default({})).stdout | default('not run') }}
 
           Usual recovery:
           1. Sync the private GitOps source that Argo CD reads.

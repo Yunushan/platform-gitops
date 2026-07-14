@@ -65,6 +65,7 @@ stale_premium_root_app = root / "gitops/bootstrap/root-app-premium-3node.yaml"
 health_playbook = root / "ansible/playbooks/verify-platform-app-health.yml"
 service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-service-path-consumers.yml"
 woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
+longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
 verify_rke2_playbook = root / "ansible/playbooks/verify-rke2.yml"
 status_playbook = root / "ansible/playbooks/platform-status.yml"
@@ -2375,10 +2376,13 @@ def main() -> None:
         "@$(MAKE) platform-ci-health",
         "PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true",
         "reason=postgres-endpoint-path-unreachable",
+        "cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)",
+        "driver name driver\\.longhorn\\.io not found",
+        "$(MAKE) platform-longhorn-runtime-repair",
         "all-node CNI/firewalld recovery",
+        "focused Longhorn runtime recovery",
         'repair_rc="$${PIPESTATUS[0]}"',
-        "grep -Fq 'reason=postgres-endpoint-path-unreachable'",
-        "all-node recovery skipped",
+        "automatic fallback skipped",
     ):
         require_text(makefile_text, needle, f"platform-woodpecker-repair must cover {needle}")
     woodpecker_repair_target = re.search(
@@ -2404,6 +2408,41 @@ def main() -> None:
         fail("platform-woodpecker-repair must refresh service-path consumers once after strict repair")
     if not (0 <= strict_repair_index < first_consumer_refresh):
         fail("platform-woodpecker-repair must run strict Woodpecker repair before service-path consumer refresh")
+    if "platform-longhorn-runtime-repair:" not in makefile_text:
+        fail("Makefile is missing platform-longhorn-runtime-repair target")
+    if "ansible/playbooks/repair-longhorn-runtime.yml" not in makefile_text:
+        fail("platform-longhorn-runtime-repair target must invoke the focused Longhorn runtime playbook")
+    longhorn_runtime_repair_text = read(longhorn_runtime_repair_playbook)
+    for needle in (
+        "missing_csi_nodes",
+        "driver.longhorn.io",
+        "daemonset/longhorn-csi-plugin",
+        "longhorn-csi-registration-timeout",
+        "len(spec_disks) <= 1",
+        "scheduled-replicas-present",
+        "action=remove-empty-duplicate",
+    ):
+        require_text(
+            longhorn_runtime_repair_text,
+            needle,
+            f"focused Longhorn runtime repair must cover {needle}",
+        )
+    woodpecker_repair_text = read(woodpecker_repair_playbook)
+    for needle in (
+        'role}" = "replica"',
+        "replica-volume-has-data",
+        "replica-volume-not-detached",
+        "clear-zero-byte-failed-replica-pvc-finalizer",
+        "delete-zero-byte-failed-replica-pv",
+        "delete-zero-byte-failed-replica-longhorn-volume",
+        "pv_claim_uid",
+        "longhorn_cleanup_allowed",
+    ):
+        require_text(
+            woodpecker_repair_text,
+            needle,
+            f"Woodpecker failed-replica cleanup must preserve its data-safety gate: {needle}",
+        )
     dns_repair_text = read(dns_repair_playbook)
     for needle in (
         "PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR",
