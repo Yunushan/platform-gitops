@@ -2482,12 +2482,22 @@ def main() -> None:
         "ensure_cnpg_webhook_fail_open",
         "action=set-failure-policy-ignore",
         '"path": f"/webhooks/{index}/failurePolicy"',
+        "PLATFORM_WOODPECKER_REPAIR_RECYCLE_STALE_POSTGRES_INSTANCE",
+        "PLATFORM_WOODPECKER_REPAIR_STALE_POSTGRES_INSTANCE_MIN_AGE",
+        "recycle_stale_postgres_instance",
+        "Instance Status Extraction Error: HTTP communication issue",
+        "action=recycle-stale-unready-cnpg-instance-pod",
+        "reason=pvc-retained",
+        'delete "pod/${current_primary}"',
+        "pvc_contract_safe",
     ):
         require_text(
             woodpecker_repair_text,
             needle,
             f"Woodpecker failed-replica cleanup must preserve its data-safety gate: {needle}",
         )
+    if 'delete "pvc/${current_primary}"' in woodpecker_repair_text:
+        fail("stale CNPG primary recovery must never delete its PVC")
     dns_repair_text = read(dns_repair_playbook)
     for needle in (
         "PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR",

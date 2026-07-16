@@ -107,6 +107,16 @@ deadlocks every PostgreSQL GitOps sync. The Woodpecker repair enforces the same
 policy before requesting the `platform-postgres` sync; workload and database
 readiness checks still have to pass before the repair succeeds.
 
+If CloudNativePG reports `Instance Status Extraction Error: HTTP communication
+issue` after the all-node service-path repair, the focused repair can recycle
+one stale, unready current-primary Pod. This recovery is enabled by default but
+requires zero ready PostgreSQL instances and endpoints, an exact CNPG phase
+match, a Pod age of at least 600 seconds, and only healthy `Bound` PVC
+references. It never deletes or modifies those PVCs. Disable it with
+`PLATFORM_WOODPECKER_REPAIR_RECYCLE_STALE_POSTGRES_INSTANCE=false`, or change
+the minimum age with
+`PLATFORM_WOODPECKER_REPAIR_STALE_POSTGRES_INSTANCE_MIN_AGE`.
+
 The focused Woodpecker repair validates the PostgreSQL service, ready endpoint,
 credentials, and backing PVC directly. It does not run the full Longhorn
 bootstrap or require every storage node to have capacity for new replicas.

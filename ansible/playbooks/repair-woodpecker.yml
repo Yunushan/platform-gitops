@@ -11,6 +11,8 @@
     platform_woodpecker_repair_auto_prerequisites_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_PREREQUISITES') }}"
     platform_woodpecker_repair_reset_failed_replica_pvcs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_FAILED_REPLICA_PVCS') }}"
     platform_woodpecker_repair_reset_unrecoverable_postgres_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES') }}"
+    platform_woodpecker_repair_recycle_stale_postgres_instance_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RECYCLE_STALE_POSTGRES_INSTANCE') }}"
+    platform_woodpecker_repair_stale_postgres_instance_min_age_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_STALE_POSTGRES_INSTANCE_MIN_AGE') }}"
     platform_woodpecker_repair_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_CHECK_IMAGE') }}"
     platform_woodpecker_repair_auto_service_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH') }}"
     platform_woodpecker_repair_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
@@ -20,6 +22,8 @@
     platform_woodpecker_repair_auto_prerequisites_effective: "{{ platform_woodpecker_repair_auto_prerequisites | default(platform_woodpecker_repair_auto_prerequisites_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_reset_failed_replica_pvcs_effective: "{{ platform_woodpecker_repair_reset_failed_replica_pvcs | default(platform_woodpecker_repair_reset_failed_replica_pvcs_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_reset_unrecoverable_postgres_effective: "{{ platform_woodpecker_repair_reset_unrecoverable_postgres | default(platform_woodpecker_repair_reset_unrecoverable_postgres_from_env, true) | default(false, true) | bool }}"
+    platform_woodpecker_repair_recycle_stale_postgres_instance_effective: "{{ platform_woodpecker_repair_recycle_stale_postgres_instance | default(platform_woodpecker_repair_recycle_stale_postgres_instance_from_env, true) | default(true, true) | bool }}"
+    platform_woodpecker_repair_stale_postgres_instance_min_age_effective: "{{ platform_woodpecker_repair_stale_postgres_instance_min_age | default(platform_woodpecker_repair_stale_postgres_instance_min_age_from_env, true) | default(600, true) | int }}"
     platform_woodpecker_repair_check_image_effective: "{{ platform_woodpecker_repair_check_image | default(platform_woodpecker_repair_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_woodpecker_repair_auto_service_path_effective: "{{ platform_woodpecker_repair_auto_service_path | default(platform_woodpecker_repair_auto_service_path_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_service_path_rollout_timeout_effective: "{{ platform_woodpecker_repair_service_path_rollout_timeout | default(platform_woodpecker_repair_service_path_rollout_timeout_from_env, true) | default(120, true) | int }}"
@@ -184,6 +188,9 @@
               sleep 5
               continue
             fi
+            if [ "${operation_phase}" = "Succeeded" ]; then
+              break
+            fi
             case "${sync_status}" in
               Synced)
                 break
@@ -222,6 +229,12 @@
               fi
               exit 0
             fi
+            case "${cluster_phase}" in
+              *"Instance Status Extraction Error: HTTP communication issue"*)
+                echo "result=fail reason=stale-cnpg-instance-status-http-path"
+                break
+                ;;
+            esac
           else
             echo "platform_postgres_rw_service=absent"
           fi
@@ -292,6 +305,12 @@
         TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
         ALLOW_DESTRUCTIVE_RESET={{ platform_woodpecker_repair_reset_unrecoverable_postgres_effective | bool | lower }}
         RESET_FAILED_REPLICA_PVCS={{ platform_woodpecker_repair_reset_failed_replica_pvcs_effective | bool | lower }}
+        RECYCLE_STALE_POSTGRES_INSTANCE={{ platform_woodpecker_repair_recycle_stale_postgres_instance_effective | bool | lower }}
+        STALE_POSTGRES_INSTANCE_MIN_AGE={{ platform_woodpecker_repair_stale_postgres_instance_min_age_effective }}
+
+        case "${STALE_POSTGRES_INSTANCE_MIN_AGE}" in
+          ""|*[!0-9]*) STALE_POSTGRES_INSTANCE_MIN_AGE=600 ;;
+        esac
 
         redact() {
           sed -E \
@@ -353,6 +372,141 @@
         # immediately so a broken webhook service path cannot deadlock the
         # platform-postgres sync that is needed to recover Woodpecker.
         ensure_cnpg_webhook_fail_open
+
+        recycle_stale_postgres_instance() {
+          if [ "${RECYCLE_STALE_POSTGRES_INSTANCE}" != "true" ]; then
+            echo "platform_postgres_stale_instance_recycle=disabled"
+            return 0
+          fi
+          if ! "$K" --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres >/dev/null 2>&1; then
+            return 0
+          fi
+
+          cluster_phase="$("$K" --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          case "${cluster_phase}" in
+            *"Instance Status Extraction Error: HTTP communication issue"*) ;;
+            *) return 0 ;;
+          esac
+
+          ready_endpoints="$("$K" --kubeconfig "$C" -n platform-databases get endpointslice \
+            -l kubernetes.io/service-name=platform-postgres-rw \
+            -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+            awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
+          cluster_ready="$("$K" --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.readyInstances}' 2>/dev/null || true)"
+          case "${ready_endpoints}" in ""|*[!0-9]*) ready_endpoints=0 ;; esac
+          case "${cluster_ready}" in ""|*[!0-9]*) cluster_ready=0 ;; esac
+          if [ "${ready_endpoints}" -gt 0 ] || [ "${cluster_ready}" -gt 0 ]; then
+            echo "platform_postgres_stale_instance_recycle=skipped reason=ready-backend-present ready_endpoints=${ready_endpoints} cluster_ready=${cluster_ready}"
+            return 0
+          fi
+
+          current_primary="$("$K" --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.currentPrimary}' 2>/dev/null || true)"
+          if [ -z "${current_primary}" ] || ! "$K" --kubeconfig "$C" -n platform-databases \
+            get "pod/${current_primary}" >/dev/null 2>&1; then
+            echo "platform_postgres_stale_instance_recycle=skipped reason=current-primary-pod-absent"
+            return 0
+          fi
+
+          pod_owner="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" \
+            -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}{"/"}{.name}{"\n"}{end}' 2>/dev/null || true)"
+          if ! printf '%s\n' "${pod_owner}" | grep -qx 'Cluster/platform-postgres'; then
+            echo "platform_postgres_stale_instance_recycle=skipped reason=unexpected-pod-owner pod=${current_primary}"
+            return 0
+          fi
+
+          pod_uid="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" \
+            -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+          pod_phase="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          pod_deleting="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" \
+            -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)"
+          pod_created="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" \
+            -o jsonpath='{.metadata.creationTimestamp}' 2>/dev/null || true)"
+          pod_ready="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" \
+            -o jsonpath='{range .status.containerStatuses[*]}{.ready}{"\n"}{end}' 2>/dev/null |
+            awk '$1 == "true" { count++ } END { print count + 0 }')"
+          pod_created_epoch="$(date -d "${pod_created}" +%s 2>/dev/null || echo 0)"
+          case "${pod_ready}" in ""|*[!0-9]*) pod_ready=0 ;; esac
+          case "${pod_created_epoch}" in ""|*[!0-9]*) pod_created_epoch=0 ;; esac
+          pod_age=0
+          if [ "${pod_created_epoch}" -gt 0 ]; then
+            pod_age=$(( $(date +%s) - pod_created_epoch ))
+          fi
+
+          if [ -z "${pod_uid}" ] || [ "${pod_phase}" != "Running" ] || [ "${pod_ready}" -gt 0 ] || \
+            [ -n "${pod_deleting}" ] || [ "${pod_age}" -lt "${STALE_POSTGRES_INSTANCE_MIN_AGE}" ]; then
+            echo "platform_postgres_stale_instance_recycle=skipped reason=pod-not-eligible pod=${current_primary} uid=${pod_uid:-absent} phase=${pod_phase:-unknown} ready_containers=${pod_ready} age=${pod_age} deleting=${pod_deleting:-false}"
+            return 0
+          fi
+
+          pvc_names="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" \
+            -o jsonpath='{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{"\n"}{end}' 2>/dev/null |
+            awk 'NF' | sort -u)"
+          if [ -z "${pvc_names}" ]; then
+            echo "platform_postgres_stale_instance_recycle=skipped reason=pod-has-no-pvc pod=${current_primary}"
+            return 0
+          fi
+
+          pvc_contract_safe=true
+          for pvc in ${pvc_names}; do
+            pvc_phase="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            pvc_uid="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            pvc_deleting="$("$K" --kubeconfig "$C" -n platform-databases get "pvc/${pvc}" \
+              -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)"
+            if [ "${pvc_phase}" != "Bound" ] || [ -z "${pvc_uid}" ] || [ -n "${pvc_deleting}" ]; then
+              echo "platform_postgres_stale_instance_pvc=${pvc} action=retain reason=pvc-not-safe-for-pod-recycle phase=${pvc_phase:-absent} deleting=${pvc_deleting:-false}"
+              pvc_contract_safe=false
+              continue
+            fi
+            echo "platform_postgres_stale_instance_pvc=${pvc} action=retain reason=pvc-retained uid=${pvc_uid}"
+          done
+          if [ "${pvc_contract_safe}" != "true" ]; then
+            echo "platform_postgres_stale_instance_recycle=skipped reason=pvc-contract-not-safe pod=${current_primary}"
+            return 0
+          fi
+
+          echo "----- stale CNPG instance diagnostics pod/${current_primary} -----"
+          "$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" -o wide 2>&1 | redact || true
+          "$K" --kubeconfig "$C" -n platform-databases describe "pod/${current_primary}" 2>&1 |
+            sed -n '/Events:/,$p' |
+            redact || true
+          echo "platform_postgres_stale_instance_pod=${current_primary} uid=${pod_uid} age=${pod_age} action=recycle-stale-unready-cnpg-instance-pod pvc_action=retain"
+          if ! "$K" --kubeconfig "$C" -n platform-databases delete "pod/${current_primary}" \
+            --ignore-not-found=true --wait=false; then
+            echo "platform_postgres_stale_instance_recycle=failed reason=pod-delete-request-failed pod=${current_primary}"
+            return 0
+          fi
+
+          replacement_wait=120
+          if [ "${TIMEOUT}" -lt "${replacement_wait}" ]; then
+            replacement_wait="${TIMEOUT}"
+          fi
+          replacement_deadline=$(( $(date +%s) + replacement_wait ))
+          while [ "$(date +%s)" -lt "${replacement_deadline}" ]; do
+            replacement_uid="$("$K" --kubeconfig "$C" -n platform-databases get "pod/${current_primary}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ -n "${replacement_uid}" ] && [ "${replacement_uid}" != "${pod_uid}" ]; then
+              echo "platform_postgres_stale_instance_pod=${current_primary} old_uid=${pod_uid} replacement_uid=${replacement_uid} action=replacement-created pvc_action=retain"
+              return 0
+            fi
+            sleep 5
+          done
+          echo "platform_postgres_stale_instance_pod=${current_primary} old_uid=${pod_uid} action=replacement-pending pvc_action=retain"
+        }
+
+        # The Make target has already repaired the all-node service path. A
+        # long-lived unready primary can retain a stale CNI endpoint or old
+        # instance manager, so recycle only that Pod and keep every PVC.
+        recycle_stale_postgres_instance
 
         reset_postgres=false
         cluster_status="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
@@ -683,6 +837,7 @@
         'action=delete-zero-byte-failed-replica-pv' in platform_woodpecker_postgres_auto_repair.stdout or
         'action=delete-zero-byte-failed-replica-longhorn-volume' in platform_woodpecker_postgres_auto_repair.stdout or
         'action=set-failure-policy-ignore' in platform_woodpecker_postgres_auto_repair.stdout or
+        'action=recycle-stale-unready-cnpg-instance-pod' in platform_woodpecker_postgres_auto_repair.stdout or
         'refresh-sync-requested' in platform_woodpecker_postgres_auto_repair.stdout
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
