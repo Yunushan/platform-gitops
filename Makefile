@@ -236,7 +236,22 @@ platform-woodpecker-repair:
 			$(MAKE) platform-longhorn-runtime-repair; \
 		fi; \
 		echo "Retrying Woodpecker repair once after classified prerequisite recovery."; \
-		ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml
+		: > "$$repair_log"; \
+		set +e; \
+		ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml 2>&1 | tee "$$repair_log"; \
+		retry_rc="$${PIPESTATUS[0]}"; \
+		set -e; \
+		if [ "$$retry_rc" -eq 0 ]; then \
+			exit 0; \
+		fi; \
+		if [ "$$service_path_repair" = "true" ] && grep -q 'reason=postgres-endpoint-path-unreachable' "$$repair_log"; then \
+			echo "Cross-node PostgreSQL endpoint access still fails after CNI/firewalld recovery; applying guarded rolling RKE2 restart on only the source and endpoint nodes."; \
+			ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker-service-path-nodes.yml; \
+			echo "Retrying Woodpecker repair after guarded rolling node recovery."; \
+			ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml; \
+			exit $$?; \
+		fi; \
+		exit "$$retry_rc"
 	@$(MAKE) platform-service-path-consumers-repair
 	@$(MAKE) platform-ci-health
 

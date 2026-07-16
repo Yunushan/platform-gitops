@@ -1108,14 +1108,47 @@
           echo "result=repaired reason=postgres-service-internal-traffic-policy value=Cluster"
         fi
 
+        component_rows_on_node() {
+          component="$1"
+          selector="$2"
+          node="$3"
+          if [ "${component}" = "kube-proxy" ]; then
+            "$K" --kubeconfig "$C" -n kube-system get pods \
+              --field-selector "spec.nodeName=${node}" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.ready}{" "}{end}{"\n"}{end}' \
+              2>/dev/null |
+              awk -F'|' '$1 ~ /^(rke2-)?kube-proxy-/ { print }'
+          else
+            "$K" --kubeconfig "$C" -n kube-system get pods \
+              -l "${selector}" \
+              --field-selector "spec.nodeName=${node}" \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.ready}{" "}{end}{"\n"}{end}' \
+              2>/dev/null
+          fi
+        }
+
+        component_pods_on_node() {
+          component="$1"
+          selector="$2"
+          node="$3"
+          if [ "${component}" = "kube-proxy" ]; then
+            "$K" --kubeconfig "$C" -n kube-system get pods \
+              --field-selector "spec.nodeName=${node}" \
+              -o name 2>/dev/null |
+              grep -E '^pod/(rke2-)?kube-proxy-' || true
+          else
+            "$K" --kubeconfig "$C" -n kube-system get pods \
+              -l "${selector}" \
+              --field-selector "spec.nodeName=${node}" \
+              -o name 2>/dev/null || true
+          fi
+        }
+
         component_ready_on_node() {
-          selector="$1"
-          node="$2"
-          "$K" --kubeconfig "$C" -n kube-system get pods \
-            -l "${selector}" \
-            --field-selector "spec.nodeName=${node}" \
-            -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.ready}{" "}{end}{"\n"}{end}' \
-            2>/dev/null |
+          component="$1"
+          selector="$2"
+          node="$3"
+          component_rows_on_node "${component}" "${selector}" "${node}" |
             awk -F'|' '
               $1 != "" && ($2 == "" || $2 == "<no value>") && $3 == "Running" {
                 count = split($4, statuses, " ")
@@ -1136,10 +1169,7 @@
           component="$1"
           selector="$2"
           for node in ${repair_nodes}; do
-            pods="$("$K" --kubeconfig "$C" -n kube-system get pods \
-              -l "${selector}" \
-              --field-selector "spec.nodeName=${node}" \
-              -o name 2>/dev/null || true)"
+            pods="$(component_pods_on_node "${component}" "${selector}" "${node}")"
             if [ -z "${pods}" ]; then
               echo "service_path_component=${component} node=${node} action=skip reason=no-matching-pod"
               continue
@@ -1151,16 +1181,65 @@
               delete ${pods} --ignore-not-found=true --wait=false || true
             component_deadline=$(( $(date +%s) + SERVICE_PATH_ROLLOUT_TIMEOUT ))
             while [ "$(date +%s)" -lt "${component_deadline}" ]; do
-              if component_ready_on_node "${selector}" "${node}"; then
+              if component_ready_on_node "${component}" "${selector}" "${node}"; then
                 echo "service_path_component=${component} node=${node} state=ready"
                 break
               fi
               sleep 3
             done
-            if ! component_ready_on_node "${selector}" "${node}"; then
+            if ! component_ready_on_node "${component}" "${selector}" "${node}"; then
               echo "service_path_component=${component} node=${node} state=rollout-timeout"
             fi
           done
+        }
+
+        refresh_cilium_operator() {
+          operator="$("$K" --kubeconfig "$C" -n kube-system get deployment -o name 2>/dev/null |
+            grep -E '^deployment\.apps/(rke2-)?cilium-operator$' |
+            head -n 1 || true)"
+          if [ -z "${operator}" ]; then
+            echo "service_path_component=cilium-operator action=skip reason=no-matching-deployment"
+            return 0
+          fi
+          echo "service_path_component=cilium-operator action=refresh workload=${operator}"
+          "$K" --kubeconfig "$C" -n kube-system rollout restart "${operator}" || true
+          if "$K" --kubeconfig "$C" -n kube-system rollout status "${operator}" \
+            --timeout="${SERVICE_PATH_ROLLOUT_TIMEOUT}s"; then
+            echo "service_path_component=cilium-operator state=ready"
+          else
+            echo "service_path_component=cilium-operator state=rollout-timeout"
+          fi
+        }
+
+        collect_cilium_service_path_state() {
+          echo "===== Cilium cross-node service-path diagnostics ====="
+          for node in ${repair_nodes}; do
+            cilium_pod="$($K --kubeconfig "$C" -n kube-system get pods \
+              -l k8s-app=cilium --field-selector "spec.nodeName=${node}" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+            echo "----- cilium node=${node} pod=${cilium_pod:-absent} -----"
+            if [ -z "${cilium_pod}" ]; then
+              continue
+            fi
+            "$K" --kubeconfig "$C" -n kube-system exec "pod/${cilium_pod}" -- \
+              cilium-dbg status --verbose 2>&1 | sed -n '1,120p' || true
+            "$K" --kubeconfig "$C" -n kube-system exec "pod/${cilium_pod}" -- \
+              cilium-health status --verbose 2>&1 | sed -n '1,160p' || true
+            "$K" --kubeconfig "$C" -n kube-system exec "pod/${cilium_pod}" -- \
+              cilium-dbg node list 2>&1 | sed -n '1,120p' || true
+            "$K" --kubeconfig "$C" -n kube-system exec "pod/${cilium_pod}" -- \
+              cilium-dbg bpf tunnel list 2>&1 | sed -n '1,120p' || true
+          done
+          echo "===== Network policies selecting the probe or database namespaces ====="
+          "$K" --kubeconfig "$C" get networkpolicy -A \
+            -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name' \
+            --no-headers 2>/dev/null |
+            awk '$1 == "woodpecker" || $1 == "platform-databases"' || true
+          "$K" --kubeconfig "$C" get ciliumnetworkpolicy -A \
+            -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name' \
+            --no-headers 2>/dev/null |
+            awk '$1 == "woodpecker" || $1 == "platform-databases"' || true
+          "$K" --kubeconfig "$C" get ciliumclusterwidenetworkpolicy -o name 2>/dev/null || true
         }
 
         repair_postgres_service_path() {
@@ -1169,8 +1248,11 @@
             echo "automatic_postgres_service_path_repair=skipped reason=no-affected-nodes"
             return 0
           fi
+          refresh_cilium_operator
           refresh_node_component kube-proxy k8s-app=kube-proxy
           refresh_node_component cilium k8s-app=cilium
+          echo "service_path_component_settle_seconds=15"
+          sleep 15
           echo "result=repaired reason=woodpecker-postgres-service-path-components-refreshed nodes=${repair_nodes}"
         }
 
@@ -1344,6 +1426,9 @@
           attempt=$(( attempt + 1 ))
           sleep 5
         done
+        if [ "${result}" -ne 0 ]; then
+          collect_cilium_service_path_state
+        fi
         rm -f "${manifest}"
         exit "${result}"
       args:

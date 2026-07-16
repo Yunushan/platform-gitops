@@ -48,6 +48,7 @@ required = [
     'ansible/playbooks/verify-platform-app-health.yml',
     'ansible/playbooks/repair-platform-service-path-consumers.yml',
     'ansible/playbooks/repair-woodpecker.yml',
+    'ansible/playbooks/repair-woodpecker-service-path-nodes.yml',
     'scripts/check_gitops_profile.py',
     'scripts/render_deployable_gitops_apps.py',
     'scripts/run_validation.py',

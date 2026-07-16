@@ -68,6 +68,7 @@ stale_premium_root_app = root / "gitops/bootstrap/root-app-premium-3node.yaml"
 health_playbook = root / "ansible/playbooks/verify-platform-app-health.yml"
 service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-service-path-consumers.yml"
 woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
+woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpecker-service-path-nodes.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
 firewalld_cleanup_script = root / "scripts/cleanup_firewalld_cni_interfaces.py"
@@ -2414,6 +2415,7 @@ def main() -> None:
         fail("Makefile is missing platform-woodpecker-repair target")
     for needle in (
         "ansible/playbooks/repair-woodpecker.yml",
+        "ansible/playbooks/repair-woodpecker-service-path-nodes.yml",
         "@$(MAKE) platform-service-path-consumers-repair",
         "@$(MAKE) platform-ci-health",
         "PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true",
@@ -2424,6 +2426,8 @@ def main() -> None:
         "all-node CNI/firewalld recovery",
         "focused Longhorn runtime recovery",
         'repair_rc="$${PIPESTATUS[0]}"',
+        'retry_rc="$${PIPESTATUS[0]}"',
+        "guarded rolling RKE2 restart",
         "automatic fallback skipped",
     ):
         require_text(makefile_text, needle, f"platform-woodpecker-repair must cover {needle}")
@@ -2625,6 +2629,11 @@ def main() -> None:
         "postgres-service-internal-traffic-policy",
         "Reconcile and verify Woodpecker PostgreSQL role credentials",
         "woodpecker-to-postgres-service-path-unreachable",
+        "component_pods_on_node",
+        "(rke2-)?kube-proxy-",
+        "refresh_cilium_operator",
+        "cilium-health status --verbose",
+        "cilium-dbg bpf tunnel list",
         "make platform-woodpecker-repair",
     ):
         require_text(
@@ -2636,6 +2645,26 @@ def main() -> None:
         fail("Woodpecker PostgreSQL probe must use Bash, not POSIX sh, for /dev/tcp")
     if "{range .items[*].endpoints[*].addresses[*]}" in woodpecker_repair_text:
         fail("Woodpecker PostgreSQL endpoint discovery must flatten nested EndpointSlice arrays structurally")
+    woodpecker_service_path_nodes_text = read(woodpecker_service_path_nodes_playbook)
+    for needle in (
+        "PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART",
+        "PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART_TIMEOUT",
+        "serial: 1",
+        "ready_peers=",
+        "systemctl --no-block restart rke2-server",
+        "ActiveEnterTimestampMonotonic",
+        "Wait for restarted Kubernetes node to report Ready",
+        "Wait for Cilium on restarted node",
+        "Wait for kube-proxy on restarted node",
+        "^(?:rke2-)?kube-proxy-",
+        "platform-postgres-rw",
+        "PVCs, PVs, Longhorn volumes, and database objects are retained",
+    ):
+        require_text(
+            woodpecker_service_path_nodes_text,
+            needle,
+            f"guarded Woodpecker service-path node recovery must cover {needle}",
+        )
     gitignore_text = read(gitignore_file)
     for needle in ("__pycache__/", ".shell-syntax-*/", ".ansible-shell-syntax-*/", ".venv/", ".pytest_cache/", "*.pyc"):
         require_text(gitignore_text, needle, f".gitignore must ignore generated validation/cache artifacts: {needle}")

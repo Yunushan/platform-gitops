@@ -1,0 +1,376 @@
+---
+- name: Discover nodes for persistent Woodpecker PostgreSQL path repair
+  hosts: rke2_servers
+  gather_facts: false
+  become: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_woodpecker_failed_node_restart_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART') }}"
+    platform_woodpecker_failed_node_restart_effective: >-
+      {{
+        (platform_woodpecker_failed_node_restart_from_env | trim | length == 0)
+        | ternary(true, platform_woodpecker_failed_node_restart_from_env | bool)
+      }}
+  tasks:
+    - name: Stop when persistent-node restart recovery is disabled
+      ansible.builtin.fail:
+        msg: |
+          Woodpecker still has a cross-node PostgreSQL endpoint timeout after
+          the normal CNI/firewalld repair, but guarded RKE2 node restart
+          recovery is disabled.
+
+          Rerun without PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART=false,
+          or diagnose the Cilium tunnel path manually before retrying.
+      when: not (platform_woodpecker_failed_node_restart_effective | bool)
+      run_once: true
+
+    - name: Discover Woodpecker source and PostgreSQL endpoint nodes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        endpoints_file="$(mktemp)"
+        nodes_file="$(mktemp)"
+        trap 'rm -f "${endpoints_file}" "${nodes_file}"' EXIT
+
+        server_node="$(
+          "$K" --kubeconfig "$C" -n woodpecker get pods \
+            -l app.kubernetes.io/name=server \
+            -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null |
+            awk 'NF { print; exit }'
+        )"
+        "$K" --kubeconfig "$C" -n platform-databases get endpointslice \
+          -l kubernetes.io/service-name=platform-postgres-rw \
+          -o json >"${endpoints_file}"
+        "$K" --kubeconfig "$C" get nodes -o json >"${nodes_file}"
+
+        python3 - "${server_node}" "${endpoints_file}" "${nodes_file}" <<'PY'
+        import json
+        import sys
+
+        server_node = sys.argv[1]
+        endpoints = json.load(open(sys.argv[2], encoding="utf-8"))
+        nodes = json.load(open(sys.argv[3], encoding="utf-8"))
+
+        endpoint_nodes = []
+        endpoint_addresses = []
+        for item in endpoints.get("items", []):
+            for endpoint in item.get("endpoints", []):
+                if endpoint.get("conditions", {}).get("ready") is False:
+                    continue
+                node = endpoint.get("nodeName") or ""
+                if node and node not in endpoint_nodes:
+                    endpoint_nodes.append(node)
+                for address in endpoint.get("addresses", []):
+                    if address not in endpoint_addresses:
+                        endpoint_addresses.append(address)
+
+        ready_nodes = []
+        for item in nodes.get("items", []):
+            conditions = {
+                condition.get("type"): condition.get("status")
+                for condition in item.get("status", {}).get("conditions", [])
+            }
+            if conditions.get("Ready") == "True":
+                ready_nodes.append(item.get("metadata", {}).get("name", ""))
+
+        restart_nodes = []
+        for node in [server_node, *endpoint_nodes]:
+            if node and node not in restart_nodes:
+                restart_nodes.append(node)
+
+        print(json.dumps({
+            "source_node": server_node,
+            "endpoint_nodes": endpoint_nodes,
+            "endpoint_addresses": endpoint_addresses,
+            "restart_nodes": restart_nodes,
+            "ready_nodes": ready_nodes,
+        }, separators=(",", ":")))
+        PY
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_service_path_restart_discovery
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Normalize persistent Woodpecker service-path restart nodes
+      ansible.builtin.set_fact:
+        platform_woodpecker_service_path_restart_state: >-
+          {{ platform_woodpecker_service_path_restart_discovery.stdout | from_json }}
+      delegate_to: "{{ rke2_first_server }}"
+      delegate_facts: true
+      run_once: true
+
+    - name: Validate guarded HA restart preconditions
+      ansible.builtin.assert:
+        that:
+          - groups['rke2_servers'] | length >= 3
+          - hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.source_node | length > 0
+          - hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.endpoint_nodes | length > 0
+          - hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.endpoint_addresses | length > 0
+          - hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.restart_nodes | length > 0
+          - >-
+            hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.restart_nodes
+            | difference(groups['rke2_servers']) | length == 0
+          - hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.ready_nodes | length >= 2
+        fail_msg: >-
+          Persistent Woodpecker service-path recovery will not restart RKE2:
+          the cluster is not a healthy three-node HA control plane, or the
+          source/endpoint node names do not match the RKE2 inventory.
+      run_once: true
+
+    - name: Print guarded Woodpecker node restart plan
+      ansible.builtin.debug:
+        msg: >-
+          Woodpecker source={{ hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.source_node }},
+          PostgreSQL endpoint nodes={{ hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.endpoint_nodes | join(' ') }},
+          rolling restart order={{ hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.restart_nodes | join(' ') }}.
+          PVCs, PVs, Longhorn volumes, and database objects are retained.
+      run_once: true
+
+    - name: Build rolling Woodpecker service-path restart group
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: platform_woodpecker_service_path_restart_nodes
+      loop: "{{ hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.restart_nodes }}"
+      run_once: true
+
+- name: Reinitialize persistent Woodpecker service-path nodes one at a time
+  hosts: platform_woodpecker_service_path_restart_nodes
+  serial: 1
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_woodpecker_failed_node_restart_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART_TIMEOUT') }}"
+    platform_woodpecker_failed_node_restart_timeout_effective: >-
+      {{ platform_woodpecker_failed_node_restart_timeout_from_env | default(600, true) | int }}
+    platform_woodpecker_failed_node_restart_poll_interval: 5
+    platform_woodpecker_failed_node_restart_retries: >-
+      {{
+        [
+          1,
+          (
+            (platform_woodpecker_failed_node_restart_timeout_effective | int)
+            // (platform_woodpecker_failed_node_restart_poll_interval | int)
+          )
+        ] | max
+      }}
+  tasks:
+    - name: Verify two peer control-plane nodes are Ready before restart
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        nodes_file="$(mktemp)"
+        trap 'rm -f "${nodes_file}"' EXIT
+        "$K" --kubeconfig "$C" get nodes -o json >"${nodes_file}"
+        python3 - "{{ inventory_hostname }}" "${nodes_file}" <<'PY'
+        import json
+        import sys
+
+        current = sys.argv[1]
+        document = json.load(open(sys.argv[2], encoding="utf-8"))
+        ready = []
+        for item in document.get("items", []):
+            conditions = {
+                condition.get("type"): condition.get("status")
+                for condition in item.get("status", {}).get("conditions", [])
+            }
+            if conditions.get("Ready") == "True":
+                ready.append(item.get("metadata", {}).get("name", ""))
+        peers = [node for node in ready if node != current]
+        print(f"restart_node={current} ready_nodes={' '.join(ready)} ready_peers={' '.join(peers)}")
+        raise SystemExit(0 if len(peers) >= 2 else 1)
+        PY
+      args:
+        executable: /bin/bash
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+
+    - name: Read current RKE2 service activation timestamp
+      ansible.builtin.command: systemctl show rke2-server --property=ActiveEnterTimestampMonotonic --value
+      register: platform_woodpecker_rke2_active_timestamp_before
+      changed_when: false
+
+    - name: Restart affected RKE2 server without blocking Ansible
+      ansible.builtin.command: systemctl --no-block restart rke2-server
+      changed_when: true
+
+    - name: Allow the RKE2 restart transaction to begin
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Wait for a new active RKE2 service instance
+      ansible.builtin.shell: |
+        set -euo pipefail
+        active="$(systemctl is-active rke2-server)"
+        activated="$(systemctl show rke2-server --property=ActiveEnterTimestampMonotonic --value)"
+        echo "state=${active} active_enter=${activated}"
+        test "${active}" = "active"
+        test -n "${activated}"
+        test "${activated}" != "{{ platform_woodpecker_rke2_active_timestamp_before.stdout | trim }}"
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_rke2_active_after_restart
+      changed_when: false
+      retries: "{{ platform_woodpecker_failed_node_restart_retries }}"
+      delay: "{{ platform_woodpecker_failed_node_restart_poll_interval }}"
+      until: platform_woodpecker_rke2_active_after_restart.rc == 0
+
+    - name: Wait for restarted Kubernetes node to report Ready
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - get
+          - node
+          - "{{ inventory_hostname }}"
+          - -o
+          - 'jsonpath={range .status.conditions[?(@.type=="Ready")]}{.status}{end}'
+      register: platform_woodpecker_kubernetes_node_ready
+      changed_when: false
+      retries: "{{ platform_woodpecker_failed_node_restart_retries }}"
+      delay: "{{ platform_woodpecker_failed_node_restart_poll_interval }}"
+      until: platform_woodpecker_kubernetes_node_ready.stdout | trim == 'True'
+      delegate_to: "{{ rke2_first_server }}"
+
+    - name: Wait for Cilium on restarted node
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" -n kube-system get pods \
+          -l k8s-app=cilium --field-selector spec.nodeName="{{ inventory_hostname }}" \
+          -o json |
+          python3 -c '
+        import json
+        import sys
+        document = json.load(sys.stdin)
+        pods = document.get("items", [])
+        ready = [
+            item for item in pods
+            if not item.get("metadata", {}).get("deletionTimestamp")
+            and item.get("status", {}).get("phase") == "Running"
+            and item.get("status", {}).get("containerStatuses")
+            and all(status.get("ready") for status in item["status"]["containerStatuses"])
+        ]
+        print(f"cilium_total={len(pods)} cilium_ready={len(ready)}")
+        raise SystemExit(0 if ready else 1)
+        '
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_restarted_node_cilium_ready
+      changed_when: false
+      retries: "{{ platform_woodpecker_failed_node_restart_retries }}"
+      delay: "{{ platform_woodpecker_failed_node_restart_poll_interval }}"
+      until: platform_woodpecker_restarted_node_cilium_ready.rc == 0
+      delegate_to: "{{ rke2_first_server }}"
+
+    - name: Wait for kube-proxy on restarted node
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" -n kube-system get pods \
+          --field-selector spec.nodeName="{{ inventory_hostname }}" -o json |
+          python3 -c '
+        import json
+        import re
+        import sys
+        document = json.load(sys.stdin)
+        candidates = []
+        ready = []
+        for item in document.get("items", []):
+            metadata = item.get("metadata", {})
+            name = metadata.get("name", "")
+            labels = metadata.get("labels", {})
+            if not (re.match(r"^(?:rke2-)?kube-proxy-", name) or labels.get("k8s-app") == "kube-proxy"):
+                continue
+            candidates.append(name)
+            statuses = item.get("status", {}).get("containerStatuses") or []
+            if (
+                not metadata.get("deletionTimestamp")
+                and item.get("status", {}).get("phase") == "Running"
+                and statuses
+                and all(status.get("ready") for status in statuses)
+            ):
+                ready.append(name)
+        print(f"kube_proxy_total={len(candidates)} kube_proxy_ready={len(ready)}")
+        raise SystemExit(0 if candidates and len(ready) == len(candidates) else 1)
+        '
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_restarted_node_kube_proxy_ready
+      changed_when: false
+      retries: "{{ platform_woodpecker_failed_node_restart_retries }}"
+      delay: "{{ platform_woodpecker_failed_node_restart_poll_interval }}"
+      until: platform_woodpecker_restarted_node_kube_proxy_ready.rc == 0
+      delegate_to: "{{ rke2_first_server }}"
+
+    - name: Let Cilium tunnel and service maps converge on restarted node
+      ansible.builtin.pause:
+        seconds: 15
+
+- name: Verify PostgreSQL endpoint recovery after rolling node restart
+  hosts: rke2_servers
+  gather_facts: false
+  become: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_woodpecker_failed_node_restart_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART_TIMEOUT') }}"
+    platform_woodpecker_failed_node_restart_timeout_effective: >-
+      {{ platform_woodpecker_failed_node_restart_timeout_from_env | default(600, true) | int }}
+    platform_woodpecker_failed_node_restart_poll_interval: 5
+    platform_woodpecker_failed_node_restart_retries: >-
+      {{
+        [
+          1,
+          (
+            (platform_woodpecker_failed_node_restart_timeout_effective | int)
+            // (platform_woodpecker_failed_node_restart_poll_interval | int)
+          )
+        ] | max
+      }}
+  tasks:
+    - name: Wait for a ready PostgreSQL writer endpoint after node restart
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" -n platform-databases get endpointslice \
+          -l kubernetes.io/service-name=platform-postgres-rw -o json |
+          python3 -c '
+        import json
+        import sys
+        document = json.load(sys.stdin)
+        addresses = []
+        for item in document.get("items", []):
+            for endpoint in item.get("endpoints", []):
+                if endpoint.get("conditions", {}).get("ready") is False:
+                    continue
+                addresses.extend(endpoint.get("addresses", []))
+        print("postgres_ready_endpoints=" + (" ".join(addresses) if addresses else "none"))
+        raise SystemExit(0 if addresses else 1)
+        '
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_post_restart_postgres_endpoint
+      changed_when: false
+      retries: "{{ platform_woodpecker_failed_node_restart_retries }}"
+      delay: "{{ platform_woodpecker_failed_node_restart_poll_interval }}"
+      until: platform_woodpecker_post_restart_postgres_endpoint.rc == 0
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print guarded Woodpecker node restart result
+      ansible.builtin.debug:
+        msg: >-
+          Persistent cross-node recovery completed in rolling order
+          {{ hostvars[rke2_first_server].platform_woodpecker_service_path_restart_state.restart_nodes | join(' ') }};
+          {{ platform_woodpecker_post_restart_postgres_endpoint.stdout | trim }}.
+          The Woodpecker repair will now rerun its in-cluster TCP probe.
+      run_once: true

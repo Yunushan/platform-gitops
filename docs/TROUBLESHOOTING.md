@@ -88,9 +88,17 @@ Woodpecker server node. A ClusterIP or direct-endpoint timeout triggers one
 bounded refresh of kube-proxy and Cilium on only the affected source/endpoint
 nodes, followed by an automatic second probe. If the direct endpoint still
 times out, the Make target applies the existing all-node CNI, reverse-path
-filter, and firewalld recovery once, then reruns the Woodpecker repair. Disable
-the first targeted recovery with `PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=false`,
-or adjust its per-node wait with
+filter, and firewalld recovery once, then reruns the Woodpecker repair. If the
+same direct endpoint path still fails on the premium three-node profile, the
+target verifies that two peer control-plane nodes are Ready and performs a
+guarded rolling RKE2 restart on only the Woodpecker source and PostgreSQL
+endpoint nodes. It waits for each node, Cilium, and kube-proxy before moving to
+the next node; PVCs, PVs, Longhorn volumes, and database objects are retained.
+Disable this final fallback with
+`PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART=false`, or adjust its wait with
+`PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART_TIMEOUT`. Disable the first
+targeted recovery with `PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=false`, or
+adjust its per-node wait with
 `PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT`.
 
 The same bounded fallback also recognizes CloudNativePG webhook and pod-probe
