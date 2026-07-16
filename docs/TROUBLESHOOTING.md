@@ -100,6 +100,13 @@ runtime and remove only empty duplicate disk registrations. It then retries the
 Woodpecker repair once. This focused target does not enforce cluster-wide
 Longhorn capacity.
 
+The premium CloudNativePG profile keeps its mutating and validating webhooks
+enabled with `failurePolicy: Ignore`. Healthy requests still pass through both
+webhooks, while a temporary API-server-to-webhook ClusterIP outage no longer
+deadlocks every PostgreSQL GitOps sync. The Woodpecker repair enforces the same
+policy before requesting the `platform-postgres` sync; workload and database
+readiness checks still have to pass before the repair succeeds.
+
 The focused Woodpecker repair validates the PostgreSQL service, ready endpoint,
 credentials, and backing PVC directly. It does not run the full Longhorn
 bootstrap or require every storage node to have capacity for new replicas.

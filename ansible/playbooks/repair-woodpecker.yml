@@ -311,6 +311,49 @@
           echo "cloudnativepg_operator=absent"
         fi
 
+        ensure_cnpg_webhook_fail_open() {
+          for configuration in \
+            mutatingwebhookconfiguration/cnpg-mutating-webhook-configuration \
+            validatingwebhookconfiguration/cnpg-validating-webhook-configuration; do
+            if ! "$K" --kubeconfig "$C" get "${configuration}" >/dev/null 2>&1; then
+              echo "cnpg_webhook_configuration=${configuration} state=absent"
+              continue
+            fi
+            patch="$("$K" --kubeconfig "$C" get "${configuration}" -o json |
+              python3 -c '
+        import json
+        import sys
+
+        document = json.load(sys.stdin)
+        operations = [
+            {
+                "op": "add",
+                "path": f"/webhooks/{index}/failurePolicy",
+                "value": "Ignore",
+            }
+            for index, webhook in enumerate(document.get("webhooks", []))
+            if webhook.get("failurePolicy") != "Ignore"
+        ]
+        print(json.dumps(operations))
+        ' 2>/dev/null || true)"
+            if [ -z "${patch}" ]; then
+              echo "cnpg_webhook_configuration=${configuration} state=inspect-failed"
+              return 1
+            fi
+            if [ "${patch}" = "[]" ]; then
+              echo "cnpg_webhook_configuration=${configuration} failure_policy=Ignore state=present"
+              continue
+            fi
+            "$K" --kubeconfig "$C" patch "${configuration}" --type=json -p "${patch}" >/dev/null
+            echo "cnpg_webhook_configuration=${configuration} action=set-failure-policy-ignore"
+          done
+        }
+
+        # The premium GitOps profile owns the same Ignore policy. Enforce it
+        # immediately so a broken webhook service path cannot deadlock the
+        # platform-postgres sync that is needed to recover Woodpecker.
+        ensure_cnpg_webhook_fail_open
+
         reset_postgres=false
         cluster_status="$("$K" --kubeconfig "$C" -n platform-databases get cluster.postgresql.cnpg.io/platform-postgres \
           -o jsonpath='{.status.phase} {.status.conditions[*].message}' 2>/dev/null || true)"
@@ -639,6 +682,7 @@
         'action=clear-zero-byte-failed-replica-pvc-finalizer' in platform_woodpecker_postgres_auto_repair.stdout or
         'action=delete-zero-byte-failed-replica-pv' in platform_woodpecker_postgres_auto_repair.stdout or
         'action=delete-zero-byte-failed-replica-longhorn-volume' in platform_woodpecker_postgres_auto_repair.stdout or
+        'action=set-failure-policy-ignore' in platform_woodpecker_postgres_auto_repair.stdout or
         'refresh-sync-requested' in platform_woodpecker_postgres_auto_repair.stdout
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"

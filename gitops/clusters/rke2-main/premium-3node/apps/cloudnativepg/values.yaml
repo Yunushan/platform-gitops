@@ -15,6 +15,14 @@ crds:
 monitoring:
   podMonitorEnabled: false
 
+# Keep GitOps reconciliation available during a transient API-server-to-webhook
+# service-path outage. The webhook is still called whenever it is reachable.
+webhook:
+  mutating:
+    failurePolicy: Ignore
+  validating:
+    failurePolicy: Ignore
+
 resources:
   requests:
     cpu: 100m

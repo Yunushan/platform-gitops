@@ -1190,6 +1190,7 @@ def main() -> None:
         "app.kubernetes.io/name: cloudnative-pg\n        app.kubernetes.io/instance: cloudnative-pg",
         "affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:",
         "topologyKey: kubernetes.io/hostname",
+        "webhook:\n  mutating:\n    failurePolicy: Ignore\n  validating:\n    failurePolicy: Ignore",
     ):
         require_text(
             premium_cloudnativepg_text,
@@ -2478,6 +2479,9 @@ def main() -> None:
         "delete-zero-byte-failed-replica-longhorn-volume",
         "pv_claim_uid",
         "longhorn_cleanup_allowed",
+        "ensure_cnpg_webhook_fail_open",
+        "action=set-failure-policy-ignore",
+        '"path": f"/webhooks/{index}/failurePolicy"',
     ):
         require_text(
             woodpecker_repair_text,
