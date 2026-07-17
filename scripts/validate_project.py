@@ -51,6 +51,7 @@ required = [
     'ansible/playbooks/repair-woodpecker-service-path-nodes.yml',
     'scripts/forge_migration_live.py',
     'scripts/test_forge_migration_live.py',
+    'scripts/test_forge_migration_live_workflow.py',
     'scripts/check_gitops_profile.py',
     'scripts/render_deployable_gitops_apps.py',
     'scripts/run_validation.py',

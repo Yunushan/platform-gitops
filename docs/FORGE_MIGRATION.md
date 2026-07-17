@@ -266,6 +266,27 @@ only successful repositories after the proof is written, add
 whose name does not begin with `platform-migration-live-`; choose a different
 prefix only with `--prefix` when running the Python command directly.
 
+### Credentialed CI Evidence
+
+The repository also includes the manual-only GitHub Actions workflow
+`live-forge-migration-acceptance`. It has no push or pull-request trigger. Add
+the following secrets to the protected
+`forge-migration-live-acceptance` GitHub Environment before running it:
+
+- `FORGE_MIGRATION_LIVE_GITHUB_NAMESPACE`
+- `FORGE_MIGRATION_LIVE_GITLAB_NAMESPACE`
+- `FORGE_MIGRATION_LIVE_FORGEJO_API_URL`
+- `FORGE_MIGRATION_LIVE_FORGEJO_NAMESPACE`
+- `FORGE_MIGRATION_LIVE_GITHUB_TOKEN`
+- `FORGE_MIGRATION_LIVE_GITLAB_TOKEN`
+- `FORGE_MIGRATION_LIVE_FORGEJO_TOKEN`
+
+Use service accounts limited to the disposable private namespaces and configure
+environment reviewers as the approval gate. The workflow writes the same
+redacted proof files to a private 90-day artifact. Its default preserves the
+temporary repositories; its `cleanup` input deletes only verified repositories
+with the guarded live-acceptance prefix.
+
 The resulting `live-acceptance.proof.json` references a pair of integrity
 checked migration and verification proofs for each of GitHub to Forgejo, GitLab
 to Forgejo, Forgejo to GitHub, and Forgejo to GitLab. It is proof for the

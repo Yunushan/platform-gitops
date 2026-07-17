@@ -30,6 +30,8 @@ jobs:
         run: python scripts/test_forge_migration.py
       - name: Test live forge migration acceptance contract
         run: python scripts/test_forge_migration_live.py
+      - name: Test live forge migration acceptance workflow
+        run: python scripts/test_forge_migration_live_workflow.py
       - name: Test private values renderer
         run: python scripts/test_private_values_renderer.py
       - name: Test platform app secret contract
