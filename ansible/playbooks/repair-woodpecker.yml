@@ -16,6 +16,7 @@
     platform_woodpecker_repair_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_CHECK_IMAGE') }}"
     platform_woodpecker_repair_auto_service_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH') }}"
     platform_woodpecker_repair_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
+    platform_woodpecker_repair_service_path_convergence_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_CONVERGENCE_TIMEOUT') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_repair_timeout_effective: "{{ platform_woodpecker_repair_timeout | default(platform_woodpecker_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_woodpecker_repair_expected_image_tag_effective: "{{ platform_woodpecker_repair_expected_image_tag | default(platform_woodpecker_repair_expected_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
@@ -27,6 +28,7 @@
     platform_woodpecker_repair_check_image_effective: "{{ platform_woodpecker_repair_check_image | default(platform_woodpecker_repair_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_woodpecker_repair_auto_service_path_effective: "{{ platform_woodpecker_repair_auto_service_path | default(platform_woodpecker_repair_auto_service_path_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_service_path_rollout_timeout_effective: "{{ platform_woodpecker_repair_service_path_rollout_timeout | default(platform_woodpecker_repair_service_path_rollout_timeout_from_env, true) | default(120, true) | int }}"
+    platform_woodpecker_repair_service_path_convergence_timeout_effective: "{{ platform_woodpecker_repair_service_path_convergence_timeout | default(platform_woodpecker_repair_service_path_convergence_timeout_from_env, true) | default(180, true) | int }}"
   tasks:
     - name: Show Woodpecker state before repair
       ansible.builtin.shell: |
@@ -1030,6 +1032,7 @@
         TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
         AUTO_SERVICE_PATH_REPAIR="{{ platform_woodpecker_repair_auto_service_path_effective | ternary('true', 'false') }}"
         SERVICE_PATH_ROLLOUT_TIMEOUT={{ platform_woodpecker_repair_service_path_rollout_timeout_effective }}
+        SERVICE_PATH_CONVERGENCE_TIMEOUT={{ platform_woodpecker_repair_service_path_convergence_timeout_effective }}
 
         workload=""
         for candidate in statefulset/woodpecker-server deployment/woodpecker-server; do
@@ -1299,7 +1302,7 @@
                     : >/tmp/platform-postgres-probe-error
                     if command -v bash >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
                       tool=bash-dev-tcp
-                      if timeout 10 bash -c 'exec 3<>/dev/tcp/\$1/\$2' _ \
+                      if timeout 5 bash -c 'exec 3<>/dev/tcp/\$1/\$2' _ \
                         "\${target}" "\${port}" 2>/tmp/platform-postgres-probe-error; then
                         rc=0
                       else
@@ -1307,7 +1310,7 @@
                       fi
                     elif command -v nc >/dev/null 2>&1; then
                       tool=netcat
-                      if nc -z -v -w 10 "\${target}" "\${port}" \
+                      if nc -z -v -w 5 "\${target}" "\${port}" \
                         2>/tmp/platform-postgres-probe-error; then
                         rc=0
                       else
@@ -1316,7 +1319,7 @@
                     elif command -v curl >/dev/null 2>&1; then
                       tool=curl-connect-only
                       if curl --connect-only --silent --show-error \
-                        --connect-timeout 10 --max-time 10 \
+                        --connect-timeout 5 --max-time 5 \
                         "telnet://\${target}:\${port}" \
                         2>/tmp/platform-postgres-probe-error; then
                         rc=0
@@ -1370,11 +1373,23 @@
                   exit 1
         YAML
         max_attempts=1
+        convergence_retry_interval_seconds=15
         if [ "${AUTO_SERVICE_PATH_REPAIR}" = "true" ]; then
-          max_attempts=2
+          convergence_attempts=$(( (
+            SERVICE_PATH_CONVERGENCE_TIMEOUT +
+            convergence_retry_interval_seconds - 1
+          ) / convergence_retry_interval_seconds ))
+          if [ "${convergence_attempts}" -lt 1 ]; then
+            convergence_attempts=1
+          fi
+          max_attempts=$(( 1 + convergence_attempts ))
         fi
+        echo "postgres_service_path_convergence_timeout=${SERVICE_PATH_CONVERGENCE_TIMEOUT}s max_attempts=${max_attempts}"
         attempt=1
         result=1
+        service_path_repair_started=false
+        service_path_repair_started_at=0
+        service_path_repair_deadline=0
         while [ "${attempt}" -le "${max_attempts}" ]; do
           echo "postgres_service_path_probe_attempt=${attempt}/${max_attempts}"
           if ! create_output="$("$K" --kubeconfig "$C" create -f "${manifest}" 2>&1)"; then
@@ -1422,9 +1437,26 @@
             break
           fi
 
-          repair_postgres_service_path
+          if [ "${service_path_repair_started}" != "true" ]; then
+            repair_postgres_service_path
+            service_path_repair_started=true
+            service_path_repair_started_at="$(date +%s)"
+            service_path_repair_deadline=$(( service_path_repair_started_at + SERVICE_PATH_CONVERGENCE_TIMEOUT ))
+          else
+            convergence_elapsed=$(( $(date +%s) - service_path_repair_started_at ))
+            echo "automatic_postgres_service_path_repair=converging elapsed=${convergence_elapsed}s timeout=${SERVICE_PATH_CONVERGENCE_TIMEOUT}s"
+          fi
+          convergence_remaining=$(( service_path_repair_deadline - $(date +%s) ))
+          if [ "${convergence_remaining}" -le 0 ]; then
+            echo "automatic_postgres_service_path_repair=expired timeout=${SERVICE_PATH_CONVERGENCE_TIMEOUT}s"
+            break
+          fi
+          convergence_sleep="${convergence_retry_interval_seconds}"
+          if [ "${convergence_remaining}" -lt "${convergence_sleep}" ]; then
+            convergence_sleep="${convergence_remaining}"
+          fi
           attempt=$(( attempt + 1 ))
-          sleep 5
+          sleep "${convergence_sleep}"
         done
         if [ "${result}" -ne 0 ]; then
           collect_cilium_service_path_state
@@ -1455,8 +1487,9 @@
           EndpointSlice addresses, and then runs the probe from the Woodpecker
           server node. For ClusterIP or direct endpoint timeouts it refreshes
           kube-proxy and Cilium only on the affected source/endpoint nodes,
-          waits for replacements, and probes one more time. Both attempts are
-          shown below:
+          waits for replacements, and repeatedly probes the real DNS,
+          ClusterIP, and direct endpoint paths during the bounded Cilium
+          convergence window. All attempts are shown below:
 
           {{ platform_woodpecker_postgres_service_path_check.stdout | default('not run') }}
 
@@ -1475,7 +1508,9 @@
           component rollout lines and direct-endpoint result above before
           changing database credentials or application configuration. Set
           PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=false only when you
-          intentionally want a diagnostic-only run.
+          intentionally want a diagnostic-only run. Adjust the bounded
+          convergence window with
+          PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_CONVERGENCE_TIMEOUT.
       when: platform_woodpecker_postgres_service_path_check.rc | int != 0
       run_once: true
 
