@@ -212,3 +212,52 @@ or evidence store:
 
 Do not commit proof files from real private repositories to this public
 template repository.
+
+## Live Four-Direction Acceptance
+
+The normal self-test uses local Git repositories and provider-shaped API
+servers. Before calling the migration capability production-ready, run the
+separate live acceptance suite against dedicated disposable private namespaces
+on GitHub, GitLab, and Forgejo. It creates one source and one destination
+repository for each supported direction, seeds branches, tags, notes, labels,
+milestones, a release, a closed issue, and comments, then performs both a
+migration and a read-only verification pass.
+
+The runner requires a service-account token with private repository create,
+read, write, and delete permission in each configured namespace. It does not
+contact a provider during its default dry run.
+
+```bash
+export FORGE_MIGRATION_LIVE_GITHUB_NAMESPACE=platform-migration-bot
+export FORGE_MIGRATION_LIVE_GITLAB_NAMESPACE=platform-migration-bot
+export FORGE_MIGRATION_LIVE_FORGEJO_API_URL=https://forgejo.example.com/api/v1
+export FORGE_MIGRATION_LIVE_FORGEJO_NAMESPACE=platform-migration-bot
+
+export GITHUB_TOKEN='...'
+export GITLAB_TOKEN='...'
+export FORGEJO_TOKEN='...'
+
+make forge-migration-live-plan
+```
+
+The dry-run output is redacted and lists the exact four disposable repository
+pairs. To execute it, use an ignored private evidence directory and explicitly
+enable live access:
+
+```bash
+FORGE_MIGRATION_LIVE=1 \
+make forge-migration-live-run \
+  LIVE_DIR=private/migrations/live-acceptance-2026-07-17
+```
+
+This leaves the temporary repositories available for a human audit. To remove
+only successful repositories after the proof is written, add
+`LIVE_CLEANUP=1`. The runner refuses to create, reuse, or delete a repository
+whose name does not begin with `platform-migration-live-`; choose a different
+prefix only with `--prefix` when running the Python command directly.
+
+The resulting `live-acceptance.proof.json` references a pair of integrity
+checked migration and verification proofs for each of GitHub to Forgejo, GitLab
+to Forgejo, Forgejo to GitHub, and Forgejo to GitLab. It is proof for the
+portable contract described above, not a claim that provider-native objects
+explicitly marked `skip` were imported.

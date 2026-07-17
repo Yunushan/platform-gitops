@@ -21,6 +21,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_gitops_selection_helper.py",
     "scripts/test_bootstrap_env_loader.py",
     "scripts/test_forge_migration.py",
+    "scripts/test_forge_migration_live.py",
     "scripts/test_private_values_renderer.py",
     "scripts/test_platform_secret_contract.py",
     "scripts/test_policy_examples.py",
