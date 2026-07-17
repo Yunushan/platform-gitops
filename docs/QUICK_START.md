@@ -19,7 +19,7 @@ ${EDITOR:-vi} inventory/hosts.local.ini
 
 Do not edit real IPs, tokens, or company data into tracked files.
 
-For a real company installation, use this public repository as the MIT template
+For a real company installation, use this public repository as the 0BSD template
 and keep the actual cluster desired state in a private deployment repository.
 See `docs/PRIVATE_DEPLOYMENT.md`.
 

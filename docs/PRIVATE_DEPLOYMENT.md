@@ -1,6 +1,6 @@
 # Private Organization Deployment
 
-This project can remain a public MIT-licensed template while each organization
+This project can remain a public 0BSD-licensed template while each organization
 installation stays private.
 
 ## Recommended Model
@@ -410,7 +410,7 @@ prometheus.<PLATFORM_DOMAIN>  -> Prometheus hostname
 
 ## What Stays Public
 
-The public MIT repo should contain:
+The public 0BSD repo should contain:
 
 ```text
 Automation

@@ -388,7 +388,7 @@
           - /etc/rancher/rke2/rke2.yaml
           - apply
           - -f
-          - -
+          - "-"
         stdin: >-
           {{
             {

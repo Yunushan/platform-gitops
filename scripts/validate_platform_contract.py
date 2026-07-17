@@ -2728,6 +2728,14 @@ def main() -> None:
             needle,
             f"guarded Cilium VXLAN overlay recovery must cover {needle}",
         )
+    cilium_stdin_apply = '\n          - apply\n          - -f\n          - "-"\n        stdin:'
+    require_text(
+        cilium_vxlan_overlay_repair_text,
+        cilium_stdin_apply,
+        "guarded Cilium VXLAN overlay recovery must pass its generated manifest to kubectl over stdin",
+    )
+    if "\n          - apply\n          - -f\n          - -\n" in cilium_vxlan_overlay_repair_text:
+        fail("guarded Cilium VXLAN overlay recovery must quote the kubectl stdin filename")
     gitignore_text = read(gitignore_file)
     for needle in ("__pycache__/", ".shell-syntax-*/", ".ansible-shell-syntax-*/", ".venv/", ".pytest_cache/", "*.pyc"):
         require_text(gitignore_text, needle, f".gitignore must ignore generated validation/cache artifacts: {needle}")

@@ -4,7 +4,7 @@
 
 Initial project template with:
 
-- MIT license.
+- 0BSD license.
 - 3-node RKE2 default architecture.
 - Forgejo + Woodpecker CI + Argo CD HA default stack.
 - Harbor, CloudNativePG, Longhorn, MetalLB, ingress-nginx, Prometheus/Grafana, Loki, Velero.

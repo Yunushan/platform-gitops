@@ -7,7 +7,7 @@
 <p align="center">
   <img alt="build" src="https://img.shields.io/badge/build-ready-brightgreen">
   <img alt="release" src="https://img.shields.io/badge/release-v0.1.0-blue">
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="license" src="https://img.shields.io/badge/license-0BSD-blue">
   <img alt="default" src="https://img.shields.io/badge/default-RKE2%203%20server%20nodes-orange">
   <img alt="git" src="https://img.shields.io/badge/git-Forgejo-purple">
   <img alt="ci" src="https://img.shields.io/badge/ci-Woodpecker%20CI-green">
@@ -100,7 +100,7 @@ No SSH keys
 
 All local values are placeholders. Real values belong only in ignored local files, external secret managers, SOPS-encrypted files, or sealed-secret workflows.
 
-For a company deployment, keep this repository as the public MIT template and
+For a company deployment, keep this repository as the public 0BSD template and
 use a separate private deployment repository as the Argo CD source. See
 [`docs/PRIVATE_DEPLOYMENT.md`](docs/PRIVATE_DEPLOYMENT.md).
 
@@ -326,4 +326,4 @@ The `examples/languages/` folder contains starter service folders for 20 common 
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+0BSD. See [`LICENSE`](LICENSE).

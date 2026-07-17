@@ -12,6 +12,6 @@ Internal DNS/FQDN mappings
 SOPS-encrypted secret manifests
 ```
 
-Do not commit real organization deployment state to the public MIT template repo.
+Do not commit real organization deployment state to the public 0BSD template repo.
 For production, store the real GitOps source in a private Git repository and
 point Argo CD at that private repository.
