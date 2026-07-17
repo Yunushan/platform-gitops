@@ -97,13 +97,26 @@ repair. The firewalld recovery installs explicit forwarding rules for every
 detected source/destination pod-CIDR pair. This matters when RKE2 assigns a
 different `/24` to each node: a same-CIDR rule permits local pod traffic but
 still drops cross-node TCP, even though Cilium health ICMP succeeds. Cilium
-network policy remains the workload-level policy layer. If the same direct
-endpoint path still fails on the premium three-node profile, the target verifies
-that two peer control-plane nodes are Ready and performs a guarded rolling RKE2
-restart on only the Woodpecker source and PostgreSQL endpoint nodes. It waits
-for each node, Cilium, and kube-proxy before moving to the next node; PVCs, PVs,
-Longhorn volumes, and database objects are retained. Disable this final fallback
-with
+network policy remains the workload-level policy layer.
+
+If Cilium health then shows host connectivity working and remote endpoint ICMP
+working while remote endpoint HTTP/TCP times out, the repair recognizes the
+[documented Cilium VMware VXLAN failure](https://docs.cilium.io/en/stable/installation/k8s-install-broadcom-vmware-esxi-nsx/#pod-communication-failure-across-hosts).
+Before restarting any RKE2 server, it opens `8223/udp` on every node, merges
+`tunnelProtocol=vxlan` and `tunnelPort=8223` into the existing RKE2
+`rke2-cilium` `HelmChartConfig`, waits for Helm and the Cilium DaemonSet, and
+retries the real PostgreSQL paths. The merge preserves unrelated Cilium values.
+Disable this guarded overlay workaround with
+`PLATFORM_CILIUM_VXLAN_WORKAROUND=false`, choose another supported alternate
+port with `PLATFORM_CILIUM_VXLAN_TUNNEL_PORT`, or adjust the rollout wait with
+`PLATFORM_CILIUM_VXLAN_ROLLOUT_TIMEOUT`.
+
+If the direct endpoint path still fails on the premium three-node profile, the
+target verifies that two peer control-plane nodes are Ready and performs a
+guarded rolling RKE2 restart on only the Woodpecker source and PostgreSQL
+endpoint nodes. It waits for each node, Cilium, and kube-proxy before moving to
+the next node; PVCs, PVs, Longhorn volumes, and database objects are retained.
+Disable this final fallback with
 `PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART=false`, or adjust its wait with
 `PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART_TIMEOUT`. Disable the first
 targeted recovery with `PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=false`, or

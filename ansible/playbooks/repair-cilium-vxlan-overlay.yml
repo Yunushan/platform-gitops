@@ -1,0 +1,542 @@
+---
+- name: Repair persistent Cilium VXLAN cross-node TCP failure
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_cilium_vxlan_workaround_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CILIUM_VXLAN_WORKAROUND') }}"
+    platform_cilium_vxlan_tunnel_port_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CILIUM_VXLAN_TUNNEL_PORT') }}"
+    platform_cilium_vxlan_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CILIUM_VXLAN_ROLLOUT_TIMEOUT') }}"
+    platform_cilium_vxlan_workaround_effective: >-
+      {{
+        (platform_cilium_vxlan_workaround_from_env | trim | length == 0)
+        | ternary(true, platform_cilium_vxlan_workaround_from_env | bool)
+      }}
+    platform_cilium_vxlan_tunnel_port_effective: >-
+      {{ platform_cilium_vxlan_tunnel_port_from_env | default(8223, true) | int }}
+    platform_cilium_vxlan_rollout_timeout_effective: >-
+      {{ platform_cilium_vxlan_rollout_timeout_from_env | default(600, true) | int }}
+    platform_cilium_vxlan_poll_interval: 5
+    platform_cilium_vxlan_rollout_retries: >-
+      {{
+        [
+          1,
+          (
+            (platform_cilium_vxlan_rollout_timeout_effective | int)
+            // (platform_cilium_vxlan_poll_interval | int)
+          )
+        ] | max
+      }}
+  tasks:
+    - name: Validate alternate Cilium VXLAN port
+      ansible.builtin.assert:
+        that:
+          - platform_cilium_vxlan_tunnel_port_effective | int >= 1024
+          - platform_cilium_vxlan_tunnel_port_effective | int <= 65535
+          - platform_cilium_vxlan_tunnel_port_effective | int != 8472
+        fail_msg: >-
+          PLATFORM_CILIUM_VXLAN_TUNNEL_PORT must be an unprivileged UDP port
+          other than the failing default VXLAN port 8472.
+      run_once: true
+
+    - name: Inspect node virtualization and primary network driver
+      ansible.builtin.shell: |
+        set -u
+        interface="$(
+          ip -4 route show default 2>/dev/null |
+            awk '{ for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit } }'
+        )"
+        driver=""
+        if [ -n "${interface}" ] && command -v ethtool >/dev/null 2>&1; then
+          driver="$(ethtool -i "${interface}" 2>/dev/null | awk '$1 == "driver:" { print $2; exit }')"
+        fi
+        if [ -z "${driver}" ] && [ -n "${interface}" ]; then
+          driver="$(basename "$(readlink -f "/sys/class/net/${interface}/device/driver" 2>/dev/null)" 2>/dev/null || true)"
+        fi
+        virtualization="$(systemd-detect-virt 2>/dev/null || true)"
+        vendor="$(tr -d '\000' </sys/class/dmi/id/sys_vendor 2>/dev/null || true)"
+        product="$(tr -d '\000' </sys/class/dmi/id/product_name 2>/dev/null || true)"
+        echo "node={{ inventory_hostname }} interface=${interface:-unknown} driver=${driver:-unknown} virtualization=${virtualization:-none} vendor=${vendor:-unknown} product=${product:-unknown}"
+      args:
+        executable: /bin/bash
+      register: platform_cilium_vxlan_node_environment
+      changed_when: false
+      failed_when: false
+
+    - name: Print Cilium VXLAN node environment
+      ansible.builtin.debug:
+        msg: "{{ platform_cilium_vxlan_node_environment.stdout | default('node environment unavailable') }}"
+
+    - name: Detect the documented VXLAN cross-node L4 failure signature
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        health_file="$(mktemp)"
+        status_file="$(mktemp)"
+        trap 'rm -f "${health_file}" "${status_file}"' EXIT
+
+        protocol="$(
+          "$K" --kubeconfig "$C" -n kube-system get configmap/cilium-config \
+            -o jsonpath='{.data.tunnel-protocol}' 2>/dev/null || true
+        )"
+        current_port="$(
+          "$K" --kubeconfig "$C" -n kube-system get configmap/cilium-config \
+            -o jsonpath='{.data.tunnel-port}' 2>/dev/null || true
+        )"
+
+        for pod in $(
+          "$K" --kubeconfig "$C" -n kube-system get pods \
+            -l k8s-app=cilium \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+        ); do
+          echo "===== ${pod} =====" >>"${health_file}"
+          "$K" --kubeconfig "$C" -n kube-system exec "pod/${pod}" \
+            -c cilium-agent -- cilium-health status --verbose \
+            >>"${health_file}" 2>&1 || true
+          "$K" --kubeconfig "$C" -n kube-system exec "pod/${pod}" \
+            -c cilium-agent -- cilium-dbg status \
+            >>"${status_file}" 2>&1 || true
+        done
+
+        if [ -z "${protocol}" ] && grep -Eq 'Routing:.*Tunnel \[vxlan\]' "${status_file}"; then
+          protocol="vxlan"
+        fi
+        if [ -z "${current_port}" ] && [ "${protocol}" = "vxlan" ]; then
+          current_port="8472"
+        fi
+
+        endpoint_icmp_ok="$(
+          awk '
+            /^[[:space:]]*Endpoint connectivity to / { endpoint = 1; next }
+            /^[[:space:]]*Host connectivity to / { endpoint = 0; next }
+            endpoint && /ICMP to stack:.*OK/ { count++ }
+            END { print count + 0 }
+          ' "${health_file}"
+        )"
+        endpoint_http_timeout="$(
+          awk '
+            /^[[:space:]]*Endpoint connectivity to / { endpoint = 1; next }
+            /^[[:space:]]*Host connectivity to / { endpoint = 0; next }
+            endpoint && /HTTP to agent:.*(context deadline exceeded|Client.Timeout exceeded|i\/o timeout)/ { count++ }
+            END { print count + 0 }
+          ' "${health_file}"
+        )"
+        host_http_ok="$(
+          awk '
+            /^[[:space:]]*Host connectivity to / { host = 1; next }
+            /^[[:space:]]*Endpoint connectivity to / { host = 0; next }
+            host && /HTTP to agent:.*OK/ { count++ }
+            END { print count + 0 }
+          ' "${health_file}"
+        )"
+        host_http_timeout="$(
+          awk '
+            /^[[:space:]]*Host connectivity to / { host = 1; next }
+            /^[[:space:]]*Endpoint connectivity to / { host = 0; next }
+            host && /HTTP to agent:.*(context deadline exceeded|Client.Timeout exceeded|i\/o timeout)/ { count++ }
+            END { print count + 0 }
+          ' "${health_file}"
+        )"
+
+        echo "cilium_tunnel_protocol=${protocol:-unknown}"
+        echo "cilium_tunnel_port=${current_port:-unknown}"
+        echo "cilium_remote_host_http_ok=${host_http_ok}"
+        echo "cilium_remote_host_http_timeout=${host_http_timeout}"
+        echo "cilium_remote_endpoint_icmp_ok=${endpoint_icmp_ok}"
+        echo "cilium_remote_endpoint_http_timeout=${endpoint_http_timeout}"
+        if [ "{{ platform_cilium_vxlan_workaround_effective | bool | lower }}" != "true" ]; then
+          echo "cilium_vxlan_overlay_repair_required=false reason=disabled"
+        elif [ "${protocol}" != "vxlan" ]; then
+          echo "cilium_vxlan_overlay_repair_required=false reason=not-vxlan"
+        elif [ "${current_port}" = "{{ platform_cilium_vxlan_tunnel_port_effective }}" ]; then
+          echo "cilium_vxlan_overlay_repair_required=false reason=alternate-port-already-active"
+        elif [ "${current_port}" != "8472" ]; then
+          echo "cilium_vxlan_overlay_repair_required=false reason=non-default-vxlan-port"
+        elif [ "${host_http_ok}" -gt 0 ] && [ "${host_http_timeout}" -eq 0 ] &&
+          [ "${endpoint_icmp_ok}" -gt 0 ] && [ "${endpoint_http_timeout}" -gt 0 ]; then
+          echo "cilium_vxlan_overlay_repair_required=true reason=remote-endpoint-icmp-ok-http-timeout"
+        else
+          echo "cilium_vxlan_overlay_repair_required=false reason=signature-not-detected"
+        fi
+        echo "===== Cilium health summary ====="
+        grep -E '^(=====|Cluster health:|  [^ ].*:|    Host connectivity|    Endpoint connectivity|      ICMP to stack:|      HTTP to agent:)' \
+          "${health_file}" || true
+      args:
+        executable: /bin/bash
+      register: platform_cilium_vxlan_signature
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Select guarded Cilium VXLAN overlay repair
+      ansible.builtin.set_fact:
+        platform_cilium_vxlan_overlay_repair_required: >-
+          {{
+            (platform_cilium_vxlan_signature.stdout | default(''))
+            is search('cilium_vxlan_overlay_repair_required=true')
+          }}
+      delegate_to: "{{ rke2_first_server }}"
+      delegate_facts: true
+      run_once: true
+
+    - name: Print Cilium VXLAN overlay diagnosis
+      ansible.builtin.debug:
+        var: platform_cilium_vxlan_signature.stdout_lines
+      run_once: true
+
+    - name: Open alternate Cilium VXLAN port in firewalld
+      ansible.builtin.shell: |
+        set -euo pipefail
+        port="{{ platform_cilium_vxlan_tunnel_port_effective }}/udp"
+        if ! systemctl is-active --quiet firewalld; then
+          echo "firewalld=inactive alternate_vxlan_port=${port} action=skipped"
+          exit 0
+        fi
+        changed=false
+        if ! timeout 15 firewall-cmd --permanent --query-port="${port}" >/dev/null 2>&1; then
+          timeout 15 firewall-cmd --permanent --add-port="${port}"
+          changed=true
+        fi
+        if ! timeout 15 firewall-cmd --query-port="${port}" >/dev/null 2>&1; then
+          timeout 15 firewall-cmd --add-port="${port}"
+          changed=true
+        fi
+        timeout 15 firewall-cmd --permanent --query-port="${port}" >/dev/null
+        timeout 15 firewall-cmd --query-port="${port}" >/dev/null
+        echo "firewalld=active alternate_vxlan_port=${port} changed=${changed}"
+      args:
+        executable: /bin/bash
+      register: platform_cilium_vxlan_firewalld_port
+      changed_when: "'changed=true' in (platform_cilium_vxlan_firewalld_port.stdout | default(''))"
+      when: hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+
+    - name: Read existing RKE2 Cilium HelmChartConfig
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - -n
+          - kube-system
+          - get
+          - helmchartconfig.helm.cattle.io/rke2-cilium
+          - -o
+          - json
+      register: platform_cilium_vxlan_helmchartconfig_before
+      changed_when: false
+      failed_when:
+        - platform_cilium_vxlan_helmchartconfig_before.rc != 0
+        - >-
+          '(NotFound)' not in
+          (platform_cilium_vxlan_helmchartconfig_before.stderr | default(''))
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+
+    - name: Decode existing RKE2 Cilium HelmChartConfig
+      ansible.builtin.set_fact:
+        platform_cilium_vxlan_helmchartconfig_exists: >-
+          {{ platform_cilium_vxlan_helmchartconfig_before.rc == 0 }}
+        platform_cilium_vxlan_helmchartconfig_document: >-
+          {{
+            (
+              platform_cilium_vxlan_helmchartconfig_before.stdout
+              | from_json
+            )
+            if platform_cilium_vxlan_helmchartconfig_before.rc == 0
+            else {}
+          }}
+      delegate_to: "{{ rke2_first_server }}"
+      delegate_facts: true
+      run_once: true
+      when: hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+
+    - name: Validate existing RKE2 Cilium values content
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              (
+                hostvars[rke2_first_server]
+                .platform_cilium_vxlan_helmchartconfig_document
+                .get('spec', {})
+                .get('valuesContent', '{}')
+                | default('{}', true)
+                | from_yaml
+                | default({}, true)
+              )
+              is mapping
+            )
+          - >-
+            (
+              hostvars[rke2_first_server]
+              .platform_cilium_vxlan_helmchartconfig_document
+              .get('spec', {})
+              .get('values', {})
+              | default({})
+            )
+            is mapping
+        fail_msg: >-
+          The existing rke2-cilium HelmChartConfig contains non-mapping
+          valuesContent or structured values, so the guarded repair cannot
+          merge the tunnel settings without risking unrelated Cilium options.
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+
+    - name: Merge alternate port with existing RKE2 Cilium values
+      ansible.builtin.set_fact:
+        platform_cilium_vxlan_values_content_merged: >-
+          {{
+            (
+              (
+                hostvars[rke2_first_server]
+                .platform_cilium_vxlan_helmchartconfig_document
+                .get('spec', {})
+                .get('valuesContent', '{}')
+                | default('{}', true)
+                | from_yaml
+                | default({}, true)
+              )
+              | combine(
+                  {
+                    'tunnelProtocol': 'vxlan',
+                    'tunnelPort': platform_cilium_vxlan_tunnel_port_effective | int
+                  },
+                  recursive=true
+                )
+              | to_nice_yaml(indent=2, sort_keys=false)
+            )
+          }}
+        platform_cilium_vxlan_structured_values_merged: >-
+          {{
+            (
+              hostvars[rke2_first_server]
+              .platform_cilium_vxlan_helmchartconfig_document
+              .get('spec', {})
+              .get('values', {})
+              | default({})
+            )
+            | combine(
+                {
+                  'tunnelProtocol': 'vxlan',
+                  'tunnelPort': platform_cilium_vxlan_tunnel_port_effective | int
+                },
+                recursive=true
+              )
+          }}
+      delegate_to: "{{ rke2_first_server }}"
+      delegate_facts: true
+      run_once: true
+      when: hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+
+    - name: Patch existing RKE2 Cilium HelmChartConfig values
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - -n
+          - kube-system
+          - patch
+          - helmchartconfig.helm.cattle.io/rke2-cilium
+          - --type=merge
+          - >-
+            --patch={{
+              {
+                'spec': {
+                  'valuesContent': hostvars[rke2_first_server]
+                    .platform_cilium_vxlan_values_content_merged
+                }
+                | combine(
+                    (
+                      {
+                        'values': hostvars[rke2_first_server]
+                          .platform_cilium_vxlan_structured_values_merged
+                      }
+                    )
+                    if (
+                      'values'
+                      in (
+                        hostvars[rke2_first_server]
+                        .platform_cilium_vxlan_helmchartconfig_document
+                        .get('spec', {})
+                      )
+                    )
+                    else {}
+                  )
+              }
+              | to_json
+            }}
+      register: platform_cilium_vxlan_helmchartconfig_patch
+      changed_when: >-
+        'patched' in (platform_cilium_vxlan_helmchartconfig_patch.stdout | default(''))
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+        - hostvars[rke2_first_server].platform_cilium_vxlan_helmchartconfig_exists | bool
+
+    - name: Create RKE2 Cilium HelmChartConfig values
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - apply
+          - -f
+          - -
+        stdin: >-
+          {{
+            {
+              'apiVersion': 'helm.cattle.io/v1',
+              'kind': 'HelmChartConfig',
+              'metadata': {
+                'name': 'rke2-cilium',
+                'namespace': 'kube-system'
+              },
+              'spec': {
+                'valuesContent': hostvars[rke2_first_server]
+                  .platform_cilium_vxlan_values_content_merged
+              }
+            }
+            | to_nice_yaml(indent=2, sort_keys=false)
+          }}
+      register: platform_cilium_vxlan_helmchartconfig_create
+      changed_when: >-
+        'created' in (platform_cilium_vxlan_helmchartconfig_create.stdout | default(''))
+        or 'configured' in (platform_cilium_vxlan_helmchartconfig_create.stdout | default(''))
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+        - not (hostvars[rke2_first_server].platform_cilium_vxlan_helmchartconfig_exists | bool)
+
+    - name: Print alternate RKE2 Cilium HelmChartConfig values
+      ansible.builtin.debug:
+        msg: >-
+          cilium_helmchartconfig=rke2-cilium
+          action={{
+            'merged'
+            if (hostvars[rke2_first_server].platform_cilium_vxlan_helmchartconfig_exists | bool)
+            else 'created'
+          }}
+          tunnelProtocol=vxlan
+          tunnelPort={{ platform_cilium_vxlan_tunnel_port_effective }}
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+
+    - name: Reconcile alternate Cilium VXLAN port
+      when: hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+      block:
+        - name: Wait for RKE2 Helm controller to render alternate Cilium VXLAN port
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            protocol="$(
+              "$K" --kubeconfig "$C" -n kube-system get configmap/cilium-config \
+                -o jsonpath='{.data.tunnel-protocol}' 2>/dev/null || true
+            )"
+            port="$(
+              "$K" --kubeconfig "$C" -n kube-system get configmap/cilium-config \
+                -o jsonpath='{.data.tunnel-port}' 2>/dev/null || true
+            )"
+            echo "cilium_tunnel_protocol=${protocol:-unknown} cilium_tunnel_port=${port:-unknown}"
+            test "${protocol}" = "vxlan"
+            test "${port}" = "{{ platform_cilium_vxlan_tunnel_port_effective }}"
+          args:
+            executable: /bin/bash
+          register: platform_cilium_vxlan_config_reconciled
+          changed_when: false
+          retries: "{{ platform_cilium_vxlan_rollout_retries }}"
+          delay: "{{ platform_cilium_vxlan_poll_interval }}"
+          until: platform_cilium_vxlan_config_reconciled.rc == 0
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Restart Cilium after alternate VXLAN port reconciliation
+          ansible.builtin.command: >-
+            /var/lib/rancher/rke2/bin/kubectl
+            --kubeconfig /etc/rancher/rke2/rke2.yaml
+            -n kube-system rollout restart daemonset/cilium
+          changed_when: true
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Wait for Cilium rollout on alternate VXLAN port
+          ansible.builtin.command:
+            argv:
+              - /var/lib/rancher/rke2/bin/kubectl
+              - --kubeconfig
+              - /etc/rancher/rke2/rke2.yaml
+              - -n
+              - kube-system
+              - rollout
+              - status
+              - daemonset/cilium
+              - "--timeout={{ platform_cilium_vxlan_rollout_timeout_effective }}s"
+          register: platform_cilium_vxlan_rollout
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Let alternate Cilium VXLAN tunnel state converge
+          ansible.builtin.pause:
+            seconds: 20
+          run_once: true
+      rescue:
+        - name: Collect failed Cilium alternate VXLAN reconciliation diagnostics
+          ansible.builtin.shell: |
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            echo "===== RKE2 Cilium Helm resources ====="
+            "$K" --kubeconfig "$C" -n kube-system get \
+              helmchart/rke2-cilium helmchartconfig/rke2-cilium -o yaml 2>&1 || true
+            echo "===== RKE2 Cilium Helm jobs ====="
+            "$K" --kubeconfig "$C" -n kube-system get jobs,pods -o wide |
+              grep -E 'NAME|helm-install-rke2-cilium|cilium' || true
+            echo "===== Cilium DaemonSet ====="
+            "$K" --kubeconfig "$C" -n kube-system describe daemonset/cilium || true
+            echo "===== Cilium events ====="
+            "$K" --kubeconfig "$C" -n kube-system get events \
+              --sort-by=.lastTimestamp | tail -80 || true
+          args:
+            executable: /bin/bash
+          register: platform_cilium_vxlan_reconcile_diagnostics
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Stop after failed Cilium alternate VXLAN reconciliation
+          ansible.builtin.fail:
+            msg: |
+              The documented Cilium remote-endpoint ICMP-success/TCP-timeout
+              signature was detected, but RKE2 did not reconcile Cilium onto
+              alternate VXLAN port {{ platform_cilium_vxlan_tunnel_port_effective }}.
+
+              {{ platform_cilium_vxlan_reconcile_diagnostics.stdout }}
+          run_once: true
+
+    - name: Show skipped Cilium VXLAN overlay repair
+      ansible.builtin.debug:
+        msg: >-
+          Alternate Cilium VXLAN-port repair was not required. The existing
+          guarded node-restart fallback may continue if the PostgreSQL endpoint
+          path is still unavailable.
+      when: not (hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool)
+      run_once: true
+
+    - name: Show completed Cilium VXLAN overlay repair
+      ansible.builtin.debug:
+        msg: >-
+          Cilium now uses supported alternate VXLAN port
+          {{ platform_cilium_vxlan_tunnel_port_effective }} after the documented
+          cross-node ICMP-success/TCP-timeout signature. The Woodpecker repair
+          will retry the real PostgreSQL DNS, ClusterIP, and endpoint paths.
+      when: hostvars[rke2_first_server].platform_cilium_vxlan_overlay_repair_required | default(false) | bool
+      run_once: true

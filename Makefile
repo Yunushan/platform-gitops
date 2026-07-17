@@ -255,7 +255,21 @@ platform-woodpecker-repair:
 			exit 0; \
 		fi; \
 		if [ "$$service_path_repair" = "true" ] && grep -q 'reason=postgres-endpoint-path-unreachable' "$$repair_log"; then \
-			echo "Cross-node PostgreSQL endpoint access still fails after CNI/firewalld recovery; applying guarded rolling RKE2 restart on only the source and endpoint nodes."; \
+			echo "Cross-node PostgreSQL endpoint access still fails after CNI/firewalld recovery; checking for the documented Cilium VXLAN remote-ICMP-success/TCP-timeout condition."; \
+			ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-cilium-vxlan-overlay.yml; \
+			echo "Retrying Woodpecker repair after guarded Cilium overlay recovery."; \
+			: > "$$repair_log"; \
+			set +e; \
+			ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml 2>&1 | tee "$$repair_log"; \
+			overlay_retry_rc="$${PIPESTATUS[0]}"; \
+			set -e; \
+			if [ "$$overlay_retry_rc" -eq 0 ]; then \
+				exit 0; \
+			fi; \
+			if ! grep -q 'reason=postgres-endpoint-path-unreachable' "$$repair_log"; then \
+				exit "$$overlay_retry_rc"; \
+			fi; \
+			echo "Cross-node PostgreSQL endpoint access still fails after Cilium overlay recovery; applying guarded rolling RKE2 restart on only the source and endpoint nodes."; \
 			ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker-service-path-nodes.yml; \
 			echo "Retrying Woodpecker repair after guarded rolling node recovery."; \
 			ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml; \

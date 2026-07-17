@@ -73,12 +73,14 @@
       - 4240/tcp
       - 4244/tcp
       - 8472/udp
+      - 8223/udp
       - 6081/udp
       - 10250/tcp
     platform_traefik_dns_service_path_firewalld_trusted_interfaces:
       - cilium_host
       - cilium_net
       - cilium_vxlan
+      - cilium_geneve
     platform_ingress_wait_retries: "{{ (((platform_ingress_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_metallb_webhook_wait_retries: "{{ (((platform_metallb_webhook_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
     platform_traefik_wait_retries: "{{ (((platform_traefik_rollout_timeout_effective | int) / (platform_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"

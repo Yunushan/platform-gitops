@@ -52,12 +52,14 @@
       - 4240/tcp
       - 4244/tcp
       - 8472/udp
+      - 8223/udp
       - 6081/udp
       - 10250/tcp
     platform_dns_service_path_firewalld_trusted_interfaces:
       - cilium_host
       - cilium_net
       - cilium_vxlan
+      - cilium_geneve
     platform_coredns_configmap: rke2-coredns-rke2-coredns
     platform_coredns_deployment: rke2-coredns-rke2-coredns
   tasks:

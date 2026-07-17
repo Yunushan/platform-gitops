@@ -69,6 +69,7 @@ health_playbook = root / "ansible/playbooks/verify-platform-app-health.yml"
 service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-service-path-consumers.yml"
 woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
 woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpecker-service-path-nodes.yml"
+cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
 firewalld_cleanup_script = root / "scripts/cleanup_firewalld_cni_interfaces.py"
@@ -2416,6 +2417,7 @@ def main() -> None:
     for needle in (
         "ansible/playbooks/repair-woodpecker.yml",
         "ansible/playbooks/repair-woodpecker-service-path-nodes.yml",
+        "ansible/playbooks/repair-cilium-vxlan-overlay.yml",
         "@$(MAKE) platform-service-path-consumers-repair",
         "@$(MAKE) platform-ci-health",
         "PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true",
@@ -2427,6 +2429,8 @@ def main() -> None:
         "focused Longhorn runtime recovery",
         'repair_rc="$${PIPESTATUS[0]}"',
         'retry_rc="$${PIPESTATUS[0]}"',
+        'overlay_retry_rc="$${PIPESTATUS[0]}"',
+        "documented Cilium VXLAN remote-ICMP-success/TCP-timeout condition",
         "guarded rolling RKE2 restart",
         "automatic fallback skipped",
     ):
@@ -2454,6 +2458,10 @@ def main() -> None:
         fail("platform-woodpecker-repair must refresh service-path consumers once after strict repair")
     if not (0 <= strict_repair_index < first_consumer_refresh):
         fail("platform-woodpecker-repair must run strict Woodpecker repair before service-path consumer refresh")
+    overlay_repair_index = woodpecker_repair_body.find("ansible/playbooks/repair-cilium-vxlan-overlay.yml")
+    node_restart_index = woodpecker_repair_body.find("ansible/playbooks/repair-woodpecker-service-path-nodes.yml")
+    if not (strict_repair_index < overlay_repair_index < node_restart_index < first_consumer_refresh):
+        fail("platform-woodpecker-repair must try guarded Cilium overlay recovery before rolling node restart")
     if "platform-longhorn-runtime-repair:" not in makefile_text:
         fail("Makefile is missing platform-longhorn-runtime-repair target")
     if "ansible/playbooks/repair-longhorn-runtime.yml" not in makefile_text:
@@ -2551,6 +2559,16 @@ def main() -> None:
             playbook_text,
             '-s "${source}" -d "${destination}" -j ACCEPT',
             f"{playbook.relative_to(root)} must install cross-node pod-CIDR forwarding rules",
+        )
+        require_text(
+            playbook_text,
+            "8223/udp",
+            f"{playbook.relative_to(root)} must permit the supported alternate Cilium VXLAN port",
+        )
+        require_text(
+            playbook_text,
+            "cilium_geneve",
+            f"{playbook.relative_to(root)} must recognize the stable Cilium Geneve interface",
         )
         if '-s "${source}" -d "${source}" -j ACCEPT' in playbook_text:
             fail(
@@ -2684,6 +2702,31 @@ def main() -> None:
             woodpecker_service_path_nodes_text,
             needle,
             f"guarded Woodpecker service-path node recovery must cover {needle}",
+        )
+    cilium_vxlan_overlay_repair_text = read(cilium_vxlan_overlay_repair_playbook)
+    for needle in (
+        "PLATFORM_CILIUM_VXLAN_WORKAROUND",
+        "PLATFORM_CILIUM_VXLAN_TUNNEL_PORT",
+        "PLATFORM_CILIUM_VXLAN_ROLLOUT_TIMEOUT",
+        "cilium-health status --verbose",
+        "remote-endpoint-icmp-ok-http-timeout",
+        "cilium_remote_host_http_timeout=",
+        "helmchartconfig.helm.cattle.io/rke2-cilium",
+        "platform_cilium_vxlan_values_content_merged",
+        "'tunnelProtocol': 'vxlan'",
+        "'tunnelPort': platform_cilium_vxlan_tunnel_port_effective | int",
+        "| from_yaml",
+        "| combine(",
+        "'valuesContent': hostvars[rke2_first_server]",
+        "configmap/cilium-config",
+        "daemonset/cilium",
+        "alternate_vxlan_port=",
+        "8223",
+    ):
+        require_text(
+            cilium_vxlan_overlay_repair_text,
+            needle,
+            f"guarded Cilium VXLAN overlay recovery must cover {needle}",
         )
     gitignore_text = read(gitignore_file)
     for needle in ("__pycache__/", ".shell-syntax-*/", ".ansible-shell-syntax-*/", ".venv/", ".pytest_cache/", "*.pyc"):
