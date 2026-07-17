@@ -44,6 +44,8 @@ from forge_migration import (  # noqa: E402
     create_label,
     create_milestone,
     create_release,
+    create_change_request,
+    create_change_request_comment,
     destination_label_maps,
     destination_milestone_maps,
     git,
@@ -169,6 +171,13 @@ def authenticated_git_url(config: ProviderConfig, repository: str, login: str, t
     return urlunsplit((base.scheme, f"{userinfo}@{base.netloc}", path, "", ""))
 
 
+def metadata_for_direction(direction: str) -> dict[str, str]:
+    source_provider, _destination_provider = direction.split("-to-", 1)
+    metadata = dict(PORTABLE_METADATA)
+    metadata["merge_requests" if source_provider == "gitlab" else "pull_requests"] = "required"
+    return metadata
+
+
 def make_plan(
     direction: str,
     name: str,
@@ -202,7 +211,7 @@ def make_plan(
                     },
                     "wiki": False,
                     "lfs": False,
-                    "metadata": PORTABLE_METADATA,
+                    "metadata": metadata_for_direction(direction),
                 }
             ],
         }
@@ -292,6 +301,31 @@ def seed_portable_metadata(target: ApiTarget) -> None:
         "labels": ["live-proof", "migration"],
         "milestone": "Live acceptance milestone",
     }
+    change_requests = [
+        {
+            "title": "Live portable review",
+            "body": "Review the portable feature branch before acceptance.",
+            "state": "open",
+            "source_branch": "feature/live-proof",
+            "target_branch": "main",
+            "labels": ["live-proof", "migration"],
+            "milestone": "Live acceptance milestone",
+            "comments": [
+                "Review the Git reference proof.",
+                "Approve after the portable metadata verification.",
+            ],
+        },
+        {
+            "title": "Closed portable review",
+            "body": "Record the closed compatibility review.",
+            "state": "closed",
+            "source_branch": "feature/live-proof",
+            "target_branch": "main",
+            "labels": ["migration"],
+            "milestone": "Live acceptance milestone",
+            "comments": ["Closed after documenting the compatibility decision."],
+        },
+    ]
     for label in labels:
         create_label(target, label)
     for milestone in milestones:
@@ -302,6 +336,10 @@ def seed_portable_metadata(target: ApiTarget) -> None:
     created = create_issue(target, issue, label_ids, milestone_map)
     create_issue_comment(target, created, "First portable live migration comment.")
     create_issue_comment(target, created, "Second portable live migration comment.")
+    for request in change_requests:
+        created_request = create_change_request(target, request, label_ids, milestone_map)
+        for comment in request["comments"]:
+            create_change_request_comment(target, created_request, comment)
 
 
 def delete_repository(target: ApiTarget, expected_prefix: str) -> dict[str, Any]:
@@ -363,7 +401,7 @@ def dry_run_manifest(configs: Mapping[str, ProviderConfig], prefix: str, run_id:
                 "direction": spec["direction"],
                 "source_repository": spec["source_repository"],
                 "destination_repository": spec["destination_repository"],
-                "metadata": PORTABLE_METADATA,
+                "metadata": metadata_for_direction(str(spec["direction"])),
                 "wiki": False,
                 "lfs": False,
             }
@@ -456,7 +494,7 @@ def run_acceptance(configs: Mapping[str, ProviderConfig], prefix: str, run_id: s
         "prefix": prefix,
         "portable_contract": {
             "git_refs": ["branches", "tags", "notes", "default_branch"],
-            "metadata": ["labels", "milestones", "releases", "issues", "comments"],
+            "metadata": ["labels", "milestones", "releases", "issues", "comments", "pull_merge_requests"],
             "excluded": sorted(key for key, value in PORTABLE_METADATA.items() if value == "skip"),
         },
         "directions": direction_results,

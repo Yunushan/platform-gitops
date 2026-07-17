@@ -7,7 +7,8 @@ report shows the selected source and destination surfaces were verified.
 ## Supported Directions
 
 The current migration helper supports the Git data plane, repository labels,
-repository milestones, portable releases, and portable issues/comments for
+repository milestones, portable releases, portable issues/comments, and open or
+closed same-repository pull or merge requests for
 these directions:
 
 - GitHub to Forgejo
@@ -30,15 +31,21 @@ due date. Release migration copies and verifies tag name, normalized release
 name (the tag when no name exists), and description/body. Issue migration copies
 and verifies the provider-common portable
 fields: title, body/description, open/closed state, labels, milestone title, and
-comment bodies. Native source authors, timestamps, issue numbers, reactions,
-cross-links, and audit history are provider-owned fields and are not rewritten
-through normal forge APIs. Provider metadata such as pull requests, merge
-requests, release assets, packages, branch protection, teams, permissions, and
-webhooks is modeled in the migration plan but intentionally fails closed when
-marked required. Draft/prerelease state and original release timestamps are not
-portable across all three providers; they are outside the verified release
-surface. This prevents a partial repository mirror from being reported as a
-complete forge migration.
+comment bodies. Pull and merge request migration copies and verifies the title,
+body/description, open/closed state, same-repository source and target branch,
+labels, milestone title, and discussion comments. It deliberately fails closed
+for merged requests, fork-originated requests, reviews, inline review comments,
+reviewers, approvals, reactions, and provider-owned authors/timestamps because
+recreating them would either rewrite destination Git history or claim identity
+that the destination forge cannot establish. Native source authors, timestamps,
+issue numbers, reactions, cross-links, and audit history are provider-owned
+fields and are not rewritten through normal forge APIs. Provider metadata such
+as release assets, packages, branch protection, teams, permissions, and webhooks
+is modeled in the migration plan but intentionally fails closed when marked
+required. Draft/prerelease state and original release timestamps are not portable
+across all three providers; they are outside the verified release surface. This
+prevents a partial repository mirror from being reported as a complete forge
+migration.
 
 ## Plan File
 
@@ -77,7 +84,7 @@ every intentionally skipped surface before approval.
         "milestones": "required",
         "releases": "required",
         "issues": "required",
-        "merge_requests": "skip",
+        "merge_requests": "required",
         "release_assets": "skip"
       }
     }
@@ -179,7 +186,7 @@ rejected before any migration begins.
 
 For a true full-fidelity migration, inventory the non-Git surfaces first:
 
-- Pull requests or merge requests
+- Open or closed same-repository pull requests or merge requests
 - Releases
 - Release assets
 - Packages and container registry artifacts
@@ -191,8 +198,9 @@ For a true full-fidelity migration, inventory the non-Git surfaces first:
 - Branch protection and rulesets
 - Users, teams, permissions, and CODEOWNERS
 
-Set supported surfaces such as `labels`, `milestones`, `releases`, and `issues` to
-`"required"` when they must be migrated and verified. Set unsupported required surfaces to
+Set supported surfaces such as `labels`, `milestones`, `releases`, `issues`, and the
+source-appropriate `pull_requests` or `merge_requests` key to `"required"` when
+they must be migrated and verified. Set unsupported required surfaces to
 `"required"` in the plan while designing a provider-specific importer. The
 helper will fail and name the missing surface. Set a surface to `"skip"` only
 when the migration approval explicitly accepts that loss.
@@ -241,8 +249,10 @@ make forge-migration-live-plan
 ```
 
 The dry-run output is redacted and lists the exact four disposable repository
-pairs. To execute it, use an ignored private evidence directory and explicitly
-enable live access:
+pairs. The acceptance sources include both open and closed same-repository
+pull or merge requests with labels, milestones, and discussion comments. To
+execute it, use an ignored private evidence directory and explicitly enable
+live access:
 
 ```bash
 FORGE_MIGRATION_LIVE=1 \

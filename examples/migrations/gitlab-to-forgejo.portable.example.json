@@ -25,7 +25,7 @@
           "releases": "required",
           "issues": "required",
           "pull_requests": "skip",
-          "merge_requests": "skip",
+          "merge_requests": "required",
           "release_assets": "skip",
           "packages": "skip",
           "project_boards": "skip",

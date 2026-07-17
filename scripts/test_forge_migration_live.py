@@ -40,8 +40,11 @@ def test_manifest_covers_every_supported_direction() -> None:
     if directions != list(live.SUPPORTED_DIRECTIONS):
         raise AssertionError(f"manifest directions are incomplete: {directions}")
     for entry in manifest["directions"]:
-        if entry["metadata"] != live.PORTABLE_METADATA:
+        if entry["metadata"] != live.metadata_for_direction(entry["direction"]):
             raise AssertionError(f"{entry['direction']}: portable metadata contract drifted")
+        expected_surface = "merge_requests" if entry["direction"].startswith("gitlab-") else "pull_requests"
+        if entry["metadata"][expected_surface] != "required":
+            raise AssertionError(f"{entry['direction']}: source review surface is not required")
         if entry["wiki"] is not False or entry["lfs"] is not False:
             raise AssertionError(f"{entry['direction']}: live acceptance must declare its explicit wiki/LFS scope")
     rendered = json.dumps(manifest, sort_keys=True)

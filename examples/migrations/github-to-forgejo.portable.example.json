@@ -24,7 +24,7 @@
           "milestones": "required",
           "releases": "required",
           "issues": "required",
-          "pull_requests": "skip",
+          "pull_requests": "required",
           "merge_requests": "skip",
           "release_assets": "skip",
           "packages": "skip",

@@ -16,6 +16,11 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_SCRIPT = ROOT / "scripts" / "forge_migration.py"
+SCRIPTS = ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+import forge_migration as migration
 
 
 def run(args: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -76,6 +81,7 @@ class FakeLabelApi:
         self.milestones: dict[tuple[str, str], list[dict[str, object]]] = {}
         self.releases: dict[tuple[str, str], list[dict[str, object]]] = {}
         self.issues: dict[tuple[str, str], list[dict[str, object]]] = {}
+        self.change_requests: dict[tuple[str, str], list[dict[str, object]]] = {}
         self.next_id = 1
         self.server: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
@@ -156,6 +162,36 @@ class FakeLabelApi:
             self.next_id += 1 + len(comments)
         self.issues[(provider, repository)] = seeded
 
+    def seed_change_requests(
+        self,
+        provider: str,
+        repository: str,
+        requests: list[dict[str, object]],
+    ) -> None:
+        seeded: list[dict[str, object]] = []
+        for request in requests:
+            comments = [
+                {"id": self.next_id + index + 1, "body": str(comment)}
+                for index, comment in enumerate(request.get("comments", []))
+            ]
+            seeded.append(
+                {
+                    "id": self.next_id,
+                    "number": self.next_id,
+                    "iid": self.next_id,
+                    "title": str(request["title"]),
+                    "body": "" if request.get("body") is None else str(request.get("body")),
+                    "state": normalize_fake_state(request.get("state")),
+                    "source_branch": str(request["source_branch"]),
+                    "target_branch": str(request["target_branch"]),
+                    "labels": [str(label) for label in request.get("labels", [])],
+                    "milestone": "" if request.get("milestone") is None else str(request.get("milestone")),
+                    "comments": comments,
+                }
+            )
+            self.next_id += 1 + len(comments)
+        self.change_requests[(provider, repository)] = seeded
+
     def url_for(self, provider: str) -> str:
         if self.server is None:
             raise AssertionError("fake API is not running")
@@ -191,6 +227,7 @@ class FakeLabelApi:
                     "milestones",
                     "releases",
                     "issues",
+                    "pulls",
                 }:
                     provider = parts[0]
                     repository = f"{parts[2]}/{parts[3]}"
@@ -202,6 +239,7 @@ class FakeLabelApi:
                     "milestones",
                     "releases",
                     "issues",
+                    "merge_requests",
                 }:
                     provider = parts[0]
                     repository = parts[2]
@@ -325,6 +363,51 @@ class FakeLabelApi:
                     "milestone": milestone,
                 }
 
+            def response_change_request(
+                self,
+                provider: str,
+                repository: str,
+                request: dict[str, object],
+            ) -> dict[str, object]:
+                milestone_title = str(request.get("milestone") or "")
+                milestone = None
+                if milestone_title:
+                    for candidate in api.milestones.setdefault((provider, repository), []):
+                        if candidate.get("title") == milestone_title:
+                            milestone = self.response_milestone(provider, candidate)
+                            break
+                label_names = [str(label) for label in request.get("labels", [])]
+                if provider == "gitlab":
+                    return {
+                        "id": request["id"],
+                        "iid": request["iid"],
+                        "title": request["title"],
+                        "description": request.get("body", ""),
+                        "state": "opened" if request.get("state") == "open" else "closed",
+                        "source_branch": request["source_branch"],
+                        "target_branch": request["target_branch"],
+                        "labels": label_names,
+                        "milestone": milestone,
+                    }
+                labels = []
+                for label_name in label_names:
+                    label = self.find_resource(api.labels.setdefault((provider, repository), []), label_name, "name")
+                    labels.append(self.response_label(provider, label) if label else {"name": label_name})
+                return {
+                    "id": request["id"],
+                    "number": request["number"],
+                    "title": request["title"],
+                    "body": request.get("body", ""),
+                    "state": request.get("state", "open"),
+                    "head": {
+                        "ref": request["source_branch"],
+                        "repo": {"full_name": repository},
+                    },
+                    "base": {"ref": request["target_branch"]},
+                    "labels": labels,
+                    "milestone": milestone,
+                }
+
             def response_comment(self, provider: str, comment: dict[str, object]) -> dict[str, object]:
                 if provider == "gitlab":
                     return {"id": comment["id"], "body": comment["body"], "system": False}
@@ -344,6 +427,19 @@ class FakeLabelApi:
                     ):
                         return resource
                 return None
+
+            def find_issue_or_change_request(
+                self,
+                provider: str,
+                repository: str,
+                resource_id: str,
+            ) -> dict[str, object] | None:
+                issue = self.find_resource(api.issues.setdefault((provider, repository), []), resource_id, "title")
+                if issue is not None:
+                    return issue
+                return self.find_resource(
+                    api.change_requests.setdefault((provider, repository), []), resource_id, "title"
+                )
 
             def labels_from_payload(self, provider: str, repository: str, body: dict[str, object]) -> list[str]:
                 raw = body.get("labels", [])
@@ -413,9 +509,29 @@ class FakeLabelApi:
                         return
                     self.send_json(200, [self.response_release(provider, release) for release in releases])
                     return
+                if resource in {"pulls", "merge_requests"}:
+                    requests = api.change_requests.setdefault((provider, repository), [])
+                    if resource_id is not None:
+                        request = self.find_resource(requests, resource_id, "title")
+                        if request is None:
+                            self.send_json(404, {"message": "not found"})
+                            return
+                        if subresource in {"comments", "notes"}:
+                            self.send_json(
+                                200,
+                                [self.response_comment(provider, comment) for comment in request.get("comments", [])],
+                            )
+                            return
+                        self.send_json(200, self.response_change_request(provider, repository, request))
+                        return
+                    self.send_json(
+                        200,
+                        [self.response_change_request(provider, repository, request) for request in requests],
+                    )
+                    return
                 issues = api.issues.setdefault((provider, repository), [])
                 if resource_id is not None:
-                    issue = self.find_resource(issues, resource_id, "title")
+                    issue = self.find_issue_or_change_request(provider, repository, resource_id)
                     if issue is None:
                         self.send_json(404, {"message": "not found"})
                         return
@@ -452,13 +568,25 @@ class FakeLabelApi:
                 provider, repository, resource, resource_id, subresource = self.parse_resource_path()
                 body = self.read_json()
                 if resource == "issues" and resource_id is not None and subresource in {"comments", "notes"}:
-                    issue = self.find_resource(api.issues.setdefault((provider, repository), []), resource_id, "title")
+                    issue = self.find_issue_or_change_request(provider, repository, resource_id)
                     if issue is None:
                         self.send_json(404, {"message": "not found"})
                         return
                     comment = {"id": api.next_id, "body": str(body.get("body") or "")}
                     api.next_id += 1
                     issue.setdefault("comments", []).append(comment)
+                    self.send_json(201, self.response_comment(provider, comment))
+                    return
+                if resource in {"pulls", "merge_requests"} and resource_id is not None and subresource in {"comments", "notes"}:
+                    request = self.find_resource(
+                        api.change_requests.setdefault((provider, repository), []), resource_id, "title"
+                    )
+                    if request is None:
+                        self.send_json(404, {"message": "not found"})
+                        return
+                    comment = {"id": api.next_id, "body": str(body.get("body") or "")}
+                    api.next_id += 1
+                    request.setdefault("comments", []).append(comment)
                     self.send_json(201, self.response_comment(provider, comment))
                     return
                 if resource_id is not None:
@@ -510,6 +638,32 @@ class FakeLabelApi:
                     api.releases.setdefault((provider, repository), []).append(release)
                     self.send_json(201, self.response_release(provider, release))
                     return
+                if resource in {"pulls", "merge_requests"}:
+                    source_branch = body.get("source_branch")
+                    target_branch = body.get("target_branch")
+                    if source_branch is None:
+                        source_branch = body.get("head")
+                    if target_branch is None:
+                        target_branch = body.get("base")
+                    request = {
+                        "id": api.next_id,
+                        "number": api.next_id,
+                        "iid": api.next_id,
+                        "title": str(body["title"]),
+                        "body": "" if body.get("description") is None else str(body.get("description")),
+                        "state": "open",
+                        "source_branch": str(source_branch or ""),
+                        "target_branch": str(target_branch or ""),
+                        "labels": self.labels_from_payload(provider, repository, body),
+                        "milestone": self.milestone_from_payload(provider, repository, body),
+                        "comments": [],
+                    }
+                    if body.get("body") is not None:
+                        request["body"] = str(body.get("body"))
+                    api.next_id += 1
+                    api.change_requests.setdefault((provider, repository), []).append(request)
+                    self.send_json(201, self.response_change_request(provider, repository, request))
+                    return
                 issue = {
                     "id": api.next_id,
                     "number": api.next_id,
@@ -533,6 +687,32 @@ class FakeLabelApi:
                     self.send_json(404, {"message": "resource id is required"})
                     return
                 body = self.read_json()
+                if resource in {"pulls", "merge_requests"}:
+                    requests = api.change_requests.setdefault((provider, repository), [])
+                    request = self.find_resource(requests, resource_id, "title")
+                    if request is None:
+                        self.send_json(404, {"message": "not found"})
+                        return
+                    if body.get("title"):
+                        request["title"] = str(body["title"])
+                    if "body" in body:
+                        request["body"] = "" if body.get("body") is None else str(body.get("body"))
+                    if "description" in body:
+                        request["body"] = "" if body.get("description") is None else str(body.get("description"))
+                    if "labels" in body:
+                        request["labels"] = self.labels_from_payload(provider, repository, body)
+                    if "milestone" in body or "milestone_id" in body:
+                        request["milestone"] = self.milestone_from_payload(provider, repository, body)
+                    if body.get("base"):
+                        request["target_branch"] = str(body["base"])
+                    if body.get("target_branch"):
+                        request["target_branch"] = str(body["target_branch"])
+                    if body.get("state_event"):
+                        request["state"] = "closed" if body["state_event"] == "close" else "open"
+                    elif body.get("state"):
+                        request["state"] = normalize_fake_state(body["state"])
+                    self.send_json(200, self.response_change_request(provider, repository, request))
+                    return
                 if resource == "labels":
                     labels = api.labels.setdefault((provider, repository), [])
                     label = self.find_resource(labels, resource_id, "name")
@@ -548,8 +728,7 @@ class FakeLabelApi:
                     self.send_json(200, self.response_label(provider, label))
                     return
                 if resource == "issues":
-                    issues = api.issues.setdefault((provider, repository), [])
-                    issue = self.find_resource(issues, resource_id, "title")
+                    issue = self.find_issue_or_change_request(provider, repository, resource_id)
                     if issue is None:
                         self.send_json(404, {"message": "not found"})
                         return
@@ -567,7 +746,10 @@ class FakeLabelApi:
                         issue["state"] = "closed" if body["state_event"] == "close" else "open"
                     elif body.get("state"):
                         issue["state"] = normalize_fake_state(body["state"])
-                    self.send_json(200, self.response_issue(provider, repository, issue))
+                    if issue in api.change_requests.setdefault((provider, repository), []):
+                        self.send_json(200, self.response_change_request(provider, repository, issue))
+                    else:
+                        self.send_json(200, self.response_issue(provider, repository, issue))
                     return
                 if resource == "releases":
                     releases = api.releases.setdefault((provider, repository), [])
@@ -878,6 +1060,58 @@ def test_metadata_migration_for_supported_directions() -> None:
                     },
                 ],
             )
+            api.seed_change_requests(
+                source_provider,
+                source_repository,
+                [
+                    {
+                        "title": "Portable feature review",
+                        "body": "Review the feature branch before cutover.",
+                        "state": "open",
+                        "source_branch": "feature/migration-proof",
+                        "target_branch": "master",
+                        "labels": ["bug", "ci"],
+                        "milestone": "v1.0",
+                        "comments": ["Check the migration proof.", "Approve after ref verification."],
+                    },
+                    {
+                        "title": "Closed compatibility review",
+                        "body": "Document the closed migration compatibility decision.",
+                        "state": "closed",
+                        "source_branch": "feature/migration-proof",
+                        "target_branch": "master",
+                        "labels": ["bug"],
+                        "milestone": "legacy cleanup",
+                        "comments": ["Closed after recording the decision."],
+                    },
+                ],
+            )
+            api.seed_change_requests(
+                destination_provider,
+                destination_repository,
+                [
+                    {
+                        "title": "Portable feature review",
+                        "body": "old request body",
+                        "state": "closed",
+                        "source_branch": "feature/migration-proof",
+                        "target_branch": "master",
+                        "labels": ["bug"],
+                        "milestone": "legacy cleanup",
+                        "comments": [],
+                    },
+                    {
+                        "title": "destination-only review",
+                        "body": "kept as extra",
+                        "state": "open",
+                        "source_branch": "feature/migration-proof",
+                        "target_branch": "master",
+                        "labels": [],
+                        "milestone": "",
+                        "comments": [],
+                    },
+                ],
+            )
             plan = {
                 "direction": direction,
                 "repositories": [
@@ -898,6 +1132,7 @@ def test_metadata_migration_for_supported_directions() -> None:
                             "milestones": "required",
                             "releases": "required",
                             "issues": "required",
+                            "merge_requests" if source_provider == "gitlab" else "pull_requests": "required",
                         },
                     }
                 ],
@@ -953,6 +1188,19 @@ def test_metadata_migration_for_supported_directions() -> None:
                 )
             if issues["extra"] != ["destination-only issue"]:
                 raise AssertionError(f"{direction}: expected destination-only issue to be reported as extra")
+            change_requests = proof["repositories"][0]["metadata"]["change_requests"]
+            if not change_requests["verified"]:
+                raise AssertionError(f"{direction}: change request proof did not verify")
+            if (
+                change_requests["created"] != 1
+                or change_requests["updated"] != 1
+                or change_requests["comments_created"] != 3
+            ):
+                raise AssertionError(
+                    f"{direction}: expected one created, one updated, and three change request comments, got {change_requests}"
+                )
+            if change_requests["extra"] != ["feature/migration-proof->master:destination-only review"]:
+                raise AssertionError(f"{direction}: expected destination-only change request to be reported as extra")
 
             verify_proof = root / direction / "verify-proof.json"
             run(
@@ -968,6 +1216,8 @@ def test_metadata_migration_for_supported_directions() -> None:
                 raise AssertionError(f"{direction}: verify command did not prove releases")
             if not verified_again["repositories"][0]["metadata"]["issues"]["verified"]:
                 raise AssertionError(f"{direction}: verify command did not prove issues")
+            if not verified_again["repositories"][0]["metadata"]["change_requests"]["verified"]:
+                raise AssertionError(f"{direction}: verify command did not prove change requests")
 
 
 def test_destination_repository_creation_for_supported_directions() -> None:
@@ -1121,6 +1371,93 @@ def test_required_metadata_fails_closed() -> None:
             raise AssertionError(result.stderr)
 
 
+def test_nonportable_change_requests_fail_closed() -> None:
+    target = migration.ApiTarget(
+        provider="github",
+        api_url="https://api.github.test",
+        repository="destination-owner/repository",
+        token_env=None,
+    )
+    base_request = {
+        "title": "Review",
+        "body": "Portable review",
+        "state": "open",
+        "head": {"ref": "feature", "repo": {"full_name": "destination-owner/repository"}},
+        "base": {"ref": "main"},
+        "labels": [],
+        "milestone": None,
+    }
+    cases = [
+        ({**base_request, "state": "closed", "merged": True}, "merged"),
+        ({**base_request, "draft": True}, "draft"),
+        ({**base_request, "head": {"ref": "feature", "repo": {"full_name": "fork/repository"}}}, "fork"),
+    ]
+    for request, label in cases:
+        try:
+            migration.normalize_change_request(target, request, [])
+        except migration.MigrationError:
+            continue
+        raise AssertionError(f"{label} change request unexpectedly passed the portable migration contract")
+
+
+def test_change_request_plan_contract() -> None:
+    for direction in ("github-to-forgejo", "gitlab-to-forgejo", "forgejo-to-github", "forgejo-to-gitlab"):
+        source_provider, destination_provider = direction.split("-to-", 1)
+        surface = "merge_requests" if source_provider == "gitlab" else "pull_requests"
+        _direction, repositories = migration.parse_plan(
+            {
+                "direction": direction,
+                "repositories": [
+                    {
+                        "name": direction,
+                        "source": {
+                            "url": f"https://{source_provider}.example.test/source/repository.git",
+                            "api_url": f"https://{source_provider}.example.test/api",
+                            "api_repository": "source/repository",
+                        },
+                        "destination": {
+                            "url": f"https://{destination_provider}.example.test/destination/repository.git",
+                            "api_url": f"https://{destination_provider}.example.test/api",
+                            "api_repository": "destination/repository",
+                        },
+                        "metadata": {surface: "required"},
+                    }
+                ],
+            }
+        )
+        preview = migration.validate_metadata_requirements(repositories[0])
+        change_requests = preview["change_requests"]
+        if change_requests["status"] != "planned" or change_requests["mode"] != "required":
+            raise AssertionError(f"{direction}: required change request surface was not planned: {change_requests}")
+
+    _direction, repositories = migration.parse_plan(
+        {
+            "direction": "gitlab-to-forgejo",
+            "repositories": [
+                {
+                    "name": "wrong-review-surface",
+                    "source": {
+                        "url": "https://gitlab.example.test/source/repository.git",
+                        "api_url": "https://gitlab.example.test/api/v4",
+                        "api_repository": "source/repository",
+                    },
+                    "destination": {
+                        "url": "https://forgejo.example.test/destination/repository.git",
+                        "api_url": "https://forgejo.example.test/api/v1",
+                        "api_repository": "destination/repository",
+                    },
+                    "metadata": {"pull_requests": "required"},
+                }
+            ],
+        }
+    )
+    try:
+        migration.validate_metadata_requirements(repositories[0])
+    except migration.MigrationError:
+        return
+    raise AssertionError("GitLab source unexpectedly accepted pull_requests instead of merge_requests")
+
+
 def main() -> int:
     if not shutil.which("git"):
         print("git is required for forge migration tests", file=sys.stderr)
@@ -1130,6 +1467,8 @@ def main() -> int:
     test_destination_repository_creation_for_supported_directions()
     test_batch_failure_writes_proof_and_continues()
     test_required_metadata_fails_closed()
+    test_nonportable_change_requests_fail_closed()
+    test_change_request_plan_contract()
     print("Forge migration helper self-test passed.")
     return 0
 

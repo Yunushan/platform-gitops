@@ -2,12 +2,12 @@
 """Mirror and verify Git forge migrations with machine-readable proof.
 
 The supported migration planes are Git refs, repository labels, milestones,
-portable releases, and portable issues/comments: branches, tags, optional
-wiki/LFS repositories, and provider-common metadata. Other provider metadata
-such as pull requests, merge requests, packages, and release assets is
-intentionally modeled in the plan and rejected when marked required until an
-importer for that surface exists. That keeps "verified migration" claims
-honest.
+portable releases, issues/comments, and open or closed same-repository pull or
+merge requests: branches, tags, optional wiki/LFS repositories, and
+provider-common metadata. Other provider metadata such as packages and release
+assets is intentionally modeled in the plan and rejected when marked required
+until an importer for that surface exists. That keeps "verified migration"
+claims honest.
 """
 
 from __future__ import annotations
@@ -42,10 +42,15 @@ OPTIONAL_DIRECTIONS = {
     "gitlab-to-github",
 }
 SUPPORTED_METADATA_STATES = {"skip", "skipped", "false", "none", "not-required"}
-SUPPORTED_METADATA_SURFACES = {"labels", "milestones", "releases", "issues"}
-UNSUPPORTED_METADATA_SURFACES = {
+SUPPORTED_METADATA_SURFACES = {
+    "labels",
+    "milestones",
+    "releases",
+    "issues",
     "pull_requests",
     "merge_requests",
+}
+UNSUPPORTED_METADATA_SURFACES = {
     "release_assets",
     "packages",
     "project_boards",
@@ -453,9 +458,9 @@ def validate_metadata_requirements(repo: RepoPlan) -> dict[str, Any]:
     source: ApiTarget | None = None
     destination: ApiTarget | None = None
 
-    def planned_surface(surface: str) -> dict[str, Any]:
+    def planned_surface(surface: str, mode_override: str | None = None) -> dict[str, Any]:
         nonlocal source, destination
-        mode = metadata_mode(repo, surface)
+        mode = mode_override if mode_override is not None else metadata_mode(repo, surface)
         if mode == "skip":
             return {"mode": mode, "status": "skipped"}
         if source is None:
@@ -478,6 +483,7 @@ def validate_metadata_requirements(repo: RepoPlan) -> dict[str, Any]:
         "milestones": planned_surface("milestones"),
         "releases": planned_surface("releases"),
         "issues": planned_surface("issues"),
+        "change_requests": planned_surface(change_request_surface(repo), change_request_mode(repo)),
         "verified": True,
     }
 
@@ -1804,20 +1810,432 @@ def verify_issues(repo: RepoPlan) -> dict[str, Any]:
     }
 
 
+def change_request_surface(repo: RepoPlan) -> str:
+    return "merge_requests" if repo.source_provider == "gitlab" else "pull_requests"
+
+
+def change_request_mode(repo: RepoPlan) -> str:
+    expected_surface = change_request_surface(repo)
+    other_surface = "pull_requests" if expected_surface == "merge_requests" else "merge_requests"
+    expected_mode = metadata_mode(repo, expected_surface)
+    other_mode = metadata_mode(repo, other_surface)
+    if other_mode != "skip":
+        raise MigrationError(
+            f"{repo.name}: {other_surface} cannot be selected for a {repo.source_provider} source; "
+            f"use {expected_surface}"
+        )
+    return expected_mode
+
+
+def change_request_resource(target: ApiTarget) -> str:
+    return "merge_requests" if target.provider == "gitlab" else "pulls"
+
+
+def list_change_requests(target: ApiTarget) -> list[dict[str, Any]]:
+    requests: list[dict[str, Any]] = []
+    base = repo_api_base(target)
+    resource = change_request_resource(target)
+    for page in range(1, 1001):
+        query: dict[str, Any] = {"state": "all", "per_page": 100, "page": page}
+        if target.provider == "gitlab":
+            query["scope"] = "all"
+        payload = api_request(target, "GET", f"{base}/{resource}", query=query, expected=(200,))
+        if not isinstance(payload, list):
+            raise MigrationError(f"{target.provider} {resource} API returned a non-list response")
+        requests.extend(item for item in payload if isinstance(item, dict))
+        if len(payload) < 100:
+            break
+    return requests
+
+
+def change_request_api_id(target: ApiTarget, request: dict[str, Any]) -> str:
+    if target.provider == "gitlab":
+        value = request.get("iid") or request.get("number") or request.get("id")
+    else:
+        value = request.get("number") or request.get("index") or request.get("id")
+    if value is None or str(value).strip() == "":
+        raise MigrationError(f"{target.provider} change request is missing a stable API id: {request}")
+    return str(value)
+
+
+def list_change_request_comments(target: ApiTarget, request: dict[str, Any]) -> list[dict[str, Any]]:
+    comments: list[dict[str, Any]] = []
+    base = repo_api_base(target)
+    request_id = quote(change_request_api_id(target, request), safe="")
+    if target.provider == "gitlab":
+        path = f"{base}/merge_requests/{request_id}/notes"
+        query: dict[str, Any] = {"sort": "asc", "order_by": "created_at", "per_page": 100}
+    else:
+        path = f"{base}/issues/{request_id}/comments"
+        query = {"per_page": 100}
+        if target.provider == "github":
+            query.update({"sort": "created", "direction": "asc"})
+    for page in range(1, 1001):
+        query["page"] = page
+        payload = api_request(target, "GET", path, query=query, expected=(200,))
+        if not isinstance(payload, list):
+            raise MigrationError(f"{target.provider} change request comments API returned a non-list response")
+        comments.extend(comment for comment in payload if not (isinstance(comment, dict) and comment.get("system")))
+        if len(payload) < 100:
+            break
+    return comments
+
+
+def normalize_change_request_state(request: dict[str, Any]) -> str:
+    state = str(request.get("state") or "open").strip().lower()
+    if state in {"open", "opened"}:
+        return "open"
+    if state == "closed" and not request.get("merged"):
+        return "closed"
+    if state == "merged" or request.get("merged"):
+        raise MigrationError(
+            "merged pull or merge requests cannot be recreated without rewriting destination Git history; "
+            "keep this surface skipped or use a provider-native archival export"
+        )
+    raise MigrationError(f"change request state must be open/opened or closed, got {state!r}")
+
+
+def normalize_change_request_branch(request: dict[str, Any], provider: str, side: str) -> str:
+    if provider == "gitlab":
+        value = request.get("source_branch" if side == "source" else "target_branch")
+    else:
+        branch = request.get("head" if side == "source" else "base")
+        value = branch.get("ref") if isinstance(branch, dict) else ""
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise MigrationError(f"{provider} change request is missing its {side} branch")
+    return normalized
+
+
+def require_same_repository_change_request(target: ApiTarget, request: dict[str, Any]) -> None:
+    if target.provider == "gitlab":
+        source_project = request.get("source_project_id")
+        target_project = request.get("target_project_id")
+        if source_project is not None and target_project is not None and str(source_project) != str(target_project):
+            raise MigrationError("fork-originated GitLab merge requests are not portable through a repository mirror")
+        return
+    head = request.get("head")
+    head_repository = head.get("repo") if isinstance(head, dict) else None
+    if not isinstance(head_repository, dict):
+        raise MigrationError(
+            "pull request source repository is unavailable, so same-repository migration cannot be proven"
+        )
+    source_repository = str(
+        head_repository.get("full_name") or head_repository.get("path_with_namespace") or ""
+    ).strip("/")
+    if not source_repository:
+        raise MigrationError("pull request source repository is missing its stable full_name")
+    if source_repository.casefold() != target.repository.strip("/").casefold():
+        raise MigrationError("fork-originated pull requests are not portable through a repository mirror")
+
+
+def normalize_change_request(target: ApiTarget, request: dict[str, Any], comments: list[dict[str, Any]]) -> dict[str, Any]:
+    title = str(request.get("title") or "").strip()
+    if not title:
+        raise MigrationError("change request is missing a title")
+    if request.get("draft") or request.get("work_in_progress"):
+        raise MigrationError("draft pull or merge requests are not portable across all supported providers")
+    require_same_repository_change_request(target, request)
+    return {
+        "title": title,
+        "body": normalize_issue_body(request),
+        "state": normalize_change_request_state(request),
+        "source_branch": normalize_change_request_branch(request, target.provider, "source"),
+        "target_branch": normalize_change_request_branch(request, target.provider, "target"),
+        "labels": normalize_issue_labels(request.get("labels")),
+        "milestone": normalize_issue_milestone(request.get("milestone")),
+        "comments": normalize_comments(comments),
+    }
+
+
+def normalized_change_requests(target: ApiTarget) -> list[dict[str, Any]]:
+    normalized = [
+        normalize_change_request(target, request, list_change_request_comments(target, request))
+        for request in list_change_requests(target)
+    ]
+    return sorted(normalized, key=lambda item: change_request_key(item).casefold())
+
+
+def change_request_key(request: dict[str, Any]) -> str:
+    return f"{request['source_branch']}->{request['target_branch']}:{request['title']}"
+
+
+def change_request_digest(requests: list[dict[str, Any]]) -> str:
+    payload = json.dumps(requests, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def change_requests_by_key(requests: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_key: dict[str, dict[str, Any]] = {}
+    duplicates: set[str] = set()
+    for request in requests:
+        key = change_request_key(request)
+        if key in by_key:
+            duplicates.add(key)
+        by_key[key] = request
+    if duplicates:
+        details = ", ".join(sorted(duplicates, key=str.casefold))
+        raise MigrationError(f"duplicate change request keys cannot be proven by the portable importer: {details}")
+    return by_key
+
+
+def change_request_core(request: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": request["title"],
+        "body": request["body"],
+        "state": request["state"],
+        "source_branch": request["source_branch"],
+        "target_branch": request["target_branch"],
+        "labels": request["labels"],
+        "milestone": request["milestone"],
+    }
+
+
+def replicated_change_request_view(
+    source_request: dict[str, Any], destination_request: dict[str, Any]
+) -> dict[str, Any]:
+    view = change_request_core(destination_request)
+    destination_comments = destination_request["comments"]
+    matched_comments: list[str] = []
+    destination_index = 0
+    for source_body in source_request["comments"]:
+        while destination_index < len(destination_comments):
+            if destination_comments[destination_index] == source_body:
+                matched_comments.append(destination_comments[destination_index])
+                destination_index += 1
+                break
+            destination_index += 1
+    view["comments"] = matched_comments
+    return view
+
+
+def compare_change_request_sets(
+    source_requests: list[dict[str, Any]], destination_requests: list[dict[str, Any]]
+) -> dict[str, Any]:
+    source_by_key = change_requests_by_key(source_requests)
+    destination_by_key = change_requests_by_key(destination_requests)
+    missing = sorted(set(source_by_key) - set(destination_by_key), key=str.casefold)
+    extra = sorted(set(destination_by_key) - set(source_by_key), key=str.casefold)
+    mismatched: list[str] = []
+    missing_comment_counts: dict[str, int] = {}
+    extra_comment_counts: dict[str, int] = {}
+    replicated: list[dict[str, Any]] = []
+    for key in sorted(set(source_by_key) & set(destination_by_key), key=str.casefold):
+        source_request = source_by_key[key]
+        destination_request = destination_by_key[key]
+        comment_missing = missing_comment_bodies(source_request["comments"], destination_request["comments"])
+        if change_request_core(source_request) != change_request_core(destination_request) or comment_missing:
+            mismatched.append(key)
+        if comment_missing:
+            missing_comment_counts[key] = len(comment_missing)
+        extra_comments = max(0, len(destination_request["comments"]) - len(source_request["comments"]))
+        if extra_comments:
+            extra_comment_counts[key] = extra_comments
+        replicated.append(replicated_change_request_view(source_request, destination_request))
+    replicated = sorted(replicated, key=lambda item: change_request_key(item).casefold())
+    return {
+        "verified": not missing and not mismatched,
+        "source_count": len(source_requests),
+        "destination_count": len(destination_requests),
+        "source_digest": change_request_digest(source_requests),
+        "destination_digest": change_request_digest(replicated),
+        "missing": missing,
+        "mismatched": mismatched,
+        "extra": extra,
+        "missing_comment_counts": missing_comment_counts,
+        "extra_comment_counts": extra_comment_counts,
+    }
+
+
+def change_request_payload(
+    target: ApiTarget,
+    request: dict[str, Any],
+    label_id_by_name: dict[str, int],
+    milestone_by_title: dict[str, dict[str, Any]],
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    milestone_id = milestone_payload_id(target, request, milestone_by_title)
+    if target.provider == "gitlab":
+        payload: dict[str, Any] = {
+            "source_branch": request["source_branch"],
+            "target_branch": request["target_branch"],
+            "title": request["title"],
+            "description": request["body"],
+            "labels": issue_label_payload(target, request, label_id_by_name),
+        }
+        if milestone_id is not None:
+            payload["milestone_id"] = milestone_id
+        if existing is not None and request["state"] != normalize_change_request_state(existing):
+            payload["state_event"] = "close" if request["state"] == "closed" else "reopen"
+        return payload
+    if existing is None:
+        return {
+            "title": request["title"],
+            "body": request["body"],
+            "head": request["source_branch"],
+            "base": request["target_branch"],
+        }
+    payload = {
+        "title": request["title"],
+        "body": request["body"],
+        "base": request["target_branch"],
+        "state": request["state"],
+    }
+    if existing is not None:
+        existing_source = normalize_change_request_branch(existing, target.provider, "source")
+        if existing_source != request["source_branch"]:
+            raise MigrationError(
+                f"cannot retarget existing {target.provider} pull request from {existing_source!r} "
+                f"to {request['source_branch']!r}"
+            )
+    return payload
+
+
+def change_request_update_path(target: ApiTarget, existing: dict[str, Any]) -> str:
+    resource = change_request_resource(target)
+    return f"{repo_api_base(target)}/{resource}/{quote(change_request_api_id(target, existing), safe='')}"
+
+
+def create_change_request(
+    target: ApiTarget,
+    request: dict[str, Any],
+    label_id_by_name: dict[str, int],
+    milestone_by_title: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    created = api_request(
+        target,
+        "POST",
+        f"{repo_api_base(target)}/{change_request_resource(target)}",
+        body=change_request_payload(target, request, label_id_by_name, milestone_by_title),
+        expected=(200, 201),
+    )
+    if not isinstance(created, dict):
+        raise MigrationError(f"{target.provider} change request create API returned a non-object response")
+    if target.provider != "gitlab":
+        update_issue(target, created, request, label_id_by_name, milestone_by_title)
+    if request["state"] == "closed":
+        update_change_request(target, created, request, label_id_by_name, milestone_by_title)
+    return created
+
+
+def update_change_request(
+    target: ApiTarget,
+    existing: dict[str, Any],
+    request: dict[str, Any],
+    label_id_by_name: dict[str, int],
+    milestone_by_title: dict[str, dict[str, Any]],
+) -> None:
+    method = "PUT" if target.provider == "gitlab" else "PATCH"
+    api_request(
+        target,
+        method,
+        change_request_update_path(target, existing),
+        body=change_request_payload(target, request, label_id_by_name, milestone_by_title, existing=existing),
+        expected=(200,),
+    )
+    if target.provider != "gitlab":
+        update_issue(target, existing, request, label_id_by_name, milestone_by_title)
+
+
+def create_change_request_comment(target: ApiTarget, request: dict[str, Any], body: str) -> None:
+    base = repo_api_base(target)
+    request_id = quote(change_request_api_id(target, request), safe="")
+    path = (
+        f"{base}/merge_requests/{request_id}/notes"
+        if target.provider == "gitlab"
+        else f"{base}/issues/{request_id}/comments"
+    )
+    api_request(target, "POST", path, body={"body": body}, expected=(200, 201))
+
+
+def migrate_change_requests(repo: RepoPlan) -> dict[str, Any]:
+    mode = change_request_mode(repo)
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    source = api_target(repo, "source")
+    destination = api_target(repo, "destination")
+    source_requests = normalized_change_requests(source)
+    destination_before_raw = list_change_requests(destination)
+    destination_before = [
+        normalize_change_request(destination, request, list_change_request_comments(destination, request))
+        for request in destination_before_raw
+    ]
+    raw_by_key = {
+        change_request_key(normalize_change_request(destination, request, list_change_request_comments(destination, request))): request
+        for request in destination_before_raw
+    }
+    destination_by_key = change_requests_by_key(destination_before)
+    _, label_id_by_name = destination_label_maps(destination)
+    milestone_by_title = destination_milestone_maps(destination)
+    created = 0
+    updated = 0
+    comments_created = 0
+    for request in source_requests:
+        key = change_request_key(request)
+        existing = destination_by_key.get(key)
+        if existing is None:
+            created_request = create_change_request(destination, request, label_id_by_name, milestone_by_title)
+            created += 1
+            for comment_body in request["comments"]:
+                create_change_request_comment(destination, created_request, comment_body)
+                comments_created += 1
+            continue
+        existing_raw = raw_by_key[key]
+        if change_request_core(existing) != change_request_core(request):
+            update_change_request(destination, existing_raw, request, label_id_by_name, milestone_by_title)
+            updated += 1
+        destination_comments = normalize_comments(list_change_request_comments(destination, existing_raw))
+        for comment_body in missing_comment_bodies(request["comments"], destination_comments):
+            create_change_request_comment(destination, existing_raw, comment_body)
+            comments_created += 1
+    comparison = compare_change_request_sets(source_requests, normalized_change_requests(destination))
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        "created": created,
+        "updated": updated,
+        "comments_created": comments_created,
+        **comparison,
+    }
+
+
+def verify_change_requests(repo: RepoPlan) -> dict[str, Any]:
+    mode = change_request_mode(repo)
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    source = api_target(repo, "source")
+    destination = api_target(repo, "destination")
+    comparison = compare_change_request_sets(
+        normalized_change_requests(source), normalized_change_requests(destination)
+    )
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        **comparison,
+    }
+
+
 def migrate_metadata(repo: RepoPlan) -> dict[str, Any]:
     labels = migrate_labels(repo)
     milestones = migrate_milestones(repo)
     releases = migrate_releases(repo)
     issues = migrate_issues(repo)
+    change_requests = migrate_change_requests(repo)
     return {
         "labels": labels,
         "milestones": milestones,
         "releases": releases,
         "issues": issues,
+        "change_requests": change_requests,
         "verified": labels.get("verified", False)
         and milestones.get("verified", False)
         and releases.get("verified", False)
-        and issues.get("verified", False),
+        and issues.get("verified", False)
+        and change_requests.get("verified", False),
     }
 
 
@@ -1826,15 +2244,18 @@ def verify_metadata(repo: RepoPlan) -> dict[str, Any]:
     milestones = verify_milestones(repo)
     releases = verify_releases(repo)
     issues = verify_issues(repo)
+    change_requests = verify_change_requests(repo)
     return {
         "labels": labels,
         "milestones": milestones,
         "releases": releases,
         "issues": issues,
+        "change_requests": change_requests,
         "verified": labels.get("verified", False)
         and milestones.get("verified", False)
         and releases.get("verified", False)
-        and issues.get("verified", False),
+        and issues.get("verified", False)
+        and change_requests.get("verified", False),
     }
 
 
