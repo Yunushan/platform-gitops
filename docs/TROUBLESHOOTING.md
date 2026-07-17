@@ -93,12 +93,17 @@ Change that window with
 `PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_CONVERGENCE_TIMEOUT`. If the direct
 endpoint still times out, the Make target applies the existing all-node CNI,
 reverse-path filter, and firewalld recovery once, then reruns the Woodpecker
-repair. If the same direct endpoint path still fails on the premium three-node
-profile, the target verifies that two peer control-plane nodes are Ready and
-performs a guarded rolling RKE2 restart on only the Woodpecker source and
-PostgreSQL endpoint nodes. It waits for each node, Cilium, and kube-proxy before
-moving to the next node; PVCs, PVs, Longhorn volumes, and database objects are
-retained. Disable this final fallback with
+repair. The firewalld recovery installs explicit forwarding rules for every
+detected source/destination pod-CIDR pair. This matters when RKE2 assigns a
+different `/24` to each node: a same-CIDR rule permits local pod traffic but
+still drops cross-node TCP, even though Cilium health ICMP succeeds. Cilium
+network policy remains the workload-level policy layer. If the same direct
+endpoint path still fails on the premium three-node profile, the target verifies
+that two peer control-plane nodes are Ready and performs a guarded rolling RKE2
+restart on only the Woodpecker source and PostgreSQL endpoint nodes. It waits
+for each node, Cilium, and kube-proxy before moving to the next node; PVCs, PVs,
+Longhorn volumes, and database objects are retained. Disable this final fallback
+with
 `PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART=false`, or adjust its wait with
 `PLATFORM_WOODPECKER_REPAIR_FAILED_NODE_RESTART_TIMEOUT`. Disable the first
 targeted recovery with `PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH=false`, or

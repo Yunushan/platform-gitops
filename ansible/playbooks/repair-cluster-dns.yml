@@ -1526,9 +1526,17 @@
               case "${source}" in
                 ''|*[!0-9./]*) continue ;;
               esac
-              add_direct_rule ipv4 filter FORWARD 0 -s "${source}" -d "${source}" -j ACCEPT
               add_direct_rule ipv4 filter INPUT 0 -s "${source}" -j ACCEPT
               add_direct_rule ipv4 filter OUTPUT 0 -d "${source}" -j ACCEPT
+              # RKE2 commonly allocates one pod CIDR per node, so every
+              # source CIDR must be allowed to reach every destination CIDR.
+              for destination in ${pod_cidrs}; do
+                case "${destination}" in
+                  ''|*[!0-9./]*) continue ;;
+                esac
+                add_direct_rule ipv4 filter FORWARD 0 \
+                  -s "${source}" -d "${destination}" -j ACCEPT
+              done
             done
 
             for prefix in cilium+ lxc+ cni+ veth+; do
@@ -1610,6 +1618,14 @@
                   echo "firewalld_runtime_missing=trusted-source:${source}"
                   missing=true
                 fi
+                for destination in ${pod_cidrs}; do
+                  if ! run_bounded 10 firewall-cmd --direct --query-rule \
+                    ipv4 filter FORWARD 0 \
+                    -s "${source}" -d "${destination}" -j ACCEPT >/dev/null 2>&1; then
+                    echo "firewalld_runtime_missing=forward:${source}->${destination}"
+                    missing=true
+                  fi
+                done
               done
 
               for node_ip in ${node_ips}; do

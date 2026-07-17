@@ -2519,6 +2519,7 @@ def main() -> None:
         "firewalld_ephemeral_interface_cleanup=changed",
         "firewalld_state_recovery_action=restart-after-interface-cleanup",
         "systemctl reset-failed firewalld",
+        "firewalld_runtime_missing=forward:${source}->${destination}",
     ):
         require_text(dns_repair_text, needle, f"DNS repair must support forced CNI service-path recovery: {needle}")
     cleanup_script_text = read(firewalld_cleanup_script)
@@ -2541,6 +2542,21 @@ def main() -> None:
             "cleanup_firewalld_cni_interfaces.py",
             f"{playbook.relative_to(root)} must prune stale CNI firewalld bindings",
         )
+        require_text(
+            playbook_text,
+            "for destination in ${pod_cidrs}; do",
+            f"{playbook.relative_to(root)} must permit every source/destination pod-CIDR pair",
+        )
+        require_text(
+            playbook_text,
+            '-s "${source}" -d "${destination}" -j ACCEPT',
+            f"{playbook.relative_to(root)} must install cross-node pod-CIDR forwarding rules",
+        )
+        if '-s "${source}" -d "${source}" -j ACCEPT' in playbook_text:
+            fail(
+                f"{playbook.relative_to(root)} must not limit pod forwarding "
+                "to same-CIDR traffic"
+            )
         if "trusted active CNI interface" in playbook_text:
             fail(f"{playbook.relative_to(root)} must not persist transient CNI interfaces")
     if "platform-monitoring-repair:" not in makefile_text:
