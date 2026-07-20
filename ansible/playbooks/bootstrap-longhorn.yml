@@ -683,6 +683,174 @@
               "${min_available_bytes}"
 
             if [ "${eligible}" != "true" ]; then
+              if [ "${reason}" != "same-filesystem-as-default-disk" ] &&
+                [ "${reason}" != "same-filesystem-id-as-default-disk" ]; then
+                exit 0
+              fi
+
+              python3 - "${node_name}" "${reason}" <<'PY'
+            import json
+            import subprocess
+            import sys
+            import time
+
+            node_name = sys.argv[1]
+            reason = sys.argv[2]
+            kubectl = [
+                "/var/lib/rancher/rke2/bin/kubectl",
+                "--kubeconfig",
+                "/etc/rancher/rke2/rke2.yaml",
+                "-n",
+                "longhorn-system",
+            ]
+
+
+            def run_kubectl(args):
+                return subprocess.run(
+                    kubectl + args,
+                    text=True,
+                    capture_output=True,
+                )
+
+
+            def get_node():
+                result = run_kubectl(["get", f"nodes.longhorn.io/{node_name}", "-o", "json"])
+                if result.returncode != 0:
+                    return None, result
+                return json.loads(result.stdout), result
+
+
+            node, result = get_node()
+            if node is None:
+                print(
+                    f"Longhorn automatic extra disk cleanup skipped: node={node_name} "
+                    "reason=longhorn-node-object-absent"
+                )
+                raise SystemExit(0)
+
+            disk_name = "auto-extra-disk"
+            spec_disks = node.get("spec", {}).get("disks") or {}
+            if disk_name not in spec_disks:
+                print(
+                    f"Longhorn stale automatic extra disk cleanup: node={node_name} "
+                    f"disk={disk_name} action=absent reason={reason}"
+                )
+                raise SystemExit(0)
+
+            status = (node.get("status", {}).get("diskStatus") or {}).get(disk_name) or {}
+            scheduled_replicas = status.get("scheduledReplica") or {}
+            scheduled_backing_images = status.get("scheduledBackingImage") or {}
+            storage_scheduled = int(status.get("storageScheduled") or 0)
+            disk_uuid = status.get("diskUUID") or ""
+
+            replica_names = []
+            if disk_uuid:
+                replicas_result = run_kubectl(["get", "replicas.longhorn.io", "-o", "json"])
+                if replicas_result.returncode != 0:
+                    sys.stderr.write(
+                        (replicas_result.stderr or "") + (replicas_result.stdout or "")
+                    )
+                    raise SystemExit(replicas_result.returncode)
+                replicas = json.loads(replicas_result.stdout)
+                replica_names = [
+                    replica.get("metadata", {}).get("name", "")
+                    for replica in replicas.get("items", [])
+                    if replica.get("spec", {}).get("diskID") == disk_uuid
+                    and not replica.get("metadata", {}).get("deletionTimestamp")
+                ]
+
+            if (
+                scheduled_replicas
+                or scheduled_backing_images
+                or storage_scheduled > 0
+                or replica_names
+            ):
+                disable_patch = json.dumps(
+                    {"spec": {"disks": {disk_name: {"allowScheduling": False}}}}
+                )
+                disable_result = run_kubectl(
+                    [
+                        "patch",
+                        f"nodes.longhorn.io/{node_name}",
+                        "--type=merge",
+                        "-p",
+                        disable_patch,
+                    ]
+                )
+                if disable_result.returncode != 0:
+                    sys.stderr.write(
+                        (disable_result.stderr or "") + (disable_result.stdout or "")
+                    )
+                    raise SystemExit(disable_result.returncode)
+                print(
+                    f"result=fail reason=stale-auto-extra-disk-in-use node={node_name} "
+                    f"disk={disk_name} detection={reason} "
+                    f"scheduledReplicas={len(scheduled_replicas)} "
+                    f"scheduledBackingImages={len(scheduled_backing_images)} "
+                    f"storageScheduled={storage_scheduled} "
+                    f"replicaObjects={len(replica_names)}"
+                )
+                raise SystemExit(2)
+
+            disable_patch = json.dumps(
+                {"spec": {"disks": {disk_name: {"allowScheduling": False}}}}
+            )
+            disable_result = run_kubectl(
+                [
+                    "patch",
+                    f"nodes.longhorn.io/{node_name}",
+                    "--type=merge",
+                    "-p",
+                    disable_patch,
+                ]
+            )
+            if disable_result.returncode != 0:
+                sys.stderr.write(
+                    (disable_result.stderr or "") + (disable_result.stdout or "")
+                )
+                raise SystemExit(disable_result.returncode)
+
+            delete_patch = json.dumps({"spec": {"disks": {disk_name: None}}})
+            last_error = ""
+            for _ in range(12):
+                delete_result = run_kubectl(
+                    [
+                        "patch",
+                        f"nodes.longhorn.io/{node_name}",
+                        "--type=merge",
+                        "-p",
+                        delete_patch,
+                    ]
+                )
+                node, get_result = get_node()
+                if node is not None and disk_name not in (
+                    node.get("spec", {}).get("disks") or {}
+                ):
+                    print(
+                        f"Longhorn stale automatic extra disk cleanup: node={node_name} "
+                        f"disk={disk_name} action=remove-stale-auto-extra-disk "
+                        f"reason={reason}"
+                    )
+                    raise SystemExit(0)
+                last_error = (
+                    (delete_result.stderr or "")
+                    + (delete_result.stdout or "")
+                    + (get_result.stderr or "")
+                )
+                time.sleep(5)
+
+            sys.stderr.write(last_error)
+            print(
+                f"result=fail reason=stale-auto-extra-disk-removal-timeout "
+                f"node={node_name} disk={disk_name} detection={reason}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+            PY
+              reconcile_rc=$?
+              if [ "${reconcile_rc}" -ne 0 ]; then
+                exit "${reconcile_rc}"
+              fi
               exit 0
             fi
             if ! "$K" --kubeconfig "$C" -n longhorn-system get "nodes.longhorn.io/${node_name}" >/dev/null 2>&1; then
@@ -703,7 +871,9 @@
           args:
             executable: /bin/bash
           register: platform_longhorn_auto_extra_disk_config
-          changed_when: "'Adding automatic extra Longhorn disk' in platform_longhorn_auto_extra_disk_config.stdout"
+          changed_when: >-
+            'Adding automatic extra Longhorn disk' in platform_longhorn_auto_extra_disk_config.stdout or
+            'action=remove-stale-auto-extra-disk' in platform_longhorn_auto_extra_disk_config.stdout
           when: platform_longhorn_auto_extra_disk_enabled_effective | bool
 
         - name: Show Longhorn automatic extra disk decisions
@@ -725,11 +895,36 @@
             "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json |
               python3 -c '
             import json
+            import re
             import subprocess
             import sys
+            import time
 
             data = json.load(sys.stdin)
-            changed = False
+            kubectl = [
+                "/var/lib/rancher/rke2/bin/kubectl",
+                "--kubeconfig",
+                "/etc/rancher/rke2/rke2.yaml",
+                "-n",
+                "longhorn-system",
+            ]
+
+
+            def run_kubectl(args):
+                return subprocess.run(
+                    kubectl + args,
+                    text=True,
+                    capture_output=True,
+                )
+
+
+            def get_node(node_name):
+                result = run_kubectl(
+                    ["get", f"nodes.longhorn.io/{node_name}", "-o", "json"]
+                )
+                if result.returncode != 0:
+                    return None, result
+                return json.loads(result.stdout), result
 
             for item in data.get("items", []):
                 name = item.get("metadata", {}).get("name", "")
@@ -738,89 +933,131 @@
                 if len(spec_disks) <= 1:
                     continue
 
+                duplicate_names = set()
                 for disk_name, status in status_disks.items():
                     conditions = status.get("conditions") or []
-                    duplicate_filesystem = any(
-                        condition.get("type") == "Ready"
-                        and condition.get("status") == "False"
-                        and (
-                            condition.get("reason") == "DiskFilesystemChanged"
-                            or "same file system ID" in (condition.get("message") or "")
+                    for condition in conditions:
+                        message = condition.get("message") or ""
+                        duplicate_filesystem = (
+                            condition.get("type") == "Ready"
+                            and condition.get("status") == "False"
+                            and (
+                                condition.get("reason") == "DiskFilesystemChanged"
+                                or "same file system ID" in message
+                            )
                         )
-                        for condition in conditions
-                    )
-                    if not duplicate_filesystem:
-                        continue
+                        if not duplicate_filesystem:
+                            continue
+                        duplicate_names.add(disk_name)
+                        for group in re.findall(r"\[([^\]]+)\]", message):
+                            duplicate_names.update(
+                                candidate
+                                for candidate in group.split()
+                                if candidate in spec_disks
+                            )
 
-                    scheduled = status.get("scheduledReplica") or {}
-                    if scheduled:
+                candidates = sorted(
+                    disk_name
+                    for disk_name in duplicate_names
+                    if disk_name in spec_disks and disk_name != "default-disk"
+                )
+                if "default-disk" in duplicate_names:
+                    print(
+                        f"Longhorn duplicate filesystem disk retained: node={name} "
+                        "disk=default-disk reason=managed-default-disk"
+                    )
+
+                for disk_name in candidates:
+                    status = status_disks.get(disk_name) or {}
+                    scheduled_replicas = status.get("scheduledReplica") or {}
+                    scheduled_backing_images = status.get("scheduledBackingImage") or {}
+                    storage_scheduled = int(status.get("storageScheduled") or 0)
+                    if (
+                        scheduled_replicas
+                        or scheduled_backing_images
+                        or storage_scheduled > 0
+                    ):
                         print(
                             f"Longhorn duplicate filesystem disk retained: node={name} "
-                            f"disk={disk_name} reason=scheduled-replicas-present count={len(scheduled)}"
+                            f"disk={disk_name} reason=scheduled-data-present "
+                            f"replicas={len(scheduled_replicas)} "
+                            f"backingImages={len(scheduled_backing_images)} "
+                            f"storageScheduled={storage_scheduled}"
                         )
                         continue
 
-                    if disk_name not in spec_disks:
-                        continue
-
-                    patch = json.dumps({"spec": {"disks": {disk_name: None}}})
                     disk_path = spec_disks.get(disk_name, {}).get("path", "")
-                    print(
-                        f"Removing empty duplicate Longhorn disk from node={name}: "
-                        f"disk={disk_name} path={disk_path}"
+                    disable_patch = json.dumps(
+                        {"spec": {"disks": {disk_name: {"allowScheduling": False}}}}
                     )
-                    result = subprocess.run(
+                    disable_result = run_kubectl(
                         [
-                            "/var/lib/rancher/rke2/bin/kubectl",
-                            "--kubeconfig",
-                            "/etc/rancher/rke2/rke2.yaml",
-                            "-n",
-                            "longhorn-system",
                             "patch",
                             f"nodes.longhorn.io/{name}",
                             "--type=merge",
                             "-p",
-                            patch,
-                        ],
-                        text=True,
-                        capture_output=True,
+                            disable_patch,
+                        ]
                     )
-                    if result.returncode == 0:
-                        changed = True
-                        continue
+                    if disable_result.returncode != 0:
+                        sys.stderr.write(
+                            (disable_result.stderr or "") + (disable_result.stdout or "")
+                        )
+                        raise SystemExit(disable_result.returncode)
+                    print(
+                        f"Disabling empty duplicate Longhorn disk before removal: "
+                        f"node={name} disk={disk_name} path={disk_path}"
+                    )
 
-                    combined_error = (result.stderr or "") + (result.stdout or "")
-                    if (
-                        "Please disable the disk" in combined_error
-                        or "remove all replicas and backing images first" in combined_error
-                    ):
-                        disable_patch = json.dumps(
-                            {"spec": {"disks": {disk_name: {"allowScheduling": False}}}}
-                        )
-                        print(
-                            f"Longhorn refused duplicate disk removal; disabling scheduling instead: "
-                            f"node={name} disk={disk_name} path={disk_path}"
-                        )
-                        subprocess.run(
+                    delete_patch = json.dumps(
+                        {"spec": {"disks": {disk_name: None}}}
+                    )
+                    removed = False
+                    last_error = ""
+                    for _ in range(12):
+                        delete_result = run_kubectl(
                             [
-                                "/var/lib/rancher/rke2/bin/kubectl",
-                                "--kubeconfig",
-                                "/etc/rancher/rke2/rke2.yaml",
-                                "-n",
-                                "longhorn-system",
                                 "patch",
                                 f"nodes.longhorn.io/{name}",
                                 "--type=merge",
                                 "-p",
-                                disable_patch,
-                            ],
-                            check=True,
+                                delete_patch,
+                            ]
                         )
-                        changed = True
+                        refreshed, get_result = get_node(name)
+                        if refreshed is not None and disk_name not in (
+                            refreshed.get("spec", {}).get("disks") or {}
+                        ):
+                            removed = True
+                            break
+                        last_error = (
+                            (delete_result.stderr or "")
+                            + (delete_result.stdout or "")
+                            + (get_result.stderr or "")
+                        )
+                        time.sleep(5)
+
+                    if removed:
+                        print(
+                            f"Removing empty duplicate Longhorn disk from node={name}: "
+                            f"disk={disk_name} path={disk_path}"
+                        )
                         continue
 
-                    sys.stderr.write(combined_error)
-                    raise SystemExit(result.returncode)
+                    sys.stderr.write(last_error)
+                    print(
+                        f"result=fail reason=empty-duplicate-disk-removal-timeout "
+                        f"node={name} disk={disk_name} path={disk_path}",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1)
+
+                if duplicate_names and not candidates:
+                    print(
+                        f"Longhorn duplicate filesystem state requires manual review: "
+                        f"node={name} disks={sorted(duplicate_names)} "
+                        "reason=no-safe-non-default-removal-candidate"
+                    )
 
             sys.exit(0)
             '
@@ -829,7 +1066,7 @@
           register: platform_longhorn_duplicate_disk_repair
           changed_when: >-
             'Removing empty duplicate Longhorn disk' in platform_longhorn_duplicate_disk_repair.stdout or
-            'disabling scheduling instead' in platform_longhorn_duplicate_disk_repair.stdout
+            'Disabling empty duplicate Longhorn disk' in platform_longhorn_duplicate_disk_repair.stdout
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 

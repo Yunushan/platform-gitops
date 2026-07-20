@@ -71,6 +71,7 @@ woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
 woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpecker-service-path-nodes.yml"
 cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
+longhorn_bootstrap_playbook = root / "ansible/playbooks/bootstrap-longhorn.yml"
 dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
 firewalld_cleanup_script = root / "scripts/cleanup_firewalld_cni_interfaces.py"
 verify_rke2_playbook = root / "ansible/playbooks/verify-rke2.yml"
@@ -2502,13 +2503,34 @@ def main() -> None:
         "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART",
         "csi-attacher csi-provisioner csi-resizer csi-snapshotter",
         "len(spec_disks) <= 1",
-        "scheduled-replicas-present",
+        "scheduled-data-present",
+        'disk_name != "default-disk"',
+        "scheduledBackingImage",
+        "storageScheduled",
         "action=remove-empty-duplicate",
+        "action=fail reason=empty-duplicate-removal-timeout",
     ):
         require_text(
             longhorn_runtime_repair_text,
             needle,
             f"focused Longhorn runtime repair must cover {needle}",
+        )
+    longhorn_bootstrap_text = read(longhorn_bootstrap_playbook)
+    for needle in (
+        "same-filesystem-as-default-disk",
+        "same-filesystem-id-as-default-disk",
+        "action=remove-stale-auto-extra-disk",
+        "reason=stale-auto-extra-disk-in-use",
+        "reason=stale-auto-extra-disk-removal-timeout",
+        'disk_name != "default-disk"',
+        "scheduledBackingImage",
+        "storageScheduled",
+        "range(12)",
+    ):
+        require_text(
+            longhorn_bootstrap_text,
+            needle,
+            f"Longhorn bootstrap stale extra-disk reconciliation must cover {needle}",
         )
     woodpecker_repair_text = read(woodpecker_repair_playbook)
     for needle in (

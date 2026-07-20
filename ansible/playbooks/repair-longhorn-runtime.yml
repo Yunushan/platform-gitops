@@ -187,6 +187,7 @@
         "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json |
           python3 -c '
         import json
+        import re
         import subprocess
         import sys
         import time
@@ -211,30 +212,85 @@
                 capture_output=True,
             )
 
+
+        def kubectl_get_node(node):
+            result = subprocess.run(
+                [
+                    "/var/lib/rancher/rke2/bin/kubectl",
+                    "--kubeconfig",
+                    "/etc/rancher/rke2/rke2.yaml",
+                    "-n",
+                    "longhorn-system",
+                    "get",
+                    f"nodes.longhorn.io/{node}",
+                    "-o",
+                    "json",
+                ],
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                return None, result
+            return json.loads(result.stdout), result
+
+
         for item in data.get("items", []):
             node = item.get("metadata", {}).get("name", "")
             spec_disks = item.get("spec", {}).get("disks") or {}
             status_disks = item.get("status", {}).get("diskStatus") or {}
             if len(spec_disks) <= 1:
                 continue
+
+            duplicate_names = set()
             for disk_name, status in status_disks.items():
                 conditions = status.get("conditions") or []
-                duplicate = any(
-                    condition.get("type") == "Ready"
-                    and condition.get("status") == "False"
-                    and (
-                        condition.get("reason") == "DiskFilesystemChanged"
-                        or "same file system ID" in (condition.get("message") or "")
+                for condition in conditions:
+                    message = condition.get("message") or ""
+                    duplicate = (
+                        condition.get("type") == "Ready"
+                        and condition.get("status") == "False"
+                        and (
+                            condition.get("reason") == "DiskFilesystemChanged"
+                            or "same file system ID" in message
+                        )
                     )
-                    for condition in conditions
+                    if not duplicate:
+                        continue
+                    duplicate_names.add(disk_name)
+                    for group in re.findall(r"\[([^\]]+)\]", message):
+                        duplicate_names.update(
+                            candidate
+                            for candidate in group.split()
+                            if candidate in spec_disks
+                        )
+
+            candidates = sorted(
+                disk_name
+                for disk_name in duplicate_names
+                if disk_name in spec_disks and disk_name != "default-disk"
+            )
+            if "default-disk" in duplicate_names:
+                print(
+                    f"longhorn_duplicate_disk={node}/default-disk action=retain "
+                    "reason=managed-default-disk"
                 )
-                scheduled = status.get("scheduledReplica") or {}
-                if not duplicate or disk_name not in spec_disks:
-                    continue
-                if scheduled:
+
+            for disk_name in candidates:
+                status = status_disks.get(disk_name) or {}
+                scheduled_replicas = status.get("scheduledReplica") or {}
+                scheduled_backing_images = status.get("scheduledBackingImage") or {}
+                storage_scheduled = int(status.get("storageScheduled") or 0)
+                if (
+                    scheduled_replicas
+                    or scheduled_backing_images
+                    or storage_scheduled > 0
+                ):
                     print(
                         f"longhorn_duplicate_disk={node}/{disk_name} action=retain "
-                        f"reason=scheduled-replicas-present count={len(scheduled)}"
+                        f"reason=scheduled-data-present "
+                        f"replicas={len(scheduled_replicas)} "
+                        f"backingImages={len(scheduled_backing_images)} "
+                        f"storageScheduled={storage_scheduled}"
                     )
                     continue
 
@@ -255,17 +311,22 @@
 
                 removed = False
                 last_error = ""
-                for _ in range(6):
+                for _ in range(12):
                     result = kubectl_patch(
                         node,
                         {"spec": {"disks": {disk_name: None}}},
                     )
-                    if result.returncode == 0:
+                    refreshed, get_result = kubectl_get_node(node)
+                    if refreshed is not None and disk_name not in (
+                        refreshed.get("spec", {}).get("disks") or {}
+                    ):
                         removed = True
                         break
-                    last_error = (result.stderr or "") + (result.stdout or "")
-                    if "Please disable the disk" not in last_error:
-                        break
+                    last_error = (
+                        (result.stderr or "")
+                        + (result.stdout or "")
+                        + (get_result.stderr or "")
+                    )
                     time.sleep(5)
 
                 if removed:
@@ -276,10 +337,18 @@
                 else:
                     print(
                         f"longhorn_duplicate_disk={node}/{disk_name} path={path} "
-                        "action=retain-disabled reason=admission-removal-pending"
+                        "action=fail reason=empty-duplicate-removal-timeout"
                     )
                     if last_error:
                         sys.stderr.write(last_error)
+                    raise SystemExit(1)
+
+            if duplicate_names and not candidates:
+                print(
+                    f"longhorn_duplicate_disk={node} action=retain "
+                    f"reason=no-safe-non-default-removal-candidate "
+                    f"disks={sorted(duplicate_names)}"
+                )
         '
       args:
         executable: /bin/bash
