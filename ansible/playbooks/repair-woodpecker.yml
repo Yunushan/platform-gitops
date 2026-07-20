@@ -1617,10 +1617,27 @@
 
         candidates="$(mktemp)"
         scaled=false
+        argocd_reconcile_paused=false
+        argocd_skip_reconcile_previous=""
         desired="$("$K" --kubeconfig "$C" -n woodpecker get "statefulset/${STS}" \
           -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 1)"
         case "${desired}" in ""|*[!0-9]*) desired=1 ;; esac
 
+        resume_argocd_reconcile() {
+          if [ "${argocd_reconcile_paused}" != "true" ]; then
+            return
+          fi
+          if [ -n "${argocd_skip_reconcile_previous}" ]; then
+            "$K" --kubeconfig "$C" -n argocd annotate application/woodpecker \
+              argocd.argoproj.io/skip-reconcile="${argocd_skip_reconcile_previous}" \
+              --overwrite >/dev/null 2>&1 || true
+          else
+            "$K" --kubeconfig "$C" -n argocd annotate application/woodpecker \
+              argocd.argoproj.io/skip-reconcile- >/dev/null 2>&1 || true
+          fi
+          echo "woodpecker_argocd_reconcile action=resume previous=${argocd_skip_reconcile_previous:-absent}"
+          argocd_reconcile_paused=false
+        }
         restore_replicas() {
           if [ "${scaled}" = "true" ]; then
             "$K" --kubeconfig "$C" -n woodpecker scale "statefulset/${STS}" \
@@ -1629,6 +1646,7 @@
         }
         cleanup() {
           restore_replicas
+          resume_argocd_reconcile
           rm -f "${candidates}"
         }
         trap cleanup EXIT
@@ -1731,6 +1749,21 @@
         fi
 
         min_ordinal="$(cut -d'|' -f1 "${candidates}" | sort -n | head -n 1)"
+        if "$K" --kubeconfig "$C" -n argocd get application/woodpecker >/dev/null 2>&1; then
+          argocd_skip_reconcile_previous="$("$K" --kubeconfig "$C" -n argocd \
+            get application/woodpecker \
+            -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/skip-reconcile}' \
+            2>/dev/null || true)"
+          if ! "$K" --kubeconfig "$C" -n argocd annotate application/woodpecker \
+            argocd.argoproj.io/skip-reconcile=true --overwrite >/dev/null; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready action=retain detail=argocd-reconcile-pause-failed"
+            exit 1
+          fi
+          argocd_reconcile_paused=true
+          echo "woodpecker_argocd_reconcile action=pause-for-empty-replica-repair previous=${argocd_skip_reconcile_previous:-absent}"
+          sleep 3
+        fi
+
         if [ "${desired}" -gt "${min_ordinal}" ]; then
           echo "woodpecker_server_statefulset=${STS} action=scale-down-for-empty-replica-repair replicas=${min_ordinal} restore=${desired}"
           "$K" --kubeconfig "$C" -n woodpecker scale "statefulset/${STS}" --replicas="${min_ordinal}"
@@ -1739,9 +1772,23 @@
 
         delete_deadline=$(( $(date +%s) + 90 ))
         while [ "$(date +%s)" -lt "${delete_deadline}" ]; do
+          current_replicas="$("$K" --kubeconfig "$C" -n woodpecker get "statefulset/${STS}" \
+            -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+          case "${current_replicas}" in
+            ""|*[!0-9]*) ;;
+            *)
+              if [ "${current_replicas}" -gt "${min_ordinal}" ]; then
+                echo "woodpecker_server_statefulset=${STS} action=reassert-scale-down replicas=${min_ordinal} observed=${current_replicas}"
+                "$K" --kubeconfig "$C" -n woodpecker scale "statefulset/${STS}" \
+                  --replicas="${min_ordinal}" >/dev/null 2>&1 || true
+              fi
+              ;;
+          esac
           remaining="$("$K" --kubeconfig "$C" -n woodpecker get pod -o name 2>/dev/null |
             awk -F- -v minimum="${min_ordinal}" '/^pod\/woodpecker-server-[0-9]+$/ { if (($NF + 0) >= minimum) print }')"
           [ -z "${remaining}" ] && break
+          "$K" --kubeconfig "$C" -n woodpecker delete ${remaining} \
+            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
           sleep 3
         done
         if [ -n "${remaining:-}" ]; then
@@ -1779,6 +1826,7 @@
 
         restore_replicas
         scaled=false
+        resume_argocd_reconcile
         exit "${failed}"
       args:
         executable: /bin/bash
