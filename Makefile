@@ -227,12 +227,15 @@ platform-woodpecker-repair:
 		fi; \
 		service_path_repair=false; \
 		longhorn_runtime_repair=false; \
+		longhorn_bootstrap_ran=false; \
 		if grep -Eq 'reason=postgres-endpoint-path-unreachable|cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)|failed calling webhook.*(cnpg|mcluster)|mcluster\.cnpg\.io.*context deadline exceeded|Instance Status Extraction Error: HTTP communication issue|:8000/(readyz|healthz|startupz).*(i/o timeout|context deadline exceeded|Client\.Timeout exceeded)' "$$repair_log"; then \
 			service_path_repair=true; \
 		fi; \
-		if grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|VolumeBinding.*binding volumes: context deadline exceeded|reason=woodpecker-server-replica-volume-not-ready|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
+		if grep -Fq 'reason=woodpecker-server-replica-volume-not-ready' "$$repair_log" || \
+			grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|VolumeBinding.*binding volumes: context deadline exceeded|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
 			longhorn_runtime_repair=true; \
 		fi; \
+		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair"; \
 		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ]; then \
 			echo "Woodpecker repair failed without a recognized PostgreSQL service-path or Longhorn CSI classification; automatic fallback skipped." >&2; \
 			exit "$$repair_rc"; \
@@ -243,7 +246,15 @@ platform-woodpecker-repair:
 		fi; \
 		if [ "$$longhorn_runtime_repair" = "true" ]; then \
 			echo "Longhorn CSI registration, attach readiness, or duplicate-disk state failed; applying focused Longhorn runtime recovery."; \
+			set +e; \
 			PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART=true $(MAKE) platform-longhorn-runtime-repair; \
+			longhorn_runtime_rc="$$?"; \
+			set -e; \
+			if [ "$$longhorn_runtime_rc" -ne 0 ]; then \
+				echo "Focused Longhorn runtime recovery failed; escalating to guarded Longhorn disk bootstrap."; \
+				$(MAKE) platform-longhorn-bootstrap; \
+				longhorn_bootstrap_ran=true; \
+			fi; \
 		fi; \
 		echo "Retrying Woodpecker repair once after classified prerequisite recovery."; \
 		: > "$$repair_log"; \
@@ -253,6 +264,17 @@ platform-woodpecker-repair:
 		set -e; \
 		if [ "$$retry_rc" -eq 0 ]; then \
 			exit 0; \
+		fi; \
+		if [ "$$longhorn_runtime_repair" = "true" ] && \
+			grep -Eq 'reason=woodpecker-server-replica-volume-not-ready|AttachVolume\.Attach failed.*volume .*not ready for workloads|actualSize=0.*robustness=faulted' "$$repair_log"; then \
+			if [ "$$longhorn_bootstrap_ran" != "true" ]; then \
+				echo "A replacement zero-byte Woodpecker volume is still faulted after runtime recovery; applying guarded Longhorn disk bootstrap."; \
+				$(MAKE) platform-longhorn-bootstrap; \
+				longhorn_bootstrap_ran=true; \
+			fi; \
+			echo "Retrying Woodpecker repair after Longhorn disk bootstrap."; \
+			ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml; \
+			exit $$?; \
 		fi; \
 		if [ "$$service_path_repair" = "true" ] && grep -q 'reason=postgres-endpoint-path-unreachable' "$$repair_log"; then \
 			echo "Cross-node PostgreSQL endpoint access still fails after CNI/firewalld recovery; checking for the documented Cilium VXLAN remote-ICMP-success/TCP-timeout condition."; \

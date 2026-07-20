@@ -2439,8 +2439,14 @@ def main() -> None:
         "AttachVolume\\.Attach failed.*volume .*not ready for workloads",
         "reason=woodpecker-server-replica-volume-not-ready",
         "VolumeBinding.*binding volumes: context deadline exceeded",
+        "Woodpecker prerequisite classification:",
         "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART=true",
         "$(MAKE) platform-longhorn-runtime-repair",
+        'longhorn_runtime_rc="$$?"',
+        "Focused Longhorn runtime recovery failed; escalating to guarded Longhorn disk bootstrap.",
+        "A replacement zero-byte Woodpecker volume is still faulted after runtime recovery",
+        "$(MAKE) platform-longhorn-bootstrap",
+        "Retrying Woodpecker repair after Longhorn disk bootstrap.",
         "all-node CNI/firewalld recovery",
         "focused Longhorn runtime recovery",
         'repair_rc="$${PIPESTATUS[0]}"',
@@ -2468,8 +2474,13 @@ def main() -> None:
     argocd_repair_index = woodpecker_repair_body.find(argocd_repair)
     if not (0 <= dns_repair_index < argocd_repair_index < strict_repair_index):
         fail("platform-woodpecker-repair must repair shared service paths and Argo CD before Woodpecker")
-    if "@$(MAKE) platform-longhorn-bootstrap" in woodpecker_repair_body:
-        fail("platform-woodpecker-repair must not gate focused CI repair on cluster-wide Longhorn capacity")
+    longhorn_runtime_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-runtime-repair")
+    longhorn_bootstrap_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-bootstrap")
+    if not (strict_repair_index < longhorn_runtime_index < longhorn_bootstrap_index < first_consumer_refresh):
+        fail(
+            "platform-woodpecker-repair must attempt focused Longhorn runtime recovery "
+            "before guarded disk bootstrap"
+        )
     if woodpecker_repair_body.count(consumer_refresh) != 1:
         fail("platform-woodpecker-repair must refresh service-path consumers once after strict repair")
     if not (0 <= strict_repair_index < first_consumer_refresh):
