@@ -152,12 +152,16 @@ The first-deploy renderer defaults Woodpecker to PostgreSQL HA against the
 shared `platform-postgres` CloudNativePG cluster. `platform-app-secrets`
 generates `woodpecker/woodpecker-database` and the matching
 `platform-databases/woodpecker-database` role password secret unless you provide
-`WOODPECKER_DATABASE_PASSWORD` or a full `WOODPECKER_DATABASE_DATASOURCE`.
+`WOODPECKER_DATABASE_PASSWORD` or a full `WOODPECKER_DATABASE_DATASOURCE`. It
+also generates and preserves `woodpecker/woodpecker-agent-secret`; both server
+and agents consume that one token, while chart-side random generation is
+disabled for deterministic Argo CD rendering.
 Render with:
 
 ```bash
 WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
+WOODPECKER_AGENT_SECRET_NAME=woodpecker-agent-secret \
 WOODPECKER_DATABASE_HOST=platform-postgres-rw.platform-databases.svc.cluster.local:5432 \
 WOODPECKER_DATABASE_NAME=woodpecker \
 WOODPECKER_DATABASE_USER=woodpecker \
@@ -167,6 +171,7 @@ make platform-app-secrets
 
 WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
+WOODPECKER_AGENT_SECRET_NAME=woodpecker-agent-secret \
 WOODPECKER_IMAGE_TAG=v3.16.0 \
 WOODPECKER_SERVER_REPLICAS=3 \
 WOODPECKER_AGENT_REPLICAS=3 \

@@ -1024,8 +1024,10 @@ def main() -> None:
         'WOODPECKER_GRPC_ADDR: ":9000"',
         'WOODPECKER_LOG_LEVEL: "debug"',
         "probes:\n    liveness:\n      timeoutSeconds: 10\n      periodSeconds: 10\n      successThreshold: 1\n      failureThreshold: 30",
+        "- woodpecker-agent-secret",
         "- woodpecker-forgejo-oauth",
-        "createAgentSecret: true",
+        "createAgentSecret: false",
+        "mapAgentSecret: false",
         "ingressClassName: traefik",
         "traefik.ingress.kubernetes.io/router.entrypoints: websecure",
         "traefik.ingress.kubernetes.io/router.tls: \"true\"",
@@ -1042,6 +1044,8 @@ def main() -> None:
         "  resources:\n    requests:\n      cpu: 250m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
     ):
         require_text(premium_woodpecker_text, needle, f"premium Woodpecker profile must include {needle.splitlines()[0]}")
+    if premium_woodpecker_text.count("- woodpecker-agent-secret") != 2:
+        fail("premium Woodpecker profile must map the same managed agent secret into server and agent")
     require_woodpecker_role_image_pin(
         premium_woodpecker_text,
         "server",
@@ -2424,6 +2428,9 @@ def main() -> None:
         "reason=postgres-endpoint-path-unreachable",
         "cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)",
         "driver name driver\\.longhorn\\.io not found",
+        "AttachVolume\\.Attach failed.*volume .*not ready for workloads",
+        "reason=woodpecker-server-replica-volume-not-ready",
+        "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART=true",
         "$(MAKE) platform-longhorn-runtime-repair",
         "all-node CNI/firewalld recovery",
         "focused Longhorn runtime recovery",
@@ -2472,6 +2479,8 @@ def main() -> None:
         "driver.longhorn.io",
         "daemonset/longhorn-csi-plugin",
         "longhorn-csi-registration-timeout",
+        "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART",
+        "csi-attacher csi-provisioner csi-resizer csi-snapshotter",
         "len(spec_disks) <= 1",
         "scheduled-replicas-present",
         "action=remove-empty-duplicate",
@@ -2502,6 +2511,14 @@ def main() -> None:
         "reason=pvc-retained",
         'delete "pod/${current_primary}"',
         "pvc_contract_safe",
+        "PLATFORM_WOODPECKER_REPAIR_RESET_FAILED_SERVER_REPLICA_PVCS",
+        "woodpecker-server-[1-9][0-9]*",
+        "delete-zero-byte-failed-server-replica-pvc",
+        "recycled-zero-byte-failed-server-replica",
+        "container-has-started",
+        "pvc-uid-changed",
+        "woodpecker-agent-secret",
+        "woodpecker-default-agent-secret",
     ):
         require_text(
             woodpecker_repair_text,

@@ -34,9 +34,10 @@ server:
       successThreshold: 1
       failureThreshold: 3
   extraSecretNamesForEnvFrom:
+    - woodpecker-agent-secret
     - woodpecker-forgejo-oauth
     - woodpecker-database
-  createAgentSecret: true
+  createAgentSecret: false
   ingress:
     enabled: true
     ingressClassName: traefik
@@ -65,6 +66,9 @@ server:
 agent:
   enabled: true
   replicaCount: 3
+  mapAgentSecret: false
+  extraSecretNamesForEnvFrom:
+    - woodpecker-agent-secret
   image:
     registry: docker.io
     repository: woodpeckerci/woodpecker-agent

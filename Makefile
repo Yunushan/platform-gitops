@@ -230,7 +230,7 @@ platform-woodpecker-repair:
 		if grep -Eq 'reason=postgres-endpoint-path-unreachable|cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)|failed calling webhook.*(cnpg|mcluster)|mcluster\.cnpg\.io.*context deadline exceeded|Instance Status Extraction Error: HTTP communication issue|:8000/(readyz|healthz|startupz).*(i/o timeout|context deadline exceeded|Client\.Timeout exceeded)' "$$repair_log"; then \
 			service_path_repair=true; \
 		fi; \
-		if grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
+		if grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|reason=woodpecker-server-replica-volume-not-ready|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
 			longhorn_runtime_repair=true; \
 		fi; \
 		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ]; then \
@@ -242,8 +242,8 @@ platform-woodpecker-repair:
 			PLATFORM_DNS_SERVICE_PATH_REPAIR=true PLATFORM_DNS_FORCE_SERVICE_PATH_REPAIR=true $(MAKE) platform-dns-repair; \
 		fi; \
 		if [ "$$longhorn_runtime_repair" = "true" ]; then \
-			echo "Longhorn CSI registration or duplicate-disk state failed; applying focused Longhorn runtime recovery."; \
-			$(MAKE) platform-longhorn-runtime-repair; \
+			echo "Longhorn CSI registration, attach readiness, or duplicate-disk state failed; applying focused Longhorn runtime recovery."; \
+			PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART=true $(MAKE) platform-longhorn-runtime-repair; \
 		fi; \
 		echo "Retrying Woodpecker repair once after classified prerequisite recovery."; \
 		: > "$$repair_log"; \

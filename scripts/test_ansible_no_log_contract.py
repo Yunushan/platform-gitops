@@ -33,6 +33,7 @@ ALLOWED_NO_LOG_TASKS = {
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve CloudNativePG object storage credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Loki object storage credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Velero cloud credentials secret"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Woodpecker shared agent secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Woodpecker database datasource secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Configure Forgejo OAuth application for Woodpecker"),
     ("ansible/playbooks/repair-woodpecker.yml", "Reconcile and verify Woodpecker PostgreSQL role credentials"),

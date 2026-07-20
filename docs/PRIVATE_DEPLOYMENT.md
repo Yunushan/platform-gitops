@@ -206,11 +206,15 @@ For production Woodpecker HA, use the shared `platform-postgres` CloudNativePG
 cluster by default. `platform-app-secrets` generates the datasource and the
 matching `platform-databases/woodpecker-database` role password secret unless
 you provide `WOODPECKER_DATABASE_PASSWORD` or a full
-`WOODPECKER_DATABASE_DATASOURCE`:
+`WOODPECKER_DATABASE_DATASOURCE`. It also generates the stable
+`woodpecker/woodpecker-agent-secret` used by both servers and agents. Set
+`WOODPECKER_AGENT_SECRET_NAME` consistently in the renderer and secret
+automation when overriding its name:
 
 ```bash
 WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
+WOODPECKER_AGENT_SECRET_NAME=woodpecker-agent-secret \
 WOODPECKER_DATABASE_HOST=platform-postgres-rw.platform-databases.svc.cluster.local:5432 \
 WOODPECKER_DATABASE_NAME=woodpecker \
 WOODPECKER_DATABASE_USER=woodpecker \

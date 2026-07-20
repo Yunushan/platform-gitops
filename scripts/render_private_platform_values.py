@@ -730,6 +730,7 @@ def woodpecker_bootstrap_values(
     storage_class: str,
     admin_users: str,
     oauth_secret_name: str,
+    agent_secret_name: str,
     image_tag: str,
     server_replicas: str,
     agent_replicas: str,
@@ -755,6 +756,8 @@ def woodpecker_bootstrap_values(
 # {database_comment}
 # For Forgejo login, create the OAuth app in Forgejo and store its client/secret in
 # the {oauth_secret_name} Kubernetes secret before syncing this app.
+# The shared server/agent token is preserved in secret/{agent_secret_name};
+# chart-side random generation is disabled so Argo CD renders are deterministic.
 # When WOODPECKER_DATABASE_MODE=postgres, run make platform-app-secrets so
 # secret/{database_secret_name} exists before syncing.
 server:
@@ -787,9 +790,10 @@ server:
       successThreshold: 1
       failureThreshold: 3
   extraSecretNamesForEnvFrom:
+    - {yaml_string(agent_secret_name)}
     - {yaml_string(oauth_secret_name)}
 {database_secret.rstrip()}
-  createAgentSecret: true
+  createAgentSecret: false
   ingress:
     enabled: true
     ingressClassName: traefik
@@ -818,6 +822,9 @@ server:
 agent:
   enabled: true
   replicaCount: {agent_replicas}
+  mapAgentSecret: false
+  extraSecretNamesForEnvFrom:
+    - {yaml_string(agent_secret_name)}
   image:
     registry: docker.io
     repository: woodpeckerci/woodpecker-agent
@@ -870,6 +877,7 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     storage_class = os.environ.get("WOODPECKER_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
     admin_users = os.environ.get("WOODPECKER_ADMIN_USERS", "admin").strip() or "admin"
     oauth_secret_name = os.environ.get("WOODPECKER_FORGEJO_OAUTH_SECRET_NAME", "woodpecker-forgejo-oauth").strip()
+    agent_secret_name = os.environ.get("WOODPECKER_AGENT_SECRET_NAME", "woodpecker-agent-secret").strip() or "woodpecker-agent-secret"
     image_tag = normalize_woodpecker_image_tag(os.environ.get("WOODPECKER_IMAGE_TAG", "v3.16.0").strip() or "v3.16.0")
     database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "postgres").strip().lower() or "postgres"
     database_secret_name = os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip() or "woodpecker-database"
@@ -898,6 +906,7 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
         storage_class,
         admin_users,
         oauth_secret_name,
+        agent_secret_name,
         image_tag,
         server_replicas,
         agent_replicas,

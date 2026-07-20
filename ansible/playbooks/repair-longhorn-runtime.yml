@@ -7,7 +7,9 @@
   vars:
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_longhorn_runtime_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_REPAIR_TIMEOUT') }}"
+    platform_longhorn_runtime_force_restart_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART') }}"
     platform_longhorn_runtime_repair_timeout_effective: "{{ platform_longhorn_runtime_repair_timeout | default(platform_longhorn_runtime_repair_timeout_from_env, true) | default(300, true) | int }}"
+    platform_longhorn_runtime_force_restart_effective: "{{ platform_longhorn_runtime_force_restart | default(platform_longhorn_runtime_force_restart_from_env, true) | default(false, true) | bool }}"
   tasks:
     - name: Repair unhealthy Longhorn manager and CSI registration
       ansible.builtin.shell: |
@@ -16,6 +18,7 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         TIMEOUT={{ platform_longhorn_runtime_repair_timeout_effective }}
+        FORCE_RESTART="{{ 'true' if platform_longhorn_runtime_force_restart_effective else 'false' }}"
 
         diagnose() {
           echo "===== Longhorn runtime diagnostics =====" >&2
@@ -82,7 +85,7 @@
         manager_desired="${manager_desired:-0}"
         manager_ready="${manager_ready:-0}"
         manager_restarted=false
-        if [ "${manager_desired}" -eq 0 ] || [ "${manager_ready}" -lt "${manager_desired}" ]; then
+        if [ "${FORCE_RESTART}" = "true" ] || [ "${manager_desired}" -eq 0 ] || [ "${manager_ready}" -lt "${manager_desired}" ]; then
           echo "action=rollout-restart-longhorn-manager ready=${manager_ready}/${manager_desired}"
           "$K" --kubeconfig "$C" -n longhorn-system rollout restart daemonset/longhorn-manager
           manager_restarted=true
@@ -93,7 +96,7 @@
           read -r driver_desired driver_ready <<<"$(deployment_counts longhorn-driver-deployer)"
           driver_desired="${driver_desired:-0}"
           driver_ready="${driver_ready:-0}"
-          if [ "${driver_desired}" -eq 0 ] || [ "${driver_ready}" -lt "${driver_desired}" ] ||
+          if [ "${FORCE_RESTART}" = "true" ] || [ "${driver_desired}" -eq 0 ] || [ "${driver_ready}" -lt "${driver_desired}" ] ||
             ! "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-csi-plugin >/dev/null 2>&1; then
             echo "action=rollout-restart-longhorn-driver-deployer ready=${driver_ready}/${driver_desired}"
             "$K" --kubeconfig "$C" -n longhorn-system rollout restart deployment/longhorn-driver-deployer
@@ -126,7 +129,7 @@
         csi_desired="${csi_desired:-0}"
         csi_ready="${csi_ready:-0}"
         missing_nodes="$(missing_csi_nodes | xargs)"
-        if [ "${csi_desired}" -eq 0 ] || [ "${csi_ready}" -lt "${csi_desired}" ] || [ -n "${missing_nodes}" ]; then
+        if [ "${FORCE_RESTART}" = "true" ] || [ "${csi_desired}" -eq 0 ] || [ "${csi_ready}" -lt "${csi_desired}" ] || [ -n "${missing_nodes}" ]; then
           echo "action=rollout-restart-longhorn-csi-plugin ready=${csi_ready}/${csi_desired} missing_registrations=${missing_nodes:-none}"
           "$K" --kubeconfig "$C" -n longhorn-system rollout restart daemonset/longhorn-csi-plugin
           if ! "$K" --kubeconfig "$C" -n longhorn-system rollout status daemonset/longhorn-csi-plugin --timeout="${TIMEOUT}s"; then
@@ -134,6 +137,22 @@
             diagnose
             exit 1
           fi
+        fi
+
+        if [ "${FORCE_RESTART}" = "true" ]; then
+          for controller in csi-attacher csi-provisioner csi-resizer csi-snapshotter; do
+            if ! "$K" --kubeconfig "$C" -n longhorn-system get "deployment/${controller}" >/dev/null 2>&1; then
+              continue
+            fi
+            echo "action=rollout-restart-longhorn-${controller}"
+            "$K" --kubeconfig "$C" -n longhorn-system rollout restart "deployment/${controller}"
+            if ! "$K" --kubeconfig "$C" -n longhorn-system rollout status \
+              "deployment/${controller}" --timeout="${TIMEOUT}s"; then
+              echo "result=fail reason=longhorn-${controller}-rollout-timeout" >&2
+              diagnose
+              exit 1
+            fi
+          done
         fi
 
         if ! wait_for_csi_registration; then

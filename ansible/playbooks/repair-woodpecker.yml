@@ -10,6 +10,7 @@
     platform_woodpecker_repair_expected_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_EXPECTED_IMAGE_TAG') }}"
     platform_woodpecker_repair_auto_prerequisites_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_PREREQUISITES') }}"
     platform_woodpecker_repair_reset_failed_replica_pvcs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_FAILED_REPLICA_PVCS') }}"
+    platform_woodpecker_repair_reset_failed_server_replica_pvcs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_FAILED_SERVER_REPLICA_PVCS') }}"
     platform_woodpecker_repair_reset_unrecoverable_postgres_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RESET_UNRECOVERABLE_POSTGRES') }}"
     platform_woodpecker_repair_recycle_stale_postgres_instance_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_RECYCLE_STALE_POSTGRES_INSTANCE') }}"
     platform_woodpecker_repair_stale_postgres_instance_min_age_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_STALE_POSTGRES_INSTANCE_MIN_AGE') }}"
@@ -17,11 +18,13 @@
     platform_woodpecker_repair_auto_service_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH') }}"
     platform_woodpecker_repair_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
     platform_woodpecker_repair_service_path_convergence_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_CONVERGENCE_TIMEOUT') }}"
+    platform_woodpecker_agent_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_AGENT_SECRET_NAME') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_repair_timeout_effective: "{{ platform_woodpecker_repair_timeout | default(platform_woodpecker_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_woodpecker_repair_expected_image_tag_effective: "{{ platform_woodpecker_repair_expected_image_tag | default(platform_woodpecker_repair_expected_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
     platform_woodpecker_repair_auto_prerequisites_effective: "{{ platform_woodpecker_repair_auto_prerequisites | default(platform_woodpecker_repair_auto_prerequisites_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_reset_failed_replica_pvcs_effective: "{{ platform_woodpecker_repair_reset_failed_replica_pvcs | default(platform_woodpecker_repair_reset_failed_replica_pvcs_from_env, true) | default(true, true) | bool }}"
+    platform_woodpecker_repair_reset_failed_server_replica_pvcs_effective: "{{ platform_woodpecker_repair_reset_failed_server_replica_pvcs | default(platform_woodpecker_repair_reset_failed_server_replica_pvcs_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_reset_unrecoverable_postgres_effective: "{{ platform_woodpecker_repair_reset_unrecoverable_postgres | default(platform_woodpecker_repair_reset_unrecoverable_postgres_from_env, true) | default(false, true) | bool }}"
     platform_woodpecker_repair_recycle_stale_postgres_instance_effective: "{{ platform_woodpecker_repair_recycle_stale_postgres_instance | default(platform_woodpecker_repair_recycle_stale_postgres_instance_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_stale_postgres_instance_min_age_effective: "{{ platform_woodpecker_repair_stale_postgres_instance_min_age | default(platform_woodpecker_repair_stale_postgres_instance_min_age_from_env, true) | default(600, true) | int }}"
@@ -29,6 +32,7 @@
     platform_woodpecker_repair_auto_service_path_effective: "{{ platform_woodpecker_repair_auto_service_path | default(platform_woodpecker_repair_auto_service_path_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_service_path_rollout_timeout_effective: "{{ platform_woodpecker_repair_service_path_rollout_timeout | default(platform_woodpecker_repair_service_path_rollout_timeout_from_env, true) | default(120, true) | int }}"
     platform_woodpecker_repair_service_path_convergence_timeout_effective: "{{ platform_woodpecker_repair_service_path_convergence_timeout | default(platform_woodpecker_repair_service_path_convergence_timeout_from_env, true) | default(180, true) | int }}"
+    platform_woodpecker_agent_secret_name_effective: "{{ platform_woodpecker_agent_secret_name | default(platform_woodpecker_agent_secret_name_from_env, true) | default('woodpecker-agent-secret', true) }}"
   tasks:
     - name: Show Woodpecker state before repair
       ansible.builtin.shell: |
@@ -1592,6 +1596,198 @@
       when: platform_woodpecker_postgres_credentials_check.rc | int != 0
       run_once: true
 
+    - name: Recycle only zero-byte failed Woodpecker server replica PVCs
+      ansible.builtin.shell: |
+        set -u
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
+        ALLOW_RESET="{{ 'true' if platform_woodpecker_repair_reset_failed_server_replica_pvcs_effective else 'false' }}"
+        STS=woodpecker-server
+
+        if ! "$K" --kubeconfig "$C" -n woodpecker get "statefulset/${STS}" >/dev/null 2>&1; then
+          echo "woodpecker_server_replica_pvc_repair=skipped reason=statefulset-absent"
+          exit 0
+        fi
+        if ! "$K" --kubeconfig "$C" get crd/volumes.longhorn.io >/dev/null 2>&1; then
+          echo "woodpecker_server_replica_pvc_repair=skipped reason=longhorn-volume-crd-absent"
+          exit 0
+        fi
+
+        candidates="$(mktemp)"
+        scaled=false
+        desired="$("$K" --kubeconfig "$C" -n woodpecker get "statefulset/${STS}" \
+          -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 1)"
+        case "${desired}" in ""|*[!0-9]*) desired=1 ;; esac
+
+        restore_replicas() {
+          if [ "${scaled}" = "true" ]; then
+            "$K" --kubeconfig "$C" -n woodpecker scale "statefulset/${STS}" \
+              --replicas="${desired}" >/dev/null 2>&1 || true
+          fi
+        }
+        cleanup() {
+          restore_replicas
+          rm -f "${candidates}"
+        }
+        trap cleanup EXIT
+
+        for pod_object in $("$K" --kubeconfig "$C" -n woodpecker get pod -o name 2>/dev/null |
+          grep -E '^pod/woodpecker-server-[1-9][0-9]*$' || true); do
+          pod="${pod_object#pod/}"
+          ordinal="${pod##*-}"
+          phase="$("$K" --kubeconfig "$C" -n woodpecker get "${pod_object}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          ready="$("$K" --kubeconfig "$C" -n woodpecker get "${pod_object}" \
+            -o jsonpath='{range .status.containerStatuses[*]}{.ready}{"\n"}{end}' 2>/dev/null |
+            grep -c '^true$' || true)"
+          restarts="$("$K" --kubeconfig "$C" -n woodpecker get "${pod_object}" \
+            -o jsonpath='{range .status.containerStatuses[*]}{.restartCount}{"\n"}{end}' 2>/dev/null |
+            awk '{ total += $1 } END { print total + 0 }')"
+          if [ "${phase}" = "Running" ] && [ "${ready}" -gt 0 ]; then
+            continue
+          fi
+
+          events="$("$K" --kubeconfig "$C" -n woodpecker describe "${pod_object}" 2>/dev/null |
+            sed -n '/Events:/,$p' || true)"
+          if ! printf '%s\n' "${events}" |
+            grep -Eq 'AttachVolume\.Attach failed.*volume .*not ready for workloads|AttachVolume\.Attach failed.*volume .*is not ready for workloads'; then
+            continue
+          fi
+
+          pvc="$("$K" --kubeconfig "$C" -n woodpecker get "${pod_object}" \
+            -o jsonpath='{.spec.volumes[?(@.name=="data")].persistentVolumeClaim.claimName}' 2>/dev/null || true)"
+          expected_pvc="data-woodpecker-server-${ordinal}"
+          if [ "${pvc}" != "${expected_pvc}" ]; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=unexpected-pvc pvc=${pvc:-absent}"
+            continue
+          fi
+
+          pvc_uid="$("$K" --kubeconfig "$C" -n woodpecker get "pvc/${pvc}" \
+            -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+          pvc_phase="$("$K" --kubeconfig "$C" -n woodpecker get "pvc/${pvc}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          pvc_deleting="$("$K" --kubeconfig "$C" -n woodpecker get "pvc/${pvc}" \
+            -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)"
+          pv="$("$K" --kubeconfig "$C" -n woodpecker get "pvc/${pvc}" \
+            -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+          driver="$("$K" --kubeconfig "$C" get "pv/${pv}" \
+            -o jsonpath='{.spec.csi.driver}' 2>/dev/null || true)"
+          handle="$("$K" --kubeconfig "$C" get "pv/${pv}" \
+            -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+          actual_size="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+            -o jsonpath='{.status.actualSize}' 2>/dev/null || true)"
+          volume_state="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+            -o jsonpath='{.status.state}' 2>/dev/null || true)"
+          volume_robustness="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+            -o jsonpath='{.status.robustness}' 2>/dev/null || true)"
+          volume_pvc="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+            -o jsonpath='{.status.kubernetesStatus.pvcName}' 2>/dev/null || true)"
+          volume_namespace="$("$K" --kubeconfig "$C" -n longhorn-system get "volumes.longhorn.io/${handle}" \
+            -o jsonpath='{.status.kubernetesStatus.namespace}' 2>/dev/null || true)"
+
+          echo "woodpecker_server_replica_volume pod=${pod} ordinal=${ordinal} pvc=${pvc} uid=${pvc_uid:-absent} phase=${pvc_phase:-absent} pv=${pv:-absent} longhornVolume=${handle:-absent} actualSize=${actual_size:-unknown} state=${volume_state:-unknown} robustness=${volume_robustness:-unknown} restarts=${restarts}"
+
+          if [ "${ALLOW_RESET}" != "true" ]; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=automatic-reset-disabled"
+            continue
+          fi
+          if [ -z "${pvc_uid}" ] || [ "${pvc_phase}" != "Bound" ] || [ -n "${pvc_deleting}" ] ||
+            [ "${driver}" != "driver.longhorn.io" ] || [ -z "${handle}" ]; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=pvc-contract-not-safe"
+            continue
+          fi
+          if [ "${actual_size}" != "0" ]; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=replica-volume-has-data actualSize=${actual_size:-unknown}"
+            continue
+          fi
+          case "${volume_state}" in
+            ""|detached|faulted|unknown) ;;
+            *)
+              echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=replica-volume-not-detached state=${volume_state}"
+              continue
+              ;;
+          esac
+          if [ "${restarts}" -ne 0 ]; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=container-has-started restarts=${restarts}"
+            continue
+          fi
+          if [ -n "${volume_pvc}" ] && [ "${volume_pvc}" != "${pvc}" ]; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=longhorn-pvc-mismatch"
+            continue
+          fi
+          if [ -n "${volume_namespace}" ] && [ "${volume_namespace}" != "woodpecker" ]; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=longhorn-namespace-mismatch"
+            continue
+          fi
+          printf '%s|%s|%s|%s|%s|%s\n' \
+            "${ordinal}" "${pod}" "${pvc}" "${pvc_uid}" "${pv}" "${handle}" >> "${candidates}"
+        done
+
+        if [ ! -s "${candidates}" ]; then
+          echo "woodpecker_server_replica_pvc_repair=unchanged"
+          exit 0
+        fi
+
+        min_ordinal="$(cut -d'|' -f1 "${candidates}" | sort -n | head -n 1)"
+        if [ "${desired}" -gt "${min_ordinal}" ]; then
+          echo "woodpecker_server_statefulset=${STS} action=scale-down-for-empty-replica-repair replicas=${min_ordinal} restore=${desired}"
+          "$K" --kubeconfig "$C" -n woodpecker scale "statefulset/${STS}" --replicas="${min_ordinal}"
+          scaled=true
+        fi
+
+        delete_deadline=$(( $(date +%s) + 90 ))
+        while [ "$(date +%s)" -lt "${delete_deadline}" ]; do
+          remaining="$("$K" --kubeconfig "$C" -n woodpecker get pod -o name 2>/dev/null |
+            awk -F- -v minimum="${min_ordinal}" '/^pod\/woodpecker-server-[0-9]+$/ { if (($NF + 0) >= minimum) print }')"
+          [ -z "${remaining}" ] && break
+          sleep 3
+        done
+        if [ -n "${remaining:-}" ]; then
+          echo "result=fail reason=woodpecker-server-replica-volume-not-ready action=retain detail=replica-pod-scale-down-timeout pods=$(printf '%s' "${remaining}" | xargs)"
+          exit 1
+        fi
+
+        failed=0
+        while IFS='|' read -r ordinal pod pvc expected_uid pv handle; do
+          current_uid="$("$K" --kubeconfig "$C" -n woodpecker get "pvc/${pvc}" \
+            -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+          if [ "${current_uid}" != "${expected_uid}" ]; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=pvc-uid-changed"
+            failed=1
+            continue
+          fi
+
+          echo "woodpecker_server_replica_pvc=${pvc} action=delete-zero-byte-failed-server-replica-pvc uid=${expected_uid} pv=${pv} longhornVolume=${handle}"
+          "$K" --kubeconfig "$C" -n woodpecker delete "pvc/${pvc}" --wait=false
+
+          pvc_deadline=$(( $(date +%s) + 90 ))
+          while [ "$(date +%s)" -lt "${pvc_deadline}" ]; do
+            if ! "$K" --kubeconfig "$C" -n woodpecker get "pvc/${pvc}" >/dev/null 2>&1; then
+              break
+            fi
+            sleep 3
+          done
+          if "$K" --kubeconfig "$C" -n woodpecker get "pvc/${pvc}" >/dev/null 2>&1; then
+            echo "result=fail reason=woodpecker-server-replica-volume-not-ready pod=${pod} action=retain detail=pvc-delete-timeout"
+            failed=1
+          else
+            echo "woodpecker_server_replica_pvc=${pvc} action=recycled-zero-byte-failed-server-replica"
+          fi
+        done < "${candidates}"
+
+        restore_replicas
+        scaled=false
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_server_replica_volume_repair
+      changed_when: "'action=recycled-zero-byte-failed-server-replica' in platform_woodpecker_server_replica_volume_repair.stdout"
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Refresh and sync Woodpecker Argo CD application
       ansible.builtin.shell: |
         set -o pipefail
@@ -1653,6 +1849,53 @@
         executable: /bin/bash
       register: platform_woodpecker_argocd_sync_wait
       changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Remove stale chart-generated Woodpecker agent secret after migration
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        MANAGED_SECRET="{{ platform_woodpecker_agent_secret_name_effective }}"
+        DEFAULT_SECRET=woodpecker-default-agent-secret
+
+        if ! "$K" --kubeconfig "$C" -n woodpecker get "secret/${MANAGED_SECRET}" \
+          -o 'go-template={{ "{{" }} index .data "WOODPECKER_AGENT_SECRET" {{ "}}" }}' 2>/dev/null | grep -q .; then
+          echo "woodpecker_default_agent_secret_cleanup=skipped reason=managed-secret-missing"
+          exit 0
+        fi
+
+        managed_refs=0
+        default_refs=0
+        workloads=0
+        for workload in statefulset/woodpecker-server deployment/woodpecker-server statefulset/woodpecker-agent deployment/woodpecker-agent; do
+          if ! "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
+            continue
+          fi
+          workloads=$((workloads + 1))
+          refs="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
+            -o jsonpath='{range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{"\n"}{end}' 2>/dev/null || true)"
+          printf '%s\n' "${refs}" | grep -Fx "${MANAGED_SECRET}" >/dev/null && managed_refs=$((managed_refs + 1))
+          printf '%s\n' "${refs}" | grep -Fx "${DEFAULT_SECRET}" >/dev/null && default_refs=$((default_refs + 1))
+        done
+
+        if [ "${workloads}" -lt 2 ] || [ "${managed_refs}" -ne "${workloads}" ] || [ "${default_refs}" -ne 0 ]; then
+          echo "woodpecker_default_agent_secret_cleanup=skipped reason=workload-migration-incomplete workloads=${workloads} managed_refs=${managed_refs} default_refs=${default_refs}"
+          exit 0
+        fi
+
+        if "$K" --kubeconfig "$C" -n woodpecker get "secret/${DEFAULT_SECRET}" >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n woodpecker delete "secret/${DEFAULT_SECRET}" --wait=false
+          echo "woodpecker_default_agent_secret_cleanup=deleted"
+        else
+          echo "woodpecker_default_agent_secret_cleanup=absent"
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_default_agent_secret_cleanup
+      changed_when: "'cleanup=deleted' in platform_woodpecker_default_agent_secret_cleanup.stdout"
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
@@ -1835,6 +2078,7 @@
 
         echo "===== required secrets state ====="
         for item in \
+          woodpecker/{{ platform_woodpecker_agent_secret_name_effective }} \
           woodpecker/woodpecker-forgejo-oauth \
           woodpecker/woodpecker-database \
           platform-databases/woodpecker-database
@@ -1876,6 +2120,7 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: >
+        ((platform_woodpecker_server_replica_volume_repair | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_argocd_sync_wait | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_rollout_wait | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_runtime_verify | default({})).rc | default(0) | int != 0)
@@ -1885,6 +2130,13 @@
         msg: |
           Woodpecker did not become reconciled, rolled out, and image-aligned
           within {{ platform_woodpecker_repair_timeout_effective }}s.
+
+          Failed server replica volume repair:
+          rc={{ (platform_woodpecker_server_replica_volume_repair | default({})).rc | default('not run') }}
+          stdout:
+          {{ (platform_woodpecker_server_replica_volume_repair | default({})).stdout | default('not run') }}
+          stderr:
+          {{ (platform_woodpecker_server_replica_volume_repair | default({})).stderr | default('not run') }}
 
           Argo CD sync wait:
           rc={{ (platform_woodpecker_argocd_sync_wait | default({})).rc | default('not run') }}
@@ -1922,6 +2174,7 @@
           make platform-woodpecker-repair
       run_once: true
       when: >
+        ((platform_woodpecker_server_replica_volume_repair | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_argocd_sync_wait | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_rollout_wait | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_runtime_verify | default({})).rc | default(0) | int != 0)

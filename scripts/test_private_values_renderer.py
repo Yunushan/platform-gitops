@@ -217,6 +217,7 @@ platform_step_ca_host=ca.example.test
             "WOODPECKER_STORAGE_CLASS": "longhorn-standard",
             "WOODPECKER_ADMIN_USERS": "platform-admin",
             "WOODPECKER_FORGEJO_OAUTH_SECRET_NAME": "woodpecker-oauth-test",
+            "WOODPECKER_AGENT_SECRET_NAME": "woodpecker-agent-test",
             "WOODPECKER_IMAGE_TAG": "3.16.0",
             "WOODPECKER_DATABASE_MODE": "postgres",
             "WOODPECKER_DATABASE_SECRET_NAME": "woodpecker-db-test",
@@ -450,7 +451,12 @@ platform_step_ca_host=ca.example.test
                     raise AssertionError(f"unexpected MinIO replica validation error: {exc}") from exc
             else:
                 raise AssertionError("MinIO renderer accepted a non-distributed replica count")
-        assert_contains(paths["woodpecker"], "ci.example.test", "woodpecker-oauth-test")
+        assert_contains(
+            paths["woodpecker"],
+            "ci.example.test",
+            "woodpecker-oauth-test",
+            "woodpecker-agent-test",
+        )
         assert_contains(
             paths["woodpecker"],
             'WOODPECKER_HOST: "https://ci.example.test"',
@@ -460,6 +466,8 @@ platform_step_ca_host=ca.example.test
             'WOODPECKER_LOG_LEVEL: "debug"',
             "failureThreshold: 30",
             '"woodpecker-db-test"',
+            "createAgentSecret: false",
+            "mapAgentSecret: false",
             "replicaCount: 3",
             "repository: woodpeckerci/woodpecker-server",
             "repository: woodpeckerci/woodpecker-agent",
@@ -667,6 +675,9 @@ platform_step_ca_host=ca.example.test
             "repository: woodpeckerci/woodpecker-agent",
             'tag: "v3.16.0"',
             '"woodpecker-oauth-test"',
+            '"woodpecker-agent-secret"',
+            "createAgentSecret: false",
+            "mapAgentSecret: false",
         )
         assert_not_contains(
             sqlite_woodpecker_path,

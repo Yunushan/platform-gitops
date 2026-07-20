@@ -51,6 +51,7 @@
     platform_forgejo_redis_mode_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_MODE') }}"
     platform_forgejo_redis_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_SECRET_NAME') }}"
     platform_woodpecker_oauth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_FORGEJO_OAUTH_SECRET_NAME') }}"
+    platform_woodpecker_agent_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_AGENT_SECRET_NAME') }}"
     platform_woodpecker_database_mode_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_MODE') }}"
     platform_woodpecker_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_SECRET_NAME') }}"
     platform_keycloak_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_SECRET_NAME') }}"
@@ -103,6 +104,7 @@
     platform_forgejo_redis_mode_effective: "{{ platform_forgejo_redis_mode | default(platform_forgejo_redis_mode_from_env, true) | default('redis', true) }}"
     platform_forgejo_redis_secret_name_effective: "{{ platform_forgejo_redis_secret_name | default(platform_forgejo_redis_secret_name_from_env, true) | default('forgejo-redis', true) }}"
     platform_woodpecker_oauth_secret_name_effective: "{{ platform_woodpecker_oauth_secret_name | default(platform_woodpecker_oauth_secret_name_from_env, true) | default('woodpecker-forgejo-oauth', true) }}"
+    platform_woodpecker_agent_secret_name_effective: "{{ platform_woodpecker_agent_secret_name | default(platform_woodpecker_agent_secret_name_from_env, true) | default('woodpecker-agent-secret', true) }}"
     platform_woodpecker_database_mode_effective: "{{ platform_woodpecker_database_mode | default(platform_woodpecker_database_mode_from_env, true) | default('auto', true) | lower }}"
     platform_woodpecker_database_secret_name_effective: "{{ platform_woodpecker_database_secret_name | default(platform_woodpecker_database_secret_name_from_env, true) | default('woodpecker-database', true) }}"
     platform_keycloak_admin_secret_name_effective: "{{ platform_keycloak_admin_secret_name | default(platform_keycloak_admin_secret_name_from_env, true) | default('keycloak-admin', true) }}"
@@ -147,6 +149,7 @@
           - platform_forgejo_database_secret_name_effective | length > 0
           - platform_forgejo_redis_secret_name_effective | length > 0
           - platform_woodpecker_oauth_secret_name_effective | length > 0
+          - platform_woodpecker_agent_secret_name_effective | length > 0
           - platform_woodpecker_database_secret_name_effective | length > 0
           - platform_keycloak_admin_secret_name_effective | length > 0
           - platform_keycloak_database_secret_name_effective | length > 0
@@ -1689,6 +1692,7 @@
           case " ${required_apps} " in
             *" woodpecker "*)
               check_secret_contract woodpecker "{{ platform_woodpecker_oauth_secret_name_effective }}" WOODPECKER_FORGEJO_CLIENT WOODPECKER_FORGEJO_SECRET
+              check_secret_contract woodpecker "{{ platform_woodpecker_agent_secret_name_effective }}" WOODPECKER_AGENT_SECRET
               if woodpecker_uses_postgres; then
                 check_secret_contract woodpecker "{{ platform_woodpecker_database_secret_name_effective }}" WOODPECKER_DATABASE_DATASOURCE
               else
@@ -3031,7 +3035,7 @@
             "$K" --kubeconfig "$C" -n forgejo get "secret/{{ platform_forgejo_redis_secret_name_effective }}" -o wide || true
             ;;
         esac
-        "$K" --kubeconfig "$C" -n woodpecker get "secret/{{ platform_woodpecker_oauth_secret_name_effective }}" "secret/{{ platform_woodpecker_database_secret_name_effective }}" -o wide || true
+        "$K" --kubeconfig "$C" -n woodpecker get "secret/{{ platform_woodpecker_oauth_secret_name_effective }}" "secret/{{ platform_woodpecker_agent_secret_name_effective }}" "secret/{{ platform_woodpecker_database_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n keycloak get "secret/{{ platform_keycloak_admin_secret_name_effective }}" "secret/{{ platform_keycloak_database_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n platform-databases get "secret/{{ platform_keycloak_database_secret_name_effective }}" -o wide || true
         "$K" --kubeconfig "$C" -n monitoring get "secret/{{ platform_grafana_admin_secret_name_effective }}" "secret/{{ platform_grafana_database_secret_name_effective }}" -o wide || true

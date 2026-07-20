@@ -82,6 +82,17 @@ It hard-refreshes and syncs the Woodpecker application first, waits for the
 server and agents, verifies the runtime server and agent image tags, refreshes
 service-path consumers, and then runs `make platform-ci-health`.
 
+The premium renderer does not use the chart-generated
+`woodpecker-default-agent-secret`. That chart secret depends on random Helm
+rendering and can change during an Argo CD comparison. Instead,
+`make platform-app-secrets` generates and preserves
+`woodpecker/woodpecker-agent-secret`, and rendered server and agent workloads
+both import it. If agents report `individual agent not found by token`, sync the
+new values and rerun the repair. It restarts both roles after the sync and
+removes the old chart secret only after no workload references it. Override the
+name with `WOODPECKER_AGENT_SECRET_NAME`; set `WOODPECKER_AGENT_SECRET` only
+through ignored private configuration when a fixed token is required.
+
 For PostgreSQL-backed Woodpecker, the repair also resolves ready EndpointSlice
 addresses and probes DNS, ClusterIP, and direct pod endpoints from the
 Woodpecker server node. A ClusterIP or direct-endpoint timeout triggers one
@@ -124,11 +135,13 @@ adjust its per-node wait with
 `PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT`.
 
 The same bounded fallback also recognizes CloudNativePG webhook and pod-probe
-timeouts. If a node has lost `driver.longhorn.io` registration, it runs
+timeouts. If a node has lost `driver.longhorn.io` registration, or a
+Woodpecker replica reports `volume ... is not ready for workloads`, it runs
 `make platform-longhorn-runtime-repair` to recover the Longhorn manager/CSI
-runtime and remove only empty duplicate disk registrations. It then retries the
-Woodpecker repair once. This focused target does not enforce cluster-wide
-Longhorn capacity.
+runtime, force-refresh the CSI sidecars for an attach-readiness fault, and
+remove only empty duplicate disk registrations. It then retries the Woodpecker
+repair once. This focused target does not enforce cluster-wide Longhorn
+capacity.
 
 The premium CloudNativePG profile keeps its mutating and validating webhooks
 enabled with `failurePolicy: Ignore`. Healthy requests still pass through both
@@ -154,6 +167,17 @@ Automatic failed-replica cleanup is limited to an initializing CNPG replica
 with no active pod and a detached, zero-byte Longhorn volume. It verifies the
 original PVC and PV UIDs before requesting cleanup and never resets the active
 PostgreSQL primary.
+
+The same data-safety rule applies to a blocked Woodpecker HA server replica.
+Only ordinals above `woodpecker-server-0` qualify, and only when the container
+has never started, the attach event says the Longhorn volume is not ready, the
+PVC/PV/Longhorn identity matches, and Longhorn reports exactly zero bytes. The
+repair temporarily scales to the blocked ordinal, deletes that empty replica
+PVC, and restores the requested replica count. It never deletes
+`data-woodpecker-server-0` or any replica volume containing data. Disable this
+recovery with
+`PLATFORM_WOODPECKER_REPAIR_RESET_FAILED_SERVER_REPLICA_PVCS=false`.
+
 Use `make platform-longhorn-bootstrap` separately when repairing cluster-wide
 storage capacity or Longhorn installation state.
 
