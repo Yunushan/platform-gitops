@@ -2438,7 +2438,7 @@ def main() -> None:
         "driver name driver\\.longhorn\\.io not found",
         "AttachVolume\\.Attach failed.*volume .*not ready for workloads",
         "reason=woodpecker-server-replica-volume-not-ready",
-        'running PreBind plugin "VolumeBinding": binding volumes: context deadline exceeded',
+        "VolumeBinding.*binding volumes: context deadline exceeded",
         "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART=true",
         "$(MAKE) platform-longhorn-runtime-repair",
         "all-node CNI/firewalld recovery",
