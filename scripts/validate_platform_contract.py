@@ -398,6 +398,14 @@ def canonical_contract_text(text: str) -> str:
     return normalized
 
 
+def count_yaml_list_scalar(text: str, value: str) -> int:
+    """Count exact YAML list scalars with optional single or double quotes."""
+    pattern = re.compile(
+        rf"""(?m)^\s*-\s*(?P<quote>['"]?){re.escape(value)}(?P=quote)\s*(?:#.*)?$"""
+    )
+    return sum(1 for _ in pattern.finditer(text))
+
+
 def rendered_placeholder_line_present(text: str, line: str) -> bool:
     stripped = line.strip()
     if ":" not in stripped:
@@ -1044,7 +1052,7 @@ def main() -> None:
         "  resources:\n    requests:\n      cpu: 250m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
     ):
         require_text(premium_woodpecker_text, needle, f"premium Woodpecker profile must include {needle.splitlines()[0]}")
-    if premium_woodpecker_text.count("- woodpecker-agent-secret") != 2:
+    if count_yaml_list_scalar(premium_woodpecker_text, "woodpecker-agent-secret") != 2:
         fail("premium Woodpecker profile must map the same managed agent secret into server and agent")
     require_woodpecker_role_image_pin(
         premium_woodpecker_text,

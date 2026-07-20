@@ -17,6 +17,7 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 RENDERER_PATH = ROOT / "scripts/render_private_platform_values.py"
 CHECKER_PATH = ROOT / "scripts/check_gitops_profile.py"
+CONTRACT_VALIDATOR_PATH = ROOT / "scripts/validate_platform_contract.py"
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
 sys.dont_write_bytecode = True
 RENDERER_ENV_PREFIXES = (
@@ -55,6 +56,15 @@ def load_checker():
     spec = importlib.util.spec_from_file_location("check_gitops_profile", CHECKER_PATH)
     if spec is None or spec.loader is None:
         raise AssertionError(f"could not load {CHECKER_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_contract_validator():
+    spec = importlib.util.spec_from_file_location("validate_platform_contract", CONTRACT_VALIDATOR_PATH)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load {CONTRACT_VALIDATOR_PATH}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -165,6 +175,7 @@ platform_step_ca_host=ca.example.test
 def main() -> int:
     renderer = load_renderer()
     checker = load_checker()
+    contract_validator = load_contract_validator()
 
     with tempfile.TemporaryDirectory(prefix="platform-private-render-") as tmp:
         repo = Path(tmp)
@@ -474,6 +485,16 @@ platform_step_ca_host=ca.example.test
             'tag: "v3.16.0"',
             'WOODPECKER_BACKEND_K8S_STORAGE_CLASS: "longhorn-standard"',
         )
+        rendered_woodpecker_text = paths["woodpecker"].read_text(encoding="utf-8")
+        if contract_validator.count_yaml_list_scalar(rendered_woodpecker_text, "woodpecker-agent-test") != 2:
+            raise AssertionError("rendered Woodpecker values did not map the managed agent Secret into both roles")
+        mixed_yaml_scalar_styles = """
+- woodpecker-agent-test
+- "woodpecker-agent-test"
+- 'woodpecker-agent-test'
+"""
+        if contract_validator.count_yaml_list_scalar(mixed_yaml_scalar_styles, "woodpecker-agent-test") != 3:
+            raise AssertionError("platform contract validator rejected a valid quoted YAML Secret list item")
         assert_contains(paths["harbor"], "registry.example.test", "harbor-admin-test", "55Gi")
         assert_contains(
             paths["harbor"],
