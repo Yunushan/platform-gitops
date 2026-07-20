@@ -743,8 +743,8 @@
             storage_scheduled = int(status.get("storageScheduled") or 0)
             disk_uuid = status.get("diskUUID") or ""
 
-            replica_names = []
-            if disk_uuid:
+            replica_items = []
+            if disk_uuid or "default-disk" in spec_disks:
                 replicas_result = run_kubectl(["get", "replicas.longhorn.io", "-o", "json"])
                 if replicas_result.returncode != 0:
                     sys.stderr.write(
@@ -752,12 +752,21 @@
                     )
                     raise SystemExit(replicas_result.returncode)
                 replicas = json.loads(replicas_result.stdout)
-                replica_names = [
+                replica_items = replicas.get("items", [])
+
+
+            def replica_names_for(current_disk_uuid):
+                if not current_disk_uuid:
+                    return []
+                return [
                     replica.get("metadata", {}).get("name", "")
-                    for replica in replicas.get("items", [])
-                    if replica.get("spec", {}).get("diskID") == disk_uuid
+                    for replica in replica_items
+                    if replica.get("spec", {}).get("diskID") == current_disk_uuid
                     and not replica.get("metadata", {}).get("deletionTimestamp")
                 ]
+
+
+            replica_names = replica_names_for(disk_uuid)
 
             if (
                 scheduled_replicas
@@ -776,25 +785,99 @@
                     )
                     raise SystemExit(0)
 
-                disable_patch = json.dumps(
-                    {"spec": {"disks": {disk_name: {"allowScheduling": False}}}}
-                )
-                disable_result = run_kubectl(
-                    [
-                        "patch",
-                        f"nodes.longhorn.io/{node_name}",
-                        "--type=merge",
-                        "-p",
-                        disable_patch,
-                    ]
-                )
-                if disable_result.returncode != 0:
-                    sys.stderr.write(
-                        (disable_result.stderr or "") + (disable_result.stdout or "")
+                companion_name = "default-disk"
+                companion_status = (
+                    node.get("status", {}).get("diskStatus") or {}
+                ).get(companion_name)
+                if companion_name in spec_disks and companion_status:
+                    companion_replicas = companion_status.get("scheduledReplica") or {}
+                    companion_backing_images = (
+                        companion_status.get("scheduledBackingImage") or {}
                     )
-                    raise SystemExit(disable_result.returncode)
+                    companion_storage_scheduled = int(
+                        companion_status.get("storageScheduled") or 0
+                    )
+                    companion_replica_names = replica_names_for(
+                        companion_status.get("diskUUID") or ""
+                    )
+                    if not (
+                        companion_replicas
+                        or companion_backing_images
+                        or companion_storage_scheduled > 0
+                        or companion_replica_names
+                    ):
+                        disable_companion_patch = json.dumps(
+                            {
+                                "spec": {
+                                    "disks": {
+                                        companion_name: {"allowScheduling": False}
+                                    }
+                                }
+                            }
+                        )
+                        disable_companion_result = run_kubectl(
+                            [
+                                "patch",
+                                f"nodes.longhorn.io/{node_name}",
+                                "--type=merge",
+                                "-p",
+                                disable_companion_patch,
+                            ]
+                        )
+                        if disable_companion_result.returncode != 0:
+                            sys.stderr.write(
+                                (disable_companion_result.stderr or "")
+                                + (disable_companion_result.stdout or "")
+                            )
+                            raise SystemExit(disable_companion_result.returncode)
+
+                        delete_companion_patch = json.dumps(
+                            {"spec": {"disks": {companion_name: None}}}
+                        )
+                        last_error = ""
+                        for _ in range(12):
+                            delete_companion_result = run_kubectl(
+                                [
+                                    "patch",
+                                    f"nodes.longhorn.io/{node_name}",
+                                    "--type=merge",
+                                    "-p",
+                                    delete_companion_patch,
+                                ]
+                            )
+                            node, get_result = get_node()
+                            if node is not None and companion_name not in (
+                                node.get("spec", {}).get("disks") or {}
+                            ):
+                                print(
+                                    f"Longhorn empty default companion cleanup: "
+                                    f"node={node_name} disk={companion_name} "
+                                    "action=remove-empty-default-companion"
+                                )
+                                print(
+                                    f"Longhorn automatic extra disk retained as active node storage: "
+                                    f"node={node_name} disk={disk_name} "
+                                    "action=retain-active-extra-disk"
+                                )
+                                raise SystemExit(0)
+                            last_error = (
+                                (delete_companion_result.stderr or "")
+                                + (delete_companion_result.stdout or "")
+                                + (get_result.stderr or "")
+                            )
+                            time.sleep(5)
+
+                        sys.stderr.write(last_error)
+                        print(
+                            "result=fail reason=empty-default-companion-removal-timeout "
+                            f"node={node_name} disk={companion_name}",
+                            file=sys.stderr,
+                        )
+                        raise SystemExit(1)
+
                 print(
-                    f"result=fail reason=stale-auto-extra-disk-in-use node={node_name} "
+                    f"result=fail reason=active-auto-extra-disk-companion-not-safe-to-remove "
+                    f"node={node_name} "
                     f"disk={disk_name} detection={reason} "
                     f"scheduledReplicas={len(scheduled_replicas)} "
                     f"scheduledBackingImages={len(scheduled_backing_images)} "
