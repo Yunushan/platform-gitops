@@ -2527,6 +2527,8 @@ def main() -> None:
         "pvc-uid-changed",
         "woodpecker-agent-secret",
         "woodpecker-default-agent-secret",
+        "woodpecker_default_agent_secret_sync=updated",
+        "env_value_from_secrets=",
     ):
         require_text(
             woodpecker_repair_text,

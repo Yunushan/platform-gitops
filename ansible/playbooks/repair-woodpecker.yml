@@ -1853,49 +1853,36 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Remove stale chart-generated Woodpecker agent secret after migration
+    - name: Synchronize chart-compatible Woodpecker agent secret after migration
       ansible.builtin.shell: |
-        set -u
+        set -euo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         MANAGED_SECRET="{{ platform_woodpecker_agent_secret_name_effective }}"
         DEFAULT_SECRET=woodpecker-default-agent-secret
 
-        if ! "$K" --kubeconfig "$C" -n woodpecker get "secret/${MANAGED_SECRET}" \
-          -o 'go-template={{ "{{" }} index .data "WOODPECKER_AGENT_SECRET" {{ "}}" }}' 2>/dev/null | grep -q .; then
-          echo "woodpecker_default_agent_secret_cleanup=skipped reason=managed-secret-missing"
+        managed_agent_secret="$("$K" --kubeconfig "$C" -n woodpecker get "secret/${MANAGED_SECRET}" \
+          -o 'go-template={{ "{{" }} index .data "WOODPECKER_AGENT_SECRET" {{ "}}" }}' 2>/dev/null || true)"
+        if [ -z "${managed_agent_secret}" ]; then
+          echo "woodpecker_default_agent_secret_sync=skipped reason=managed-secret-missing"
           exit 0
         fi
 
-        managed_refs=0
-        default_refs=0
-        workloads=0
-        for workload in statefulset/woodpecker-server deployment/woodpecker-server statefulset/woodpecker-agent deployment/woodpecker-agent; do
-          if ! "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
-            continue
-          fi
-          workloads=$((workloads + 1))
-          refs="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
-            -o jsonpath='{range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{"\n"}{end}' 2>/dev/null || true)"
-          printf '%s\n' "${refs}" | grep -Fx "${MANAGED_SECRET}" >/dev/null && managed_refs=$((managed_refs + 1))
-          printf '%s\n' "${refs}" | grep -Fx "${DEFAULT_SECRET}" >/dev/null && default_refs=$((default_refs + 1))
-        done
-
-        if [ "${workloads}" -lt 2 ] || [ "${managed_refs}" -ne "${workloads}" ] || [ "${default_refs}" -ne 0 ]; then
-          echo "woodpecker_default_agent_secret_cleanup=skipped reason=workload-migration-incomplete workloads=${workloads} managed_refs=${managed_refs} default_refs=${default_refs}"
+        current_agent_secret="$("$K" --kubeconfig "$C" -n woodpecker get "secret/${DEFAULT_SECRET}" \
+          -o 'go-template={{ "{{" }} index .data "WOODPECKER_AGENT_SECRET" {{ "}}" }}' 2>/dev/null || true)"
+        if [ "${current_agent_secret}" = "${managed_agent_secret}" ]; then
+          echo "woodpecker_default_agent_secret_sync=unchanged"
           exit 0
         fi
 
-        if "$K" --kubeconfig "$C" -n woodpecker get "secret/${DEFAULT_SECRET}" >/dev/null 2>&1; then
-          "$K" --kubeconfig "$C" -n woodpecker delete "secret/${DEFAULT_SECRET}" --wait=false
-          echo "woodpecker_default_agent_secret_cleanup=deleted"
-        else
-          echo "woodpecker_default_agent_secret_cleanup=absent"
-        fi
+        "$K" --kubeconfig "$C" -n woodpecker create secret generic "${DEFAULT_SECRET}" \
+          --from-literal=WOODPECKER_AGENT_SECRET="$(printf '%s' "${managed_agent_secret}" | base64 -d)" \
+          --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -
+        echo "woodpecker_default_agent_secret_sync=updated"
       args:
         executable: /bin/bash
-      register: platform_woodpecker_default_agent_secret_cleanup
-      changed_when: "'cleanup=deleted' in platform_woodpecker_default_agent_secret_cleanup.stdout"
+      register: platform_woodpecker_default_agent_secret_sync
+      changed_when: "'sync=updated' in platform_woodpecker_default_agent_secret_sync.stdout"
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
@@ -2072,7 +2059,7 @@
           if "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
             echo "--- ${workload} ---"
             "$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
-              -o jsonpath='images={range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\n"}env_names={range .spec.template.spec.containers[*].env[*]}{.name}{" "}{end}{"\n"}env_from_secrets={range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{" "}{end}{"\n"}' 2>&1 | redact || true
+              -o jsonpath='images={range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\n"}env_names={range .spec.template.spec.containers[*].env[*]}{.name}{" "}{end}{"\n"}env_from_secrets={range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{" "}{end}{"\n"}env_value_from_secrets={range .spec.template.spec.containers[*].env[*].valueFrom.secretKeyRef}{.name}{" "}{end}{"\n"}' 2>&1 | redact || true
           fi
         done
 
