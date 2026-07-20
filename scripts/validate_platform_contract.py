@@ -2520,6 +2520,7 @@ def main() -> None:
         "same-filesystem-as-default-disk",
         "same-filesystem-id-as-default-disk",
         "action=remove-stale-auto-extra-disk",
+        "action=retain-active-extra-disk",
         "reason=stale-auto-extra-disk-in-use",
         "reason=stale-auto-extra-disk-removal-timeout",
         'disk_name != "default-disk"',

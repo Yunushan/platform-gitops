@@ -765,6 +765,17 @@
                 or storage_scheduled > 0
                 or replica_names
             ):
+                if set(spec_disks) == {disk_name}:
+                    print(
+                        f"Longhorn automatic extra disk retained as active node storage: "
+                        f"node={node_name} disk={disk_name} action=retain-active-extra-disk "
+                        f"reason={reason} scheduledReplicas={len(scheduled_replicas)} "
+                        f"scheduledBackingImages={len(scheduled_backing_images)} "
+                        f"storageScheduled={storage_scheduled} "
+                        f"replicaObjects={len(replica_names)}"
+                    )
+                    raise SystemExit(0)
+
                 disable_patch = json.dumps(
                     {"spec": {"disks": {disk_name: {"allowScheduling": False}}}}
                 )
