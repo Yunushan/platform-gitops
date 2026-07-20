@@ -230,7 +230,7 @@ platform-woodpecker-repair:
 		if grep -Eq 'reason=postgres-endpoint-path-unreachable|cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)|failed calling webhook.*(cnpg|mcluster)|mcluster\.cnpg\.io.*context deadline exceeded|Instance Status Extraction Error: HTTP communication issue|:8000/(readyz|healthz|startupz).*(i/o timeout|context deadline exceeded|Client\.Timeout exceeded)' "$$repair_log"; then \
 			service_path_repair=true; \
 		fi; \
-		if grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|reason=woodpecker-server-replica-volume-not-ready|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
+		if grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|running PreBind plugin "VolumeBinding": binding volumes: context deadline exceeded|reason=woodpecker-server-replica-volume-not-ready|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
 			longhorn_runtime_repair=true; \
 		fi; \
 		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ]; then \
