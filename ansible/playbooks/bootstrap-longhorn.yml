@@ -286,7 +286,7 @@
               exit 0
             fi
 
-            # RKE2's `reinstall` policy performs an uninstall first. Recover the
+            # The RKE2 `reinstall` policy performs an uninstall first. Recover the
             # failed revision with a normal Helm upgrade so volumes and CRs stay
             # in place, then return ownership to the Helm controller.
             job_image=""

@@ -93,6 +93,21 @@ def playbooks() -> list[Path]:
     return [path for path in sorted(PLAYBOOK_DIR.glob("*.yml")) if not should_skip(path)]
 
 
+def validate_free_form_comment_quotes(path: Path) -> list[str]:
+    errors: list[str] = []
+    for line_no, script in shell_blocks(path):
+        for offset, line in enumerate(script.splitlines()):
+            comment = line.lstrip()
+            if not comment.startswith("#"):
+                continue
+            if comment.count("'") % 2 or comment.count('"') % 2:
+                errors.append(
+                    f"{path.relative_to(ROOT)}:{line_no + offset + 1}: "
+                    "Ansible free-form shell comment has an unmatched quote"
+                )
+    return errors
+
+
 def validate_argocd_cleanup_contract() -> list[str]:
     text = ARGOCD_REPAIR_PLAYBOOK.read_text(encoding="utf-8")
     errors: list[str] = []
@@ -161,6 +176,8 @@ def main() -> int:
         return 1
 
     playbook_contract_errors = validate_argocd_cleanup_contract() + validate_coredns_rollout_contract()
+    for path in playbooks():
+        playbook_contract_errors.extend(validate_free_form_comment_quotes(path))
     if playbook_contract_errors:
         print("Ansible repair contract validation failed:")
         for error in playbook_contract_errors:
