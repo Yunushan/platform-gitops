@@ -123,6 +123,25 @@ fi
         )
         assert_success(result, "loading literal env values with spaces")
 
+        preserve_result = run_bash(
+            r"""
+set -euo pipefail
+. scripts/bootstrap/load-env-file.sh
+export PLATFORM_AUTO_COMMIT_MESSAGE="explicit command-line value"
+load_env_file "$1" preserve-existing
+if [ "${PLATFORM_AUTO_COMMIT_MESSAGE}" != "explicit command-line value" ]; then
+  echo "preserve-existing replaced an explicit environment value" >&2
+  exit 1
+fi
+if [ "${DOUBLE_QUOTED_VALUE}" != "quoted value with spaces" ]; then
+  echo "preserve-existing did not load an unset environment value" >&2
+  exit 1
+fi
+""",
+            rel_env_file,
+        )
+        assert_success(preserve_result, "preserving explicit environment values")
+
         invalid_env_file = temp_root / "invalid.env"
         invalid_env_file.write_text("this is not an assignment\n", encoding="utf-8", newline="\n")
         rel_invalid_env_file = invalid_env_file.relative_to(ROOT).as_posix()
@@ -140,6 +159,22 @@ load_env_file "$1"
                 "invalid env syntax did not print a useful error\n"
                 f"stdout:\n{invalid_result.stdout}\n"
                 f"stderr:\n{invalid_result.stderr}"
+            )
+
+        invalid_mode_result = run_bash(
+            r"""
+set -euo pipefail
+. scripts/bootstrap/load-env-file.sh
+load_env_file "$1" unsupported-mode
+""",
+            rel_env_file,
+        )
+        assert_failure(invalid_mode_result, "loading with an invalid mode")
+        if "mode must be overwrite or preserve-existing" not in invalid_mode_result.stderr:
+            raise AssertionError(
+                "invalid loader mode did not print a useful error\n"
+                f"stdout:\n{invalid_mode_result.stdout}\n"
+                f"stderr:\n{invalid_mode_result.stderr}"
             )
 
     print("Bootstrap env loader self-test passed.")

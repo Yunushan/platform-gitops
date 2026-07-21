@@ -42,7 +42,7 @@ help:
 	@echo "  platform-monitoring-health  Verify focused Grafana and Prometheus readiness and ingress APIs"
 	@echo "  platform-monitoring-repair  Repair monitoring reconciliation, storage prerequisites, and ready backends"
 	@echo "  platform-production-check  Run read-only repo, RKE2, status, and platform app readiness gates"
-	@echo "  platform-longhorn-bootstrap  Bootstrap Longhorn storage, pre-pull images on nodes, and verify CSI/PVC readiness"
+	@echo "  platform-longhorn-bootstrap  Load private settings, bootstrap Longhorn storage, and verify CSI/PVC readiness"
 	@echo "  platform-longhorn-runtime-repair  Repair Longhorn manager/CSI registration without blocking on storage capacity"
 	@echo "  platform-longhorn-crd-repair  Restore missing Longhorn CRDs and restart Longhorn manager"
 	@echo "  platform-forgejo-diagnose  Show Forgejo init, logs, PVC/PV, Longhorn volume, service, and ingress diagnostics"
@@ -329,7 +329,7 @@ platform-monitoring-repair:
 platform-production-check: validate platform-profile-check rke2-verify platform-status platform-app-health
 
 platform-longhorn-bootstrap:
-	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/bootstrap-longhorn.yml
+	@bash scripts/bootstrap/run-longhorn-bootstrap.sh
 
 platform-longhorn-runtime-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-longhorn-runtime.yml

@@ -72,6 +72,7 @@ woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpe
 cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 longhorn_bootstrap_playbook = root / "ansible/playbooks/bootstrap-longhorn.yml"
+longhorn_bootstrap_runner = root / "scripts/bootstrap/run-longhorn-bootstrap.sh"
 dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
 firewalld_cleanup_script = root / "scripts/cleanup_firewalld_cni_interfaces.py"
 verify_rke2_playbook = root / "ansible/playbooks/verify-rke2.yml"
@@ -2546,6 +2547,7 @@ def main() -> None:
         "Reconcile live Longhorn storage overprovisioning setting",
         "settings.longhorn.io/${setting}",
         "reason=longhorn-live-setting-reconciliation-failed",
+        "are being syncing and please retry later",
         "defaultCompanionPathReplicaObjects",
         "defaultCompanionBlockingPathReplicaObjects",
         "defaultCompanionEvictionRequested",
@@ -2568,6 +2570,24 @@ def main() -> None:
             needle,
             f"Longhorn bootstrap stale extra-disk reconciliation must cover {needle}",
         )
+    longhorn_bootstrap_runner_text = read(longhorn_bootstrap_runner)
+    for needle in (
+        "PLATFORM_LONGHORN_ENV_FILE",
+        "private/seed-git.env",
+        "private/first-deploy.env",
+        'load_env_file "${env_file}" preserve-existing',
+        "ansible/playbooks/bootstrap-longhorn.yml",
+    ):
+        require_text(
+            longhorn_bootstrap_runner_text,
+            needle,
+            f"Longhorn bootstrap private environment runner must cover {needle}",
+        )
+    require_text(
+        makefile_text,
+        "@bash scripts/bootstrap/run-longhorn-bootstrap.sh",
+        "platform-longhorn-bootstrap must load private deployment settings",
+    )
     woodpecker_repair_text = read(woodpecker_repair_playbook)
     for needle in (
         'role}" = "replica"',

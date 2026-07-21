@@ -302,8 +302,11 @@ storage or removing confirmed-unused `Released` PVs after backup. If physical
 usage, alerts, and growth forecasts justify thin provisioning, set
 `PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE` in the ignored private
 deployment environment, rerender and sync the private GitOps values, then rerun
-`make platform-longhorn-bootstrap`. The default remains `100`; increasing it
-does not create physical capacity.
+`make platform-longhorn-bootstrap`. The target automatically loads
+`private/seed-git.env`, or `private/first-deploy.env` when no seed environment
+exists. Explicitly exported values take precedence, and
+`PLATFORM_LONGHORN_ENV_FILE` can select another ignored environment file. The
+default remains `100`; increasing it does not create physical capacity.
 
 To skip only Loki `/ready`, Velero `BackupStorageLocation`, or Velero backup
 schedule enforcement during a temporary debug run:

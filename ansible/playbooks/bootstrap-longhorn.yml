@@ -1695,6 +1695,12 @@
             'action=remove-empty-default-companion' in platform_longhorn_auto_extra_disk_config.stdout or
             'action=request-default-companion-evacuation' in platform_longhorn_auto_extra_disk_config.stdout or
             'action=remove-evacuated-default-companion' in platform_longhorn_auto_extra_disk_config.stdout
+          retries: 30
+          delay: 5
+          until: >-
+            platform_longhorn_auto_extra_disk_config.rc == 0 or
+            'are being syncing and please retry later' not in
+            (platform_longhorn_auto_extra_disk_config.stderr | default(''))
           when: platform_longhorn_auto_extra_disk_enabled_effective | bool
 
         - name: Show Longhorn automatic extra disk decisions

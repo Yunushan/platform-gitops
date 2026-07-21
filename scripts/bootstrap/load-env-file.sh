@@ -3,8 +3,14 @@ set -euo pipefail
 
 load_env_file() {
   local env_file="$1"
+  local mode="${2:-overwrite}"
   local line_number=0
   local line key value
+
+  if [[ "${mode}" != "overwrite" && "${mode}" != "preserve-existing" ]]; then
+    echo "load_env_file: mode must be overwrite or preserve-existing, got: ${mode}" >&2
+    exit 1
+  fi
 
   [[ -f "${env_file}" ]] || return 0
 
@@ -37,6 +43,10 @@ load_env_file() {
       value="${value:1:${#value}-2}"
     elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
       value="${value:1:${#value}-2}"
+    fi
+
+    if [[ "${mode}" == "preserve-existing" && -v ${key} ]]; then
+      continue
     fi
 
     export "${key}=${value}"
