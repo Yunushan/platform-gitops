@@ -301,6 +301,10 @@ platform_step_ca_host=ca.example.test
         }
 
         with patched_env(env):
+            if contract_validator.configured_longhorn_storage_over_provisioning_percentage() != 275:
+                raise AssertionError(
+                    "platform contract validator ignored the private Longhorn overprovisioning setting"
+                )
             renderer.render_argocd(paths["argocd"], inventory)
             renderer.render_forgejo(paths["forgejo"], inventory)
             renderer.render_longhorn(paths["longhorn"], os.environ["LONGHORN_BACKUP_TARGET"])
@@ -395,6 +399,15 @@ platform_step_ca_host=ca.example.test
             "s3://platform-test-longhorn@eu-test-1/",
             "storageOverProvisioningPercentage: 275",
         )
+        if (
+            contract_validator.yaml_integer_scalar(
+                paths["longhorn"].read_text(encoding="utf-8"),
+                "storageOverProvisioningPercentage",
+                "rendered Longhorn test profile",
+            )
+            != 275
+        ):
+            raise AssertionError("platform contract validator rejected the rendered Longhorn override")
         assert_contains(
             paths["cnpg"],
             'namespace: "platform-databases"',

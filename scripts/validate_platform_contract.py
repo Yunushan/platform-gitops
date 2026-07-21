@@ -6,6 +6,7 @@ Forgejo/Gitea, Woodpecker, and minimal bootstrap environments.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 import sys
@@ -236,6 +237,29 @@ required_storage_classes = [
 def fail(message: str) -> None:
     print(f"Platform contract validation failed: {message}")
     sys.exit(1)
+
+
+def configured_longhorn_storage_over_provisioning_percentage() -> int:
+    raw_value = os.environ.get(
+        "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE",
+        "100",
+    ).strip() or "100"
+    if not raw_value.isdigit() or not 100 <= int(raw_value) <= 1000:
+        fail(
+            "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE must be "
+            "an integer from 100 through 1000"
+        )
+    return int(raw_value)
+
+
+def yaml_integer_scalar(text: str, key: str, label: str) -> int:
+    matches = re.findall(
+        rf"(?m)^\s*{re.escape(key)}:\s*['\"]?(\d+)['\"]?\s*(?:#.*)?$",
+        text,
+    )
+    if len(matches) != 1:
+        fail(f"{label} must define exactly one integer {key}")
+    return int(matches[0])
 
 
 def read(path: Path) -> str:
@@ -1136,7 +1160,6 @@ def main() -> None:
         "defaultReplicaCount: 2",
         "defaultDataLocality: best-effort",
         "replicaAutoBalance: best-effort",
-        "storageOverProvisioningPercentage: 100",
         "storageMinimalAvailablePercentage: 10",
         "orphanAutoDeletion: true",
         "concurrentAutomaticEngineUpgradePerNodeLimit: 1",
@@ -1147,6 +1170,18 @@ def main() -> None:
             premium_longhorn_text,
             needle,
             f"premium Longhorn profile must include {needle.splitlines()[0]}",
+        )
+    configured_over_provisioning = configured_longhorn_storage_over_provisioning_percentage()
+    rendered_over_provisioning = yaml_integer_scalar(
+        premium_longhorn_text,
+        "storageOverProvisioningPercentage",
+        "premium Longhorn profile",
+    )
+    if rendered_over_provisioning != configured_over_provisioning:
+        fail(
+            "premium Longhorn profile storageOverProvisioningPercentage must "
+            "match PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE "
+            f"({configured_over_provisioning}), got {rendered_over_provisioning}"
         )
     premium_longhorn_storageclasses_text = read(premium_longhorn_storageclasses)
     for needle in (
