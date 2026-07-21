@@ -791,6 +791,7 @@
                 companion_status = (
                     node.get("status", {}).get("diskStatus") or {}
                 ).get(companion_name) or {}
+                companion_uuid = companion_status.get("diskUUID") or ""
                 companion_path = companion_spec.get("path") or ""
                 companion_path_replica_names = [
                     replica.get("metadata", {}).get("name", "")
@@ -799,6 +800,9 @@
                     and replica.get("spec", {}).get("diskPath") == companion_path
                     and not replica.get("metadata", {}).get("deletionTimestamp")
                 ]
+                companion_blocking_path_replica_names = (
+                    [] if companion_uuid else companion_path_replica_names
+                )
                 if companion_name in spec_disks:
                     companion_replicas = companion_status.get("scheduledReplica") or {}
                     companion_backing_images = (
@@ -808,14 +812,14 @@
                         companion_status.get("storageScheduled") or 0
                     )
                     companion_replica_names = replica_names_for(
-                        companion_status.get("diskUUID") or ""
+                        companion_uuid
                     )
                     if not (
                         companion_replicas
                         or companion_backing_images
                         or companion_storage_scheduled > 0
                         or companion_replica_names
-                        or companion_path_replica_names
+                        or companion_blocking_path_replica_names
                     ):
                         disable_companion_patch = json.dumps(
                             {
@@ -919,7 +923,8 @@
                         f"node={node_name} disk={companion_name} "
                         "action=request-default-companion-evacuation "
                         f"replicaObjects={len(companion_replica_names)} "
-                        f"pathReplicaObjects={len(companion_path_replica_names)}"
+                        f"pathReplicaObjects={len(companion_path_replica_names)} "
+                        f"blockingPathReplicaObjects={len(companion_blocking_path_replica_names)}"
                     )
                     deadline = time.monotonic() + evacuation_timeout
                     last_state = "evacuation-state-unavailable"
@@ -973,19 +978,23 @@
                             and replica.get("spec", {}).get("diskPath") == companion_path
                             and not replica.get("metadata", {}).get("deletionTimestamp")
                         ]
+                        current_blocking_path_replica_names = (
+                            [] if current_uuid else current_path_replica_names
+                        )
                         last_state = (
                             f"scheduledReplicas={len(current_replicas)} "
                             f"scheduledBackingImages={len(current_backing_images)} "
                             f"storageScheduled={current_storage_scheduled} "
                             f"replicaObjects={len(current_replica_names)} "
-                            f"pathReplicaObjects={len(current_path_replica_names)}"
+                            f"pathReplicaObjects={len(current_path_replica_names)} "
+                            f"blockingPathReplicaObjects={len(current_blocking_path_replica_names)}"
                         )
                         if (
                             current_replicas
                             or current_backing_images
                             or current_storage_scheduled > 0
                             or current_replica_names
-                            or current_path_replica_names
+                            or current_blocking_path_replica_names
                         ):
                             continue
 
@@ -1023,6 +1032,7 @@
                     f"specDisks={','.join(sorted(spec_disks))} "
                     f"defaultCompanionStatusPresent={bool(companion_status)} "
                     f"defaultCompanionPathReplicaObjects={len(companion_path_replica_names)} "
+                    f"defaultCompanionBlockingPathReplicaObjects={len(companion_blocking_path_replica_names)} "
                     f"scheduledReplicas={len(scheduled_replicas)} "
                     f"scheduledBackingImages={len(scheduled_backing_images)} "
                     f"storageScheduled={storage_scheduled} "
