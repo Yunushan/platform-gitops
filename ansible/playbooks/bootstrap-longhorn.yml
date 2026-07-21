@@ -792,6 +792,9 @@
                     node.get("status", {}).get("diskStatus") or {}
                 ).get(companion_name) or {}
                 companion_uuid = companion_status.get("diskUUID") or ""
+                companion_eviction_requested = bool(
+                    companion_spec.get("evictionRequested", False)
+                )
                 companion_path = companion_spec.get("path") or ""
                 companion_path_replica_names = [
                     replica.get("metadata", {}).get("name", "")
@@ -801,7 +804,9 @@
                     and not replica.get("metadata", {}).get("deletionTimestamp")
                 ]
                 companion_blocking_path_replica_names = (
-                    [] if companion_uuid else companion_path_replica_names
+                    []
+                    if companion_uuid or companion_eviction_requested
+                    else companion_path_replica_names
                 )
                 if companion_name in spec_disks:
                     companion_replicas = companion_status.get("scheduledReplica") or {}
@@ -962,6 +967,12 @@
                         current_status = (
                             node.get("status", {}).get("diskStatus") or {}
                         ).get(companion_name) or {}
+                        current_companion_spec = (
+                            current_spec_disks.get(companion_name) or {}
+                        )
+                        current_eviction_requested = bool(
+                            current_companion_spec.get("evictionRequested", False)
+                        )
                         current_uuid = current_status.get("diskUUID") or ""
                         current_replicas = current_status.get("scheduledReplica") or {}
                         current_backing_images = (
@@ -979,7 +990,9 @@
                             and not replica.get("metadata", {}).get("deletionTimestamp")
                         ]
                         current_blocking_path_replica_names = (
-                            [] if current_uuid else current_path_replica_names
+                            []
+                            if current_uuid or current_eviction_requested
+                            else current_path_replica_names
                         )
                         last_state = (
                             f"scheduledReplicas={len(current_replicas)} "
@@ -1031,6 +1044,7 @@
                     f"disk={disk_name} detection={reason} "
                     f"specDisks={','.join(sorted(spec_disks))} "
                     f"defaultCompanionStatusPresent={bool(companion_status)} "
+                    f"defaultCompanionEvictionRequested={companion_eviction_requested} "
                     f"defaultCompanionPathReplicaObjects={len(companion_path_replica_names)} "
                     f"defaultCompanionBlockingPathReplicaObjects={len(companion_blocking_path_replica_names)} "
                     f"scheduledReplicas={len(scheduled_replicas)} "
