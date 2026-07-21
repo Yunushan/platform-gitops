@@ -781,6 +781,46 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Reconcile live Longhorn storage overprovisioning setting
+          ansible.builtin.shell: |
+            set -euo pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            setting=storage-over-provisioning-percentage
+            desired={{ platform_longhorn_storage_over_provisioning_percentage_effective | int }}
+
+            current="$("$K" --kubeconfig "$C" -n longhorn-system get \
+              "settings.longhorn.io/${setting}" -o jsonpath='{.value}' 2>/dev/null || true)"
+            if [ -z "${current}" ]; then
+              echo "Longhorn setting is not available yet: ${setting}" >&2
+              exit 1
+            fi
+
+            if [ "${current}" != "${desired}" ]; then
+              "$K" --kubeconfig "$C" -n longhorn-system patch \
+                "settings.longhorn.io/${setting}" --type=merge \
+                -p "{\"value\":\"${desired}\"}" >/dev/null
+              echo "Longhorn live setting reconciled: setting=${setting} previous=${current} desired=${desired}"
+            else
+              echo "Longhorn live setting already reconciled: setting=${setting} value=${current}"
+            fi
+
+            observed="$("$K" --kubeconfig "$C" -n longhorn-system get \
+              "settings.longhorn.io/${setting}" -o jsonpath='{.value}')"
+            if [ "${observed}" != "${desired}" ]; then
+              echo "result=fail reason=longhorn-live-setting-reconciliation-failed setting=${setting} desired=${desired} observed=${observed:-missing}" >&2
+              exit 1
+            fi
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_storage_over_provisioning_setting
+          retries: 30
+          delay: 5
+          until: platform_longhorn_storage_over_provisioning_setting.rc == 0
+          changed_when: "'Longhorn live setting reconciled:' in platform_longhorn_storage_over_provisioning_setting.stdout"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
         - name: Configure Longhorn default disks on all nodes
           ansible.builtin.shell: |
             set -o pipefail
