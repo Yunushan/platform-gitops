@@ -1210,23 +1210,23 @@
                 spec_disks = item.get("spec", {}).get("disks") or {}
                 status_disks = item.get("status", {}).get("diskStatus") or {}
                 print(f"{name}: specDisks={list(spec_disks.keys())} statusDisks={list(status_disks.keys())}")
-                for disk_name, disk in status_disks.items():
+                for disk_name, disk_status in status_disks.items():
                     conditions = {
                         condition.get("type"): condition
-                        for condition in disk.get("conditions", [])
+                        for condition in disk_status.get("conditions", [])
                     }
                     ready = conditions.get("Ready", {})
                     schedulable = conditions.get("Schedulable", {})
-                    scheduled = disk.get("scheduledReplica") or {}
+                    scheduled = disk_status.get("scheduledReplica") or {}
                     print(
                         f"  {disk_name}: ready={ready.get('status', 'Unknown')} "
                         f"readyReason={ready.get('reason', '') or 'none'} "
                         f"schedulable={schedulable.get('status', 'Unknown')} "
                         f"schedulableReason={schedulable.get('reason', '') or 'none'} "
                         f"scheduledReplicas={len(scheduled)} "
-                        f"storageAvailable={disk.get('storageAvailable', 0)} "
-                        f"storageMaximum={disk.get('storageMaximum', 0)} "
-                        f"storageScheduled={disk.get('storageScheduled', 0)}"
+                        f"storageAvailable={disk_status.get('storageAvailable', 0)} "
+                        f"storageMaximum={disk_status.get('storageMaximum', 0)} "
+                        f"storageScheduled={disk_status.get('storageScheduled', 0)}"
                     )
 
             problems = []
@@ -1246,7 +1246,10 @@
           register: platform_longhorn_default_disks_ready
           retries: "{{ (((platform_longhorn_wait_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
           delay: 10
-          until: platform_longhorn_default_disks_ready.rc == 0
+          until: >-
+            platform_longhorn_default_disks_ready.rc == 0 or
+            'Traceback (most recent call last):' in platform_longhorn_default_disks_ready.stderr
+          failed_when: platform_longhorn_default_disks_ready.rc != 0
           changed_when: false
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
