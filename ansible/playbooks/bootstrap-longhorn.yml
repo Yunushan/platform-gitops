@@ -786,10 +786,19 @@
                     raise SystemExit(0)
 
                 companion_name = "default-disk"
+                companion_spec = spec_disks.get(companion_name) or {}
                 companion_status = (
                     node.get("status", {}).get("diskStatus") or {}
-                ).get(companion_name)
-                if companion_name in spec_disks and companion_status:
+                ).get(companion_name) or {}
+                companion_path = companion_spec.get("path") or ""
+                companion_path_replica_names = [
+                    replica.get("metadata", {}).get("name", "")
+                    for replica in replica_items
+                    if replica.get("spec", {}).get("nodeID") == node_name
+                    and replica.get("spec", {}).get("diskPath") == companion_path
+                    and not replica.get("metadata", {}).get("deletionTimestamp")
+                ]
+                if companion_name in spec_disks:
                     companion_replicas = companion_status.get("scheduledReplica") or {}
                     companion_backing_images = (
                         companion_status.get("scheduledBackingImage") or {}
@@ -805,6 +814,7 @@
                         or companion_backing_images
                         or companion_storage_scheduled > 0
                         or companion_replica_names
+                        or companion_path_replica_names
                     ):
                         disable_companion_patch = json.dumps(
                             {
@@ -879,6 +889,9 @@
                     f"result=fail reason=active-auto-extra-disk-companion-not-safe-to-remove "
                     f"node={node_name} "
                     f"disk={disk_name} detection={reason} "
+                    f"specDisks={','.join(sorted(spec_disks))} "
+                    f"defaultCompanionStatusPresent={bool(companion_status)} "
+                    f"defaultCompanionPathReplicaObjects={len(companion_path_replica_names)} "
                     f"scheduledReplicas={len(scheduled_replicas)} "
                     f"scheduledBackingImages={len(scheduled_backing_images)} "
                     f"storageScheduled={storage_scheduled} "

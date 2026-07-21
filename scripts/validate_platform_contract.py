@@ -2523,6 +2523,8 @@ def main() -> None:
         "action=retain-active-extra-disk",
         "action=remove-empty-default-companion",
         "reason=active-auto-extra-disk-companion-not-safe-to-remove",
+        "companion_path_replica_names",
+        "defaultCompanionPathReplicaObjects",
         "reason=stale-auto-extra-disk-removal-timeout",
         'disk_name != "default-disk"',
         "scheduledBackingImage",
