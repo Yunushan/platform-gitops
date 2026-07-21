@@ -11,6 +11,7 @@
     platform_longhorn_backup_target_from_env: "{{ lookup('ansible.builtin.env', 'LONGHORN_BACKUP_TARGET') }}"
     platform_longhorn_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_WAIT_TIMEOUT') }}"
     platform_longhorn_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CLEANUP_HELM_JOBS') }}"
+    platform_longhorn_failed_release_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_FAILED_RELEASE_REPAIR') }}"
     platform_longhorn_crd_repair_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CRD_REPAIR_ENABLED') }}"
     platform_longhorn_crd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CRD_MANIFEST_URL') }}"
     platform_longhorn_prepull_images_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_PREPULL_IMAGES') }}"
@@ -27,6 +28,7 @@
     platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"
     platform_longhorn_wait_timeout_effective: "{{ platform_longhorn_wait_timeout | default(platform_longhorn_wait_timeout_from_env, true) | default(900, true) | int }}"
     platform_longhorn_cleanup_helm_jobs_effective: "{{ platform_longhorn_cleanup_helm_jobs | default(platform_longhorn_cleanup_helm_jobs_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_failed_release_repair_effective: "{{ platform_longhorn_failed_release_repair | default(platform_longhorn_failed_release_repair_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_crd_repair_enabled_effective: "{{ platform_longhorn_crd_repair_enabled | default(platform_longhorn_crd_repair_enabled_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_crd_manifest_url_effective: >-
       {{ platform_longhorn_crd_manifest_url
@@ -236,6 +238,174 @@
           changed_when: >-
             'created' in platform_longhorn_apply.stdout or
             'configured' in platform_longhorn_apply.stdout
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Repair a failed Longhorn Helm release with an in-place upgrade
+          ansible.builtin.shell: |
+            set -euo pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            release=platform-longhorn
+            release_namespace=longhorn-system
+            controller_namespace=kube-system
+            controller_job=helm-install-platform-longhorn
+            repair_job=helm-repair-platform-longhorn
+            repair_config=helm-repair-platform-longhorn-values
+            wait_timeout={{ platform_longhorn_wait_timeout_effective | int }}
+
+            release_state="$(${K} --kubeconfig "${C}" -n "${release_namespace}" get secret \
+              -l "owner=helm,name=${release}" -o json 2>/dev/null |
+              python3 -c '
+            import json
+            import sys
+
+            data = json.load(sys.stdin)
+            releases = []
+            for item in data.get("items", []):
+                labels = item.get("metadata", {}).get("labels", {})
+                try:
+                    revision = int(labels.get("version", "0"))
+                except ValueError:
+                    revision = 0
+                releases.append((revision, labels.get("status", "unknown")))
+            if releases:
+                revision, status = max(releases)
+                print(f"{revision} {status}")
+            ' || true)"
+            read -r release_revision release_status <<<"${release_state:-0 absent}"
+            echo "longhorn_helm_release_revision=${release_revision:-0} status=${release_status:-absent}"
+
+            if [ "${release_status:-absent}" != "failed" ]; then
+              echo "action=skip-failed-release-repair reason=latest-release-not-failed"
+              exit 0
+            fi
+
+            if [ "{{ platform_longhorn_failed_release_repair_effective | ternary('true', 'false') }}" != "true" ]; then
+              echo "action=skip-failed-release-repair reason=automatic-repair-disabled"
+              exit 0
+            fi
+
+            # RKE2's `reinstall` policy performs an uninstall first. Recover the
+            # failed revision with a normal Helm upgrade so volumes and CRs stay
+            # in place, then return ownership to the Helm controller.
+            job_image=""
+            service_account=""
+            for _ in $(seq 1 30); do
+              job_image="$(${K} --kubeconfig "${C}" -n "${controller_namespace}" \
+                get "job/${controller_job}" \
+                -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+              service_account="$(${K} --kubeconfig "${C}" -n "${controller_namespace}" \
+                get "job/${controller_job}" \
+                -o jsonpath='{.spec.template.spec.serviceAccountName}' 2>/dev/null || true)"
+              if [ -n "${job_image}" ] && [ -n "${service_account}" ]; then
+                break
+              fi
+              sleep 2
+            done
+            if [ -z "${job_image}" ] || [ -z "${service_account}" ]; then
+              echo "result=fail reason=longhorn-helm-controller-job-template-unavailable" >&2
+              exit 1
+            fi
+
+            ${K} --kubeconfig "${C}" -n "${controller_namespace}" patch \
+              "job/${controller_job}" --type=merge -p '{"spec":{"suspend":true}}' >/dev/null
+            ${K} --kubeconfig "${C}" -n "${controller_namespace}" delete \
+              "job/${repair_job}" --ignore-not-found=true --wait=true >/dev/null
+
+            values_file="$(mktemp)"
+            trap 'rm -f "${values_file}"' EXIT
+            ${K} --kubeconfig "${C}" -n "${controller_namespace}" get \
+              "helmchart/${release}" -o jsonpath='{.spec.valuesContent}' >"${values_file}"
+            test -s "${values_file}"
+            ${K} --kubeconfig "${C}" -n "${controller_namespace}" create configmap \
+              "${repair_config}" --from-file=values.yaml="${values_file}" \
+              --dry-run=client -o yaml | ${K} --kubeconfig "${C}" apply -f - >/dev/null
+
+            cat <<EOF | ${K} --kubeconfig "${C}" apply -f - >/dev/null
+            apiVersion: batch/v1
+            kind: Job
+            metadata:
+              name: ${repair_job}
+              namespace: ${controller_namespace}
+              labels:
+                app.kubernetes.io/name: ${release}
+                app.kubernetes.io/component: failed-release-repair
+            spec:
+              backoffLimit: 0
+              activeDeadlineSeconds: $((wait_timeout + 120))
+              template:
+                metadata:
+                  labels:
+                    app.kubernetes.io/name: ${release}
+                    app.kubernetes.io/component: failed-release-repair
+                spec:
+                  serviceAccountName: ${service_account}
+                  restartPolicy: Never
+                  containers:
+                    - name: helm
+                      image: ${job_image}
+                      imagePullPolicy: IfNotPresent
+                      command: ["/bin/bash", "-ec"]
+                      args:
+                        - |
+                          helm repo add platform-longhorn {{ platform_longhorn_chart_repo_effective | quote }} --force-update
+                          helm repo update
+                          version_args=()
+                          if [ -n {{ platform_longhorn_chart_version_effective | quote }} ]; then
+                            version_args=(--version {{ platform_longhorn_chart_version_effective | quote }})
+                          fi
+                          helm upgrade --install platform-longhorn platform-longhorn/longhorn \
+                            --namespace longhorn-system \
+                            --create-namespace \
+                            --values /config/values.yaml \
+                            --wait \
+                            --timeout ${wait_timeout}s \
+                            --history-max 10 \
+                            "\${version_args[@]}"
+                      volumeMounts:
+                        - name: values
+                          mountPath: /config
+                          readOnly: true
+                  volumes:
+                    - name: values
+                      configMap:
+                        name: ${repair_config}
+            EOF
+
+            deadline=$((SECONDS + wait_timeout + 120))
+            while [ "${SECONDS}" -lt "${deadline}" ]; do
+              complete="$(${K} --kubeconfig "${C}" -n "${controller_namespace}" get \
+                "job/${repair_job}" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+              failed="$(${K} --kubeconfig "${C}" -n "${controller_namespace}" get \
+                "job/${repair_job}" -o jsonpath='{.status.failed}' 2>/dev/null || true)"
+              if [ "${complete:-0}" -ge 1 ]; then
+                ${K} --kubeconfig "${C}" -n "${controller_namespace}" logs \
+                  "job/${repair_job}" --all-containers --tail=160 || true
+                echo "action=repair-failed-longhorn-release result=ok previousRevision=${release_revision}"
+                ${K} --kubeconfig "${C}" -n "${controller_namespace}" delete \
+                  "job/${repair_job}" "configmap/${repair_config}" --ignore-not-found=true --wait=false >/dev/null
+                ${K} --kubeconfig "${C}" -n "${controller_namespace}" delete \
+                  "job/${controller_job}" --ignore-not-found=true --wait=false >/dev/null
+                exit 0
+              fi
+              if [ "${failed:-0}" -ge 1 ]; then
+                echo "result=fail reason=longhorn-in-place-helm-upgrade-failed" >&2
+                ${K} --kubeconfig "${C}" -n "${controller_namespace}" logs \
+                  "job/${repair_job}" --all-containers --tail=240 >&2 || true
+                exit 1
+              fi
+              sleep 5
+            done
+
+            echo "result=fail reason=longhorn-in-place-helm-upgrade-timeout timeoutSeconds=$((wait_timeout + 120))" >&2
+            ${K} --kubeconfig "${C}" -n "${controller_namespace}" logs \
+              "job/${repair_job}" --all-containers --tail=240 >&2 || true
+            exit 1
+          args:
+            executable: /bin/bash
+          register: platform_longhorn_failed_release_repair
+          changed_when: "'action=repair-failed-longhorn-release result=ok' in platform_longhorn_failed_release_repair.stdout"
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
@@ -1479,12 +1649,15 @@
             "$K" --kubeconfig "$C" -n kube-system get helmchart platform-longhorn -o yaml || true
             echo "===== Helm install jobs and pods ====="
             "$K" --kubeconfig "$C" -n kube-system get job,pods -o wide | grep -E 'helm-install-platform-longhorn|platform-longhorn|longhorn|NAME' || true
-            "$K" --kubeconfig "$C" -n kube-system describe job helm-install-platform-longhorn || true
-            for pod in $("$K" --kubeconfig "$C" -n kube-system get pods -l job-name=helm-install-platform-longhorn -o name 2>/dev/null); do
-              echo "===== ${pod} logs ====="
-              "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --tail=160 || true
-              echo "===== ${pod} describe ====="
-              "$K" --kubeconfig "$C" -n kube-system describe "${pod}" || true
+            for job in helm-install-platform-longhorn helm-repair-platform-longhorn; do
+              "$K" --kubeconfig "$C" -n kube-system describe "job/${job}" 2>/dev/null || true
+              for pod in $("$K" --kubeconfig "$C" -n kube-system get pods \
+                  -l "job-name=${job}" -o name 2>/dev/null); do
+                echo "===== ${pod} logs ====="
+                "$K" --kubeconfig "$C" -n kube-system logs "${pod}" --all-containers --tail=240 || true
+                echo "===== ${pod} describe ====="
+                "$K" --kubeconfig "$C" -n kube-system describe "${pod}" || true
+              done
             done
             echo "===== Longhorn namespace ====="
             "$K" --kubeconfig "$C" get ns longhorn-system || true
