@@ -23,6 +23,7 @@
     platform_longhorn_auto_extra_disk_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK') }}"
     platform_longhorn_auto_extra_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_PATH') }}"
     platform_longhorn_auto_extra_disk_min_available_gib_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_MIN_AVAILABLE_GIB') }}"
+    platform_longhorn_storage_over_provisioning_percentage_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE') }}"
     platform_longhorn_chart_repo_effective: "{{ platform_longhorn_chart_repo | default(platform_longhorn_chart_repo_from_env, true) | default('https://charts.longhorn.io', true) }}"
     platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) }}"
     platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"
@@ -43,6 +44,7 @@
     platform_longhorn_auto_extra_disk_enabled_effective: "{{ platform_longhorn_auto_extra_disk_enabled | default(platform_longhorn_auto_extra_disk_enabled_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_auto_extra_disk_path_effective: "{{ platform_longhorn_auto_extra_disk_path | default(platform_longhorn_auto_extra_disk_path_from_env, true) | default('/home/longhorn', true) }}"
     platform_longhorn_auto_extra_disk_min_available_gib_effective: "{{ platform_longhorn_auto_extra_disk_min_available_gib | default(platform_longhorn_auto_extra_disk_min_available_gib_from_env, true) | default(40, true) | int }}"
+    platform_longhorn_storage_over_provisioning_percentage_effective: "{{ platform_longhorn_storage_over_provisioning_percentage | default(platform_longhorn_storage_over_provisioning_percentage_from_env, true) | default(100, true) | int }}"
     platform_longhorn_required_crds:
       - nodes.longhorn.io
       - engines.longhorn.io
@@ -53,6 +55,17 @@
       - settings.longhorn.io
   tasks:
     - block:
+        - name: Validate Longhorn storage overprovisioning percentage
+          ansible.builtin.assert:
+            that:
+              - platform_longhorn_storage_over_provisioning_percentage_effective | int >= 100
+              - platform_longhorn_storage_over_provisioning_percentage_effective | int <= 1000
+            fail_msg: >-
+              PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE must be an
+              integer from 100 through 1000. Increasing it does not create
+              physical storage capacity.
+          run_once: true
+
         - name: Verify RKE2 HelmChart CRD exists
           ansible.builtin.command:
             argv:
@@ -220,7 +233,7 @@
                     defaultReplicaCount: 2
                     defaultDataLocality: best-effort
                     replicaAutoBalance: best-effort
-                    storageOverProvisioningPercentage: 100
+                    storageOverProvisioningPercentage: {{ platform_longhorn_storage_over_provisioning_percentage_effective }}
                     storageMinimalAvailablePercentage: 10
                     orphanAutoDeletion: true
                     concurrentAutomaticEngineUpgradePerNodeLimit: 1
@@ -860,6 +873,7 @@
 
               python3 - "${node_name}" "${reason}" "{{ platform_longhorn_wait_timeout_effective }}" <<'PY'
             import json
+            import math
             import subprocess
             import sys
             import time
@@ -926,15 +940,232 @@
                 replica_items = replicas.get("items", [])
 
 
-            def replica_names_for(current_disk_uuid):
+            def replicas_for(current_disk_uuid):
                 if not current_disk_uuid:
                     return []
                 return [
-                    replica.get("metadata", {}).get("name", "")
+                    replica
                     for replica in replica_items
                     if replica.get("spec", {}).get("diskID") == current_disk_uuid
                     and not replica.get("metadata", {}).get("deletionTimestamp")
                 ]
+
+
+            def replica_names_for(current_disk_uuid):
+                return [
+                    replica.get("metadata", {}).get("name", "")
+                    for replica in replicas_for(current_disk_uuid)
+                ]
+
+
+            def request_replica_evictions(replicas_to_evict):
+                pending = [
+                    replica
+                    for replica in replicas_to_evict
+                    if not replica.get("spec", {}).get("evictionRequested", False)
+                ]
+                already_requested = len(replicas_to_evict) - len(pending)
+                if not pending:
+                    return {
+                        "requested": 0,
+                        "already_requested": already_requested,
+                        "linked_clone_replicas": [],
+                        "error": "",
+                    }
+
+                volumes_result = run_kubectl(
+                    ["get", "volumes.longhorn.io", "-o", "json"]
+                )
+                if volumes_result.returncode != 0:
+                    return {
+                        "requested": 0,
+                        "already_requested": already_requested,
+                        "linked_clone_replicas": [],
+                        "error": (
+                            (volumes_result.stderr or "")
+                            + (volumes_result.stdout or "")
+                        ),
+                    }
+                volume_items = json.loads(volumes_result.stdout).get("items", [])
+                linked_clone_volumes = {
+                    volume.get("metadata", {}).get("name", "")
+                    for volume in volume_items
+                    if volume.get("spec", {}).get("cloneMode") == "linked-clone"
+                }
+                linked_clone_replicas = [
+                    replica.get("metadata", {}).get("name", "")
+                    for replica in pending
+                    if replica.get("spec", {}).get("volumeName")
+                    in linked_clone_volumes
+                ]
+                requested = 0
+                for replica in pending:
+                    replica_name = replica.get("metadata", {}).get("name", "")
+                    if not replica_name or replica_name in linked_clone_replicas:
+                        continue
+                    patch = json.dumps(
+                        {"spec": {"evictionRequested": True}}
+                    )
+                    patch_result = run_kubectl(
+                        [
+                            "patch",
+                            f"replicas.longhorn.io/{replica_name}",
+                            "--type=merge",
+                            "-p",
+                            patch,
+                        ]
+                    )
+                    if patch_result.returncode != 0:
+                        return {
+                            "requested": requested,
+                            "already_requested": already_requested,
+                            "linked_clone_replicas": linked_clone_replicas,
+                            "error": (
+                                (patch_result.stderr or "")
+                                + (patch_result.stdout or "")
+                            ),
+                        }
+                    requested += 1
+                return {
+                    "requested": requested,
+                    "already_requested": already_requested,
+                    "linked_clone_replicas": linked_clone_replicas,
+                    "error": "",
+                }
+
+
+            def condition_is_true(disk_status, condition_type):
+                return any(
+                    condition.get("type") == condition_type
+                    and condition.get("status") == "True"
+                    for condition in disk_status.get("conditions", [])
+                )
+
+
+            def evacuation_capacity_state(replicas_to_evict):
+                nodes_result = run_kubectl(
+                    ["get", "nodes.longhorn.io", "-o", "json"]
+                )
+                setting_result = run_kubectl(
+                    [
+                        "get",
+                        "settings.longhorn.io/storage-over-provisioning-percentage",
+                        "-o",
+                        "json",
+                    ]
+                )
+                volumes_result = run_kubectl(
+                    ["get", "volumes.longhorn.io", "-o", "json"]
+                )
+                failed_results = [
+                    result
+                    for result in (nodes_result, setting_result, volumes_result)
+                    if result.returncode != 0
+                ]
+                if failed_results:
+                    return {
+                        "error": "".join(
+                            (result.stderr or "") + (result.stdout or "")
+                            for result in failed_results
+                        )
+                    }
+
+                nodes = json.loads(nodes_result.stdout).get("items", [])
+                setting = json.loads(setting_result.stdout)
+                try:
+                    over_provisioning_percentage = int(setting.get("value") or 100)
+                except (TypeError, ValueError):
+                    over_provisioning_percentage = 100
+
+                candidate_disk_count = 0
+                total_maximum = 0
+                total_scheduled = 0
+                for longhorn_node in nodes:
+                    node_spec = longhorn_node.get("spec", {})
+                    if not node_spec.get("allowScheduling", False):
+                        continue
+                    spec_disks = node_spec.get("disks") or {}
+                    status_disks = (
+                        longhorn_node.get("status", {}).get("diskStatus") or {}
+                    )
+                    for current_disk_name, current_disk_spec in spec_disks.items():
+                        if not current_disk_spec.get("allowScheduling", False):
+                            continue
+                        current_disk_status = status_disks.get(current_disk_name) or {}
+                        if not condition_is_true(current_disk_status, "Ready"):
+                            continue
+                        candidate_disk_count += 1
+                        storage_reserved = int(
+                            current_disk_spec.get("storageReserved") or 0
+                        )
+                        storage_maximum = max(
+                            0,
+                            int(current_disk_status.get("storageMaximum") or 0)
+                            - storage_reserved,
+                        )
+                        total_maximum += storage_maximum
+                        total_scheduled += int(
+                            current_disk_status.get("storageScheduled") or 0
+                        )
+
+                remaining_replica_bytes = sum(
+                    int(replica.get("spec", {}).get("volumeSize") or 0)
+                    for replica in replicas_to_evict
+                )
+                provisioned_limit = (
+                    total_maximum * over_provisioning_percentage // 100
+                )
+                logical_headroom = max(0, provisioned_limit - total_scheduled)
+                required_evacuation_percentage = (
+                    math.ceil(
+                        (total_scheduled + remaining_replica_bytes)
+                        * 100
+                        / total_maximum
+                    )
+                    if total_maximum > 0
+                    else 0
+                )
+
+                volumes = json.loads(volumes_result.stdout).get("items", [])
+                all_volume_bytes = 0
+                bound_volume_bytes = 0
+                released_volume_count = 0
+                for volume in volumes:
+                    volume_spec = volume.get("spec", {})
+                    desired_bytes = int(volume_spec.get("size") or 0) * int(
+                        volume_spec.get("numberOfReplicas") or 0
+                    )
+                    all_volume_bytes += desired_bytes
+                    pv_status = (
+                        volume.get("status", {})
+                        .get("kubernetesStatus", {})
+                        .get("pvStatus", "")
+                    )
+                    if pv_status == "Bound":
+                        bound_volume_bytes += desired_bytes
+                    elif pv_status == "Released":
+                        released_volume_count += 1
+
+                def required_percentage(desired_bytes):
+                    if total_maximum <= 0:
+                        return 0
+                    return math.ceil(desired_bytes * 100 / total_maximum)
+
+                return {
+                    "error": "",
+                    "over_provisioning_percentage": over_provisioning_percentage,
+                    "candidate_disk_count": candidate_disk_count,
+                    "total_maximum": total_maximum,
+                    "total_scheduled": total_scheduled,
+                    "logical_headroom": logical_headroom,
+                    "remaining_replica_bytes": remaining_replica_bytes,
+                    "required_evacuation_percentage": required_evacuation_percentage,
+                    "bound_volume_percentage": required_percentage(
+                        bound_volume_bytes
+                    ),
+                    "all_volume_percentage": required_percentage(all_volume_bytes),
+                    "released_volume_count": released_volume_count,
+                }
 
 
             replica_names = replica_names_for(disk_uuid)
@@ -1069,6 +1300,10 @@
                         {
                             "spec": {
                                 "disks": {
+                                    disk_name: {
+                                        "allowScheduling": True,
+                                        "evictionRequested": False,
+                                    },
                                     companion_name: {
                                         "allowScheduling": False,
                                         "evictionRequested": True,
@@ -1093,6 +1328,40 @@
                         )
                         raise SystemExit(evacuation_result.returncode)
 
+                    companion_replica_items = replicas_for(companion_uuid)
+                    eviction_bridge = request_replica_evictions(
+                        companion_replica_items
+                    )
+                    if eviction_bridge["error"]:
+                        sys.stderr.write(eviction_bridge["error"])
+                        print(
+                            "result=fail "
+                            "reason=default-companion-replica-eviction-request-failed "
+                            f"node={node_name} disk={companion_name}",
+                            file=sys.stderr,
+                        )
+                        raise SystemExit(5)
+                    if eviction_bridge["linked_clone_replicas"]:
+                        print(
+                            "result=fail "
+                            "reason=linked-clone-blocks-default-companion-evacuation "
+                            f"node={node_name} disk={companion_name} "
+                            "replicas="
+                            + ",".join(
+                                eviction_bridge["linked_clone_replicas"]
+                            ),
+                            file=sys.stderr,
+                        )
+                        raise SystemExit(4)
+                    print(
+                        "Longhorn duplicate disk replica eviction bridge: "
+                        f"node={node_name} disk={companion_name} "
+                        "action=request-replica-eviction-direct "
+                        f"requested={eviction_bridge['requested']} "
+                        "alreadyRequested="
+                        f"{eviction_bridge['already_requested']}"
+                    )
+
                     print(
                         f"Longhorn duplicate default companion evacuation requested: "
                         f"node={node_name} disk={companion_name} "
@@ -1103,6 +1372,8 @@
                     )
                     deadline = time.monotonic() + evacuation_timeout
                     last_state = "evacuation-state-unavailable"
+                    last_replica_count = len(companion_replica_items)
+                    stalled_since = time.monotonic()
                     while time.monotonic() < deadline:
                         time.sleep(10)
                         node, get_result = get_node()
@@ -1151,7 +1422,80 @@
                         current_storage_scheduled = int(
                             current_status.get("storageScheduled") or 0
                         )
-                        current_replica_names = replica_names_for(current_uuid)
+                        current_replica_items = replicas_for(current_uuid)
+                        current_replica_names = [
+                            replica.get("metadata", {}).get("name", "")
+                            for replica in current_replica_items
+                        ]
+                        eviction_bridge = request_replica_evictions(
+                            current_replica_items
+                        )
+                        if eviction_bridge["error"]:
+                            last_state = (
+                                "replicaEvictionRequestError="
+                                + eviction_bridge["error"].replace("\n", " ")
+                            )
+                            continue
+                        if eviction_bridge["linked_clone_replicas"]:
+                            print(
+                                "result=fail "
+                                "reason=linked-clone-blocks-default-companion-evacuation "
+                                f"node={node_name} disk={companion_name} "
+                                "replicas="
+                                + ",".join(
+                                    eviction_bridge["linked_clone_replicas"]
+                                ),
+                                file=sys.stderr,
+                            )
+                            raise SystemExit(4)
+                        current_replica_count = len(current_replica_items)
+                        if current_replica_count < last_replica_count:
+                            last_replica_count = current_replica_count
+                            stalled_since = time.monotonic()
+                        all_replica_evictions_requested = (
+                            eviction_bridge["already_requested"]
+                            + eviction_bridge["requested"]
+                            == current_replica_count
+                        )
+                        if (
+                            current_replica_count > 0
+                            and all_replica_evictions_requested
+                            and time.monotonic() - stalled_since >= 60
+                        ):
+                            capacity = evacuation_capacity_state(
+                                current_replica_items
+                            )
+                            if capacity.get("error"):
+                                last_state = (
+                                    "capacityCheckError="
+                                    + capacity["error"].replace("\n", " ")
+                                )
+                            elif (
+                                capacity["logical_headroom"]
+                                < capacity["remaining_replica_bytes"]
+                            ):
+                                print(
+                                    "result=fail "
+                                    "reason=default-companion-evacuation-capacity-insufficient "
+                                    f"node={node_name} disk={companion_name} "
+                                    "overProvisioningPercentage="
+                                    f"{capacity['over_provisioning_percentage']} "
+                                    f"candidateDisks={capacity['candidate_disk_count']} "
+                                    f"logicalHeadroomBytes={capacity['logical_headroom']} "
+                                    "remainingEvictionReplicaBytes="
+                                    f"{capacity['remaining_replica_bytes']} "
+                                    "requiredEvacuationOverProvisioningPercentage="
+                                    f"{capacity['required_evacuation_percentage']} "
+                                    "boundVolumeProvisioningPercentage="
+                                    f"{capacity['bound_volume_percentage']} "
+                                    "allVolumeProvisioningPercentage="
+                                    f"{capacity['all_volume_percentage']} "
+                                    "releasedVolumeCount="
+                                    f"{capacity['released_volume_count']} "
+                                    "action=add-dedicated-storage-or-configure-reviewed-overprovisioning",
+                                    file=sys.stderr,
+                                )
+                                raise SystemExit(6)
                         current_path_replica_names = [
                             replica.get("metadata", {}).get("name", "")
                             for replica in replica_items
@@ -1169,6 +1513,8 @@
                             f"scheduledBackingImages={len(current_backing_images)} "
                             f"storageScheduled={current_storage_scheduled} "
                             f"replicaObjects={len(current_replica_names)} "
+                            "evictionRequestedReplicaObjects="
+                            f"{eviction_bridge['already_requested'] + eviction_bridge['requested']} "
                             f"pathReplicaObjects={len(current_path_replica_names)} "
                             f"blockingPathReplicaObjects={len(current_blocking_path_replica_names)}"
                         )
@@ -1317,6 +1663,7 @@
               {% for node in groups['rke2_servers'] %}
               ===== {{ node }} =====
               {{ hostvars[node].platform_longhorn_auto_extra_disk_config.stdout | default('automatic extra disk check did not run') }}
+              {{ hostvars[node].platform_longhorn_auto_extra_disk_config.stderr | default('') }}
               {% endfor %}
           run_once: true
           when: platform_longhorn_auto_extra_disk_enabled_effective | bool

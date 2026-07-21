@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOK_DIR = ROOT / "ansible" / "playbooks"
 ARGOCD_REPAIR_PLAYBOOK = PLAYBOOK_DIR / "repair-argocd-service-path.yml"
 COREDNS_REPAIR_PLAYBOOK = PLAYBOOK_DIR / "repair-cluster-dns.yml"
+LONGHORN_BOOTSTRAP_PLAYBOOK = PLAYBOOK_DIR / "bootstrap-longhorn.yml"
 SHELL_BLOCK_RE = re.compile(
     r"^(?P<indent>\s*)(?:ansible\.builtin\.)?(?:shell|command):\s*(?P<style>[|>])(?:[-+])?\s*(?:#.*)?$"
 )
@@ -169,13 +170,38 @@ def validate_coredns_rollout_contract() -> list[str]:
     return errors
 
 
+def validate_longhorn_embedded_python() -> list[str]:
+    text = LONGHORN_BOOTSTRAP_PLAYBOOK.read_text(encoding="utf-8")
+    errors: list[str] = []
+    reconciliation_script = re.search(
+        r'''(?ms)^\s*python3 - "\$\{node_name\}" "\$\{reason\}" .*? <<'PY'\s*$\n'''
+        r"(?P<body>.*?)^\s*PY\s*$",
+        text,
+    )
+    if reconciliation_script is None:
+        return ["Longhorn bootstrap is missing automatic disk reconciliation Python"]
+    try:
+        compile(
+            textwrap.dedent(reconciliation_script.group("body")),
+            str(LONGHORN_BOOTSTRAP_PLAYBOOK),
+            "exec",
+        )
+    except SyntaxError as exc:
+        errors.append(f"Longhorn automatic disk reconciliation Python is invalid: {exc}")
+    return errors
+
+
 def main() -> int:
     bash = shutil.which("bash")
     if not bash:
         print("bash is required for Ansible inline shell syntax validation.")
         return 1
 
-    playbook_contract_errors = validate_argocd_cleanup_contract() + validate_coredns_rollout_contract()
+    playbook_contract_errors = (
+        validate_argocd_cleanup_contract()
+        + validate_coredns_rollout_contract()
+        + validate_longhorn_embedded_python()
+    )
     for path in playbooks():
         playbook_contract_errors.extend(validate_free_form_comment_quotes(path))
     if playbook_contract_errors:

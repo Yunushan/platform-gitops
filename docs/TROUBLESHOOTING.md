@@ -296,6 +296,15 @@ make platform-monitoring-repair
 The repair stops with pod, PVC, and Longhorn diagnostics when capacity or a
 volume attachment still prevents either backend from becoming Ready.
 
+Longhorn duplicate-disk evacuation also stops early when ready disks lack the
+logical headroom needed to rebuild evicted replicas. Prefer adding dedicated
+storage or removing confirmed-unused `Released` PVs after backup. If physical
+usage, alerts, and growth forecasts justify thin provisioning, set
+`PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE` in the ignored private
+deployment environment, rerender and sync the private GitOps values, then rerun
+`make platform-longhorn-bootstrap`. The default remains `100`; increasing it
+does not create physical capacity.
+
 To skip only Loki `/ready`, Velero `BackupStorageLocation`, or Velero backup
 schedule enforcement during a temporary debug run:
 

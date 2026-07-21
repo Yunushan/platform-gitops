@@ -202,7 +202,8 @@ platform_step_ca_host=ca.example.test
             ),
             "longhorn": write(
                 repo / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/values.yaml",
-                'defaultSettings:\n  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n',
+                'defaultSettings:\n  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n'
+                "  storageOverProvisioningPercentage: 100\n",
             ),
             "forgejo": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml"),
             "woodpecker": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"),
@@ -224,6 +225,7 @@ platform_step_ca_host=ca.example.test
             "FORGEJO_STORAGE_CLASS": "longhorn-critical",
             "FORGEJO_IMAGE_TAG": "15.0.3-rootless",
             "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn@eu-test-1/",
+            "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE": "275",
             "WOODPECKER_DATA_SIZE": "11Gi",
             "WOODPECKER_STORAGE_CLASS": "longhorn-standard",
             "WOODPECKER_ADMIN_USERS": "platform-admin",
@@ -388,7 +390,11 @@ platform_step_ca_host=ca.example.test
             'HOST: "forgejo-mariadb.example.test:3306"',
             'name: "forgejo-mariadb-test"',
         )
-        assert_contains(paths["longhorn"], "s3://platform-test-longhorn@eu-test-1/")
+        assert_contains(
+            paths["longhorn"],
+            "s3://platform-test-longhorn@eu-test-1/",
+            "storageOverProvisioningPercentage: 275",
+        )
         assert_contains(
             paths["cnpg"],
             'namespace: "platform-databases"',

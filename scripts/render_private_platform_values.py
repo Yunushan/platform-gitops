@@ -96,12 +96,37 @@ def platform_host(
     return f"{default_prefix}.{domain}" if domain else ""
 
 
-def render_longhorn(path: Path, backup_target: str) -> bool:
+def render_longhorn(
+    path: Path,
+    backup_target: str,
+    storage_over_provisioning_percentage: str | None = None,
+) -> bool:
+    if storage_over_provisioning_percentage is None:
+        storage_over_provisioning_percentage = os.environ.get(
+            "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE",
+            "100",
+        ).strip() or "100"
+    if (
+        not storage_over_provisioning_percentage.isdigit()
+        or not 100 <= int(storage_over_provisioning_percentage) <= 1000
+    ):
+        raise SystemExit(
+            "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE "
+            "must be an integer from 100 through 1000"
+        )
     text = path.read_text(encoding="utf-8")
     rendered = re.sub(
         r"^(\s*backupTarget:\s*).*$",
         lambda match: f'{match.group(1)}"{backup_target}"',
         text,
+        flags=re.MULTILINE,
+    )
+    rendered = re.sub(
+        r"^(\s*storageOverProvisioningPercentage:\s*).*$",
+        lambda match: (
+            f"{match.group(1)}{storage_over_provisioning_percentage}"
+        ),
+        rendered,
         flags=re.MULTILINE,
     )
     changed = rendered != text
@@ -2154,6 +2179,10 @@ def main() -> int:
             )
         )
         print(f"LONGHORN_BACKUP_TARGET={os.environ.get('LONGHORN_BACKUP_TARGET', '')}")
+        print(
+            "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE="
+            f"{os.environ.get('PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE', '100')}"
+        )
         print(
             "LOKI_HOST="
             + (
