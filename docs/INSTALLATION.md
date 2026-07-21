@@ -689,6 +689,13 @@ StorageClass enforcement. It also sets
 `PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS=false`, so unrelated existing Argo
 CD Applications do not block this focused repair check.
 
+The premium Argo CD profile intentionally uses headless repo-server and Redis
+HAProxy Services. `platform-status` and the health gates treat those Services as
+ready when they have ready EndpointSlice addresses; `clusterIP: None` is not a
+failure for these internal DNS-discovered Services. Redis HAProxy also uses a
+zero-surge rolling strategy so its required three-node anti-affinity cannot
+leave a fourth rollout pod permanently Pending.
+
 If Woodpecker remains `Synced` but `Progressing`, or agents still show an old
 `next-*` image after you pushed corrected values, run the focused repair. It
 hard-refreshes and syncs the Woodpecker Argo CD application first, waits for
@@ -918,8 +925,13 @@ restricted registries or slow pulls, override the image or timeout:
 ```bash
 PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE=<internal-image-with-curl-or-wget> \
 PLATFORM_APP_HEALTH_SERVICE_CHECK_TIMEOUT=300 \
+PLATFORM_APP_HEALTH_SERVICE_CHECK_CREATE_ATTEMPTS=5 \
 make platform-app-health
 ```
+
+Probe Job creation is retried automatically. If admission or API availability
+still prevents creation, the health report includes each apply error and recent
+Job events instead of reporting only a missing probe pod count.
 
 To skip required StorageClass enforcement during a temporary non-Longhorn subset
 debug run:

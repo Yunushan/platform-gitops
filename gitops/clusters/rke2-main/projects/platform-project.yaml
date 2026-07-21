@@ -73,6 +73,8 @@ spec:
       kind: ClusterSecretStore
     - group: kyverno.io
       kind: ClusterPolicy
+    - group: networking.k8s.io
+      kind: IngressClass
     - group: rbac.authorization.k8s.io
       kind: ClusterRole
     - group: rbac.authorization.k8s.io

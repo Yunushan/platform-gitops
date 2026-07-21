@@ -156,6 +156,87 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Reconcile Traefik IngressClass permission in active platform project
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        if ! "$K" --kubeconfig "$C" -n argocd get appproject/platform >/dev/null 2>&1; then
+          echo "argocd_platform_project=absent ingressclass_permission=skipped"
+          exit 0
+        fi
+
+        project_json="$(mktemp)"
+        patch_json="$(mktemp)"
+        trap 'rm -f "${project_json}" "${patch_json}"' EXIT
+        "$K" --kubeconfig "$C" -n argocd get appproject/platform -o json >"${project_json}"
+        python3 - "${project_json}" "${patch_json}" <<'PY'
+        import json
+        import sys
+
+        source_path, patch_path = sys.argv[1:]
+        with open(source_path, encoding="utf-8") as handle:
+            project = json.load(handle)
+
+        required = {"group": "networking.k8s.io", "kind": "IngressClass"}
+        whitelist = project.get("spec", {}).get("clusterResourceWhitelist", [])
+        changed = required not in whitelist
+        if changed:
+            whitelist.append(required)
+
+        with open(patch_path, "w", encoding="utf-8") as handle:
+            json.dump({"changed": changed, "spec": {"clusterResourceWhitelist": whitelist}}, handle)
+        PY
+
+        changed="$(python3 - "${patch_json}" <<'PY'
+        import json
+        import sys
+        with open(sys.argv[1], encoding="utf-8") as handle:
+            print(str(json.load(handle)["changed"]).lower())
+        PY
+        )"
+        if [ "${changed}" != "true" ]; then
+          echo "argocd_platform_project=present ingressclass_permission=present"
+          exit 0
+        fi
+
+        python3 - "${patch_json}" <<'PY'
+        import json
+        import sys
+        with open(sys.argv[1], encoding="utf-8") as handle:
+            patch = json.load(handle)
+        patch.pop("changed", None)
+        with open(sys.argv[1], "w", encoding="utf-8") as handle:
+            json.dump(patch, handle)
+        PY
+        "$K" --kubeconfig "$C" -n argocd patch appproject/platform \
+          --type merge --patch-file "${patch_json}" >/dev/null
+        echo "argocd_platform_project=patched ingressclass_permission=added"
+
+        if "$K" --kubeconfig "$C" -n argocd get application/traefik >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n argocd annotate application/traefik \
+            argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+          phase="$("$K" --kubeconfig "$C" -n argocd get application/traefik \
+            -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
+          if [ "${phase}" != "Running" ]; then
+            revision="$("$K" --kubeconfig "$C" -n argocd get application/traefik \
+              -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+            revision="${revision:-main}"
+            "$K" --kubeconfig "$C" -n argocd patch application/traefik --type merge \
+              -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")" >/dev/null
+            echo "argocd_application_traefik=refresh-sync-requested revision=${revision}"
+          else
+            echo "argocd_application_traefik=sync-already-running"
+          fi
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_argocd_platform_project_repair
+      changed_when: "'ingressclass_permission=added' in platform_argocd_platform_project_repair.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Patch active Argo CD command parameters and restart active workloads
       ansible.builtin.shell: |
         set -o pipefail

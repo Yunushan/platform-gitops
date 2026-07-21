@@ -140,9 +140,13 @@
             if "$K" --kubeconfig "$C" -n argocd get "service/${service}" >/dev/null 2>&1; then
               cluster_ip="$("$K" --kubeconfig "$C" -n argocd get "service/${service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
               endpoints="$(service_ready_endpoint_count "${service}")"
-              printf '  service/%-30s clusterIP=%-15s ready_endpoints=%s\n' \
-                "${service}" "${cluster_ip:-missing}" "${endpoints}"
-              if [ -z "${cluster_ip}" ] || [ "${cluster_ip}" = "None" ] || [ "${endpoints}" -lt 1 ]; then
+              service_mode=cluster-ip
+              if [ "${cluster_ip}" = "None" ]; then
+                service_mode=headless
+              fi
+              printf '  service/%-30s clusterIP=%-15s mode=%-10s ready_endpoints=%s\n' \
+                "${service}" "${cluster_ip:-missing}" "${service_mode}" "${endpoints}"
+              if [ -z "${cluster_ip}" ] || [ "${endpoints}" -lt 1 ]; then
                 runtime_not_ready=$((runtime_not_ready + 1))
               fi
             else
@@ -151,7 +155,7 @@
             fi
           done
           if [ "${runtime_not_ready}" -gt 0 ]; then
-            echo "Argo CD runtime readiness: NOT READY - ${runtime_not_ready} configured runtime service(s) are missing or have no ready endpoints."
+            echo "Argo CD runtime readiness: NOT READY - ${runtime_not_ready} configured runtime service(s) are missing, have no service address, or have no ready endpoints."
             echo "Run: make platform-argocd-service-repair"
           else
             echo "Argo CD runtime readiness: server, repo-server, and Redis service endpoints are present."

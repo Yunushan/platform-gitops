@@ -61,6 +61,7 @@ REQUIRED_CLUSTER_RESOURCE_WHITELIST = {
     ("external-secrets.io", "ClusterPushSecret"),
     ("external-secrets.io", "ClusterSecretStore"),
     ("kyverno.io", "ClusterPolicy"),
+    ("networking.k8s.io", "IngressClass"),
     ("rbac.authorization.k8s.io", "ClusterRole"),
     ("rbac.authorization.k8s.io", "ClusterRoleBinding"),
     ("scheduling.k8s.io", "PriorityClass"),

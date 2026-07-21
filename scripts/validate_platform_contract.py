@@ -893,7 +893,7 @@ def main() -> None:
             "  resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
             f"repoServer:\n  replicas: {repo_replicas}",
             "applicationSet:\n  replicas: 2\n  resources:\n    requests:\n      cpu: 100m\n      memory: 128Mi\n    limits:\n      memory: 512Mi",
-            "redis-ha:\n  enabled: true\n  haproxy:\n    resources:\n      requests:\n        cpu: 50m\n        memory: 64Mi\n      limits:\n        memory: 128Mi",
+            "redis-ha:\n  enabled: true\n  haproxy:\n    deploymentStrategy:\n      type: RollingUpdate\n      rollingUpdate:\n        maxSurge: 0\n        maxUnavailable: 1\n    resources:\n      requests:\n        cpu: 50m\n        memory: 64Mi\n      limits:\n        memory: 128Mi",
             "  redis:\n    resources:\n      requests:\n        cpu: 100m\n        memory: 128Mi\n      limits:\n        memory: 512Mi",
             "    sentinel:\n      resources:\n        requests:\n          cpu: 50m\n          memory: 64Mi\n        limits:\n          memory: 128Mi",
             "dex:\n  resources:\n    requests:\n      cpu: 50m\n      memory: 64Mi\n    limits:\n      memory: 256Mi",
@@ -1792,7 +1792,10 @@ def main() -> None:
         "PLATFORM_APP_HEALTH_ARGOCD_RUNTIME=false make platform-app-health",
         "configured_repo_server=${repo_server} repo_service=${repo_service}",
         "configured_redis_server=${redis_server} redis_service=${redis_service}",
+        "service_mode=headless",
+        "argocd-service-has-no-address",
         "argocd-service-has-no-ready-endpoints",
+        "reason=surplus-rollout-pod",
         "platform_app_health_argocd_runtime_probe",
     ):
         require_text(
@@ -2094,6 +2097,16 @@ def main() -> None:
         "PLATFORM_APP_HEALTH_SERVICE_CHECK_TIMEOUT",
         "platform-app-health must expose a diagnostic pod timeout override",
     )
+    for needle in (
+        "PLATFORM_APP_HEALTH_SERVICE_CHECK_CREATE_ATTEMPTS",
+        "service-path-check-job-create-failed",
+        "job_apply_summary expected=${expected} created=${created}",
+    ):
+        require_text(
+            health_text,
+            needle,
+            f"platform-app-health must retry and diagnose service-path probe creation: {needle}",
+        )
     require_text(
         health_text,
         "no-curl-or-wget",
@@ -2115,6 +2128,7 @@ def main() -> None:
         "configured repo-server:",
         "configured Redis:",
         "ready_endpoints=",
+        "service_mode=headless",
         "Argo CD runtime readiness: NOT READY",
         "Run: make platform-argocd-service-repair",
         "service_ready_endpoint_count",

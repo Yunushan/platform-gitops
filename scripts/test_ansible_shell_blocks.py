@@ -124,6 +124,9 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "make_headless argo-cd-redis-ha-haproxy",
         '"clusterIP": "None"',
         "PLATFORM_ARGOCD_SERVICE_REPAIR_HEADLESS_INTERNALS",
+        "Reconcile Traefik IngressClass permission in active platform project",
+        'required = {"group": "networking.k8s.io", "kind": "IngressClass"}',
+        "argocd_application_traefik=refresh-sync-requested",
     )
     for fragment in required_fragments:
         if fragment not in text:

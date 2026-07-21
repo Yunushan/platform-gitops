@@ -38,6 +38,7 @@
     platform_app_health_node_ingress_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT') }}"
     platform_app_health_service_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE') }}"
     platform_app_health_service_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_TIMEOUT') }}"
+    platform_app_health_service_check_create_attempts_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_CREATE_ATTEMPTS') }}"
     platform_app_health_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_harbor_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'HARBOR_ADMIN_SECRET_NAME') }}"
@@ -92,6 +93,7 @@
     platform_app_health_node_ingress_strict_effective: "{{ platform_app_health_node_ingress_strict | default(platform_app_health_node_ingress_strict_from_env, true) | default(false, true) | bool }}"
     platform_app_health_service_check_image_effective: "{{ platform_app_health_service_check_image | default(platform_app_health_service_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_app_health_service_check_timeout_effective: "{{ platform_app_health_service_check_timeout | default(platform_app_health_service_check_timeout_from_env, true) | default(120, true) | string | regex_replace('s$', '') | int }}"
+    platform_app_health_service_check_create_attempts_effective: "{{ platform_app_health_service_check_create_attempts | default(platform_app_health_service_check_create_attempts_from_env, true) | default(3, true) | int }}"
     platform_app_health_woodpecker_image_tag_effective: "{{ platform_app_health_woodpecker_image_tag | default(platform_app_health_woodpecker_image_tag_from_env, true) | default(platform_woodpecker_image_tag_from_env, true) | default('v3.16.0', true) }}"
     platform_harbor_admin_secret_name_effective: "{{ platform_harbor_admin_secret_name | default(platform_harbor_admin_secret_name_from_env, true) | default('harbor-admin', true) }}"
     platform_harbor_secret_key_secret_name_effective: "{{ platform_harbor_secret_key_secret_name | default(platform_harbor_secret_key_secret_name_from_env, true) | default('harbor-secret-key', true) }}"
@@ -140,6 +142,7 @@
           - platform_app_health_gui_apps_effective | length > 0
           - platform_app_health_service_check_image_effective | length > 0
           - platform_app_health_service_check_timeout_effective | int > 0
+          - platform_app_health_service_check_create_attempts_effective | int > 0
           - platform_app_health_woodpecker_image_tag_effective | length > 0
           - platform_harbor_admin_secret_name_effective | length > 0
           - platform_harbor_secret_key_secret_name_effective | length > 0
@@ -362,6 +365,32 @@
           argocd_helm_stack=true
         fi
 
+        fully_available_owner_deployment() {
+          namespace="$1"
+          pod="$2"
+          owner_kind="$("$K" --kubeconfig "$C" -n "${namespace}" get "pod/${pod}" \
+            -o jsonpath='{.metadata.ownerReferences[0].kind}' 2>/dev/null || true)"
+          owner_name="$("$K" --kubeconfig "$C" -n "${namespace}" get "pod/${pod}" \
+            -o jsonpath='{.metadata.ownerReferences[0].name}' 2>/dev/null || true)"
+          [ "${owner_kind}" = "ReplicaSet" ] || return 1
+          deployment_kind="$("$K" --kubeconfig "$C" -n "${namespace}" get "replicaset/${owner_name}" \
+            -o jsonpath='{.metadata.ownerReferences[0].kind}' 2>/dev/null || true)"
+          deployment_name="$("$K" --kubeconfig "$C" -n "${namespace}" get "replicaset/${owner_name}" \
+            -o jsonpath='{.metadata.ownerReferences[0].name}' 2>/dev/null || true)"
+          [ "${deployment_kind}" = "Deployment" ] || return 1
+          stats="$("$K" --kubeconfig "$C" -n "${namespace}" get "deployment/${deployment_name}" \
+            -o jsonpath='{.spec.replicas}{"|"}{.status.readyReplicas}{"|"}{.status.availableReplicas}' 2>/dev/null || true)"
+          IFS='|' read -r desired ready available <<< "${stats}"
+          case "${desired:-}" in ''|*[!0-9]*) desired=0 ;; esac
+          case "${ready:-}" in ''|*[!0-9]*) ready=0 ;; esac
+          case "${available:-}" in ''|*[!0-9]*) available=0 ;; esac
+          if [ "${desired}" -gt 0 ] && [ "${ready}" -ge "${desired}" ] && [ "${available}" -ge "${desired}" ]; then
+            printf '%s' "${deployment_name}"
+            return 0
+          fi
+          return 1
+        }
+
         for namespace in ${namespaces}; do
           echo "===== namespace ${namespace} pods ====="
           if ! "$K" --kubeconfig "$C" get "namespace/${namespace}" >/dev/null 2>&1; then
@@ -388,6 +417,17 @@
                   ;;
               esac
             fi
+            case "${status}" in
+              Running|Succeeded|Completed)
+                ;;
+              *)
+                owner_deployment="$(fully_available_owner_deployment "${namespace}" "${name}" || true)"
+                if [ -n "${owner_deployment}" ]; then
+                  echo "pod=${name} ready=${ready} status=${status} result=skip reason=surplus-rollout-pod deployment=${owner_deployment}"
+                  continue
+                fi
+                ;;
+            esac
             echo "pod=${name} ready=${ready} status=${status}"
             case "${status}" in
               Running)
@@ -508,8 +548,15 @@
 
           cluster_ip="$("$K" --kubeconfig "$C" -n argocd get "service/${service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
           endpoints="$(service_ready_endpoint_count "${service}")"
-          echo "service=${service} port=${port} cluster_ip=${cluster_ip:-missing} ready_endpoints=${endpoints}"
-          if [ -z "${cluster_ip}" ] || [ "${cluster_ip}" = "None" ] || [ "${endpoints}" -lt 1 ]; then
+          service_mode=cluster-ip
+          if [ "${cluster_ip}" = "None" ]; then
+            service_mode=headless
+          fi
+          echo "service=${service} port=${port} cluster_ip=${cluster_ip:-missing} service_mode=${service_mode} ready_endpoints=${endpoints}"
+          if [ -z "${cluster_ip}" ]; then
+            echo "result=fail reason=argocd-service-has-no-address service=${service}"
+            failed=1
+          elif [ "${endpoints}" -lt 1 ]; then
             echo "result=fail reason=argocd-service-has-no-ready-endpoints service=${service}"
             failed=1
           fi
@@ -2729,7 +2776,7 @@
 
     - name: Probe Argo CD and Woodpecker ClusterIP service paths from pods pinned to every RKE2 node
       ansible.builtin.shell: |
-        set -u
+        set -uo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         NAMESPACE=kube-system
@@ -2739,6 +2786,7 @@
         CONNECT_TIMEOUT={{ platform_app_health_connect_timeout_effective }}
         MAX_TIME={{ platform_app_health_max_time_effective }}
         JOB_TIMEOUT={{ platform_app_health_service_check_timeout_effective }}
+        JOB_APPLY_ATTEMPTS={{ platform_app_health_service_check_create_attempts_effective }}
         failed=0
 
         safe_name() {
@@ -2764,11 +2812,15 @@
         fi
 
         expected=0
+        created=0
         for node in ${nodes}; do
           expected=$((expected + 1))
           node_safe="$(safe_name "${node}")"
           job_name="platform-app-svc-${node_safe}-${CHECK_ID}"
-          cat <<YAML | "$K" --kubeconfig "$C" apply -f -
+          apply_attempt=1
+          apply_rc=1
+          while [ "${apply_attempt}" -le "${JOB_APPLY_ATTEMPTS}" ]; do
+            apply_output="$(cat <<YAML | "$K" --kubeconfig "$C" apply -f - 2>&1
         apiVersion: batch/v1
         kind: Job
         metadata:
@@ -2904,23 +2956,45 @@
                       probe_tcp woodpecker-grpc woodpecker-server.woodpecker.svc.cluster.local 9000
                       exit "\${failed}"
         YAML
+            )"
+            apply_rc=$?
+            echo "job_apply node=${node} job=${job_name} attempt=${apply_attempt}/${JOB_APPLY_ATTEMPTS} rc=${apply_rc}"
+            if [ -n "${apply_output}" ]; then
+              printf '%s\n' "${apply_output}" | sed 's/^/job_apply_output=/'
+            fi
+            if [ "${apply_rc}" -eq 0 ]; then
+              created=$((created + 1))
+              break
+            fi
+            apply_attempt=$((apply_attempt + 1))
+            if [ "${apply_attempt}" -le "${JOB_APPLY_ATTEMPTS}" ]; then
+              sleep 2
+            fi
+          done
+          if [ "${apply_rc}" -ne 0 ]; then
+            echo "result=fail reason=service-path-check-job-create-failed node=${node} job=${job_name}"
+            failed=1
+          fi
         done
 
-        deadline=$(( $(date +%s) + JOB_TIMEOUT ))
-        while [ "$(date +%s)" -lt "${deadline}" ]; do
-          succeeded="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
-            -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
-            -o jsonpath='{range .items[*]}{.status.succeeded}{"\n"}{end}' 2>/dev/null |
-            awk '{ total += $1 + 0 } END { print total + 0 }')"
-          failed_jobs="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
-            -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
-            -o jsonpath='{range .items[*]}{.status.failed}{"\n"}{end}' 2>/dev/null |
-            awk '{ total += $1 + 0 } END { print total + 0 }')"
-          if [ "$((succeeded + failed_jobs))" -ge "${expected}" ]; then
-            break
-          fi
-          sleep 3
-        done
+        echo "job_apply_summary expected=${expected} created=${created}"
+        if [ "${created}" -gt 0 ]; then
+          deadline=$(( $(date +%s) + JOB_TIMEOUT ))
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            succeeded="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
+              -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+              -o jsonpath='{range .items[*]}{.status.succeeded}{"\n"}{end}' 2>/dev/null |
+              awk '{ total += $1 + 0 } END { print total + 0 }')"
+            failed_jobs="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
+              -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
+              -o jsonpath='{range .items[*]}{.status.failed}{"\n"}{end}' 2>/dev/null |
+              awk '{ total += $1 + 0 } END { print total + 0 }')"
+            if [ "$((succeeded + failed_jobs))" -ge "${created}" ]; then
+              break
+            fi
+            sleep 3
+          done
+        fi
 
         pods="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get pods \
           -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" \
@@ -2938,6 +3012,12 @@
         pod_count="$(printf '%s\n' "${pods}" | awk 'NF { count++ } END { print count + 0 }')"
         if [ "${pod_count}" -lt "${expected}" ]; then
           echo "result=fail reason=missing-service-path-check-pods expected=${expected} actual=${pod_count}"
+          echo "===== service-path check jobs ====="
+          "$K" --kubeconfig "$C" -n "${NAMESPACE}" get jobs \
+            -l "app.kubernetes.io/name=${CHECK_NAME},platform.gitops/check-id=${CHECK_ID}" -o wide 2>&1 || true
+          echo "===== recent service-path check events ====="
+          "$K" --kubeconfig "$C" -n "${NAMESPACE}" get events \
+            --field-selector involvedObject.kind=Job --sort-by=.lastTimestamp 2>&1 | tail -40 || true
           failed=1
         fi
 
