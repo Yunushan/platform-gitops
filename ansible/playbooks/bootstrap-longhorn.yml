@@ -688,7 +688,7 @@
                 exit 0
               fi
 
-              python3 - "${node_name}" "${reason}" <<'PY'
+              python3 - "${node_name}" "${reason}" "{{ platform_longhorn_wait_timeout_effective }}" <<'PY'
             import json
             import subprocess
             import sys
@@ -696,6 +696,7 @@
 
             node_name = sys.argv[1]
             reason = sys.argv[2]
+            evacuation_timeout = int(sys.argv[3])
             kubectl = [
                 "/var/lib/rancher/rke2/bin/kubectl",
                 "--kubeconfig",
@@ -885,6 +886,136 @@
                         )
                         raise SystemExit(1)
 
+                    evacuation_patch = json.dumps(
+                        {
+                            "spec": {
+                                "disks": {
+                                    companion_name: {
+                                        "allowScheduling": False,
+                                        "evictionRequested": True,
+                                    }
+                                }
+                            }
+                        }
+                    )
+                    evacuation_result = run_kubectl(
+                        [
+                            "patch",
+                            f"nodes.longhorn.io/{node_name}",
+                            "--type=merge",
+                            "-p",
+                            evacuation_patch,
+                        ]
+                    )
+                    if evacuation_result.returncode != 0:
+                        sys.stderr.write(
+                            (evacuation_result.stderr or "")
+                            + (evacuation_result.stdout or "")
+                        )
+                        raise SystemExit(evacuation_result.returncode)
+
+                    print(
+                        f"Longhorn duplicate default companion evacuation requested: "
+                        f"node={node_name} disk={companion_name} "
+                        "action=request-default-companion-evacuation "
+                        f"replicaObjects={len(companion_replica_names)} "
+                        f"pathReplicaObjects={len(companion_path_replica_names)}"
+                    )
+                    deadline = time.monotonic() + evacuation_timeout
+                    last_state = "evacuation-state-unavailable"
+                    while time.monotonic() < deadline:
+                        time.sleep(10)
+                        node, get_result = get_node()
+                        if node is None:
+                            last_state = (get_result.stderr or get_result.stdout or "")
+                            continue
+
+                        current_spec_disks = node.get("spec", {}).get("disks") or {}
+                        if companion_name not in current_spec_disks:
+                            print(
+                                f"Longhorn evacuated default companion cleanup: "
+                                f"node={node_name} disk={companion_name} "
+                                "action=remove-evacuated-default-companion"
+                            )
+                            print(
+                                f"Longhorn automatic extra disk retained as active node storage: "
+                                f"node={node_name} disk={disk_name} "
+                                "action=retain-active-extra-disk"
+                            )
+                            raise SystemExit(0)
+
+                        replicas_result = run_kubectl(
+                            ["get", "replicas.longhorn.io", "-o", "json"]
+                        )
+                        if replicas_result.returncode != 0:
+                            last_state = (
+                                (replicas_result.stderr or "")
+                                + (replicas_result.stdout or "")
+                            )
+                            continue
+                        replica_items = json.loads(replicas_result.stdout).get("items", [])
+                        current_status = (
+                            node.get("status", {}).get("diskStatus") or {}
+                        ).get(companion_name) or {}
+                        current_uuid = current_status.get("diskUUID") or ""
+                        current_replicas = current_status.get("scheduledReplica") or {}
+                        current_backing_images = (
+                            current_status.get("scheduledBackingImage") or {}
+                        )
+                        current_storage_scheduled = int(
+                            current_status.get("storageScheduled") or 0
+                        )
+                        current_replica_names = replica_names_for(current_uuid)
+                        current_path_replica_names = [
+                            replica.get("metadata", {}).get("name", "")
+                            for replica in replica_items
+                            if replica.get("spec", {}).get("nodeID") == node_name
+                            and replica.get("spec", {}).get("diskPath") == companion_path
+                            and not replica.get("metadata", {}).get("deletionTimestamp")
+                        ]
+                        last_state = (
+                            f"scheduledReplicas={len(current_replicas)} "
+                            f"scheduledBackingImages={len(current_backing_images)} "
+                            f"storageScheduled={current_storage_scheduled} "
+                            f"replicaObjects={len(current_replica_names)} "
+                            f"pathReplicaObjects={len(current_path_replica_names)}"
+                        )
+                        if (
+                            current_replicas
+                            or current_backing_images
+                            or current_storage_scheduled > 0
+                            or current_replica_names
+                            or current_path_replica_names
+                        ):
+                            continue
+
+                        delete_companion_patch = json.dumps(
+                            {"spec": {"disks": {companion_name: None}}}
+                        )
+                        delete_companion_result = run_kubectl(
+                            [
+                                "patch",
+                                f"nodes.longhorn.io/{node_name}",
+                                "--type=merge",
+                                "-p",
+                                delete_companion_patch,
+                            ]
+                        )
+                        if delete_companion_result.returncode != 0:
+                            last_state = (
+                                (delete_companion_result.stderr or "")
+                                + (delete_companion_result.stdout or "")
+                            )
+                            continue
+
+                    print(
+                        f"result=fail reason=default-companion-evacuation-timeout "
+                        f"node={node_name} disk={companion_name} "
+                        f"timeoutSeconds={evacuation_timeout} {last_state}",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(3)
+
                 print(
                     f"result=fail reason=active-auto-extra-disk-companion-not-safe-to-remove "
                     f"node={node_name} "
@@ -980,7 +1111,10 @@
           register: platform_longhorn_auto_extra_disk_config
           changed_when: >-
             'Adding automatic extra Longhorn disk' in platform_longhorn_auto_extra_disk_config.stdout or
-            'action=remove-stale-auto-extra-disk' in platform_longhorn_auto_extra_disk_config.stdout
+            'action=remove-stale-auto-extra-disk' in platform_longhorn_auto_extra_disk_config.stdout or
+            'action=remove-empty-default-companion' in platform_longhorn_auto_extra_disk_config.stdout or
+            'action=request-default-companion-evacuation' in platform_longhorn_auto_extra_disk_config.stdout or
+            'action=remove-evacuated-default-companion' in platform_longhorn_auto_extra_disk_config.stdout
           when: platform_longhorn_auto_extra_disk_enabled_effective | bool
 
         - name: Show Longhorn automatic extra disk decisions
@@ -1182,12 +1316,15 @@
             set -o pipefail
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
-            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json |
-              python3 -c '
+            readiness_json="$(mktemp)"
+            trap 'rm -f "${readiness_json}"' EXIT
+            "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json >"${readiness_json}"
+            python3 - "${readiness_json}" <<'PY'
             import json
             import sys
 
-            data = json.load(sys.stdin)
+            with open(sys.argv[1], encoding="utf-8") as stream:
+                data = json.load(stream)
             missing_spec = []
             missing_status = []
             not_schedulable = []
@@ -1253,7 +1390,7 @@
             if problems:
                 print("Longhorn disk readiness problems: " + "; ".join(problems), file=sys.stderr)
                 sys.exit(1)
-            '
+            PY
           args:
             executable: /bin/bash
           register: platform_longhorn_default_disks_ready

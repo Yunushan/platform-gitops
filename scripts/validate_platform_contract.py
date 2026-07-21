@@ -2522,6 +2522,9 @@ def main() -> None:
         "action=remove-stale-auto-extra-disk",
         "action=retain-active-extra-disk",
         "action=remove-empty-default-companion",
+        "action=request-default-companion-evacuation",
+        "action=remove-evacuated-default-companion",
+        "reason=default-companion-evacuation-timeout",
         "reason=active-auto-extra-disk-companion-not-safe-to-remove",
         "companion_path_replica_names",
         "defaultCompanionPathReplicaObjects",
@@ -2530,6 +2533,8 @@ def main() -> None:
         "scheduledBackingImage",
         "storageScheduled",
         "range(12)",
+        "readiness_json=\"$(mktemp)\"",
+        "python3 - \"${readiness_json}\" <<'PY'",
     ):
         require_text(
             longhorn_bootstrap_text,
