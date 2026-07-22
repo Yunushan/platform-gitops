@@ -31,7 +31,10 @@ alternative_rook_ceph_values = root / "gitops/clusters/rke2-main/alternatives/ro
 alternative_traefik_values = root / "gitops/clusters/rke2-main/alternatives/traefik/values.yaml"
 base_argocd_values = root / "gitops/clusters/rke2-main/apps/argocd-ha/values.yaml"
 premium_argocd_values = root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml"
+base_argocd_kustomization = root / "gitops/clusters/rke2-main/apps/argocd-ha/kustomization.yaml"
 premium_argocd_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/kustomization.yaml"
+base_argocd_kubelet_health_policy = root / "gitops/clusters/rke2-main/apps/argocd-ha/kubelet-health-policy.yaml"
+premium_argocd_kubelet_health_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/kubelet-health-policy.yaml"
 base_forgejo_values = root / "gitops/clusters/rke2-main/apps/forgejo/values.yaml"
 premium_forgejo_values = root / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml"
 base_woodpecker_values = root / "gitops/clusters/rke2-main/apps/woodpecker/values.yaml"
@@ -936,6 +939,33 @@ def main() -> None:
             "    timeout.reconciliation.jitter: 60s",
         ):
             require_text(argocd_text, needle, f"{label} must include {needle.splitlines()[0]}")
+
+    for kustomization, policy, label in (
+        (base_argocd_kustomization, base_argocd_kubelet_health_policy, "base Argo CD HA profile"),
+        (premium_argocd_kustomization, premium_argocd_kubelet_health_policy, "premium Argo CD HA profile"),
+    ):
+        kustomization_text = read(kustomization)
+        policy_text = read(policy)
+        require_text(
+            kustomization_text,
+            "- kubelet-health-policy.yaml",
+            f"{label} must include its kubelet health policy",
+        )
+        for needle in (
+            "kind: CiliumNetworkPolicy",
+            "name: platform-argocd-kubelet-health-probes",
+            "- argocd-application-controller",
+            "- argocd-repo-server",
+            "- host",
+            "- remote-node",
+            '- port: "8082"',
+            '- port: "8084"',
+        ):
+            require_text(
+                policy_text,
+                needle,
+                f"{label} kubelet health policy must include {needle}",
+            )
 
     premium_argocd_kustomization_text = read(premium_argocd_kustomization)
     for needle in (

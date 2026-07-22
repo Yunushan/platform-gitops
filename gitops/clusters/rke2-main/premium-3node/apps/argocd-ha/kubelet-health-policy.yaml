@@ -1,0 +1,26 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: platform-argocd-kubelet-health-probes
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: argocd
+    platform.gitops/purpose: kubelet-health-probes
+spec:
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - argocd-application-controller
+          - argocd-repo-server
+  ingress:
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8082"
+              protocol: TCP
+            - port: "8084"
+              protocol: TCP

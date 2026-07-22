@@ -456,6 +456,54 @@
       run_once: true
       when: platform_argocd_service_repair_node_local_effective | bool
 
+    - name: Allow Cilium kubelet health probes for active Argo CD internals
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        if ! "$K" --kubeconfig "$C" get crd/ciliumnetworkpolicies.cilium.io >/dev/null 2>&1; then
+          echo "argocd_kubelet_health_policy state=skipped reason=cilium-network-policy-crd-not-found"
+          exit 0
+        fi
+
+        "$K" --kubeconfig "$C" apply -f - <<'YAML'
+        apiVersion: cilium.io/v2
+        kind: CiliumNetworkPolicy
+        metadata:
+          name: platform-argocd-kubelet-health-probes
+          namespace: argocd
+          labels:
+            app.kubernetes.io/part-of: argocd
+            platform.gitops/purpose: kubelet-health-probes
+        spec:
+          endpointSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - argocd-application-controller
+                  - argocd-repo-server
+          ingress:
+            - fromEntities:
+                - host
+                - remote-node
+              toPorts:
+                - ports:
+                    - port: "8082"
+                      protocol: TCP
+                    - port: "8084"
+                      protocol: TCP
+        YAML
+      args:
+        executable: /bin/bash
+      register: platform_argocd_kubelet_health_policy
+      changed_when: >-
+        ' created' in platform_argocd_kubelet_health_policy.stdout or
+        ' configured' in platform_argocd_kubelet_health_policy.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Stabilize active Argo CD controller and repo server for loaded clusters
       ansible.builtin.shell: |
         set -euo pipefail
@@ -839,7 +887,7 @@
         fi
 
         echo "argocd_active_stack=helm-ha cleanup=stale-bootstrap"
-        for kind in deployment statefulset service ingress ingressroute.traefik.io poddisruptionbudget; do
+        for kind in deployment statefulset service ingress ingressroute.traefik.io poddisruptionbudget networkpolicy; do
           while IFS= read -r resource; do
             case "${resource}" in
               */argocd-*)

@@ -133,6 +133,10 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "reason=pod-too-young-for-recycle",
         "action=recycle reason=local-health-probe-timeout",
         "argocd_health_probe_recovery recycled=${recycled}",
+        "Allow Cilium kubelet health probes for active Argo CD internals",
+        "platform-argocd-kubelet-health-probes",
+        "fromEntities:",
+        "- remote-node",
         "Stabilize active Argo CD controller and repo server for loaded clusters",
         '"requests": {"cpu": "500m", "memory": "512Mi"}',
         '"startupProbe": startup',
@@ -148,6 +152,7 @@ def validate_argocd_cleanup_contract() -> list[str]:
         '"prune":false',
         "Verify final Argo CD core readiness after application retries",
         "final_ready_endpoints=${ready_endpoints}",
+        "poddisruptionbudget networkpolicy",
     )
     for fragment in required_fragments:
         if fragment not in text:
