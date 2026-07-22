@@ -927,7 +927,7 @@ def main() -> None:
             "    sentinel:\n      resources:\n        requests:\n          cpu: 50m\n          memory: 64Mi\n        limits:\n          memory: 128Mi",
             "dex:\n  resources:\n    requests:\n      cpu: 50m\n      memory: 64Mi\n    limits:\n      memory: 256Mi",
             "notifications:\n  resources:\n    requests:\n      cpu: 50m\n      memory: 64Mi\n    limits:\n      memory: 256Mi",
-            "controller:\n  readinessProbe:\n    initialDelaySeconds: 10\n    periodSeconds: 10\n    timeoutSeconds: 10\n    failureThreshold: 18",
+            "controller:\n  env:\n    - name: KUBERNETES_SERVICE_HOST\n      value: kubernetes.default.svc\n  readinessProbe:\n    initialDelaySeconds: 10\n    periodSeconds: 10\n    timeoutSeconds: 10\n    failureThreshold: 18",
             "  resources:\n    requests:\n      cpu: 500m\n      memory: 1Gi\n    limits:\n      memory: 2Gi",
             '    controller.status.processors: "10"',
             '    controller.operation.processors: "5"',

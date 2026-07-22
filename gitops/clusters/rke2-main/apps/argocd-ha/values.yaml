@@ -134,6 +134,9 @@ notifications:
       memory: 256Mi
 
 controller:
+  env:
+    - name: KUBERNETES_SERVICE_HOST
+      value: kubernetes.default.svc
   readinessProbe:
     initialDelaySeconds: 10
     periodSeconds: 10
