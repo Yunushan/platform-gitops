@@ -130,6 +130,7 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "Prune known stale Traefik chart resources",
         "PLATFORM_ARGOCD_PRUNE_LEGACY_TRAEFIK",
         "unexpected-prune-candidates",
+        '("networking.k8s.io", "IngressClass", "", "platform-traefik")',
         "action=prune-requested",
         "prune=true",
         "action=skip-unchanged-rollout",

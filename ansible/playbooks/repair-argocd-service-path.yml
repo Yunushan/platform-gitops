@@ -300,6 +300,7 @@
 
         allowed = {
             ("", "ServiceAccount", "traefik", "traefik"),
+            ("networking.k8s.io", "IngressClass", "", "platform-traefik"),
             ("policy", "PodDisruptionBudget", "traefik", "traefik"),
             ("rbac.authorization.k8s.io", "ClusterRole", "", "traefik-traefik"),
             ("rbac.authorization.k8s.io", "ClusterRoleBinding", "", "traefik-traefik"),
