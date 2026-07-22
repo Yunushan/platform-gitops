@@ -227,10 +227,13 @@
             printf '%s\n' "${condition_messages}" | sed 's/^/condition_message=/'
           fi
 
+          # A failed operation can be historical: Argo CD may subsequently reconcile
+          # the application successfully. Only an operation that is still active is
+          # a current health failure when sync and resource health are both good.
           operation_unhealthy=0
           case "${operation_phase}" in
-            ""|Succeeded) ;;
-            Running|Terminating|Error|Failed)
+            ""|Succeeded|Error|Failed) ;;
+            Running|Terminating)
               operation_unhealthy=1
               ;;
             *)
@@ -2034,6 +2037,25 @@
           fi
         done
 
+        # Only enforce volumes that back a currently Bound PVC. Longhorn retains
+        # detached CRs after old PVCs are removed, and those historical objects
+        # must not make an otherwise healthy platform fail its readiness gate.
+        bound_volume_handles="$(
+          "$K" --kubeconfig "$C" get pvc -A \
+            -o jsonpath='{range .items[*]}{.status.phase}{"|"}{.spec.volumeName}{"\n"}{end}' 2>/dev/null |
+            while IFS='|' read -r pvc_phase pv_name; do
+              [ "${pvc_phase}" = "Bound" ] || continue
+              [ -n "${pv_name}" ] || continue
+              pv_info="$("$K" --kubeconfig "$C" get "pv/${pv_name}" \
+                -o jsonpath='{.spec.csi.driver}{"|"}{.spec.csi.volumeHandle}{"\n"}' 2>/dev/null || true)"
+              pv_driver="${pv_info%%|*}"
+              pv_handle="${pv_info#*|}"
+              [ "${pv_driver}" = "driver.longhorn.io" ] || continue
+              [ -n "${pv_handle}" ] || continue
+              printf '%s\n' "${pv_handle}"
+            done | sort -u
+        )"
+
         volumes="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get volumes.longhorn.io \
           -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
         if [ -z "${volumes}" ]; then
@@ -2043,6 +2065,10 @@
 
         for volume in ${volumes}; do
           echo "===== Longhorn volume ${volume} ====="
+          if ! printf '%s\n' "${bound_volume_handles}" | grep -F -x -- "${volume}" >/dev/null 2>&1; then
+            echo "result=skip reason=longhorn-volume-not-backed-by-bound-pvc"
+            continue
+          fi
           info="$("$K" --kubeconfig "$C" -n "${NAMESPACE}" get "volumes.longhorn.io/${volume}" \
             -o jsonpath='{.metadata.name}{"|"}{.status.state}{"|"}{.status.robustness}{"|"}{.status.ownerID}{"|"}{.status.conditions[?(@.type=="Scheduled")].status}{"\n"}' 2>/dev/null || true)"
           volume_name="$(printf '%s' "${info}" | cut -d'|' -f1)"
@@ -3218,8 +3244,8 @@
           Common causes are Traefik backend routing, kube-proxy/Cilium service
           routing, host firewall forwarding, or node-to-pod networking drift.
           The report above also fails when required Argo CD Applications are
-          OutOfSync/Progressing/Degraded, have active or failed Argo CD
-          operations, still use temporary seed Git or insecure git:// sources,
+          OutOfSync/Progressing/Degraded, have active Argo CD operations,
+          still use temporary seed Git or insecure git:// sources,
           differ from PLATFORM_APP_HEALTH_EXPECTED_REPO_URL / PLATFORM_REPO_URL
           when one is set,
           or when platform namespace pods are Pending,
@@ -3341,5 +3367,5 @@
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set, platform pods are Ready, Argo CD runtime components and configured repo-server/Redis service endpoints are present, shared platform Valkey is present with its auth secret when required, critical HA workloads meet minimum desired and ready replica coverage, Woodpecker server and agent pods run the expected pinned image tag, cert-manager Certificates are Ready when present or explicitly required, trust-manager Bundles are synced when present or explicitly required, step-ca answers /health on its ClusterIP service when required, CloudNativePG clusters are Ready when present or explicitly required, CloudNativePG object-storage credentials are present when enforced, Loki answers a known /ready endpoint when required, Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required, generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey app secrets exist with required keys, Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced, required StorageClasses exist, platform PVCs are Bound, Longhorn nodes are Ready/schedulable and attached Longhorn volumes are healthy, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required, Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations (historical failed operations are ignored after a clean reconciliation), Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set, platform pods are Ready, Argo CD runtime components and configured repo-server/Redis service endpoints are present, shared platform Valkey is present with its auth secret when required, critical HA workloads meet minimum desired and ready replica coverage, Woodpecker server and agent pods run the expected pinned image tag, cert-manager Certificates are Ready when present or explicitly required, trust-manager Bundles are synced when present or explicitly required, step-ca answers /health on its ClusterIP service when required, CloudNativePG clusters are Ready when present or explicitly required, CloudNativePG object-storage credentials are present when enforced, Loki answers a known /ready endpoint when required, Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required, generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey app secrets exist with required keys, Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced, required StorageClasses exist, platform PVCs are Bound, Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required, Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
       run_once: true

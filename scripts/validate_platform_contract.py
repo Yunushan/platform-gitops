@@ -1918,7 +1918,7 @@ def main() -> None:
     )
     require_text(
         health_text,
-        "Longhorn nodes are Ready/schedulable and attached Longhorn volumes are healthy",
+        "Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy",
         "platform-app-health success message must include Longhorn runtime readiness",
     )
     require_text(

@@ -5,9 +5,10 @@ resources:
   - namespace.yaml
 helmCharts:
   - name: keycloak
-    version: 25.3.2
+    # 25.2.0 is the published Bitnami chart release for Keycloak 26.3.3.
+    # Do not advance this independently of the image/value compatibility check.
+    version: 25.2.0
     repo: https://charts.bitnami.com/bitnami
     releaseName: keycloak
     namespace: keycloak
     valuesFile: values.yaml
-
