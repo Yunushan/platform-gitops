@@ -3,11 +3,11 @@ kind: Kustomization
 namespace: platform-cache
 resources:
   - namespace.yaml
+  - service-primary.yaml
 helmCharts:
   - name: valkey
-    version: 4.0.2
-    repo: https://charts.bitnami.com/bitnami
+    version: 0.10.0
+    repo: https://valkey.io/valkey-helm
     releaseName: platform-valkey
     namespace: platform-cache
     valuesFile: values.yaml
-

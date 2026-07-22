@@ -1,79 +1,62 @@
-# Shared platform Valkey HA profile rendered by scripts/render_private_platform_values.py.
-# Argo CD keeps its own dedicated Redis/Redis HA; this cache is for platform
-# applications such as Forgejo and Harbor.
-global:
-  defaultStorageClass: longhorn-critical
-
-architecture: replication
+# Shared platform Valkey profile rendered by scripts/render_private_platform_values.py.
+# Argo CD keeps its dedicated Redis HA; this cache is for Forgejo and Harbor.
+fullnameOverride: platform-valkey
 
 auth:
   enabled: true
-  sentinel: true
-  existingSecret: platform-valkey-auth
-  existingSecretPasswordKey: valkey-password
+  usersExistingSecret: platform-valkey-auth
+  aclUsers:
+    default:
+      passwordKey: valkey-password
+      permissions: "~* &* +@all"
 
-commonConfiguration: |-
+valkeyConfig: |-
   appendonly yes
   save ""
 
-primary:
-  persistence:
-    enabled: true
-    storageClass: longhorn-critical
-    size: 8Gi
-  podAntiAffinityPreset: soft
-  pdb:
-    create: true
-    minAvailable: 1
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 1Gi
+service:
+  type: ClusterIP
+  port: 6379
 
 replica:
-  replicaCount: 3
+  enabled: true
+  # One primary plus two replicas gives three cache members, one per node.
+  replicas: 2
+  minReplicasToWrite: 1
   persistence:
-    enabled: true
     storageClass: longhorn-critical
     size: 8Gi
-  podAntiAffinityPreset: hard
-  pdb:
-    create: true
-    minAvailable: 2
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 1Gi
 
-sentinel:
+podDisruptionBudget:
   enabled: true
-  primarySet: platform-primary
-  quorum: 2
-  service:
-    createPrimary: true
+  minAvailable: 2
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/instance: platform-valkey
+        app.kubernetes.io/name: valkey
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+metrics:
+  enabled: true
   resources:
     requests:
       cpu: 50m
       memory: 128Mi
     limits:
       memory: 256Mi
-
-rbac:
-  create: true
-
-networkPolicy:
-  enabled: true
-  allowExternal: true
-
-metrics:
-  enabled: true
   serviceMonitor:
     enabled: true
     namespace: monitoring
     additionalLabels:
       release: monitoring
-

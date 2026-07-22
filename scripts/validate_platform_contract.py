@@ -1328,13 +1328,12 @@ def main() -> None:
 
     premium_platform_valkey_text = read(premium_platform_valkey_values)
     for needle in (
-        "architecture: replication",
-        "existingSecret: platform-valkey-auth",
-        "existingSecretPasswordKey: valkey-password",
-        "replicaCount: 3",
-        "sentinel:\n  enabled: true",
-        "quorum: 2",
-        "createPrimary: true",
+        "fullnameOverride: platform-valkey",
+        "usersExistingSecret: platform-valkey-auth",
+        "passwordKey: valkey-password",
+        "replicas: 2",
+        "podDisruptionBudget:\n  enabled: true",
+        "minAvailable: 2",
         "storageClass: longhorn-critical",
         "size: 8Gi",
         "serviceMonitor:\n    enabled: true",
@@ -5871,7 +5870,7 @@ def main() -> None:
         "cnpg-object-test",
         "platform-valkey-test",
         "valkey-password-test",
-        "createPrimary: true",
+        "usersExistingSecret:",
         "minio-root-test",
         "root-password-test",
         "MINIO_REPLICA_COUNT",

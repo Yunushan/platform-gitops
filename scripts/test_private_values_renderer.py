@@ -427,13 +427,12 @@ platform_step_ca_host=ca.example.test
         )
         assert_contains(
             paths["valkey"],
-            'existingSecret: "platform-valkey-test"',
-            'existingSecretPasswordKey: "valkey-password-test"',
+            'usersExistingSecret: "platform-valkey-test"',
+            'passwordKey: "valkey-password-test"',
             'storageClass: "longhorn-critical"',
             'size: "9Gi"',
-            "replicaCount: 3",
-            "sentinel:\n  enabled: true",
-            "createPrimary: true",
+            "replicas: 3",
+            "podDisruptionBudget:\n  enabled: true",
             "serviceMonitor:\n    enabled: true",
         )
         assert_contains(

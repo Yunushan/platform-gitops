@@ -153,85 +153,62 @@ def platform_valkey_values(
       release: monitoring
 """
 
-    return f"""# Shared platform Valkey HA profile rendered by scripts/render_private_platform_values.py.
-# Argo CD keeps its own dedicated Redis/Redis HA; this cache is for platform
-# applications such as Forgejo and Harbor.
-global:
-  defaultStorageClass: {yaml_string(storage_class)}
-
-architecture: replication
+    return f"""# Shared platform Valkey profile rendered by scripts/render_private_platform_values.py.
+# Argo CD keeps its dedicated Redis HA; this cache is for Forgejo and Harbor.
+fullnameOverride: platform-valkey
 
 auth:
   enabled: true
-  sentinel: true
-  existingSecret: {yaml_string(auth_secret_name)}
-  existingSecretPasswordKey: {yaml_string(auth_secret_key)}
+  usersExistingSecret: {yaml_string(auth_secret_name)}
+  aclUsers:
+    default:
+      passwordKey: {yaml_string(auth_secret_key)}
+      permissions: "~* &* +@all"
 
-commonConfiguration: |-
+valkeyConfig: |-
   appendonly yes
   save ""
 
-primary:
-  persistence:
-    enabled: true
-    storageClass: {yaml_string(storage_class)}
-    size: {yaml_string(data_size)}
-  podAntiAffinityPreset: soft
-  pdb:
-    create: true
-    minAvailable: 1
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 1Gi
+service:
+  type: ClusterIP
+  port: 6379
 
 replica:
-  replicaCount: {replica_count}
+  enabled: true
+  replicas: {replica_count}
+  minReplicasToWrite: 1
   persistence:
-    enabled: true
     storageClass: {yaml_string(storage_class)}
     size: {yaml_string(data_size)}
-  podAntiAffinityPreset: hard
-  pdb:
-    create: true
-    minAvailable: 2
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 1Gi
 
-sentinel:
+podDisruptionBudget:
   enabled: true
-  primarySet: platform-primary
-  quorum: 2
-  service:
-    createPrimary: true
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      memory: 256Mi
+  minAvailable: 2
 
-rbac:
-  create: true
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/instance: platform-valkey
+        app.kubernetes.io/name: valkey
 
-networkPolicy:
-  enabled: true
-  allowExternal: true
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
 
 metrics:
 {metrics_block}"""
 
 
 def render_platform_valkey(path: Path) -> bool:
-    replica_count = os.environ.get("PLATFORM_VALKEY_REPLICA_COUNT", "3").strip() or "3"
-    if not replica_count.isdigit() or int(replica_count) < 3:
-        raise SystemExit("PLATFORM_VALKEY_REPLICA_COUNT must be at least 3 for HA")
+    replica_count = os.environ.get("PLATFORM_VALKEY_REPLICA_COUNT", "2").strip() or "2"
+    if not replica_count.isdigit() or int(replica_count) < 2:
+        raise SystemExit("PLATFORM_VALKEY_REPLICA_COUNT must be at least 2 for HA")
     rendered = platform_valkey_values(
         auth_secret_name=os.environ.get("PLATFORM_VALKEY_AUTH_SECRET_NAME", "platform-valkey-auth").strip()
         or "platform-valkey-auth",

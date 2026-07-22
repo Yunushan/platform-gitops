@@ -49,14 +49,14 @@ CONTRACTS = [
         "playbook_key_needles": ['--from-literal="${PASSWORD_KEY}=${password}"'],
         "static_file": PREMIUM_APPS / "platform-valkey" / "values.yaml",
         "static_needles": [
-            "existingSecret: platform-valkey-auth",
-            "existingSecretPasswordKey: valkey-password",
+            "usersExistingSecret: platform-valkey-auth",
+            "passwordKey: valkey-password",
         ],
         "rendered_app": "valkey",
         "custom_secret": "platform-valkey-custom",
         "rendered_needles": [
-            'existingSecret: "platform-valkey-custom"',
-            'existingSecretPasswordKey: "valkey-password-custom"',
+            'usersExistingSecret: "platform-valkey-custom"',
+            'passwordKey: "valkey-password-custom"',
         ],
     },
     {
