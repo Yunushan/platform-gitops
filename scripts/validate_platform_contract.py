@@ -33,8 +33,6 @@ base_argocd_values = root / "gitops/clusters/rke2-main/apps/argocd-ha/values.yam
 premium_argocd_values = root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml"
 base_argocd_kustomization = root / "gitops/clusters/rke2-main/apps/argocd-ha/kustomization.yaml"
 premium_argocd_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/kustomization.yaml"
-base_argocd_kubelet_health_policy = root / "gitops/clusters/rke2-main/apps/argocd-ha/kubelet-health-policy.yaml"
-premium_argocd_kubelet_health_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/kubelet-health-policy.yaml"
 base_forgejo_values = root / "gitops/clusters/rke2-main/apps/forgejo/values.yaml"
 premium_forgejo_values = root / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml"
 base_woodpecker_values = root / "gitops/clusters/rke2-main/apps/woodpecker/values.yaml"
@@ -940,32 +938,45 @@ def main() -> None:
         ):
             require_text(argocd_text, needle, f"{label} must include {needle.splitlines()[0]}")
 
-    for kustomization, policy, label in (
-        (base_argocd_kustomization, base_argocd_kubelet_health_policy, "base Argo CD HA profile"),
-        (premium_argocd_kustomization, premium_argocd_kubelet_health_policy, "premium Argo CD HA profile"),
+    for kustomization, label in (
+        (base_argocd_kustomization, "base Argo CD HA profile"),
+        (premium_argocd_kustomization, "premium Argo CD HA profile"),
     ):
         kustomization_text = read(kustomization)
-        policy_text = read(policy)
-        require_text(
-            kustomization_text,
-            "- kubelet-health-policy.yaml",
-            f"{label} must include its kubelet health policy",
-        )
         for needle in (
-            "kind: CiliumNetworkPolicy",
-            "name: platform-argocd-kubelet-health-probes",
-            "- argocd-application-controller",
-            "- argocd-repo-server",
-            "fromCIDR:",
-            "- 10.42.0.0/16",
-            '- port: "8082"',
-            '- port: "8084"',
+            "kind: Deployment\n      name: argo-cd-argocd-repo-server",
+            "kind: StatefulSet\n      name: argo-cd-argocd-application-controller",
+            "/usr/bin/timeout",
+            "/usr/bin/bash",
+            "/dev/tcp/127.0.0.1/8084",
+            "/dev/tcp/127.0.0.1/8082",
+            "GET /healthz HTTP/1.0",
+            "GET /healthz?full=true HTTP/1.0",
+            "/usr/bin/head -n 1 <&3 | /usr/bin/grep -q ' 200 '",
         ):
             require_text(
-                policy_text,
+                kustomization_text,
                 needle,
-                f"{label} kubelet health policy must include {needle}",
+                f"{label} local health probes must include {needle}",
             )
+        for probe_path, minimum in (
+            ("path: /spec/template/spec/containers/0/readinessProbe", 2),
+            ("path: /spec/template/spec/containers/0/livenessProbe", 1),
+            ("path: /spec/template/spec/containers/0/startupProbe", 2),
+        ):
+            if kustomization_text.count(probe_path) < minimum:
+                fail(
+                    f"{label} must patch at least {minimum} {probe_path.rsplit('/', 1)[-1]} entries"
+                )
+        if "kubelet-health-policy.yaml" in kustomization_text:
+            fail(f"{label} must not reference the obsolete kubelet health policy")
+
+    for stale_policy in (
+        root / "gitops/clusters/rke2-main/apps/argocd-ha/kubelet-health-policy.yaml",
+        root / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/kubelet-health-policy.yaml",
+    ):
+        if stale_policy.exists():
+            fail(f"obsolete Argo CD kubelet health policy must not exist: {stale_policy.relative_to(root)}")
 
     premium_argocd_kustomization_text = read(premium_argocd_kustomization)
     for needle in (

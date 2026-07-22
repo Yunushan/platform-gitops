@@ -20,7 +20,6 @@
     platform_argocd_health_probe_recovery_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT') }}"
     platform_argocd_service_repair_retry_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS') }}"
     platform_argocd_service_repair_app_sync_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT') }}"
-    platform_argocd_kubelet_probe_cidr_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_KUBELET_PROBE_CIDR') }}"
     platform_argocd_prune_legacy_traefik_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_PRUNE_LEGACY_TRAEFIK') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
@@ -36,7 +35,6 @@
     platform_argocd_health_probe_recovery_timeout_effective: "{{ platform_argocd_health_probe_recovery_timeout | default(platform_argocd_health_probe_recovery_timeout_from_env, true) | default(600, true) | int }}"
     platform_argocd_service_repair_retry_apps_effective: "{{ platform_argocd_service_repair_retry_apps | default(platform_argocd_service_repair_retry_apps_from_env, true) | default('argocd-ha traefik woodpecker', true) }}"
     platform_argocd_service_repair_app_sync_timeout_effective: "{{ platform_argocd_service_repair_app_sync_timeout | default(platform_argocd_service_repair_app_sync_timeout_from_env, true) | default(600, true) | int }}"
-    platform_argocd_kubelet_probe_cidr_effective: "{{ platform_argocd_kubelet_probe_cidr | default(platform_argocd_kubelet_probe_cidr_from_env, true) | default(rke2_cluster_cidr | default('10.42.0.0/16', true), true) }}"
     platform_argocd_prune_legacy_traefik_effective: "{{ platform_argocd_prune_legacy_traefik | default(platform_argocd_prune_legacy_traefik_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Show current Argo CD service path state
@@ -599,53 +597,6 @@
       run_once: true
       when: platform_argocd_service_repair_node_local_effective | bool
 
-    - name: Allow Cilium kubelet health probes for active Argo CD internals
-      ansible.builtin.shell: |
-        set -euo pipefail
-        K=/var/lib/rancher/rke2/bin/kubectl
-        C=/etc/rancher/rke2/rke2.yaml
-
-        if ! "$K" --kubeconfig "$C" get crd/ciliumnetworkpolicies.cilium.io >/dev/null 2>&1; then
-          echo "argocd_kubelet_health_policy state=skipped reason=cilium-network-policy-crd-not-found"
-          exit 0
-        fi
-
-        "$K" --kubeconfig "$C" apply -f - <<'YAML'
-        apiVersion: cilium.io/v2
-        kind: CiliumNetworkPolicy
-        metadata:
-          name: platform-argocd-kubelet-health-probes
-          namespace: argocd
-          labels:
-            app.kubernetes.io/part-of: argocd
-            platform.gitops/purpose: kubelet-health-probes
-        spec:
-          endpointSelector:
-            matchExpressions:
-              - key: app.kubernetes.io/name
-                operator: In
-                values:
-                  - argocd-application-controller
-                  - argocd-repo-server
-          ingress:
-            - fromCIDR:
-                - "{{ platform_argocd_kubelet_probe_cidr_effective }}"
-              toPorts:
-                - ports:
-                    - port: "8082"
-                      protocol: TCP
-                    - port: "8084"
-                      protocol: TCP
-        YAML
-      args:
-        executable: /bin/bash
-      register: platform_argocd_kubelet_health_policy
-      changed_when: >-
-        ' created' in platform_argocd_kubelet_health_policy.stdout or
-        ' configured' in platform_argocd_kubelet_health_policy.stdout
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
-
     - name: Stabilize active Argo CD controller and repo server for loaded clusters
       ansible.builtin.shell: |
         set -euo pipefail
@@ -667,30 +618,32 @@
         import sys
 
         container_name = sys.argv[1]
+        def local_http_exec_probe(port, path, initial_delay, failure_threshold):
+            command = (
+                f"exec 3<>/dev/tcp/127.0.0.1/{port}; "
+                f"printf 'GET {path} HTTP/1.0\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; "
+                "/usr/bin/head -n 1 <&3 | /usr/bin/grep -q ' 200 '"
+            )
+            return {
+                "exec": {
+                    "command": ["/usr/bin/timeout", "5", "/usr/bin/bash", "-ec", command],
+                },
+                "failureThreshold": failure_threshold,
+                "initialDelaySeconds": initial_delay,
+                "periodSeconds": 10,
+                "successThreshold": 1,
+                "timeoutSeconds": {{ platform_argocd_controller_readiness_timeout_effective }},
+            }
+
         probe_common = {
             "failureThreshold": {{ platform_argocd_controller_readiness_failure_threshold_effective }},
             "periodSeconds": 10,
             "successThreshold": 1,
             "timeoutSeconds": {{ platform_argocd_controller_readiness_timeout_effective }},
         }
-        readiness = dict(probe_common)
-        readiness.update({
-            "initialDelaySeconds": 10,
-            "httpGet": {"path": "/healthz", "port": 8084, "scheme": "HTTP"},
-        })
-        liveness = dict(probe_common)
-        liveness.update({
-            "initialDelaySeconds": 30,
-            "httpGet": {"path": "/healthz?full=true", "port": 8084, "scheme": "HTTP"},
-        })
-        startup = {
-            "failureThreshold": 60,
-            "initialDelaySeconds": 10,
-            "periodSeconds": 10,
-            "successThreshold": 1,
-            "timeoutSeconds": {{ platform_argocd_controller_readiness_timeout_effective }},
-            "httpGet": {"path": "/healthz", "port": 8084, "scheme": "HTTP"},
-        }
+        readiness = local_http_exec_probe(8084, "/healthz", 10, probe_common["failureThreshold"])
+        liveness = local_http_exec_probe(8084, "/healthz?full=true", 30, probe_common["failureThreshold"])
+        startup = local_http_exec_probe(8084, "/healthz", 10, 60)
         print(json.dumps({
             "spec": {
                 "strategy": {
@@ -742,22 +695,25 @@
 
         container_name = sys.argv[1]
         timeout = {{ platform_argocd_controller_readiness_timeout_effective }}
-        readiness = {
-            "failureThreshold": {{ platform_argocd_controller_readiness_failure_threshold_effective }},
-            "initialDelaySeconds": 10,
-            "periodSeconds": 10,
-            "successThreshold": 1,
-            "timeoutSeconds": timeout,
-            "httpGet": {"path": "/healthz", "port": 8082, "scheme": "HTTP"},
-        }
-        startup = {
-            "failureThreshold": 60,
-            "initialDelaySeconds": 10,
-            "periodSeconds": 10,
-            "successThreshold": 1,
-            "timeoutSeconds": timeout,
-            "httpGet": {"path": "/healthz", "port": 8082, "scheme": "HTTP"},
-        }
+        def local_http_exec_probe(initial_delay, failure_threshold):
+            command = (
+                "exec 3<>/dev/tcp/127.0.0.1/8082; "
+                "printf 'GET /healthz HTTP/1.0\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; "
+                "/usr/bin/head -n 1 <&3 | /usr/bin/grep -q ' 200 '"
+            )
+            return {
+                "exec": {
+                    "command": ["/usr/bin/timeout", "5", "/usr/bin/bash", "-ec", command],
+                },
+                "failureThreshold": failure_threshold,
+                "initialDelaySeconds": initial_delay,
+                "periodSeconds": 10,
+                "successThreshold": 1,
+                "timeoutSeconds": timeout,
+            }
+
+        readiness = local_http_exec_probe(10, {{ platform_argocd_controller_readiness_failure_threshold_effective }})
+        startup = local_http_exec_probe(10, 60)
         print(json.dumps({
             "spec": {
                 "template": {
@@ -817,6 +773,20 @@
         executable: /bin/bash
       register: platform_argocd_workload_stabilization
       changed_when: "'state=updated' in platform_argocd_workload_stabilization.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Remove obsolete Cilium kubelet health policy after local exec probe migration
+      ansible.builtin.shell: |
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" -n argocd delete \
+          ciliumnetworkpolicy/platform-argocd-kubelet-health-probes \
+          --ignore-not-found=true --wait=false
+      args:
+        executable: /bin/bash
+      register: platform_argocd_obsolete_kubelet_health_policy
+      changed_when: "' deleted' in platform_argocd_obsolete_kubelet_health_policy.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 

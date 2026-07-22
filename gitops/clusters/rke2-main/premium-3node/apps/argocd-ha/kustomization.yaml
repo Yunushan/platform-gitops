@@ -1,8 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: argocd
-resources:
-  - kubelet-health-policy.yaml
 helmCharts:
   - name: argo-cd
     version: 10.0.0
@@ -22,6 +20,108 @@ patches:
       - op: add
         path: /spec/publishNotReadyAddresses
         value: false
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: argo-cd-argocd-repo-server
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/readinessProbe
+        value:
+          exec:
+            command:
+              - /usr/bin/timeout
+              - "5"
+              - /usr/bin/bash
+              - -ec
+              - >-
+                exec 3<>/dev/tcp/127.0.0.1/8084;
+                printf 'GET /healthz HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+                /usr/bin/head -n 1 <&3 | /usr/bin/grep -q ' 200 '
+          failureThreshold: 18
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
+      - op: replace
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          exec:
+            command:
+              - /usr/bin/timeout
+              - "5"
+              - /usr/bin/bash
+              - -ec
+              - >-
+                exec 3<>/dev/tcp/127.0.0.1/8084;
+                printf 'GET /healthz?full=true HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+                /usr/bin/head -n 1 <&3 | /usr/bin/grep -q ' 200 '
+          failureThreshold: 18
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
+      - op: replace
+        path: /spec/template/spec/containers/0/startupProbe
+        value:
+          exec:
+            command:
+              - /usr/bin/timeout
+              - "5"
+              - /usr/bin/bash
+              - -ec
+              - >-
+                exec 3<>/dev/tcp/127.0.0.1/8084;
+                printf 'GET /healthz HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+                /usr/bin/head -n 1 <&3 | /usr/bin/grep -q ' 200 '
+          failureThreshold: 60
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
+  - target:
+      group: apps
+      version: v1
+      kind: StatefulSet
+      name: argo-cd-argocd-application-controller
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/readinessProbe
+        value:
+          exec:
+            command:
+              - /usr/bin/timeout
+              - "5"
+              - /usr/bin/bash
+              - -ec
+              - >-
+                exec 3<>/dev/tcp/127.0.0.1/8082;
+                printf 'GET /healthz HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+                /usr/bin/head -n 1 <&3 | /usr/bin/grep -q ' 200 '
+          failureThreshold: 18
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
+      - op: replace
+        path: /spec/template/spec/containers/0/startupProbe
+        value:
+          exec:
+            command:
+              - /usr/bin/timeout
+              - "5"
+              - /usr/bin/bash
+              - -ec
+              - >-
+                exec 3<>/dev/tcp/127.0.0.1/8082;
+                printf 'GET /healthz HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+                /usr/bin/head -n 1 <&3 | /usr/bin/grep -q ' 200 '
+          failureThreshold: 60
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
   - target:
       version: v1
       kind: Service
