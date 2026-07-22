@@ -19,6 +19,7 @@
     platform_argocd_health_probe_recycle_min_age_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HEALTH_PROBE_RECYCLE_MIN_AGE') }}"
     platform_argocd_health_probe_recovery_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT') }}"
     platform_argocd_service_repair_retry_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS') }}"
+    platform_argocd_service_repair_app_sync_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_node_local_effective: "{{ platform_argocd_service_repair_node_local | default(platform_argocd_service_repair_node_local_from_env, true) | default(true, true) | bool }}"
@@ -32,6 +33,7 @@
     platform_argocd_health_probe_recycle_min_age_effective: "{{ platform_argocd_health_probe_recycle_min_age | default(platform_argocd_health_probe_recycle_min_age_from_env, true) | default(300, true) | int }}"
     platform_argocd_health_probe_recovery_timeout_effective: "{{ platform_argocd_health_probe_recovery_timeout | default(platform_argocd_health_probe_recovery_timeout_from_env, true) | default(600, true) | int }}"
     platform_argocd_service_repair_retry_apps_effective: "{{ platform_argocd_service_repair_retry_apps | default(platform_argocd_service_repair_retry_apps_from_env, true) | default('argocd-ha traefik woodpecker', true) }}"
+    platform_argocd_service_repair_app_sync_timeout_effective: "{{ platform_argocd_service_repair_app_sync_timeout | default(platform_argocd_service_repair_app_sync_timeout_from_env, true) | default(600, true) | int }}"
   tasks:
     - name: Show current Argo CD service path state
       ansible.builtin.shell: |
@@ -266,14 +268,29 @@
               -o jsonpath='{.data.repo\.server}' 2>/dev/null || true)"
             current_redis_server="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" \
               -o jsonpath='{.data.redis\.server}' 2>/dev/null || true)"
+            current_status_processors="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" \
+              -o jsonpath='{.data.controller\.status\.processors}' 2>/dev/null || true)"
+            current_operation_processors="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" \
+              -o jsonpath='{.data.controller\.operation\.processors}' 2>/dev/null || true)"
+            current_kubectl_parallelism="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" \
+              -o jsonpath='{.data.controller\.kubectl\.parallelism\.limit}' 2>/dev/null || true)"
+            current_repo_timeout="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" \
+              -o jsonpath='{.data.controller\.repo\.server\.timeout\.seconds}' 2>/dev/null || true)"
+            current_repo_parallelism="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" \
+              -o jsonpath='{.data.reposerver\.parallelism\.limit}' 2>/dev/null || true)"
             if [ "${current_repo_server}" = "${repo_server}" ] && \
-              [ "${current_redis_server}" = "${redis_server}" ]; then
+              [ "${current_redis_server}" = "${redis_server}" ] && \
+              [ "${current_status_processors}" = "10" ] && \
+              [ "${current_operation_processors}" = "5" ] && \
+              [ "${current_kubectl_parallelism}" = "5" ] && \
+              [ "${current_repo_timeout}" = "120" ] && \
+              [ "${current_repo_parallelism}" = "2" ]; then
               echo "configmap=${cm} state=current"
               return 0
             fi
             "$K" --kubeconfig "$C" -n argocd patch "configmap/${cm}" \
               --type merge \
-              -p "$(printf '{"data":{"repo.server":"%s","redis.server":"%s"}}' "${repo_server}" "${redis_server}")"
+              -p "$(printf '{"data":{"repo.server":"%s","redis.server":"%s","controller.status.processors":"10","controller.operation.processors":"5","controller.kubectl.parallelism.limit":"5","controller.repo.server.timeout.seconds":"120","reposerver.parallelism.limit":"2"}}' "${repo_server}" "${redis_server}")"
             echo "configmap=${cm} state=updated"
             restart_required=1
           fi
@@ -296,14 +313,8 @@
 
           if [ "${restart_required}" -eq 1 ]; then
             for workload in \
-              deployment/argo-cd-argocd-applicationset-controller \
-              deployment/argo-cd-argocd-dex-server \
-              deployment/argo-cd-argocd-notifications-controller \
               deployment/argo-cd-argocd-repo-server \
-              deployment/argo-cd-argocd-server \
-              deployment/argo-cd-redis-ha-haproxy \
-              statefulset/argo-cd-argocd-application-controller \
-              statefulset/argo-cd-redis-ha-server; do
+              statefulset/argo-cd-argocd-application-controller; do
               restart_if_present "${workload}"
             done
           else
@@ -357,12 +368,7 @@
 
           if [ "${restart_required}" -eq 1 ]; then
             for workload in \
-              deployment/argocd-applicationset-controller \
-              deployment/argocd-dex-server \
-              deployment/argocd-notifications-controller \
-              deployment/argocd-redis \
               deployment/argocd-repo-server \
-              deployment/argocd-server \
               statefulset/argocd-application-controller; do
               restart_if_present "${workload}"
             done
@@ -450,23 +456,177 @@
       run_once: true
       when: platform_argocd_service_repair_node_local_effective | bool
 
-    - name: Relax active Argo CD application controller readiness probe for loaded clusters
+    - name: Stabilize active Argo CD controller and repo server for loaded clusters
       ansible.builtin.shell: |
-        set -o pipefail
+        set -euo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
 
-        for statefulset in argo-cd-argocd-application-controller argocd-application-controller; do
-          if "$K" --kubeconfig "$C" -n argocd get "statefulset/${statefulset}" >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n argocd patch "statefulset/${statefulset}" \
-              --type json \
-              -p '[{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds","value":{{ platform_argocd_controller_readiness_timeout_effective }}},{"op":"add","path":"/spec/template/spec/containers/0/readinessProbe/failureThreshold","value":{{ platform_argocd_controller_readiness_failure_threshold_effective }}}]' || true
+        patch_repo_deployment() {
+          resource="$1"
+          if ! "$K" --kubeconfig "$C" -n argocd get "${resource}" >/dev/null 2>&1; then
+            return 0
           fi
-        done
+
+          container_name="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.spec.template.spec.containers[0].name}')"
+          before_generation="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.metadata.generation}')"
+          patch="$(python3 - "${container_name}" <<'PY'
+        import json
+        import sys
+
+        container_name = sys.argv[1]
+        probe_common = {
+            "failureThreshold": {{ platform_argocd_controller_readiness_failure_threshold_effective }},
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": {{ platform_argocd_controller_readiness_timeout_effective }},
+        }
+        readiness = dict(probe_common)
+        readiness.update({
+            "initialDelaySeconds": 10,
+            "httpGet": {"path": "/healthz", "port": 8084, "scheme": "HTTP"},
+        })
+        liveness = dict(probe_common)
+        liveness.update({
+            "initialDelaySeconds": 30,
+            "httpGet": {"path": "/healthz?full=true", "port": 8084, "scheme": "HTTP"},
+        })
+        startup = {
+            "failureThreshold": 60,
+            "initialDelaySeconds": 10,
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": {{ platform_argocd_controller_readiness_timeout_effective }},
+            "httpGet": {"path": "/healthz", "port": 8084, "scheme": "HTTP"},
+        }
+        print(json.dumps({
+            "spec": {
+                "strategy": {
+                    "type": "RollingUpdate",
+                    "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1},
+                },
+                "template": {
+                    "spec": {
+                        "containers": [{
+                            "name": container_name,
+                            "readinessProbe": readiness,
+                            "livenessProbe": liveness,
+                            "startupProbe": startup,
+                            "resources": {
+                                "requests": {"cpu": "500m", "memory": "512Mi"},
+                                "limits": {"memory": "2Gi"},
+                            },
+                        }],
+                    },
+                },
+            },
+        }))
+        PY
+          )"
+          "$K" --kubeconfig "$C" -n argocd patch "${resource}" \
+            --type strategic -p "${patch}" >/dev/null
+          after_generation="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.metadata.generation}')"
+          if [ "${before_generation}" != "${after_generation}" ]; then
+            echo "workload=${resource} state=updated generation=${before_generation}->${after_generation}"
+          else
+            echo "workload=${resource} state=current generation=${after_generation}"
+          fi
+        }
+
+        patch_controller_statefulset() {
+          resource="$1"
+          if ! "$K" --kubeconfig "$C" -n argocd get "${resource}" >/dev/null 2>&1; then
+            return 0
+          fi
+
+          container_name="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.spec.template.spec.containers[0].name}')"
+          before_generation="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.metadata.generation}')"
+          patch="$(python3 - "${container_name}" <<'PY'
+        import json
+        import sys
+
+        container_name = sys.argv[1]
+        timeout = {{ platform_argocd_controller_readiness_timeout_effective }}
+        readiness = {
+            "failureThreshold": {{ platform_argocd_controller_readiness_failure_threshold_effective }},
+            "initialDelaySeconds": 10,
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": timeout,
+            "httpGet": {"path": "/healthz", "port": 8082, "scheme": "HTTP"},
+        }
+        startup = {
+            "failureThreshold": 60,
+            "initialDelaySeconds": 10,
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": timeout,
+            "httpGet": {"path": "/healthz", "port": 8082, "scheme": "HTTP"},
+        }
+        print(json.dumps({
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [{
+                            "name": container_name,
+                            "readinessProbe": readiness,
+                            "startupProbe": startup,
+                            "resources": {
+                                "requests": {"cpu": "500m", "memory": "1Gi"},
+                                "limits": {"memory": "2Gi"},
+                            },
+                        }],
+                    },
+                },
+            },
+        }))
+        PY
+          )"
+          "$K" --kubeconfig "$C" -n argocd patch "${resource}" \
+            --type strategic -p "${patch}" >/dev/null
+          after_generation="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.metadata.generation}')"
+          if [ "${before_generation}" != "${after_generation}" ]; then
+            echo "workload=${resource} state=updated generation=${before_generation}->${after_generation}"
+          else
+            echo "workload=${resource} state=current generation=${after_generation}"
+          fi
+        }
+
+        patch_deployment_strategy() {
+          resource="$1"
+          if ! "$K" --kubeconfig "$C" -n argocd get "${resource}" >/dev/null 2>&1; then
+            return 0
+          fi
+          before_generation="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.metadata.generation}')"
+          "$K" --kubeconfig "$C" -n argocd patch "${resource}" --type strategic \
+            -p '{"spec":{"strategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":1}}}}' \
+            >/dev/null
+          after_generation="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.metadata.generation}')"
+          if [ "${before_generation}" != "${after_generation}" ]; then
+            echo "workload=${resource} state=updated generation=${before_generation}->${after_generation}"
+          else
+            echo "workload=${resource} state=current generation=${after_generation}"
+          fi
+        }
+
+        patch_repo_deployment deployment/argo-cd-argocd-repo-server
+        patch_repo_deployment deployment/argocd-repo-server
+        patch_controller_statefulset statefulset/argo-cd-argocd-application-controller
+        patch_controller_statefulset statefulset/argocd-application-controller
+        patch_deployment_strategy deployment/argo-cd-redis-ha-haproxy
+
       args:
         executable: /bin/bash
-      register: platform_argocd_controller_readiness_patch
-      changed_when: "'patched' in platform_argocd_controller_readiness_patch.stdout"
+      register: platform_argocd_workload_stabilization
+      changed_when: "'state=updated' in platform_argocd_workload_stabilization.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
@@ -531,27 +691,39 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Wait for recycled Argo CD pods to become ready
+    - name: Wait for stabilized or recycled Argo CD workloads to become ready
       ansible.builtin.shell: |
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         RECOVERY_TIMEOUT={{ platform_argocd_health_probe_recovery_timeout_effective }}
 
-        for component in argocd-application-controller argocd-repo-server argocd-server; do
-          count="$("$K" --kubeconfig "$C" -n argocd get pods \
-            -l "app.kubernetes.io/name=${component}" \
-            -o name 2>/dev/null | awk 'END { print NR + 0 }')"
-          if [ "${count}" -eq 0 ]; then
-            echo "component=${component} pods=0 action=skip"
+        if "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          workloads="
+          deployment/argo-cd-argocd-repo-server
+          deployment/argo-cd-argocd-server
+          deployment/argo-cd-redis-ha-haproxy
+          statefulset/argo-cd-argocd-application-controller
+          statefulset/argo-cd-redis-ha-server
+          "
+        else
+          workloads="
+          deployment/argocd-repo-server
+          deployment/argocd-server
+          deployment/argocd-redis
+          statefulset/argocd-application-controller
+          "
+        fi
+
+        for workload in ${workloads}; do
+          if ! "$K" --kubeconfig "$C" -n argocd get "${workload}" >/dev/null 2>&1; then
+            echo "workload=${workload} action=skip reason=not-found"
             continue
           fi
-          echo "component=${component} pods=${count} action=wait-ready timeout=${RECOVERY_TIMEOUT}s"
-          "$K" --kubeconfig "$C" -n argocd wait pod \
-            -l "app.kubernetes.io/name=${component}" \
-            --for=condition=Ready \
+          echo "workload=${workload} action=wait-ready timeout=${RECOVERY_TIMEOUT}s"
+          "$K" --kubeconfig "$C" -n argocd rollout status "${workload}" \
             --timeout="${RECOVERY_TIMEOUT}s"
-          echo "component=${component} result=ready"
+          echo "workload=${workload} result=ready"
         done
       args:
         executable: /bin/bash
@@ -559,7 +731,10 @@
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
-      when: platform_argocd_health_probe_recovery.changed
+      when: >-
+        platform_argocd_service_path_repair.changed or
+        platform_argocd_workload_stabilization.changed or
+        platform_argocd_health_probe_recovery.changed
 
     - name: Wait for active Argo CD internal service endpoints
       ansible.builtin.shell: |
@@ -691,14 +866,39 @@
 
     - name: Refresh platform applications after Argo CD service repair
       ansible.builtin.shell: |
+        set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
+        APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"
+        APP_SYNC_TIMEOUT={{ platform_argocd_service_repair_app_sync_timeout_effective }}
 
-        apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io \
-          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
-        for app in ${apps}; do
+        wait_for_refresh() {
+          app="$1"
+          deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            refresh="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+              -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/refresh}' 2>/dev/null || true)"
+            phase="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+              -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
+            if [ -z "${refresh}" ] && [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
+              echo "application=${app} action=hard-refresh-finished phase=${phase:-none}"
+              return 0
+            fi
+            sleep 5
+          done
+          echo "application=${app} action=hard-refresh-timeout timeout=${APP_SYNC_TIMEOUT}s"
+          return 1
+        }
+
+        for app in ${APPS}; do
+          if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+            echo "application=${app} action=skip-refresh reason=not-found"
+            continue
+          fi
           "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
             argocd.argoproj.io/refresh=hard --overwrite
+          echo "application=${app} action=hard-refresh-requested"
+          wait_for_refresh "${app}"
         done
       args:
         executable: /bin/bash
@@ -714,6 +914,27 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         RETRY_APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"
+        APP_SYNC_TIMEOUT={{ platform_argocd_service_repair_app_sync_timeout_effective }}
+
+        wait_for_requested_operation() {
+          app="$1"
+          deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+              -o jsonpath='{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
+              2>/dev/null || true)"
+            requested_revision="$(printf '%s' "${state}" | cut -d'|' -f1)"
+            phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
+            sync_status="$(printf '%s' "${state}" | cut -d'|' -f3)"
+            if [ -z "${requested_revision}" ] && [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
+              echo "application=${app} action=sync-finished phase=${phase:-none} sync=${sync_status:-unknown}"
+              return 0
+            fi
+            sleep 5
+          done
+          echo "application=${app} action=sync-wait-timeout timeout=${APP_SYNC_TIMEOUT}s"
+          return 1
+        }
 
         for app in ${RETRY_APPS}; do
           if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
@@ -729,6 +950,10 @@
           case "${operation_phase}" in
             Running|Terminating)
               echo "application=${app} action=keep operation=${operation_phase}"
+              if ! wait_for_requested_operation "${app}"; then
+                echo "application=${app} action=stop-retries reason=sync-wait-timeout"
+                break
+              fi
               continue
               ;;
             Error|Failed)
@@ -751,6 +976,10 @@
             -p "$(printf '{"operation":{"sync":{"revision":"%s","prune":false}}}' "${revision}")" >/dev/null
           echo "application=${app} action=sync-requested reason=${retry_reason} revision=${revision} prune=false"
           sleep 5
+          if ! wait_for_requested_operation "${app}"; then
+            echo "application=${app} action=stop-retries reason=sync-wait-timeout"
+            break
+          fi
         done
       args:
         executable: /bin/bash
@@ -759,6 +988,58 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: platform_argocd_service_repair_refresh_apps_effective | bool
+
+    - name: Verify final Argo CD core readiness after application retries
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        RECOVERY_TIMEOUT={{ platform_argocd_health_probe_recovery_timeout_effective }}
+
+        if "$K" --kubeconfig "$C" -n argocd get deployment/argo-cd-argocd-server >/dev/null 2>&1; then
+          workloads="
+          deployment/argo-cd-argocd-repo-server
+          deployment/argo-cd-argocd-server
+          deployment/argo-cd-redis-ha-haproxy
+          statefulset/argo-cd-argocd-application-controller
+          statefulset/argo-cd-redis-ha-server
+          "
+          services="argo-cd-argocd-repo-server argo-cd-argocd-server argo-cd-redis-ha-haproxy"
+        else
+          workloads="
+          deployment/argocd-repo-server
+          deployment/argocd-server
+          deployment/argocd-redis
+          statefulset/argocd-application-controller
+          "
+          services="argocd-repo-server-headless argocd-server argocd-redis-headless"
+        fi
+
+        for workload in ${workloads}; do
+          if ! "$K" --kubeconfig "$C" -n argocd get "${workload}" >/dev/null 2>&1; then
+            echo "workload=${workload} action=skip-final-check reason=not-found"
+            continue
+          fi
+          echo "workload=${workload} action=final-wait timeout=${RECOVERY_TIMEOUT}s"
+          "$K" --kubeconfig "$C" -n argocd rollout status "${workload}" \
+            --timeout="${RECOVERY_TIMEOUT}s"
+          echo "workload=${workload} final_result=ready"
+        done
+
+        for service in ${services}; do
+          ready_endpoints="$("$K" --kubeconfig "$C" -n argocd get endpointslice \
+            -l "kubernetes.io/service-name=${service}" \
+            -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null |
+            awk '$1 == "true" || $1 == "<none>" || $1 == "" { count++ } END { print count + 0 }')"
+          echo "service=${service} final_ready_endpoints=${ready_endpoints}"
+          test "${ready_endpoints}" -ge 1
+        done
+      args:
+        executable: /bin/bash
+      register: platform_argocd_final_core_readiness
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
 
     - name: Show repaired Argo CD service path state
       ansible.builtin.shell: |

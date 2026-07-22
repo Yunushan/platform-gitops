@@ -54,12 +54,30 @@ repoServer:
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 18
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 18
+  startupProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 60
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 500m
+      memory: 512Mi
     limits:
-      memory: 1Gi
+      memory: 2Gi
 
 applicationSet:
   replicas: 2
@@ -116,10 +134,21 @@ notifications:
       memory: 256Mi
 
 controller:
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 18
+  startupProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 60
   resources:
     requests:
-      cpu: 250m
-      memory: 512Mi
+      cpu: 500m
+      memory: 1Gi
     limits:
       memory: 2Gi
 
@@ -128,3 +157,11 @@ configs:
     repo.server: argo-cd-argocd-repo-server:8081
     redis.server: argo-cd-redis-ha-haproxy:6379
     server.insecure: true
+    controller.status.processors: "10"
+    controller.operation.processors: "5"
+    controller.kubectl.parallelism.limit: "5"
+    controller.repo.server.timeout.seconds: "120"
+    reposerver.parallelism.limit: "2"
+  cm:
+    timeout.reconciliation: 180s
+    timeout.reconciliation.jitter: 60s

@@ -133,12 +133,21 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "reason=pod-too-young-for-recycle",
         "action=recycle reason=local-health-probe-timeout",
         "argocd_health_probe_recovery recycled=${recycled}",
-        "Wait for recycled Argo CD pods to become ready",
+        "Stabilize active Argo CD controller and repo server for loaded clusters",
+        '"requests": {"cpu": "500m", "memory": "512Mi"}',
+        '"startupProbe": startup',
+        "Wait for stabilized or recycled Argo CD workloads to become ready",
         "PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT",
+        'APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"',
+        "action=hard-refresh-requested",
         "Retry failed Argo CD application operations after service repair",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS",
+        "PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT",
+        "action=sync-finished",
         "action=sync-requested reason=${retry_reason}",
         '"prune":false',
+        "Verify final Argo CD core readiness after application retries",
+        "final_ready_endpoints=${ready_endpoints}",
     )
     for fragment in required_fragments:
         if fragment not in text:
