@@ -956,8 +956,8 @@ def main() -> None:
             "name: platform-argocd-kubelet-health-probes",
             "- argocd-application-controller",
             "- argocd-repo-server",
-            "- host",
-            "- remote-node",
+            "fromCIDR:",
+            "- 10.42.0.0/16",
             '- port: "8082"',
             '- port: "8084"',
         ):
@@ -2178,6 +2178,7 @@ def main() -> None:
         'job_manifest="$(mktemp)"',
         'apply -f "${job_manifest}"',
         "job_manifest node=${node} job=${job_name} bytes=${manifest_bytes:-0}",
+        'case "\\$1" in',
         "service-path-check-job-create-failed",
         "job_apply_summary expected=${expected} created=${created}",
     ):

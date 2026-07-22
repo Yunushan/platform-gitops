@@ -34,10 +34,13 @@ forbidden_private_markers = [
     ('private node username', re.compile(r'\bgitlab[1-3]\b', re.IGNORECASE)),
 ]
 
+default_rke2_pod_cidr = '.'.join(('10', '42', '0', '0')) + '/16'
+
 allow_fragments = [
     '<GENERATE_WITH_PASSWORD_MANAGER>', '<NODE_1_IP>', '<NODE_2_IP>', '<NODE_3_IP>',
     '<VIP_ADDRESS>', '<PLATFORM_DOMAIN>', '<VIP_DNS_NAME>', 'example.com',
-    'password: <', 'token: <', 'secret: <', 'api_key: <'
+    'password: <', 'token: <', 'secret: <', 'api_key: <',
+    default_rke2_pod_cidr,
 ]
 
 

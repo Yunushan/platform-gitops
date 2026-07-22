@@ -20,6 +20,7 @@
     platform_argocd_health_probe_recovery_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT') }}"
     platform_argocd_service_repair_retry_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS') }}"
     platform_argocd_service_repair_app_sync_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT') }}"
+    platform_argocd_kubelet_probe_cidr_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_KUBELET_PROBE_CIDR') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_node_local_effective: "{{ platform_argocd_service_repair_node_local | default(platform_argocd_service_repair_node_local_from_env, true) | default(true, true) | bool }}"
@@ -34,6 +35,7 @@
     platform_argocd_health_probe_recovery_timeout_effective: "{{ platform_argocd_health_probe_recovery_timeout | default(platform_argocd_health_probe_recovery_timeout_from_env, true) | default(600, true) | int }}"
     platform_argocd_service_repair_retry_apps_effective: "{{ platform_argocd_service_repair_retry_apps | default(platform_argocd_service_repair_retry_apps_from_env, true) | default('argocd-ha traefik woodpecker', true) }}"
     platform_argocd_service_repair_app_sync_timeout_effective: "{{ platform_argocd_service_repair_app_sync_timeout | default(platform_argocd_service_repair_app_sync_timeout_from_env, true) | default(600, true) | int }}"
+    platform_argocd_kubelet_probe_cidr_effective: "{{ platform_argocd_kubelet_probe_cidr | default(platform_argocd_kubelet_probe_cidr_from_env, true) | default(rke2_cluster_cidr | default('10.42.0.0/16', true), true) }}"
   tasks:
     - name: Show current Argo CD service path state
       ansible.builtin.shell: |
@@ -485,9 +487,8 @@
                   - argocd-application-controller
                   - argocd-repo-server
           ingress:
-            - fromEntities:
-                - host
-                - remote-node
+            - fromCIDR:
+                - "{{ platform_argocd_kubelet_probe_cidr_effective }}"
               toPorts:
                 - ports:
                     - port: "8082"

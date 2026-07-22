@@ -15,9 +15,10 @@ spec:
           - argocd-application-controller
           - argocd-repo-server
   ingress:
-    - fromEntities:
-        - host
-        - remote-node
+    # Legacy Cilium host routing can identify local kubelet probes by the
+    # cilium_host address, so allow only the pod CIDR on health ports.
+    - fromCIDR:
+        - 10.42.0.0/16
       toPorts:
         - ports:
             - port: "8082"

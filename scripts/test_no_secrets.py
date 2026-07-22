@@ -38,6 +38,7 @@ def main() -> int:
     private_host = "gitops-" + "arge." + "is" + "bak.com.tr"
     argocd_host = "argocd-" + "gitops-" + "arge." + "is" + "bak.com.tr"
     private_ip = "172.16." + "134.47"
+    default_rke2_pod_cidr = ".".join(("10", "42", "0", "0")) + "/16"
     private_user = "git" + "lab1"
     fake_secret = "real" + "Secret" + "123"
 
@@ -52,6 +53,7 @@ token: ${PLATFORM_TOKEN}
     assert_problem(f"host: {private_host}\n", "company domain fragment")
     assert_problem(f"host: {argocd_host}\n", "private deployment hostname")
     assert_clean(f"host: {private_host}\n", include_internal_markers=False)
+    assert_clean(f"podCIDR: {default_rke2_pod_cidr}\n")
     assert_problem(f"vip: {private_ip}\n", "private IP-like value")
     assert_problem(f"ansible_user: {private_user}\n", "private node username")
     assert_problem(f"password: {fake_secret}\n", "possible plaintext secret")

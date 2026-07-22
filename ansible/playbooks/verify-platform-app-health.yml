@@ -2862,7 +2862,7 @@
                       set -u
                       failed=0
                       http_ok_code() {
-                        case "$1" in
+                        case "\$1" in
                           200|301|302|303|307|308|401|403|404) return 0 ;;
                           *) return 1 ;;
                         esac
