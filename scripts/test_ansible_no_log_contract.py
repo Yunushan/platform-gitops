@@ -23,6 +23,7 @@ ALLOWED_NO_LOG_TASKS = {
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Harbor bootstrap secrets"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Harbor external database password secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Harbor external Redis credentials secret"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate Harbor core Redis URL override secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Harbor registry S3 credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Grafana admin credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Grafana database password secret"),
