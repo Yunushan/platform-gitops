@@ -75,6 +75,7 @@ REQUIRED_NAMESPACE_RESOURCE_BLACKLIST = {
     ("argoproj.io", "ApplicationSet"),
     ("argoproj.io", "AppProject"),
 }
+REQUIRED_ADDITIONAL_DESTINATION_NAMESPACES = {"kube-system"}
 KUSTOMIZE_NAMESPACE_RE = re.compile(r"(?m)^namespace:\s*(?P<value>[^\s#]+)")
 HELM_NAMESPACE_RE = re.compile(r"(?m)^\s+namespace:\s*(?P<value>[^\s#]+)")
 HELM_VALUES_FILE_RE = re.compile(r"(?m)^\s+valuesFile:\s*(?P<value>[^\s#]+)")
@@ -365,7 +366,7 @@ def check_project_contract() -> list[str]:
     if "*" in source_repos:
         problems.append(f"{label} sourceRepos must not allow wildcard repositories")
 
-    expected_namespaces = application_destination_namespaces()
+    expected_namespaces = application_destination_namespaces() | REQUIRED_ADDITIONAL_DESTINATION_NAMESPACES
     destinations = project_list_items(text, "destinations")
     destination_namespaces = {item.get("namespace", "") for item in destinations if item.get("namespace")}
     wildcard_namespaces = sorted(namespace for namespace in destination_namespaces if "*" in namespace)
