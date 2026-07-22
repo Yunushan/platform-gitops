@@ -33,6 +33,7 @@ topologySpreadConstraints:
 ingressClass:
   enabled: true
   isDefaultClass: true
+  name: traefik
 
 providers:
   kubernetesCRD:

@@ -1157,6 +1157,7 @@ def main() -> None:
             "updateStrategy:\n  type: RollingUpdate\n  rollingUpdate:\n    maxUnavailable: 1\n    maxSurge: 0",
             "affinity:\n  podAntiAffinity:\n    requiredDuringSchedulingIgnoredDuringExecution:",
             "topologySpreadConstraints:\n  - maxSkew: 1\n    topologyKey: kubernetes.io/hostname\n    whenUnsatisfiable: DoNotSchedule",
+            "ingressClass:\n  enabled: true\n  isDefaultClass: true\n  name: traefik",
             "externalTrafficPolicy: Local",
             "internalTrafficPolicy: Local",
             "--entrypoints.web.http.redirections.entrypoint.permanent=true",
