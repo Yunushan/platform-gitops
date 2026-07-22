@@ -56,6 +56,11 @@ server:
 
 repoServer:
   replicas: 3
+  deploymentStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   pdb:
     enabled: true
     minAvailable: 2

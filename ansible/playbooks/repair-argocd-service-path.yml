@@ -249,15 +249,27 @@
           active_stack=helm-ha
         fi
         echo "argocd_active_stack=${active_stack}"
+        restart_required=0
 
         patch_cm_if_present() {
           cm="$1"
           repo_server="$2"
           redis_server="$3"
           if "$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" >/dev/null 2>&1; then
+            current_repo_server="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" \
+              -o jsonpath='{.data.repo\.server}' 2>/dev/null || true)"
+            current_redis_server="$("$K" --kubeconfig "$C" -n argocd get "configmap/${cm}" \
+              -o jsonpath='{.data.redis\.server}' 2>/dev/null || true)"
+            if [ "${current_repo_server}" = "${repo_server}" ] && \
+              [ "${current_redis_server}" = "${redis_server}" ]; then
+              echo "configmap=${cm} state=current"
+              return 0
+            fi
             "$K" --kubeconfig "$C" -n argocd patch "configmap/${cm}" \
               --type merge \
               -p "$(printf '{"data":{"repo.server":"%s","redis.server":"%s"}}' "${repo_server}" "${redis_server}")"
+            echo "configmap=${cm} state=updated"
+            restart_required=1
           fi
         }
 
@@ -276,17 +288,21 @@
             argo-cd-argocd-repo-server:8081 \
             argo-cd-redis-ha-haproxy:6379
 
-          for workload in \
-            deployment/argo-cd-argocd-applicationset-controller \
-            deployment/argo-cd-argocd-dex-server \
-            deployment/argo-cd-argocd-notifications-controller \
-            deployment/argo-cd-argocd-repo-server \
-            deployment/argo-cd-argocd-server \
-            deployment/argo-cd-redis-ha-haproxy \
-            statefulset/argo-cd-argocd-application-controller \
-            statefulset/argo-cd-redis-ha-server; do
-            restart_if_present "${workload}"
-          done
+          if [ "${restart_required}" -eq 1 ]; then
+            for workload in \
+              deployment/argo-cd-argocd-applicationset-controller \
+              deployment/argo-cd-argocd-dex-server \
+              deployment/argo-cd-argocd-notifications-controller \
+              deployment/argo-cd-argocd-repo-server \
+              deployment/argo-cd-argocd-server \
+              deployment/argo-cd-redis-ha-haproxy \
+              statefulset/argo-cd-argocd-application-controller \
+              statefulset/argo-cd-redis-ha-server; do
+              restart_if_present "${workload}"
+            done
+          else
+            echo "argocd_active_stack=helm-ha action=skip-unchanged-rollout"
+          fi
         else
           "$K" --kubeconfig "$C" apply -f - <<'YAML'
         ---
@@ -333,16 +349,20 @@
             argocd-repo-server-headless:8081 \
             argocd-redis-headless:6379
 
-          for workload in \
-            deployment/argocd-applicationset-controller \
-            deployment/argocd-dex-server \
-            deployment/argocd-notifications-controller \
-            deployment/argocd-redis \
-            deployment/argocd-repo-server \
-            deployment/argocd-server \
-            statefulset/argocd-application-controller; do
-            restart_if_present "${workload}"
-          done
+          if [ "${restart_required}" -eq 1 ]; then
+            for workload in \
+              deployment/argocd-applicationset-controller \
+              deployment/argocd-dex-server \
+              deployment/argocd-notifications-controller \
+              deployment/argocd-redis \
+              deployment/argocd-repo-server \
+              deployment/argocd-server \
+              statefulset/argocd-application-controller; do
+              restart_if_present "${workload}"
+            done
+          else
+            echo "argocd_active_stack=bootstrap action=skip-unchanged-rollout"
+          fi
         fi
       args:
         executable: /bin/bash
@@ -441,6 +461,56 @@
         executable: /bin/bash
       register: platform_argocd_controller_readiness_patch
       changed_when: "'patched' in platform_argocd_controller_readiness_patch.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Recycle Argo CD pods with timed-out local health probes
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        recycled=0
+
+        while IFS='|' read -r pod phase ready_statuses; do
+          [ -n "${pod}" ] || continue
+          case "${pod}" in
+            argo-cd-argocd-application-controller-*|\
+            argo-cd-argocd-repo-server-*|\
+            argo-cd-argocd-server-*|\
+            argocd-application-controller-*|\
+            argocd-repo-server-*|\
+            argocd-server-*)
+              ;;
+            *)
+              continue
+              ;;
+          esac
+
+          case ",${ready_statuses}," in
+            *,false,*) ;;
+            *) continue ;;
+          esac
+
+          diagnostics="$("$K" --kubeconfig "$C" -n argocd describe "pod/${pod}" 2>&1 || true)"
+          if printf '%s\n' "${diagnostics}" |
+            grep -Eiq '(Readiness|Liveness|Startup) probe failed.*(context deadline exceeded|Client\.Timeout exceeded|i/o timeout)'; then
+            echo "pod=${pod} phase=${phase} ready=${ready_statuses} action=recycle reason=local-health-probe-timeout"
+            "$K" --kubeconfig "$C" -n argocd delete "pod/${pod}" --wait=false
+            recycled=$((recycled + 1))
+          else
+            echo "pod=${pod} phase=${phase} ready=${ready_statuses} action=keep reason=no-local-health-probe-timeout"
+          fi
+        done < <("$K" --kubeconfig "$C" -n argocd get pods \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.ready}{","}{end}{"\n"}{end}' 2>/dev/null || true)
+
+        echo "argocd_health_probe_recovery recycled=${recycled}"
+        if [ "${recycled}" -gt 0 ]; then
+          sleep 5
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_argocd_health_probe_recovery
+      changed_when: "'action=recycle' in platform_argocd_health_probe_recovery.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
@@ -587,6 +657,66 @@
         executable: /bin/bash
       register: platform_argocd_service_path_app_refresh
       changed_when: "'annotated' in platform_argocd_service_path_app_refresh.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_argocd_service_repair_refresh_apps_effective | bool
+
+    - name: Retry failed Argo CD application operations after service repair
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        for app in ${apps}; do
+          state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.status.sync.status}{"|"}{.status.operationState.phase}{"|"}{.status.conditions[*].type}' 2>/dev/null || true)"
+          sync_status="$(printf '%s' "${state}" | cut -d'|' -f1)"
+          operation_phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
+          condition_types="$(printf '%s' "${state}" | cut -d'|' -f3-)"
+          retry_reason=""
+
+          case "${operation_phase}" in
+            Running|Terminating)
+              echo "application=${app} action=keep operation=${operation_phase}"
+              continue
+              ;;
+            Error|Failed)
+              retry_reason="operation-${operation_phase}"
+              ;;
+          esac
+          if [ -z "${retry_reason}" ]; then
+            case "${sync_status}" in
+              OutOfSync|Unknown)
+                retry_reason="sync-${sync_status}"
+                ;;
+            esac
+          fi
+          if [ -z "${retry_reason}" ] && printf '%s\n' "${condition_types}" |
+            grep -Eq '(^| )(ComparisonError|InvalidSpecError)( |$)'; then
+            retry_reason="blocking-condition"
+          fi
+          if [ -z "${retry_reason}" ]; then
+            echo "application=${app} action=keep sync=${sync_status:-unknown} operation=${operation_phase:-none}"
+            continue
+          fi
+
+          revision="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+          if [ -z "${revision}" ]; then
+            revision="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+              -o jsonpath='{.spec.sources[0].targetRevision}' 2>/dev/null || true)"
+          fi
+          revision="${revision:-main}"
+          "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
+            -p "$(printf '{"operation":{"sync":{"revision":"%s","prune":false}}}' "${revision}")" >/dev/null
+          echo "application=${app} action=sync-requested reason=${retry_reason} revision=${revision} prune=false"
+        done
+      args:
+        executable: /bin/bash
+      register: platform_argocd_failed_app_retry
+      changed_when: "'action=sync-requested' in platform_argocd_failed_app_retry.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: platform_argocd_service_repair_refresh_apps_effective | bool

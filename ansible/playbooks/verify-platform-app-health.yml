@@ -2817,10 +2817,8 @@
           expected=$((expected + 1))
           node_safe="$(safe_name "${node}")"
           job_name="platform-app-svc-${node_safe}-${CHECK_ID}"
-          apply_attempt=1
-          apply_rc=1
-          while [ "${apply_attempt}" -le "${JOB_APPLY_ATTEMPTS}" ]; do
-            apply_output="$(cat <<YAML | "$K" --kubeconfig "$C" apply -f - 2>&1
+          job_manifest="$(mktemp)"
+          cat >"${job_manifest}" <<YAML
         apiVersion: batch/v1
         kind: Job
         metadata:
@@ -2956,7 +2954,12 @@
                       probe_tcp woodpecker-grpc woodpecker-server.woodpecker.svc.cluster.local 9000
                       exit "\${failed}"
         YAML
-            )"
+          manifest_bytes="$(wc -c <"${job_manifest}" | tr -d '[:space:]')"
+          echo "job_manifest node=${node} job=${job_name} bytes=${manifest_bytes:-0}"
+          apply_attempt=1
+          apply_rc=1
+          while [ "${apply_attempt}" -le "${JOB_APPLY_ATTEMPTS}" ]; do
+            apply_output="$("$K" --kubeconfig "$C" apply -f "${job_manifest}" 2>&1)"
             apply_rc=$?
             echo "job_apply node=${node} job=${job_name} attempt=${apply_attempt}/${JOB_APPLY_ATTEMPTS} rc=${apply_rc}"
             if [ -n "${apply_output}" ]; then
@@ -2971,6 +2974,7 @@
               sleep 2
             fi
           done
+          rm -f "${job_manifest}"
           if [ "${apply_rc}" -ne 0 ]; then
             echo "result=fail reason=service-path-check-job-create-failed node=${node} job=${job_name}"
             failed=1

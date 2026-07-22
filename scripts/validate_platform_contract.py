@@ -915,7 +915,7 @@ def main() -> None:
         for needle in (
             "server:\n  replicas: 3",
             "  resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
-            f"repoServer:\n  replicas: {repo_replicas}",
+            f"repoServer:\n  replicas: {repo_replicas}\n  deploymentStrategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxSurge: 0\n      maxUnavailable: 1",
             "applicationSet:\n  replicas: 2\n  resources:\n    requests:\n      cpu: 100m\n      memory: 128Mi\n    limits:\n      memory: 512Mi",
             "redis-ha:\n  enabled: true\n  haproxy:\n    deploymentStrategy:\n      type: RollingUpdate\n      rollingUpdate:\n        maxSurge: 0\n        maxUnavailable: 1\n    resources:\n      requests:\n        cpu: 50m\n        memory: 64Mi\n      limits:\n        memory: 128Mi",
             "  redis:\n    resources:\n      requests:\n        cpu: 100m\n        memory: 128Mi\n      limits:\n        memory: 512Mi",
@@ -2134,6 +2134,9 @@ def main() -> None:
     )
     for needle in (
         "PLATFORM_APP_HEALTH_SERVICE_CHECK_CREATE_ATTEMPTS",
+        'job_manifest="$(mktemp)"',
+        'apply -f "${job_manifest}"',
+        "job_manifest node=${node} job=${job_name} bytes=${manifest_bytes:-0}",
         "service-path-check-job-create-failed",
         "job_apply_summary expected=${expected} created=${created}",
     ):

@@ -127,6 +127,13 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "Reconcile Traefik IngressClass permission in active platform project",
         'required = {"group": "networking.k8s.io", "kind": "IngressClass"}',
         "argocd_application_traefik=refresh-sync-requested",
+        "action=skip-unchanged-rollout",
+        "Recycle Argo CD pods with timed-out local health probes",
+        "action=recycle reason=local-health-probe-timeout",
+        "argocd_health_probe_recovery recycled=${recycled}",
+        "Retry failed Argo CD application operations after service repair",
+        "action=sync-requested reason=${retry_reason}",
+        '"prune":false',
     )
     for fragment in required_fragments:
         if fragment not in text:
