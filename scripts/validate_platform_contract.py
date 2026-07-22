@@ -2847,6 +2847,7 @@ def main() -> None:
         "Verify Woodpecker gRPC ClusterIP service path before agent refresh from every RKE2 node",
         "Verify Woodpecker gRPC ClusterIP service path after agent refresh from every RKE2 node",
         "Verify Woodpecker gRPC ClusterIP service path from pods pinned to every RKE2 node after agent refresh",
+        "Reconcile Woodpecker Argo CD application after consumer refresh",
         "Stop after Woodpecker gRPC node service-path failure",
         "Stop after Woodpecker consumer refresh failure",
         "statefulset/woodpecker-agent",
@@ -2857,9 +2858,13 @@ def main() -> None:
         "woodpecker-server.woodpecker.svc.cluster.local:9000",
         "PLATFORM_SERVICE_PATH_CONSUMER_REPAIR_CHECK_IMAGE",
         "PLATFORM_SERVICE_PATH_CONSUMER_REPAIR_TIMEOUT",
+        "MAX_ATTEMPTS=3",
+        "action=sync-requested attempt=${attempt}",
+        "action=sync-finished phase=${phase:-none}",
         "(platform_woodpecker_grpc_node_probe | default({})).rc",
         "(platform_woodpecker_grpc_pod_probe | default({})).rc",
         "(platform_woodpecker_agent_rollout | default({})).rc",
+        "(platform_woodpecker_argocd_reconcile_after_consumer_refresh | default({})).rc",
     ):
         require_text(
             service_path_consumers_text,

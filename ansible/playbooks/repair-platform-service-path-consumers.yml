@@ -429,6 +429,104 @@
         - platform_woodpecker_consumer_state_before is defined
         - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
 
+    - name: Reconcile Woodpecker Argo CD application after consumer refresh
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        APP=woodpecker
+        SYNC_TIMEOUT={{ platform_service_path_consumer_repair_timeout_effective }}
+        MAX_ATTEMPTS=3
+
+        if ! "$K" --kubeconfig "$C" -n argocd get "application/${APP}" >/dev/null 2>&1; then
+          echo "application=${APP} action=skip reason=not-found"
+          exit 0
+        fi
+
+        read_state() {
+          "$K" --kubeconfig "$C" -n argocd get "application/${APP}" \
+            -o jsonpath='{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}{"|"}{.status.health.status}' \
+            2>/dev/null || true
+        }
+
+        wait_for_operation() {
+          deadline="$(( $(date +%s) + SYNC_TIMEOUT ))"
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            state="$(read_state)"
+            requested_revision="$(printf '%s' "${state}" | cut -d'|' -f1)"
+            phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
+            sync_status="$(printf '%s' "${state}" | cut -d'|' -f3)"
+            health_status="$(printf '%s' "${state}" | cut -d'|' -f4)"
+            if [ -z "${requested_revision}" ] && [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
+              echo "application=${APP} action=sync-finished phase=${phase:-none} sync=${sync_status:-unknown} health=${health_status:-unknown}"
+              if [ "${sync_status}" = "Synced" ] && [ "${health_status}" = "Healthy" ] &&
+                { [ "${phase}" = "Succeeded" ] || [ -z "${phase}" ]; }; then
+                return 0
+              fi
+              return 1
+            fi
+            sleep 5
+          done
+          echo "application=${APP} action=sync-wait-timeout timeout=${SYNC_TIMEOUT}s"
+          return 1
+        }
+
+        "$K" --kubeconfig "$C" -n argocd annotate "application/${APP}" \
+          argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+
+        attempt=1
+        while [ "${attempt}" -le "${MAX_ATTEMPTS}" ]; do
+          state="$(read_state)"
+          requested_revision="$(printf '%s' "${state}" | cut -d'|' -f1)"
+          phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
+          sync_status="$(printf '%s' "${state}" | cut -d'|' -f3)"
+          health_status="$(printf '%s' "${state}" | cut -d'|' -f4)"
+
+          if [ -n "${requested_revision}" ] || [ "${phase}" = "Running" ] || [ "${phase}" = "Terminating" ]; then
+            echo "application=${APP} action=wait-existing-operation attempt=${attempt}"
+            if wait_for_operation; then
+              exit 0
+            fi
+          elif [ "${sync_status}" = "Synced" ] && [ "${health_status}" = "Healthy" ] &&
+            { [ "${phase}" = "Succeeded" ] || [ -z "${phase}" ]; }; then
+            echo "application=${APP} action=keep phase=${phase:-none} sync=${sync_status} health=${health_status}"
+            exit 0
+          fi
+
+          revision="$($K --kubeconfig "$C" -n argocd get "application/${APP}" \
+            -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+          if [ -z "${revision}" ]; then
+            revision="$($K --kubeconfig "$C" -n argocd get "application/${APP}" \
+              -o jsonpath='{.spec.sources[0].targetRevision}' 2>/dev/null || true)"
+          fi
+          revision="${revision:-main}"
+          "$K" --kubeconfig "$C" -n argocd patch "application/${APP}" --type merge \
+            -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")" >/dev/null
+          echo "application=${APP} action=sync-requested attempt=${attempt} revision=${revision} prune=false"
+          sleep 3
+          if wait_for_operation; then
+            exit 0
+          fi
+          attempt=$((attempt + 1))
+        done
+
+        state="$(read_state)"
+        echo "application=${APP} result=fail state=${state:-unknown} attempts=${MAX_ATTEMPTS}"
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_argocd_reconcile_after_consumer_refresh
+      changed_when: "'action=sync-requested' in platform_woodpecker_argocd_reconcile_after_consumer_refresh.stdout"
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_service_path_consumer_repair_woodpecker_effective | bool
+        - platform_woodpecker_consumer_state_before is defined
+        - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+        - (platform_woodpecker_agent_rollout | default({})).rc | default(0) | int == 0
+        - (platform_woodpecker_grpc_pod_probe | default({})).rc | default(0) | int == 0
+
     - name: Show Woodpecker service path consumer repair result
       ansible.builtin.shell: |
         K=/var/lib/rancher/rke2/bin/kubectl
@@ -489,8 +587,9 @@
     - name: Stop after Woodpecker consumer refresh failure
       ansible.builtin.fail:
         msg: |
-          Woodpecker agents did not become Ready, or the pod-pinned Woodpecker
-          gRPC service-path check still failed after consumer refresh.
+          Woodpecker agents did not become Ready, the pod-pinned Woodpecker
+          gRPC service-path check failed, or Argo CD could not record a
+          successful Woodpecker sync after consumer refresh.
 
           Agent rollout stdout:
           {{ (platform_woodpecker_agent_rollout | default({})).stdout | default('not run', true) }}
@@ -503,6 +602,12 @@
 
           Pod-pinned gRPC probe stderr:
           {{ (platform_woodpecker_grpc_pod_probe | default({})).stderr | default('not run', true) }}
+
+          Argo CD post-refresh reconciliation stdout:
+          {{ (platform_woodpecker_argocd_reconcile_after_consumer_refresh | default({})).stdout | default('not run', true) }}
+
+          Argo CD post-refresh reconciliation stderr:
+          {{ (platform_woodpecker_argocd_reconcile_after_consumer_refresh | default({})).stderr | default('not run', true) }}
       run_once: true
       when:
         - platform_service_path_consumer_repair_woodpecker_effective | bool
@@ -510,4 +615,5 @@
         - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
         - >
           ((platform_woodpecker_agent_rollout | default({})).rc | default(0) | int != 0) or
-          ((platform_woodpecker_grpc_pod_probe | default({})).rc | default(0) | int != 0)
+          ((platform_woodpecker_grpc_pod_probe | default({})).rc | default(0) | int != 0) or
+          ((platform_woodpecker_argocd_reconcile_after_consumer_refresh | default({})).rc | default(0) | int != 0)
