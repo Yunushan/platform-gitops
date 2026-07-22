@@ -20,9 +20,10 @@ prometheus:
     retentionSize: 20GB
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
+    # Keep both HA replicas schedulable on the three-node premium baseline.
     resources:
       requests:
-        cpu: 500m
+        cpu: 250m
         memory: 2Gi
       limits:
         memory: 4Gi

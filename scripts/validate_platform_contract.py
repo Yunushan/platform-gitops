@@ -1551,7 +1551,7 @@ def main() -> None:
     premium_monitoring_text = read(premium_monitoring_values)
     for needle in (
         "prometheusSpec:\n    replicas: 2\n    retention: 15d",
-        "    resources:\n      requests:\n        cpu: 500m\n        memory: 2Gi\n      limits:\n        memory: 4Gi",
+        "    resources:\n      requests:\n        cpu: 250m\n        memory: 2Gi\n      limits:\n        memory: 4Gi",
         "alertmanagerSpec:\n    replicas: 3\n    resources:\n      requests:\n        cpu: 100m\n        memory: 256Mi",
         "grafana:\n  replicas: 1\n  admin:",
         "resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi",
@@ -1588,9 +1588,9 @@ def main() -> None:
     for needle in (
         "deploymentMode: SimpleScalable",
         "replication_factor: 3",
-        "write:\n  replicas: 3\n  resources:\n    requests:\n      cpu: 500m\n      memory: 1Gi",
+        "write:\n  replicas: 3\n  resources:\n    requests:\n      cpu: 250m\n      memory: 1Gi",
         "read:\n  replicas: 3\n  resources:\n    requests:\n      cpu: 250m\n      memory: 512Mi",
-        "backend:\n  replicas: 3\n  resources:\n    requests:\n      cpu: 500m\n      memory: 1Gi",
+        "backend:\n  replicas: 3\n  resources:\n    requests:\n      cpu: 250m\n      memory: 1Gi",
         "gateway:\n  enabled: true\n  resources:\n    requests:\n      cpu: 100m\n      memory: 128Mi",
         "serviceMonitor:\n    enabled: true",
     ):

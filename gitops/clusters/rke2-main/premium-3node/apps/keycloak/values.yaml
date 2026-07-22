@@ -20,9 +20,11 @@ httpEnabled: true
 replicaCount: 2
 podAntiAffinityPreset: hard
 
+# The premium profile targets three 8-vCPU nodes; reserve enough CPU for HA
+# while leaving scheduler headroom for storage and platform rollouts.
 resources:
   requests:
-    cpu: 500m
+    cpu: 250m
     memory: 1Gi
   limits:
     memory: 2Gi
@@ -72,4 +74,3 @@ metrics:
     namespace: monitoring
     labels:
       release: monitoring
-
