@@ -2521,6 +2521,17 @@ def main() -> None:
         fail("platform-service-path-consumers-repair target must invoke the consumer refresh playbook")
     if "@$(MAKE) platform-service-path-consumers-repair" not in makefile_text:
         fail("platform-service-path-repair must refresh service-path consumers after DNS/CNI repair")
+    argocd_repair_target = re.search(
+        r"(?m)^platform-argocd-service-repair:\n(?P<body>(?:\t[^\n]*\n)+)",
+        makefile_text,
+    )
+    if not argocd_repair_target:
+        fail("could not parse platform-argocd-service-repair target body")
+    argocd_repair_body = argocd_repair_target.group("body")
+    argocd_dns_repair_index = argocd_repair_body.find("@$(MAKE) platform-dns-repair")
+    argocd_playbook_index = argocd_repair_body.find("ansible/playbooks/repair-argocd-service-path.yml")
+    if not (0 <= argocd_dns_repair_index < argocd_playbook_index):
+        fail("platform-argocd-service-repair must preflight shared DNS and API service paths")
     if "platform-woodpecker-repair:" not in makefile_text:
         fail("Makefile is missing platform-woodpecker-repair target")
     for needle in (
@@ -2561,16 +2572,16 @@ def main() -> None:
     if not woodpecker_repair_target:
         fail("could not parse platform-woodpecker-repair target body")
     woodpecker_repair_body = woodpecker_repair_target.group("body")
-    dns_repair = "@$(MAKE) platform-dns-repair"
     argocd_repair = "@$(MAKE) platform-argocd-service-repair"
     consumer_refresh = "@$(MAKE) platform-service-path-consumers-repair"
     strict_repair = "ansible/playbooks/repair-woodpecker.yml"
     first_consumer_refresh = woodpecker_repair_body.find(consumer_refresh)
     strict_repair_index = woodpecker_repair_body.find(strict_repair)
-    dns_repair_index = woodpecker_repair_body.find(dns_repair)
     argocd_repair_index = woodpecker_repair_body.find(argocd_repair)
-    if not (0 <= dns_repair_index < argocd_repair_index < strict_repair_index):
-        fail("platform-woodpecker-repair must repair shared service paths and Argo CD before Woodpecker")
+    if not (0 <= argocd_repair_index < strict_repair_index):
+        fail("platform-woodpecker-repair must repair Argo CD and its shared service paths before Woodpecker")
+    if "@$(MAKE) platform-dns-repair" in woodpecker_repair_body:
+        fail("platform-woodpecker-repair must not duplicate the Argo CD DNS/API service-path preflight")
     longhorn_runtime_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-runtime-repair")
     longhorn_bootstrap_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-bootstrap")
     if not (strict_repair_index < longhorn_runtime_index < longhorn_bootstrap_index < first_consumer_refresh):
@@ -2744,6 +2755,10 @@ def main() -> None:
         "firewalld_state_recovery_action=restart-after-interface-cleanup",
         "systemctl reset-failed firewalld",
         "firewalld_runtime_missing=forward:${source}->${destination}",
+        "run_kubernetes_api_service_check",
+        "Kubernetes API ClusterIP TLS service-path probe",
+        "https://kubernetes.default.svc",
+        "platform-kubernetes-api-check",
     ):
         require_text(dns_repair_text, needle, f"DNS repair must support forced CNI service-path recovery: {needle}")
     cleanup_script_text = read(firewalld_cleanup_script)

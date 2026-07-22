@@ -184,6 +184,7 @@ platform-argocd-diagnose:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/diagnose-argocd.yml
 
 platform-argocd-service-repair:
+	@$(MAKE) platform-dns-repair
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-argocd-service-path.yml
 
 platform-app-secrets:
@@ -212,7 +213,6 @@ platform-ci-health:
 	ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-app-health.yml
 
 platform-woodpecker-repair:
-	@$(MAKE) platform-dns-repair
 	@$(MAKE) platform-argocd-service-repair
 	@$(MAKE) platform-app-secrets
 	@set -o pipefail; \

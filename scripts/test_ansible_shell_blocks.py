@@ -181,6 +181,10 @@ def validate_coredns_rollout_contract() -> list[str]:
         "Wait for CoreDNS after OpenBao admission guard",
         "platform.gitops/openbao-injection",
         "openbao_injector_guard admission_dry_run=ok",
+        "run_kubernetes_api_service_check",
+        "Kubernetes API ClusterIP TLS service-path probe",
+        "https://kubernetes.default.svc",
+        "platform-kubernetes-api-check",
     )
     for fragment in required_fragments:
         if fragment not in text:
@@ -191,6 +195,10 @@ def validate_coredns_rollout_contract() -> list[str]:
         errors.append("CoreDNS repair and HA placement must both retain maxSurge=0")
     if re.search(r"(?m)^\s+- name: Wait for CoreDNS rollout\s*$", text):
         errors.append("CoreDNS must not retry rollout status after ProgressDeadlineExceeded")
+    if text.count("run_kubernetes_api_service_check()") < 2:
+        errors.append("CoreDNS must probe the Kubernetes API ClusterIP before and after service-path repair")
+    if text.count('run_kubernetes_api_service_check || api_service_rc="$?"') < 2:
+        errors.append("CoreDNS must enforce both Kubernetes API ClusterIP probe results")
     guard_script = re.search(
         r'''(?ms)^\s*python3 - "\$\{state_file\}" >"\$\{patches_file\}" <<'PY'\s*$\n'''
         r"(?P<body>.*?)^\s*PY\s*$",

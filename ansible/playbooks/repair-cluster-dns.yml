@@ -578,6 +578,41 @@
                         helm_output_has_failure() {
                           grep -E 'Unable to get an update|Error:|i/o timeout|no such host|bad address|TLS handshake timeout|connection timed out|context deadline exceeded|network is unreachable'
                         }
+                        api_output_has_path_failure() {
+                          grep -Ei 'TLS handshake timeout|i/o timeout|context deadline exceeded|connection timed out|operation timed out|connection refused|no such host|bad address|temporary failure in name resolution|server misbehaving|network is unreachable|no route to host|Client\.Timeout exceeded|connection reset by peer|x509:|remote error: tls'
+                        }
+                        run_kubernetes_api_service_check() {
+                          echo "===== Kubernetes API ClusterIP TLS service-path probe ====="
+                          nslookup kubernetes.default.svc || true
+                          helm repo remove platform-kubernetes-api-check >/dev/null 2>&1 || true
+
+                          set +e
+                          api_output="$(run_bounded "${HELM_TIMEOUT}" helm repo add platform-kubernetes-api-check \
+                            https://kubernetes.default.svc \
+                            --ca-file /var/run/secrets/kubernetes.io/serviceaccount/ca.crt 2>&1)"
+                          api_rc="$?"
+                          set -e
+                          printf '%s\n' "${api_output}"
+
+                          case "${api_rc}" in
+                            124|137|143)
+                              echo "Kubernetes API ClusterIP probe timed out with rc=${api_rc}." >&2
+                              return 1
+                              ;;
+                          esac
+                          if printf '%s\n' "${api_output}" | api_output_has_path_failure >/dev/null 2>&1; then
+                            echo "Kubernetes API ClusterIP probe reported a service-path or TLS failure." >&2
+                            return 1
+                          fi
+                          if [ "${api_rc}" -ne 0 ] && ! printf '%s\n' "${api_output}" |
+                            grep -Eq '401 Unauthorized|403 Forbidden|404 Not Found|status code:?[[:space:]]*[0-9]{3}'; then
+                            echo "Kubernetes API ClusterIP probe failed without a conclusive HTTP response (rc=${api_rc})." >&2
+                            return 1
+                          fi
+
+                          echo "Kubernetes API ClusterIP returned a bounded TLS/HTTP response (helm_rc=${api_rc})."
+                          return 0
+                        }
                         run_helm_repo_check() {
                           attempt=1
                           while [ "${attempt}" -le "${HELM_ATTEMPTS}" ]; do
@@ -648,7 +683,13 @@
                         else
                           echo "No curl or wget found in check image; skipping direct HTTPS index probe."
                         fi
-                        run_helm_repo_check
+                        api_service_rc=0
+                        run_kubernetes_api_service_check || api_service_rc="$?"
+                        repo_rc=0
+                        run_helm_repo_check || repo_rc="$?"
+                        if [ "${api_service_rc}" -ne 0 ] || [ "${repo_rc}" -ne 0 ]; then
+                          exit 1
+                        fi
       register: platform_dns_check_before
       changed_when: false
       failed_when: false
@@ -657,7 +698,7 @@
 
     - name: Show healthy cluster DNS
       ansible.builtin.debug:
-        msg: "Cluster DNS already resolves external chart repositories from pods."
+        msg: "Cluster DNS resolves external chart repositories and the Kubernetes API ClusterIP TLS path responds from pods."
       when:
         - platform_dns_check_before.rc == 0
         - not (platform_dns_force_service_path_repair_effective | bool)
@@ -2225,6 +2266,41 @@
                             helm_output_has_failure() {
                               grep -E 'Unable to get an update|Error:|i/o timeout|no such host|bad address|TLS handshake timeout|connection timed out|context deadline exceeded|network is unreachable'
                             }
+                            api_output_has_path_failure() {
+                              grep -Ei 'TLS handshake timeout|i/o timeout|context deadline exceeded|connection timed out|operation timed out|connection refused|no such host|bad address|temporary failure in name resolution|server misbehaving|network is unreachable|no route to host|Client\.Timeout exceeded|connection reset by peer|x509:|remote error: tls'
+                            }
+                            run_kubernetes_api_service_check() {
+                              echo "===== Kubernetes API ClusterIP TLS service-path probe ====="
+                              nslookup kubernetes.default.svc || true
+                              helm repo remove platform-kubernetes-api-check >/dev/null 2>&1 || true
+
+                              set +e
+                              api_output="$(run_bounded "${HELM_TIMEOUT}" helm repo add platform-kubernetes-api-check \
+                                https://kubernetes.default.svc \
+                                --ca-file /var/run/secrets/kubernetes.io/serviceaccount/ca.crt 2>&1)"
+                              api_rc="$?"
+                              set -e
+                              printf '%s\n' "${api_output}"
+
+                              case "${api_rc}" in
+                                124|137|143)
+                                  echo "Kubernetes API ClusterIP probe timed out with rc=${api_rc}." >&2
+                                  return 1
+                                  ;;
+                              esac
+                              if printf '%s\n' "${api_output}" | api_output_has_path_failure >/dev/null 2>&1; then
+                                echo "Kubernetes API ClusterIP probe reported a service-path or TLS failure." >&2
+                                return 1
+                              fi
+                              if [ "${api_rc}" -ne 0 ] && ! printf '%s\n' "${api_output}" |
+                                grep -Eq '401 Unauthorized|403 Forbidden|404 Not Found|status code:?[[:space:]]*[0-9]{3}'; then
+                                echo "Kubernetes API ClusterIP probe failed without a conclusive HTTP response (rc=${api_rc})." >&2
+                                return 1
+                              fi
+
+                              echo "Kubernetes API ClusterIP returned a bounded TLS/HTTP response (helm_rc=${api_rc})."
+                              return 0
+                            }
                             run_helm_repo_check() {
                               attempt=1
                               while [ "${attempt}" -le "${HELM_ATTEMPTS}" ]; do
@@ -2295,7 +2371,13 @@
                             else
                               echo "No curl or wget found in check image; skipping direct HTTPS index probe."
                             fi
-                            run_helm_repo_check
+                            api_service_rc=0
+                            run_kubernetes_api_service_check || api_service_rc="$?"
+                            repo_rc=0
+                            run_helm_repo_check || repo_rc="$?"
+                            if [ "${api_service_rc}" -ne 0 ] || [ "${repo_rc}" -ne 0 ]; then
+                              exit 1
+                            fi
           register: platform_dns_check_after
           changed_when: false
           failed_when: false
