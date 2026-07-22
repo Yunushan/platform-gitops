@@ -628,6 +628,9 @@
                 "exec": {
                     "command": ["/usr/bin/timeout", "5", "/usr/bin/bash", "-ec", command],
                 },
+                "httpGet": None,
+                "tcpSocket": None,
+                "grpc": None,
                 "failureThreshold": failure_threshold,
                 "initialDelaySeconds": initial_delay,
                 "periodSeconds": 10,
@@ -705,6 +708,9 @@
                 "exec": {
                     "command": ["/usr/bin/timeout", "5", "/usr/bin/bash", "-ec", command],
                 },
+                "httpGet": None,
+                "tcpSocket": None,
+                "grpc": None,
                 "failureThreshold": failure_threshold,
                 "initialDelaySeconds": initial_delay,
                 "periodSeconds": 10,
