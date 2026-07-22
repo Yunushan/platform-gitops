@@ -16,6 +16,9 @@
     platform_argocd_cleanup_stale_bootstrap_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CLEAN_STALE_BOOTSTRAP') }}"
     platform_argocd_controller_readiness_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_TIMEOUT') }}"
     platform_argocd_controller_readiness_failure_threshold_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_FAILURE_THRESHOLD') }}"
+    platform_argocd_health_probe_recycle_min_age_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HEALTH_PROBE_RECYCLE_MIN_AGE') }}"
+    platform_argocd_health_probe_recovery_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT') }}"
+    platform_argocd_service_repair_retry_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_node_local_effective: "{{ platform_argocd_service_repair_node_local | default(platform_argocd_service_repair_node_local_from_env, true) | default(true, true) | bool }}"
@@ -26,6 +29,9 @@
     platform_argocd_cleanup_stale_bootstrap_effective: "{{ platform_argocd_cleanup_stale_bootstrap | default(platform_argocd_cleanup_stale_bootstrap_from_env, true) | default(true, true) | bool }}"
     platform_argocd_controller_readiness_timeout_effective: "{{ platform_argocd_controller_readiness_timeout | default(platform_argocd_controller_readiness_timeout_from_env, true) | default(10, true) | int }}"
     platform_argocd_controller_readiness_failure_threshold_effective: "{{ platform_argocd_controller_readiness_failure_threshold | default(platform_argocd_controller_readiness_failure_threshold_from_env, true) | default(18, true) | int }}"
+    platform_argocd_health_probe_recycle_min_age_effective: "{{ platform_argocd_health_probe_recycle_min_age | default(platform_argocd_health_probe_recycle_min_age_from_env, true) | default(300, true) | int }}"
+    platform_argocd_health_probe_recovery_timeout_effective: "{{ platform_argocd_health_probe_recovery_timeout | default(platform_argocd_health_probe_recovery_timeout_from_env, true) | default(600, true) | int }}"
+    platform_argocd_service_repair_retry_apps_effective: "{{ platform_argocd_service_repair_retry_apps | default(platform_argocd_service_repair_retry_apps_from_env, true) | default('argocd-ha traefik woodpecker', true) }}"
   tasks:
     - name: Show current Argo CD service path state
       ansible.builtin.shell: |
@@ -469,9 +475,10 @@
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
+        MIN_AGE={{ platform_argocd_health_probe_recycle_min_age_effective }}
         recycled=0
 
-        while IFS='|' read -r pod phase ready_statuses; do
+        while IFS='|' read -r pod phase created_at ready_statuses; do
           [ -n "${pod}" ] || continue
           case "${pod}" in
             argo-cd-argocd-application-controller-*|\
@@ -491,17 +498,27 @@
             *) continue ;;
           esac
 
+          created_epoch="$(date -d "${created_at}" +%s 2>/dev/null || echo 0)"
+          pod_age=0
+          if [ "${created_epoch}" -gt 0 ]; then
+            pod_age="$(( $(date +%s) - created_epoch ))"
+          fi
+          if [ "${pod_age}" -lt "${MIN_AGE}" ]; then
+            echo "pod=${pod} phase=${phase} ready=${ready_statuses} age=${pod_age}s action=keep reason=pod-too-young-for-recycle"
+            continue
+          fi
+
           diagnostics="$("$K" --kubeconfig "$C" -n argocd describe "pod/${pod}" 2>&1 || true)"
           if printf '%s\n' "${diagnostics}" |
             grep -Eiq '(Readiness|Liveness|Startup) probe failed.*(context deadline exceeded|Client\.Timeout exceeded|i/o timeout)'; then
-            echo "pod=${pod} phase=${phase} ready=${ready_statuses} action=recycle reason=local-health-probe-timeout"
+            echo "pod=${pod} phase=${phase} ready=${ready_statuses} age=${pod_age}s action=recycle reason=local-health-probe-timeout"
             "$K" --kubeconfig "$C" -n argocd delete "pod/${pod}" --wait=false
             recycled=$((recycled + 1))
           else
             echo "pod=${pod} phase=${phase} ready=${ready_statuses} action=keep reason=no-local-health-probe-timeout"
           fi
         done < <("$K" --kubeconfig "$C" -n argocd get pods \
-          -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{range .status.containerStatuses[*]}{.ready}{","}{end}{"\n"}{end}' 2>/dev/null || true)
+          -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{.metadata.creationTimestamp}{"|"}{range .status.containerStatuses[*]}{.ready}{","}{end}{"\n"}{end}' 2>/dev/null || true)
 
         echo "argocd_health_probe_recovery recycled=${recycled}"
         if [ "${recycled}" -gt 0 ]; then
@@ -513,6 +530,36 @@
       changed_when: "'action=recycle' in platform_argocd_health_probe_recovery.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
+
+    - name: Wait for recycled Argo CD pods to become ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        RECOVERY_TIMEOUT={{ platform_argocd_health_probe_recovery_timeout_effective }}
+
+        for component in argocd-application-controller argocd-repo-server argocd-server; do
+          count="$("$K" --kubeconfig "$C" -n argocd get pods \
+            -l "app.kubernetes.io/name=${component}" \
+            -o name 2>/dev/null | awk 'END { print NR + 0 }')"
+          if [ "${count}" -eq 0 ]; then
+            echo "component=${component} pods=0 action=skip"
+            continue
+          fi
+          echo "component=${component} pods=${count} action=wait-ready timeout=${RECOVERY_TIMEOUT}s"
+          "$K" --kubeconfig "$C" -n argocd wait pod \
+            -l "app.kubernetes.io/name=${component}" \
+            --for=condition=Ready \
+            --timeout="${RECOVERY_TIMEOUT}s"
+          echo "component=${component} result=ready"
+        done
+      args:
+        executable: /bin/bash
+      register: platform_argocd_health_probe_recovery_wait
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_argocd_health_probe_recovery.changed
 
     - name: Wait for active Argo CD internal service endpoints
       ansible.builtin.shell: |
@@ -666,15 +713,17 @@
         set -o pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
+        RETRY_APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"
 
-        apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io \
-          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
-        for app in ${apps}; do
+        for app in ${RETRY_APPS}; do
+          if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+            echo "application=${app} action=skip reason=not-found"
+            continue
+          fi
           state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-            -o jsonpath='{.status.sync.status}{"|"}{.status.operationState.phase}{"|"}{.status.conditions[*].type}' 2>/dev/null || true)"
+            -o jsonpath='{.status.sync.status}{"|"}{.status.operationState.phase}' 2>/dev/null || true)"
           sync_status="$(printf '%s' "${state}" | cut -d'|' -f1)"
           operation_phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
-          condition_types="$(printf '%s' "${state}" | cut -d'|' -f3-)"
           retry_reason=""
 
           case "${operation_phase}" in
@@ -686,17 +735,6 @@
               retry_reason="operation-${operation_phase}"
               ;;
           esac
-          if [ -z "${retry_reason}" ]; then
-            case "${sync_status}" in
-              OutOfSync|Unknown)
-                retry_reason="sync-${sync_status}"
-                ;;
-            esac
-          fi
-          if [ -z "${retry_reason}" ] && printf '%s\n' "${condition_types}" |
-            grep -Eq '(^| )(ComparisonError|InvalidSpecError)( |$)'; then
-            retry_reason="blocking-condition"
-          fi
           if [ -z "${retry_reason}" ]; then
             echo "application=${app} action=keep sync=${sync_status:-unknown} operation=${operation_phase:-none}"
             continue
@@ -712,6 +750,7 @@
           "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
             -p "$(printf '{"operation":{"sync":{"revision":"%s","prune":false}}}' "${revision}")" >/dev/null
           echo "application=${app} action=sync-requested reason=${retry_reason} revision=${revision} prune=false"
+          sleep 5
         done
       args:
         executable: /bin/bash
