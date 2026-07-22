@@ -130,7 +130,7 @@ redis:
     jobserviceDatabaseIndex: "1"
     registryDatabaseIndex: "2"
     trivyAdapterIndex: "5"
-    username: ""
+    username: default
     existingSecret: harbor-redis
 
 existingSecretAdminPassword: harbor-admin

@@ -1231,16 +1231,20 @@ def harbor_redis_settings() -> tuple[str, str, str, str]:
         raise SystemExit("HARBOR_REDIS_MODE must be internal, external, redis, or valkey")
 
     addr = os.environ.get("HARBOR_REDIS_ADDR", "").strip()
+    shared_valkey = not addr and not os.environ.get("HARBOR_REDIS_HOST", "").strip()
     if not addr:
         host = os.environ.get("HARBOR_REDIS_HOST", "").strip()
         host = host or os.environ.get("PLATFORM_VALKEY_PRIMARY_HOST", "platform-valkey-primary.platform-cache.svc.cluster.local").strip()
         host = require("HARBOR_REDIS_HOST or HARBOR_REDIS_ADDR", host)
         port = os.environ.get("HARBOR_REDIS_PORT", os.environ.get("PLATFORM_VALKEY_PORT", "6379")).strip() or "6379"
         addr = f"{host}:{port}"
+    username = os.environ.get("HARBOR_REDIS_USERNAME", "").strip()
+    if not username and shared_valkey:
+        username = "default"
     return (
         harbor_external_redis_block(
             addr=addr,
-            username=os.environ.get("HARBOR_REDIS_USERNAME", "").strip(),
+            username=username,
             secret_name=os.environ.get("HARBOR_REDIS_SECRET_NAME", "harbor-redis").strip() or "harbor-redis",
             tls_enabled=env_bool("HARBOR_REDIS_TLS", False),
         ),
