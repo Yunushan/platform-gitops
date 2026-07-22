@@ -117,6 +117,7 @@ CONTRACTS = [
         "rendered_needles": [
             "redis:\n  type: external",
             'existingSecret: "harbor-redis-custom"',
+            'name: "harbor-redis-url"',
         ],
     },
     {

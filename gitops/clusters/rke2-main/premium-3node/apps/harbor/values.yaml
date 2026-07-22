@@ -24,6 +24,14 @@ portal:
       memory: 256Mi
 core:
   replicas: 1
+  # Harbor's chart cannot build the core Redis URL from existingSecret.
+  # Keep the URL, including the password, in generated Secret data instead.
+  extraEnvVars:
+    - name: _REDIS_URL_CORE
+      valueFrom:
+        secretKeyRef:
+          name: harbor-redis-url
+          key: REDIS_URL_CORE
   resources:
     requests:
       cpu: 250m

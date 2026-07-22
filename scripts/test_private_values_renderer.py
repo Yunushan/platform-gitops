@@ -520,7 +520,7 @@ platform_step_ca_host=ca.example.test
             'storageClass: "longhorn-critical"',
             'size: "55Gi"',
             "portal:\n  replicas: 1\n  resources:",
-            "core:\n  replicas: 1\n  resources:",
+            "core:\n  replicas: 1\n  # Harbor's chart cannot build the core Redis URL from existingSecret.",
             "jobservice:\n  replicas: 1\n  resources:",
             "registry:\n  replicas: 1\n  registry:\n    resources:",
             "trivy:\n  enabled: true\n  replicas: 1\n  resources:",
@@ -529,6 +529,8 @@ platform_step_ca_host=ca.example.test
             "redis:\n  type: external",
             'addr: "platform-valkey-primary.platform-cache.svc.cluster.local:6379"',
             'existingSecret: "harbor-redis"',
+            "extraEnvVars:\n    - name: _REDIS_URL_CORE",
+            'name: "harbor-redis-url"',
         )
 
         external_harbor_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/harbor/external-values.yaml")

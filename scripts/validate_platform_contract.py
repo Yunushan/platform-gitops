@@ -1515,7 +1515,8 @@ def main() -> None:
     premium_harbor_text = read(premium_harbor_values)
     for needle in (
         "portal:\n  replicas: 1\n  resources:",
-        "core:\n  replicas: 1\n  resources:",
+        "core:\n  replicas: 1\n  # Harbor's chart cannot build the core Redis URL from existingSecret.",
+        "extraEnvVars:\n    - name: _REDIS_URL_CORE\n      valueFrom:\n        secretKeyRef:\n          name: harbor-redis-url\n          key: REDIS_URL_CORE",
         "jobservice:\n  replicas: 1\n  resources:",
         "registry:\n  replicas: 1\n  registry:\n    resources:",
         "  controller:\n    resources:",

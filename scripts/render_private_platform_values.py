@@ -937,6 +937,7 @@ def harbor_bootstrap_values(
     registry_storage_block: str,
     database_block: str,
     redis_block: str,
+    core_redis_url_env_block: str,
     dependency_note: str,
 ) -> str:
     tls_secret_block = ""
@@ -968,6 +969,7 @@ portal:
       memory: 256Mi
 core:
   replicas: 1
+{core_redis_url_env_block}
   resources:
     requests:
       cpu: 250m
@@ -1147,6 +1149,17 @@ def harbor_external_redis_block(addr: str, username: str, secret_name: str, tls_
     existingSecret: {yaml_string(secret_name)}"""
 
 
+def harbor_core_redis_url_env_block(secret_name: str) -> str:
+    return f"""  # Harbor's chart cannot build the core Redis URL from existingSecret.
+  # Keep the URL, including the password, in generated Secret data instead.
+  extraEnvVars:
+    - name: _REDIS_URL_CORE
+      valueFrom:
+        secretKeyRef:
+          name: {yaml_string(secret_name)}
+          key: REDIS_URL_CORE"""
+
+
 def harbor_registry_storage_settings() -> tuple[str, str, str]:
     storage_mode = os.environ.get("HARBOR_STORAGE_MODE", "filesystem").strip().lower() or "filesystem"
     if storage_mode in {"filesystem", "local", "pvc"}:
@@ -1210,10 +1223,10 @@ def harbor_database_settings() -> tuple[str, str, str]:
     )
 
 
-def harbor_redis_settings() -> tuple[str, str, str]:
+def harbor_redis_settings() -> tuple[str, str, str, str]:
     redis_mode = os.environ.get("HARBOR_REDIS_MODE", "external").strip().lower() or "external"
     if redis_mode in {"internal", "local"}:
-        return (harbor_internal_redis_block(), "internal Redis", redis_mode)
+        return (harbor_internal_redis_block(), "", "internal Redis", redis_mode)
     if redis_mode not in {"external", "redis", "valkey"}:
         raise SystemExit("HARBOR_REDIS_MODE must be internal, external, redis, or valkey")
 
@@ -1230,6 +1243,10 @@ def harbor_redis_settings() -> tuple[str, str, str]:
             username=os.environ.get("HARBOR_REDIS_USERNAME", "").strip(),
             secret_name=os.environ.get("HARBOR_REDIS_SECRET_NAME", "harbor-redis").strip() or "harbor-redis",
             tls_enabled=env_bool("HARBOR_REDIS_TLS", False),
+        ),
+        harbor_core_redis_url_env_block(
+            os.environ.get("HARBOR_REDIS_URL_SECRET_NAME", "harbor-redis-url").strip()
+            or "harbor-redis-url"
         ),
         "external Redis",
         "external",
@@ -1253,7 +1270,7 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
     storage_class = os.environ.get("HARBOR_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical"
     registry_storage_block, registry_note, _registry_mode = harbor_registry_storage_settings()
     database_block, database_note, _database_mode = harbor_database_settings()
-    redis_block, redis_note, _redis_mode = harbor_redis_settings()
+    redis_block, core_redis_url_env_block, redis_note, _redis_mode = harbor_redis_settings()
     rendered = harbor_bootstrap_values(
         host,
         tls_cert_source,
@@ -1269,6 +1286,7 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
         registry_storage_block,
         database_block,
         redis_block,
+        core_redis_url_env_block,
         f"Uses {database_note}, {redis_note}, and {registry_note}.",
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
