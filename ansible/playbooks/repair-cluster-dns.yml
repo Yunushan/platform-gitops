@@ -509,7 +509,7 @@
           awk '$1 == "True" && $2 != "true" && $3 != "<none>" { print $3 }')"
         endpoint_ips="$(${K} --kubeconfig "${C}" -n default get endpointslice \
           -l kubernetes.io/service-name=kubernetes \
-          -o jsonpath='{range .items[*].endpoints[*]}{range .addresses[*]}{.}{"\n"}{end}{end}' |
+          -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{"\n"}{end}' |
           awk 'NF' | sort -u)"
 
         if [ -z "${ready_node_ips}" ]; then
