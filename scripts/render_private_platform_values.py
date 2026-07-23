@@ -356,7 +356,7 @@ podAntiAffinityPreset: hard
 
 resources:
   requests:
-    cpu: 500m
+    cpu: 250m
     memory: 1Gi
   limits:
     memory: 2Gi
@@ -1335,7 +1335,7 @@ prometheus:
     serviceMonitorSelectorNilUsesHelmValues: false
     resources:
       requests:
-        cpu: 500m
+        cpu: 250m
         memory: 2Gi
       limits:
         memory: 4Gi
@@ -1547,7 +1547,7 @@ write:
   replicas: 3
   resources:
     requests:
-      cpu: 500m
+      cpu: 250m
       memory: 1Gi
     limits:
       memory: 2Gi
@@ -1568,7 +1568,7 @@ backend:
   replicas: 3
   resources:
     requests:
-      cpu: 500m
+      cpu: 250m
       memory: 1Gi
     limits:
       memory: 2Gi

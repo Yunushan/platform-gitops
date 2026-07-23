@@ -603,7 +603,7 @@ platform_step_ca_host=ca.example.test
             "prometheus.example.test",
             "60Gi",
             "prometheusSpec:\n    replicas: 2\n    retention: 15d",
-            "    resources:\n      requests:\n        cpu: 500m\n        memory: 2Gi",
+            "    resources:\n      requests:\n        cpu: 250m\n        memory: 2Gi",
         )
         assert_contains(
             paths["monitoring"],
@@ -660,7 +660,7 @@ platform_step_ca_host=ca.example.test
             "read:\n  replicas: 3\n  resources:",
             "backend:\n  replicas: 3\n  resources:",
             "gateway:\n  enabled: true\n  resources:",
-            "      cpu: 500m\n      memory: 1Gi",
+            "      cpu: 250m\n      memory: 1Gi",
         )
         assert_contains(
             paths["velero"],
