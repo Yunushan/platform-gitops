@@ -12,6 +12,7 @@
     platform_app_health_required_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_REQUIRED_APPS') }}"
     platform_app_health_include_existing_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS') }}"
     platform_app_health_forbid_temporary_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO') }}"
+    platform_app_health_openbao_ready_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_OPENBAO_READY') }}"
     platform_app_health_expected_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REPO_URL') }}"
     platform_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_URL') }}"
     platform_app_health_namespaces_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NAMESPACES') }}"
@@ -68,6 +69,7 @@
     platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca kyverno platform-policies tetragon external-secrets openbao metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak forgejo woodpecker harbor monitoring loki velero', true) }}"
     platform_app_health_include_existing_apps_effective: "{{ platform_app_health_include_existing_apps | default(platform_app_health_include_existing_apps_from_env, true) | default(true, true) | bool }}"
     platform_app_health_forbid_temporary_repo_effective: "{{ platform_app_health_forbid_temporary_repo | default(platform_app_health_forbid_temporary_repo_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_openbao_ready_effective: "{{ platform_app_health_openbao_ready | default(platform_app_health_openbao_ready_from_env, true) | default(true, true) | bool }}"
     platform_app_health_expected_repo_url_effective: "{{ platform_app_health_expected_repo_url | default(platform_app_health_expected_repo_url_from_env, true) | default(platform_repo_url_from_env, true) | default('', true) }}"
     platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default('argocd cert-manager step-ca kyverno tetragon external-secrets openbao cnpg-system platform-databases platform-cache object-storage keycloak forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
     platform_app_health_storage_classes_effective: "{{ platform_app_health_storage_classes | default(platform_app_health_storage_classes_from_env, true) | default('longhorn-standard longhorn-critical longhorn-cache', true) }}"
@@ -172,6 +174,7 @@
         C=/etc/rancher/rke2/rke2.yaml
         required_apps="{{ platform_app_health_required_apps_effective }}"
         include_existing_apps="{{ platform_app_health_include_existing_apps_effective | ternary('true', 'false') }}"
+        require_openbao_ready="{{ platform_app_health_openbao_ready_effective | ternary('true', 'false') }}"
         existing_apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null || true)"
         failed=0
         seen=" "
@@ -241,7 +244,11 @@
               ;;
           esac
 
-          if [ "${sync_status}" = "Synced" ] && [ "${health_status}" = "Healthy" ] && [ -z "${blocking_condition_types}" ] && [ "${operation_unhealthy}" -eq 0 ]; then
+          if [ "${app}" = "openbao" ] && [ "${require_openbao_ready}" != "true" ] &&
+            [ "${sync_status}" = "Synced" ] && [ "${health_status}" = "Progressing" ] &&
+            [ -z "${blocking_condition_types}" ] && [ "${operation_unhealthy}" -eq 0 ]; then
+            echo "result=skip reason=openbao-initialization-ceremony-pending"
+          elif [ "${sync_status}" = "Synced" ] && [ "${health_status}" = "Healthy" ] && [ -z "${blocking_condition_types}" ] && [ "${operation_unhealthy}" -eq 0 ]; then
             echo "result=ok"
           else
             echo "result=fail"
@@ -361,6 +368,7 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         namespaces="{{ platform_app_health_namespaces_effective }}"
+        require_openbao_ready="{{ platform_app_health_openbao_ready_effective | ternary('true', 'false') }}"
         failed=0
         argocd_helm_stack=false
         if "$K" --kubeconfig "$C" -n argocd get service/argo-cd-argocd-server >/dev/null 2>&1 ||
@@ -437,7 +445,20 @@
                 ready_count="${ready%/*}"
                 desired_count="${ready#*/}"
                 if [ "${ready_count}" != "${desired_count}" ] || [ "${desired_count}" = "0" ]; then
-                  namespace_failed=1
+                  openbao_state=""
+                  if [ "${namespace}" = "openbao" ] && [ "${require_openbao_ready}" != "true" ]; then
+                    case "${name}" in
+                      openbao-[0-9]*)
+                        openbao_state="$("$K" --kubeconfig "$C" -n openbao exec "pod/${name}" -- bao status -format=json 2>/dev/null || true)"
+                        ;;
+                    esac
+                  fi
+                  if printf '%s' "${openbao_state}" | grep -Eq '"initialized"[[:space:]]*:[[:space:]]*false' &&
+                    printf '%s' "${openbao_state}" | grep -Eq '"sealed"[[:space:]]*:[[:space:]]*true'; then
+                    echo "pod=${name} result=skip reason=openbao-uninitialized-and-sealed-bootstrap-state"
+                  else
+                    namespace_failed=1
+                  fi
                 fi
                 ;;
               Succeeded|Completed)
@@ -3339,6 +3360,13 @@
           To allow temporary seed Git or git:// sources during bootstrap only:
           PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false make platform-app-health
 
+          To permit only an explicitly uninitialized and sealed OpenBao server
+          during the bootstrap ceremony:
+          PLATFORM_APP_HEALTH_OPENBAO_READY=false make platform-app-health
+
+          To force all production checks even when private/seed-git.env exists:
+          PLATFORM_APP_HEALTH_MODE=production make platform-app-health
+
           To require the exact intended production Git source:
           PLATFORM_APP_HEALTH_EXPECTED_REPO_URL=<PRIVATE_REPO_URL> make platform-app-health
 
@@ -3367,5 +3395,5 @@
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations (historical failed operations are ignored after a clean reconciliation), Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set, platform pods are Ready, Argo CD runtime components and configured repo-server/Redis service endpoints are present, shared platform Valkey is present with its auth secret when required, critical HA workloads meet minimum desired and ready replica coverage, Woodpecker server and agent pods run the expected pinned image tag, cert-manager Certificates are Ready when present or explicitly required, trust-manager Bundles are synced when present or explicitly required, step-ca answers /health on its ClusterIP service when required, CloudNativePG clusters are Ready when present or explicitly required, CloudNativePG object-storage credentials are present when enforced, Loki answers a known /ready endpoint when required, Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required, generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey app secrets exist with required keys, Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced, required StorageClasses exist, platform PVCs are Bound, Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy, configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path, Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required, Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required, and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey app secrets exist with required keys; Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
       run_once: true

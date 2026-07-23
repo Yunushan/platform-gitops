@@ -1735,6 +1735,17 @@ def main() -> None:
         fail("platform-app-health must expose temporary seed Git/source repository enforcement")
     if "platform_app_health_forbid_temporary_repo_effective" not in health_text:
         fail("platform-app-health must default temporary seed Git/source repository enforcement through an effective variable")
+    if "PLATFORM_APP_HEALTH_OPENBAO_READY" not in health_text:
+        fail("platform-app-health must expose OpenBao initialization readiness enforcement")
+    if "platform_app_health_openbao_ready_effective" not in health_text:
+        fail("platform-app-health must default OpenBao readiness enforcement through an effective variable")
+    for needle in (
+        "openbao-initialization-ceremony-pending",
+        "openbao-uninitialized-and-sealed-bootstrap-state",
+        '"initialized"[[:space:]]*:[[:space:]]*false',
+        '"sealed"[[:space:]]*:[[:space:]]*true',
+    ):
+        require_text(health_text, needle, f"platform-app-health must safely classify OpenBao bootstrap readiness: {needle}")
     if "PLATFORM_APP_HEALTH_EXPECTED_REPO_URL" not in health_text:
         fail("platform-app-health must expose exact production Argo CD source repository enforcement")
     if "platform_app_health_expected_repo_url_effective" not in health_text:
@@ -2582,6 +2593,10 @@ def main() -> None:
     for needle in (
         "load_env_file",
         "private/platform-apps.rendered.yaml",
+        "PLATFORM_APP_HEALTH_MODE",
+        "health_mode=bootstrap",
+        "PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false",
+        "PLATFORM_APP_HEALTH_OPENBAO_READY=false",
         "PLATFORM_APP_HEALTH_REQUIRED_APPS",
         "PLATFORM_APP_HEALTH_NAMESPACES",
         "PLATFORM_APP_HEALTH_STEP_CA_API=false",
@@ -5961,10 +5976,15 @@ def main() -> None:
         fail("platform-bootstrap must run the initial pre-VIP rke2-verify with RKE2_VERIFY_API_VIP=false")
     if "@$(MAKE) rke2-api-vip" not in makefile_text or "@$(MAKE) rke2-verify" not in makefile_text:
         fail("platform-bootstrap must deploy the API VIP and then run the strict rke2-verify gate")
-    for target in ("validate", "platform-profile-check", "rke2-verify", "platform-status", "platform-app-health"):
+    for target in ("validate", "platform-profile-check", "rke2-verify", "platform-status"):
         production_target = re.search(r"(?m)^platform-production-check:.*$", makefile_text)
         if not production_target or target not in production_target.group(0):
             fail(f"platform-production-check must depend on {target}")
+    require_text(
+        makefile_text,
+        "PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh",
+        "platform-production-check must force strict production-mode app health",
+    )
     for needle in (
         "def render_loki(",
         "def render_velero(",

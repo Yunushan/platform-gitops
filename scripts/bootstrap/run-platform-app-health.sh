@@ -23,6 +23,37 @@ if [[ -n "${env_file}" ]]; then
   load_env_file "${env_file}" preserve-existing
 fi
 
+health_mode="${PLATFORM_APP_HEALTH_MODE:-auto}"
+if [[ "${health_mode}" == "auto" ]]; then
+  case "${env_file##*/}" in
+    seed-git.env|first-deploy.env)
+      health_mode=bootstrap
+      ;;
+    *)
+      health_mode=production
+      ;;
+  esac
+fi
+
+case "${health_mode}" in
+  bootstrap)
+    export PLATFORM_APP_HEALTH_MODE=bootstrap
+    if [[ ! -v PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO ]]; then
+      export PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false
+    fi
+    if [[ ! -v PLATFORM_APP_HEALTH_OPENBAO_READY ]]; then
+      export PLATFORM_APP_HEALTH_OPENBAO_READY=false
+    fi
+    ;;
+  production)
+    export PLATFORM_APP_HEALTH_MODE=production
+    ;;
+  *)
+    printf 'Unsupported PLATFORM_APP_HEALTH_MODE=%s; use auto, bootstrap, or production.\n' "${health_mode}" >&2
+    exit 2
+    ;;
+esac
+
 rendered_apps=()
 rendered_namespaces=()
 if [[ -n "${env_file}" && -f private/platform-apps.rendered.yaml ]]; then

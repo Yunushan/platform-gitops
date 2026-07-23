@@ -326,7 +326,8 @@ platform-monitoring-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-monitoring.yml
 	@$(MAKE) platform-monitoring-health
 
-platform-production-check: validate platform-profile-check rke2-verify platform-status platform-app-health
+platform-production-check: validate platform-profile-check rke2-verify platform-status
+	@PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh
 
 platform-longhorn-bootstrap:
 	@bash scripts/bootstrap/run-longhorn-bootstrap.sh

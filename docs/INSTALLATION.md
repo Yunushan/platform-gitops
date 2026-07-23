@@ -543,13 +543,19 @@ temporary seed service:
 make platform-seed-git-remove
 ```
 
-Final production health treats the temporary seed service as a bootstrap-only
-source. `make platform-app-health` fails if Argo CD Applications still point at
-`git://...:9418` or another seed Git URL. Migrate the platform repository into
-the intended private Git service, rerun `PLATFORM_REPO_URL=<PRIVATE_REPO_URL>
-PLATFORM_APPLY_GITOPS=true make platform-argocd`, then remove seed Git. During
-bootstrap-only troubleshooting, bypass just this source check with
-`PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false`.
+When `make platform-app-health` loads `private/seed-git.env` or
+`private/first-deploy.env`, it automatically uses bootstrap mode. That mode
+accepts the temporary seed source and a verified `initialized=false`,
+`sealed=true` OpenBao server while its private initialization ceremony is still
+pending. `make platform-production-check` always forces production mode and
+rejects both states. Migrate the platform repository into the intended private
+Git service, rerun `PLATFORM_REPO_URL=<PRIVATE_REPO_URL>
+PLATFORM_APPLY_GITOPS=true make platform-argocd`, initialize and unseal OpenBao,
+then remove seed Git. Use `PLATFORM_APP_HEALTH_MODE=production make
+platform-app-health` to invoke the same strict app gate directly. For a
+one-off bootstrap probe without an env file, set
+`PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false` and
+`PLATFORM_APP_HEALTH_OPENBAO_READY=false` explicitly.
 
 For final proof that every Argo CD Application is reading from the exact
 intended private repository, keep `PLATFORM_REPO_URL=<PRIVATE_REPO_URL>`
@@ -746,8 +752,8 @@ Applications:
 PLATFORM_REPO_URL=<PRIVATE_REPO_URL> make platform-production-check
 ```
 
-`platform-app-health` requires the controller/client path through the app VIP,
-verifies that Argo CD Applications use production-safe repository sources
+In production mode, `platform-app-health` requires the controller/client path
+through the app VIP, verifies that Argo CD Applications use production-safe repository sources
 instead of temporary seed Git or insecure `git://` URLs and match
 `PLATFORM_APP_HEALTH_EXPECTED_REPO_URL` / `PLATFORM_REPO_URL` when one is set,
 verifies that

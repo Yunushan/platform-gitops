@@ -412,8 +412,15 @@ make platform-production-check
 ```
 
 That command chains repository validation, the selected GitOps profile
-placeholder check, RKE2 verification, platform status, and the platform app
-health gate.
+placeholder check, RKE2 verification, platform status, and a production-mode
+platform app health gate. Production mode remains strict even when the normal
+health runner loads `private/seed-git.env` in bootstrap mode. Bootstrap mode
+accepts temporary seed Git and only a verified uninitialized/sealed OpenBao
+server while its private initialization ceremony is pending. For a one-off
+bootstrap probe without the private env file, set
+`PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false` and
+`PLATFORM_APP_HEALTH_OPENBAO_READY=false`; never use those overrides as
+production evidence.
 
 The app health gate requires controller/client access through the app VIP,
 production-safe Argo CD repository sources instead of temporary seed Git or
