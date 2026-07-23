@@ -78,6 +78,7 @@ woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
 woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpecker-service-path-nodes.yml"
 cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
+empty_faulted_longhorn_claim_repair = root / "scripts/repair_empty_faulted_longhorn_claims.py"
 longhorn_bootstrap_playbook = root / "ansible/playbooks/bootstrap-longhorn.yml"
 longhorn_bootstrap_runner = root / "scripts/bootstrap/run-longhorn-bootstrap.sh"
 platform_app_health_runner = root / "scripts/bootstrap/run-platform-app-health.sh"
@@ -1508,6 +1509,7 @@ def main() -> None:
         'platform.gitops/openbao-injection: "enabled"',
         "key: kubernetes.io/metadata.name\n          operator: NotIn",
         "server:\n  enabled: true",
+        "statefulSet:\n    securityContext:\n      container:\n        allowPrivilegeEscalation: false\n        capabilities:\n          drop:\n            - ALL",
         "dataStorage:\n    enabled: true\n    size: 20Gi\n    storageClass: longhorn-critical",
         "persistentVolumeClaimRetentionPolicy:\n      whenDeleted: Retain\n      whenScaled: Retain",
         "auditStorage:\n    enabled: true\n    size: 10Gi\n    storageClass: longhorn-critical",
@@ -1632,6 +1634,10 @@ def main() -> None:
         "serviceMonitor:\n    enabled: true",
     ):
         require_text(base_loki_text, needle, f"base Loki profile must include {needle.splitlines()[0]}")
+    if base_loki_text.count("enableStatefulSetAutoDeletePVC: false") < 2:
+        raise ValidationError(
+            "base Loki profile must retain both write and backend StatefulSet claims"
+        )
 
     premium_loki_text = read(premium_loki_values)
     for needle in (
@@ -1644,6 +1650,10 @@ def main() -> None:
         "serviceMonitor:\n    enabled: true",
     ):
         require_text(premium_loki_text, needle, f"premium Loki profile must include {needle.splitlines()[0]}")
+    if premium_loki_text.count("enableStatefulSetAutoDeletePVC: false") < 2:
+        raise ValidationError(
+            "premium Loki profile must retain both write and backend StatefulSet claims"
+        )
 
     for velero_values, label in (
         (base_velero_values, "base Velero profile"),
@@ -2720,11 +2730,40 @@ def main() -> None:
         "action=refresh-controller-managed-consumer",
         "result=workload-recovered",
         "reason=empty-volume-workload-recovery-timeout",
+        "PLATFORM_LONGHORN_RUNTIME_EMPTY_FAULTED_CLAIM_REPAIR",
+        "Recreate only empty faulted StatefulSet claims without recovery sources",
+        "scripts/repair_empty_faulted_longhorn_claims.py",
     ):
         require_text(
             longhorn_runtime_repair_text,
             needle,
             f"focused Longhorn runtime repair must cover {needle}",
+        )
+    empty_faulted_claim_repair_text = read(empty_faulted_longhorn_claim_repair)
+    for needle in (
+        'status.get("actualSize")',
+        'status.get("state") != "detached"',
+        'status.get("robustness") != "faulted"',
+        "volume-has-backup-history",
+        "volume-has-replicas",
+        "volume-has-snapshots",
+        "volume-has-backups",
+        "ordinal-zero-not-automatically-recycled",
+        "fewer-than-two-ready-peers",
+        "statefulset-pvc-retention-not-retain",
+        "statefulset_retains_claims(statefulset)",
+        "pause-for-empty-faulted-claim-repair",
+        "scale-below-empty-faulted-ordinal",
+        "assert_destructive_contract",
+        "delete-empty-faulted-statefulset-claim",
+        "delete-empty-faulted-retained-pv",
+        "delete-empty-faulted-volume",
+        "recycle-empty-faulted-statefulset-claim result=healthy",
+    ):
+        require_text(
+            empty_faulted_claim_repair_text,
+            needle,
+            f"empty faulted Longhorn claim repair must preserve safety gate {needle}",
         )
     longhorn_bootstrap_text = read(longhorn_bootstrap_playbook)
     for needle in (

@@ -10,10 +10,12 @@
     platform_longhorn_runtime_force_restart_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART') }}"
     platform_longhorn_runtime_stale_replica_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_STALE_REPLICA_REPAIR') }}"
     platform_longhorn_runtime_empty_unscheduled_replica_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_EMPTY_UNSCHEDULED_REPLICA_REPAIR') }}"
+    platform_longhorn_runtime_empty_faulted_claim_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_EMPTY_FAULTED_CLAIM_REPAIR') }}"
     platform_longhorn_runtime_repair_timeout_effective: "{{ platform_longhorn_runtime_repair_timeout | default(platform_longhorn_runtime_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_longhorn_runtime_force_restart_effective: "{{ platform_longhorn_runtime_force_restart | default(platform_longhorn_runtime_force_restart_from_env, true) | default(false, true) | bool }}"
     platform_longhorn_runtime_stale_replica_repair_effective: "{{ platform_longhorn_runtime_stale_replica_repair | default(platform_longhorn_runtime_stale_replica_repair_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_runtime_empty_unscheduled_replica_repair_effective: "{{ platform_longhorn_runtime_empty_unscheduled_replica_repair | default(platform_longhorn_runtime_empty_unscheduled_replica_repair_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_runtime_empty_faulted_claim_repair_effective: "{{ platform_longhorn_runtime_empty_faulted_claim_repair | default(platform_longhorn_runtime_empty_faulted_claim_repair_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Repair unhealthy Longhorn manager and CSI registration
       ansible.builtin.shell: |
@@ -765,6 +767,20 @@
       run_once: true
       when: platform_longhorn_runtime_empty_unscheduled_replica_repair_effective | bool
 
+    - name: Recreate only empty faulted StatefulSet claims without recovery sources
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../../scripts/repair_empty_faulted_longhorn_claims.py
+          --timeout {{ platform_longhorn_runtime_repair_timeout_effective }}
+        executable: /usr/bin/python3
+      register: platform_longhorn_empty_faulted_claim_repair
+      changed_when: >-
+        'action=recycle-empty-faulted-statefulset-claim result=healthy' in
+        (platform_longhorn_empty_faulted_claim_repair.stdout | default(''))
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_longhorn_runtime_empty_faulted_claim_repair_effective | bool
+
     - name: Show focused Longhorn runtime repair result
       ansible.builtin.debug:
         msg:
@@ -772,4 +788,5 @@
           - "{{ platform_longhorn_duplicate_runtime_repair.stdout_lines | default(['duplicate disk repair did not run']) }}"
           - "{{ platform_longhorn_stale_replica_repair.stdout_lines | default(['stale replica repair did not run']) }}"
           - "{{ platform_longhorn_empty_unscheduled_replica_repair.stdout_lines | default(['empty unscheduled replica repair did not run']) }}"
+          - "{{ platform_longhorn_empty_faulted_claim_repair.stdout_lines | default(['empty faulted claim repair did not run']) }}"
       run_once: true

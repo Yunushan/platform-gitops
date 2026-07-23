@@ -49,6 +49,7 @@ validate:
     - python scripts/test_ansible_until_contract.py
     - python scripts/test_ansible_failed_when_contract.py
     - python scripts/test_ansible_no_log_contract.py
+    - python scripts/test_empty_faulted_longhorn_claim_repair.py
     - python scripts/test_docs_make_targets.py
     - python scripts/test_markdown_links.py
     - python scripts/test_example_templates.py

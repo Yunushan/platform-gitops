@@ -36,6 +36,10 @@ write:
     limits:
       memory: 1Gi
   persistence:
+    # Keep StatefulSet claims across scale-down and deletion. Longhorn's
+    # retained PVs remain available for deliberate recovery instead of being
+    # silently replaced by the chart.
+    enableStatefulSetAutoDeletePVC: false
     storageClass: <LOKI_STORAGE_CLASS>
     size: <LOKI_WRITE_CACHE_SIZE>
 
@@ -57,6 +61,7 @@ backend:
     limits:
       memory: 1Gi
   persistence:
+    enableStatefulSetAutoDeletePVC: false
     storageClass: <LOKI_STORAGE_CLASS>
     size: <LOKI_BACKEND_CACHE_SIZE>
 

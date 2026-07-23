@@ -36,6 +36,9 @@ write:
     limits:
       memory: 2Gi
   persistence:
+    # StatefulSet scale-down is also used by guarded storage repair. Retain
+    # every claim so healthy higher ordinals cannot be discarded with it.
+    enableStatefulSetAutoDeletePVC: false
     storageClass: longhorn-standard
     size: <LOKI_WRITE_CACHE_SIZE>
 
@@ -57,6 +60,7 @@ backend:
     limits:
       memory: 2Gi
   persistence:
+    enableStatefulSetAutoDeletePVC: false
     storageClass: longhorn-standard
     size: <LOKI_BACKEND_CACHE_SIZE>
 

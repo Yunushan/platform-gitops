@@ -98,6 +98,8 @@ jobs:
         run: python scripts/test_ansible_failed_when_contract.py
       - name: Test Ansible no_log contract
         run: python scripts/test_ansible_no_log_contract.py
+      - name: Test empty faulted Longhorn claim repair
+        run: python scripts/test_empty_faulted_longhorn_claim_repair.py
       - name: Test documented make targets
         run: python scripts/test_docs_make_targets.py
       - name: Test Markdown links
