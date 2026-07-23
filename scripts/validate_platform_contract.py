@@ -51,6 +51,8 @@ premium_platform_valkey_values = root / "gitops/clusters/rke2-main/premium-3node
 premium_keycloak_values = root / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml"
 premium_kyverno_values = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/values.yaml"
 premium_kyverno_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/kustomization.yaml"
+premium_no_plaintext_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/no-plaintext-secrets.yaml"
+premium_workload_baseline_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-workload-baseline.yaml"
 premium_tetragon_values = root / "gitops/clusters/rke2-main/premium-3node/apps/tetragon/values.yaml"
 premium_minio_values = root / "gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml"
 premium_external_secrets_values = root / "gitops/clusters/rke2-main/premium-3node/apps/external-secrets/values.yaml"
@@ -1378,6 +1380,33 @@ def main() -> None:
             needle,
             "premium Kyverno Kustomization must remove normalized empty labels from policy CRDs",
         )
+
+    policy_default_contracts = (
+        (premium_no_plaintext_policy, 1),
+        (premium_workload_baseline_policy, 3),
+    )
+    for policy_path, expected_rule_count in policy_default_contracts:
+        policy_text = read(policy_path)
+        for needle in (
+            "spec:\n  admission: true\n  emitWarning: false",
+            "validationFailureAction: Audit",
+            "background: true",
+        ):
+            require_text(
+                policy_text,
+                needle,
+                f"{policy_path.relative_to(root)} must make Kyverno admission defaults explicit",
+            )
+        if policy_text.count("skipBackgroundRequests: true") != expected_rule_count:
+            fail(
+                f"{policy_path.relative_to(root)} must set skipBackgroundRequests on all "
+                f"{expected_rule_count} rule(s)"
+            )
+        if policy_text.count("allowExistingViolations: true") != expected_rule_count:
+            fail(
+                f"{policy_path.relative_to(root)} must set allowExistingViolations on all "
+                f"{expected_rule_count} validation rule(s)"
+            )
 
     premium_tetragon_text = read(premium_tetragon_values)
     for needle in (

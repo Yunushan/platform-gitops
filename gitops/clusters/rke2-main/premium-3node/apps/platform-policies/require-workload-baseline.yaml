@@ -3,10 +3,13 @@ kind: ClusterPolicy
 metadata:
   name: require-workload-baseline
 spec:
+  admission: true
+  emitWarning: false
   validationFailureAction: Audit
   background: true
   rules:
     - name: require-resource-requests
+      skipBackgroundRequests: true
       match:
         any:
           - resources:
@@ -15,6 +18,7 @@ spec:
                 - StatefulSet
                 - DaemonSet
       validate:
+        allowExistingViolations: true
         message: Workloads should set CPU and memory requests.
         pattern:
           spec:
@@ -26,6 +30,7 @@ spec:
                         memory: "?*"
                         cpu: "?*"
     - name: require-non-root
+      skipBackgroundRequests: true
       match:
         any:
           - resources:
@@ -39,12 +44,14 @@ spec:
                 - longhorn-system
                 - metallb-system
       validate:
+        allowExistingViolations: true
         message: Pods should opt into non-root execution where supported.
         pattern:
           spec:
             securityContext:
               runAsNonRoot: true
     - name: require-no-privilege-escalation
+      skipBackgroundRequests: true
       match:
         any:
           - resources:
@@ -58,10 +65,10 @@ spec:
                 - longhorn-system
                 - metallb-system
       validate:
+        allowExistingViolations: true
         message: Containers should explicitly disable privilege escalation where supported.
         pattern:
           spec:
             containers:
               - securityContext:
                   allowPrivilegeEscalation: false
-

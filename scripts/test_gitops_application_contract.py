@@ -59,6 +59,11 @@ RUNTIME_IGNORE_CONTRACT = {
         "name: platform-databases",
         "- /spec/finalizers",
         "- /status",
+        "name: platform-postgres",
+        "- /spec/affinity",
+        "- /spec/storage/resizeInUseVolumes",
+        ".spec.managed.roles[]?.connectionLimit",
+        ".spec.managed.roles[]?.inherit",
     ),
     "platform-valkey": (
         "name: platform-cache",
