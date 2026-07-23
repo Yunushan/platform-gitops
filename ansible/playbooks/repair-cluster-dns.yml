@@ -759,12 +759,14 @@
       when:
         - platform_dns_check_before.rc == 0
         - not (platform_dns_force_service_path_repair_effective | bool)
+        - not (platform_dns_api_local_routing_preflight is changed)
       run_once: true
 
     - name: Repair CoreDNS upstreams when pod DNS check fails
       when: >-
         (platform_dns_force_service_path_repair_effective | bool) or
-        platform_dns_check_before.rc != 0
+        platform_dns_check_before.rc != 0 or
+        (platform_dns_api_local_routing_preflight is changed)
       block:
         - name: Collect cluster DNS diagnostics before repair
           ansible.builtin.shell: |
@@ -1327,6 +1329,7 @@
             platform_dns_service_path_repair_required: >-
               {{
                 (platform_dns_force_service_path_repair_effective | bool) or
+                (platform_dns_api_local_routing_preflight is changed) or
                 not (platform_dns_default_resolution_ok | bool) or
                 not (platform_dns_kubernetes_api_service_path_ok | bool)
               }}
