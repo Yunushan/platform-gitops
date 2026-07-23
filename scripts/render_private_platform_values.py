@@ -751,7 +751,39 @@ def render_argocd(path: Path, inventory: dict[str, str]) -> bool:
     )
 
     text = path.read_text(encoding="utf-8")
+    admin_enabled = env_bool("PLATFORM_ARGOCD_ADMIN_ENABLED", default=True)
+    if not admin_enabled and not re.search(
+        r"^\s+(?:oidc|dex)\.config:\s*\S+",
+        text,
+        flags=re.MULTILINE,
+    ):
+        raise SystemExit(
+            "PLATFORM_ARGOCD_ADMIN_ENABLED=false requires a configured "
+            "configs.cm oidc.config or dex.config login provider"
+        )
+
     rendered = text.replace("argocd.<PLATFORM_DOMAIN>", host)
+    admin_value = "true" if admin_enabled else "false"
+    admin_pattern = r"^(\s*admin\.enabled:\s*).*$"
+    if re.search(admin_pattern, rendered, flags=re.MULTILINE):
+        rendered = re.sub(
+            admin_pattern,
+            lambda match: f'{match.group(1)}"{admin_value}"',
+            rendered,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    else:
+        rendered, substitutions = re.subn(
+            r"^(\s{2}cm:\s*)$",
+            lambda match: f'{match.group(1)}\n    admin.enabled: "{admin_value}"',
+            rendered,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if substitutions != 1:
+            raise SystemExit("Argo CD values must define configs.cm")
+
     changed = rendered != text
     if changed:
         path.write_text(rendered, encoding="utf-8")

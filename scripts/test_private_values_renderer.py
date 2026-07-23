@@ -198,7 +198,8 @@ platform_step_ca_host=ca.example.test
         paths = {
             "argocd": write(
                 repo / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml",
-                "server:\n  ingress:\n    hostname: argocd.<PLATFORM_DOMAIN>\n",
+                "server:\n  ingress:\n    hostname: argocd.<PLATFORM_DOMAIN>\n"
+                "configs:\n  cm:\n    admin.enabled: \"false\"\n",
             ),
             "longhorn": write(
                 repo / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/values.yaml",
@@ -321,7 +322,21 @@ platform_step_ca_host=ca.example.test
 
         rendered_paths = list(paths.values())
         assert_no_placeholders(rendered_paths)
-        assert_contains(paths["argocd"], "argocd.example.test")
+        assert_contains(paths["argocd"], "argocd.example.test", 'admin.enabled: "true"')
+
+        disabled_argocd_path = write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/disabled-values.yaml",
+            "global:\n  domain: argocd.<PLATFORM_DOMAIN>\n"
+            "configs:\n  cm:\n    admin.enabled: \"true\"\n",
+        )
+        with patched_env(dict(env, PLATFORM_ARGOCD_ADMIN_ENABLED="false")):
+            try:
+                renderer.render_argocd(disabled_argocd_path, inventory)
+            except SystemExit as exc:
+                if "requires a configured configs.cm" not in str(exc):
+                    raise AssertionError(f"unexpected Argo CD login validation error: {exc}") from exc
+            else:
+                raise AssertionError("Argo CD renderer disabled every login method")
         assert_contains(
             paths["forgejo"],
             "git.example.test",

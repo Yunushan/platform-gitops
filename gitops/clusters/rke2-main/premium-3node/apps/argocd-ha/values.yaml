@@ -176,7 +176,7 @@ configs:
     controller.repo.server.timeout.seconds: "120"
     reposerver.parallelism.limit: "2"
   cm:
-    admin.enabled: "false"
+    admin.enabled: "true"
     timeout.reconciliation: 180s
     timeout.reconciliation.jitter: 60s
   rbac:

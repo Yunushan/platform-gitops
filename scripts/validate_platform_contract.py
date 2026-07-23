@@ -945,6 +945,23 @@ def main() -> None:
         ):
             require_text(argocd_text, needle, f"{label} must include {needle.splitlines()[0]}")
 
+        if not re.search(
+            r'^\s+admin\.enabled:\s*["\']?(?:true|false)["\']?\s*$',
+            argocd_text,
+            flags=re.MULTILINE,
+        ):
+            fail(f"{label} must explicitly configure configs.cm admin.enabled")
+        if re.search(
+            r'^\s+admin\.enabled:\s*["\']?false["\']?\s*$',
+            argocd_text,
+            flags=re.MULTILINE,
+        ) and not re.search(
+            r"^\s+(?:oidc|dex)\.config:\s*\S+",
+            argocd_text,
+            flags=re.MULTILINE,
+        ):
+            fail(f"{label} must not disable admin login without an OIDC or Dex login provider")
+
     for kustomization, label in (
         (base_argocd_kustomization, "base Argo CD HA profile"),
         (premium_argocd_kustomization, "premium Argo CD HA profile"),
