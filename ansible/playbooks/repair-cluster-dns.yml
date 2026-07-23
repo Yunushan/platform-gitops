@@ -504,25 +504,25 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
 
-        ready_nodes="$(${K} --kubeconfig "${C}" get nodes --no-headers \
-          -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,UNSCHEDULABLE:.spec.unschedulable' |
-          awk '$2 == "True" && $3 != "true" { print $1 }')"
-        endpoint_nodes="$(${K} --kubeconfig "${C}" -n default get endpointslice \
+        ready_node_ips="$(${K} --kubeconfig "${C}" get nodes --no-headers \
+          -o custom-columns='READY:.status.conditions[?(@.type=="Ready")].status,UNSCHEDULABLE:.spec.unschedulable,INTERNAL_IP:.status.addresses[?(@.type=="InternalIP")].address' |
+          awk '$1 == "True" && $2 != "true" && $3 != "<none>" { print $3 }')"
+        endpoint_ips="$(${K} --kubeconfig "${C}" -n default get endpointslice \
           -l kubernetes.io/service-name=kubernetes \
-          -o jsonpath='{range .items[*].endpoints[*]}{.nodeName}{"\n"}{end}' |
+          -o jsonpath='{range .items[*].endpoints[*].addresses[*]}{.}{"\n"}{end}' |
           awk 'NF' | sort -u)"
 
-        if [ -z "${ready_nodes}" ]; then
+        if [ -z "${ready_node_ips}" ]; then
           echo "kubernetes_api_local_routing=skipped reason=no-ready-schedulable-nodes"
           exit 0
         fi
         missing=""
-        while read -r node; do
-          [ -n "${node}" ] || continue
-          if ! printf '%s\n' "${endpoint_nodes}" | grep -Fx "${node}" >/dev/null 2>&1; then
-            missing="${missing} ${node}"
+        while read -r node_ip; do
+          [ -n "${node_ip}" ] || continue
+          if ! printf '%s\n' "${endpoint_ips}" | grep -Fx "${node_ip}" >/dev/null 2>&1; then
+            missing="${missing} ${node_ip}"
           fi
-        done <<<"${ready_nodes}"
+        done <<<"${ready_node_ips}"
         if [ -n "${missing}" ]; then
           missing_csv="$(printf '%s\n' "${missing}" | xargs | tr ' ' ',')"
           echo "kubernetes_api_local_routing=skipped reason=nodes-without-local-api-endpoint nodes=${missing_csv}"
