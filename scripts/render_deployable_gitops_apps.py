@@ -51,6 +51,7 @@ APP_SYNC_WAVES = {
     "loki": "4",
     "velero": "5",
 }
+SERVER_SIDE_APPLY_APPS = {"kyverno", "velero"}
 
 
 def unresolved_in_text(text: str) -> list[str]:
@@ -215,6 +216,10 @@ def generated_application_doc(repo_url: str, source_path: str, source_dir: Path)
     name = source_dir.name
     namespace = kustomization_namespace(source_dir)
     sync_wave = APP_SYNC_WAVES.get(name, "4")
+    sync_options = ["CreateNamespace=true"]
+    if name in SERVER_SIDE_APPLY_APPS:
+        sync_options.append("ServerSideApply=true")
+    sync_options_yaml = "\n".join(f"      - {option}" for option in sync_options)
     return f"""apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -236,7 +241,7 @@ spec:
       prune: false
       selfHeal: true
     syncOptions:
-      - CreateNamespace=true"""
+{sync_options_yaml}"""
 
 
 def selected_application_documents(repo_root: Path, profile: str, repo_url: str) -> list[str]:

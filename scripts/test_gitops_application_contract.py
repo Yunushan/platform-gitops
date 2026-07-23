@@ -49,6 +49,7 @@ REQUIRED_APP_DEPENDENCIES = {
     "loki": {"longhorn", "monitoring", "traefik"},
     "velero": {"longhorn"},
 }
+SERVER_SIDE_APPLY_APPS = {"kyverno", "velero"}
 REQUIRED_CLUSTER_RESOURCE_WHITELIST = {
     ("", "Namespace"),
     ("admissionregistration.k8s.io", "MutatingWebhookConfiguration"),
@@ -225,6 +226,8 @@ def check_application_doc(app_file: Path, doc: str) -> list[str]:
             problems.append(f"{label} has non-numeric sync wave: {sync_wave}")
     if "CreateNamespace=true" not in sync_options:
         problems.append(f"{label} is missing sync option CreateNamespace=true")
+    if app_name in SERVER_SIDE_APPLY_APPS and "ServerSideApply=true" not in sync_options:
+        problems.append(f"{label} must use server-side apply for large chart CRDs")
     if not AUTOMATED_SYNC_RE.search(doc):
         problems.append(f"{label} is missing automated sync policy")
     if not PRUNE_FALSE_RE.search(doc):
