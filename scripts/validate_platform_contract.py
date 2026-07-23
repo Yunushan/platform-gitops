@@ -1354,6 +1354,7 @@ def main() -> None:
     premium_kyverno_text = read(premium_kyverno_values)
     for needle in (
         "crds:\n  install: true",
+        "migration:\n    enabled: false",
         "admissionController:\n  replicas: 3",
         "backgroundController:\n  replicas: 2",
         "cleanupController:\n  replicas: 2",
@@ -6009,6 +6010,7 @@ def main() -> None:
         "GRAFANA_DATABASE_SECRET_NAME",
         "$__env{GF_DATABASE_PASSWORD}",
         "BACKUP_BUCKET",
+        'INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"',
         "crds:\n  enabled: true",
     ):
         require_text(renderer_text, needle, f"private values renderer must cover {needle}")
@@ -6333,6 +6335,9 @@ def main() -> None:
         "root-password",
         "Generate or preserve Loki object storage credentials secret",
         "Generate or preserve Velero cloud credentials secret",
+        'credentials_source="minio-root"',
+        'result_state="reconciled"',
+        "'state=reconciled' in platform_velero_secret_result.stdout",
         "platform_minio_root_user_secret_key",
         "platform_minio_root_password_secret_key",
         "set-explicit-cloud-credentials-or-create-minio-root-secret",

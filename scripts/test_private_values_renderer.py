@@ -684,6 +684,17 @@ platform_step_ca_host=ca.example.test
             "nodeAgent:\n  resources:",
             "      cpu: 250m\n      memory: 256Mi",
         )
+        default_velero_path = write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/velero/default-values.yaml"
+        )
+        with patched_env({"BACKUP_PROVIDER": "aws"}):
+            renderer.render_velero(default_velero_path)
+        assert_contains(
+            default_velero_path,
+            's3Url: "http://platform-minio.object-storage.svc.cluster.local:9000"',
+            'bucket: "platform-velero-backups"',
+            'existingSecret: "velero-credentials"',
+        )
         assert_contains(
             paths["step_ca"],
             "Platform Test CA",

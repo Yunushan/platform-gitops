@@ -463,6 +463,22 @@ def check_renderer_and_secret_playbook() -> None:
                     f"app-secret playbook literal key for {contract['label']} is missing one of: "
                     + ", ".join(key_needles)
                 )
+    require_contains(
+        renderer_text,
+        'INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"',
+        "renderer internal MinIO default",
+    )
+    for needle in (
+        'credentials_source="minio-root"',
+        'result_state="reconciled"',
+        'state=present source=minio-root',
+        "'state=reconciled' in platform_velero_secret_result.stdout",
+    ):
+        require_contains(
+            playbook_text,
+            needle,
+            "Velero MinIO credential reconciliation",
+        )
 
 
 def render_with_custom_secret_names() -> dict[str, str]:

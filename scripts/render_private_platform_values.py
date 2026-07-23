@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 
 
+INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"
+
+
 def read_inventory_vars(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
@@ -1634,9 +1637,7 @@ def render_loki(path: Path, inventory: dict[str, str]) -> bool:
         "PLATFORM_LOKI_HOST or platform_loki_host",
         platform_host("PLATFORM_LOKI_HOST", inventory, ("platform_loki_host",), "loki"),
     )
-    endpoint = os.environ.get(
-        "OBJECT_STORAGE_ENDPOINT", "http://platform-minio.object-storage.svc.cluster.local:9000"
-    ).strip()
+    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", INTERNAL_MINIO_ENDPOINT).strip()
     region = os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip() or "us-east-1"
     bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
     storage_class = os.environ.get("LOKI_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
@@ -1759,7 +1760,7 @@ def render_velero(path: Path) -> bool:
     provider = os.environ.get("BACKUP_PROVIDER", "aws").strip() or "aws"
     if provider != "aws":
         raise SystemExit("BACKUP_PROVIDER currently supports aws for automatic Velero rendering")
-    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", "https://s3.amazonaws.com").strip()
+    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", INTERNAL_MINIO_ENDPOINT).strip()
     region = os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip() or "us-east-1"
     bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
     force_path_style = os.environ.get("OBJECT_STORAGE_FORCE_PATH_STYLE", "true").strip().lower() not in {

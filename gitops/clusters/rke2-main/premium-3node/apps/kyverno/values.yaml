@@ -2,6 +2,10 @@
 # Policies are deployed separately so enforcement can be promoted deliberately.
 crds:
   install: true
+  # A fresh GitOps install has no legacy Kyverno resources to migrate. The
+  # post-upgrade hook is not idempotent under Argo CD and can remain failed.
+  migration:
+    enabled: false
 
 features:
   policyReports:
@@ -80,4 +84,3 @@ reportsController:
       memory: 256Mi
     limits:
       memory: 768Mi
-
