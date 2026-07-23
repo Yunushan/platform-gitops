@@ -23,6 +23,7 @@
     platform_dns_coredns_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_REPLICAS') }}"
     platform_dns_coredns_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_ROLLOUT_TIMEOUT') }}"
     platform_dns_openbao_webhook_guard_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_OPENBAO_WEBHOOK_GUARD') }}"
+    platform_dns_api_local_routing_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_API_LOCAL_ROUTING') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
@@ -44,6 +45,7 @@
     platform_dns_coredns_rollout_timeout_effective: "{{ platform_dns_coredns_rollout_timeout | default(platform_dns_coredns_rollout_timeout_from_env, true) | default(300, true) | int }}"
     platform_dns_coredns_progress_deadline_effective: "{{ [((platform_dns_coredns_rollout_timeout_effective | int) * 2), 600] | max }}"
     platform_dns_openbao_webhook_guard_effective: "{{ platform_dns_openbao_webhook_guard | default(platform_dns_openbao_webhook_guard_from_env, true) | default(true, true) | bool }}"
+    platform_dns_api_local_routing_effective: "{{ platform_dns_api_local_routing | default(platform_dns_api_local_routing_from_env, true) | default(true, true) | bool }}"
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
@@ -685,6 +687,11 @@
                         fi
                         api_service_rc=0
                         run_kubernetes_api_service_check || api_service_rc="$?"
+                        if [ "${api_service_rc}" -eq 0 ]; then
+                          echo "PLATFORM_KUBERNETES_API_SERVICE_PATH=true"
+                        else
+                          echo "PLATFORM_KUBERNETES_API_SERVICE_PATH=false"
+                        fi
                         repo_rc=0
                         run_helm_repo_check || repo_rc="$?"
                         if [ "${api_service_rc}" -ne 0 ] || [ "${repo_rc}" -ne 0 ]; then
@@ -1262,6 +1269,7 @@
             platform_dns_service_ip_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_SERVICE_IP_RESOLUTION=true') }}"
             platform_dns_coredns_endpoint_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_COREDNS_ENDPOINT_RESOLUTION=true') }}"
             platform_dns_direct_upstream_resolution_ok: "{{ (platform_dns_service_path_check.stdout | default('')) is search('PLATFORM_DNS_DIRECT_UPSTREAM_RESOLUTION=true') }}"
+            platform_dns_kubernetes_api_service_path_ok: "{{ (platform_dns_check_before.stdout | default('')) is search('PLATFORM_KUBERNETES_API_SERVICE_PATH=true') }}"
           run_once: true
 
         - name: Determine whether CNI service-path repair is required
@@ -1269,7 +1277,8 @@
             platform_dns_service_path_repair_required: >-
               {{
                 (platform_dns_force_service_path_repair_effective | bool) or
-                not (platform_dns_default_resolution_ok | bool)
+                not (platform_dns_default_resolution_ok | bool) or
+                not (platform_dns_kubernetes_api_service_path_ok | bool)
               }}
           run_once: true
 
@@ -1745,6 +1754,112 @@
             - platform_dns_service_path_repair_effective | bool
             - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
+
+        - name: Route Kubernetes API ClusterIP to local endpoints on all-server clusters
+          ansible.builtin.shell: |
+            set -euo pipefail
+            python3 - <<'PY'
+            import json
+            import subprocess
+            import sys
+
+            kubectl = [
+                "/var/lib/rancher/rke2/bin/kubectl",
+                "--kubeconfig",
+                "/etc/rancher/rke2/rke2.yaml",
+            ]
+
+
+            def run(*args, input_text=None):
+                result = subprocess.run(
+                    kubectl + list(args),
+                    input=input_text,
+                    text=True,
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    sys.stderr.write((result.stderr or "") + (result.stdout or ""))
+                    raise SystemExit(result.returncode)
+                return result.stdout
+
+
+            nodes = json.loads(run("get", "nodes", "-o", "json")).get("items", [])
+            ready_nodes = set()
+            address_to_node = {}
+            for node in nodes:
+                name = node.get("metadata", {}).get("name", "")
+                conditions = {
+                    item.get("type"): item.get("status")
+                    for item in node.get("status", {}).get("conditions", [])
+                }
+                if name and conditions.get("Ready") == "True" and not node.get("spec", {}).get("unschedulable", False):
+                    ready_nodes.add(name)
+                for address in node.get("status", {}).get("addresses", []):
+                    value = address.get("address", "")
+                    if value and name:
+                        address_to_node[value] = name
+
+            slices = json.loads(
+                run(
+                    "-n",
+                    "default",
+                    "get",
+                    "endpointslice",
+                    "-l",
+                    "kubernetes.io/service-name=kubernetes",
+                    "-o",
+                    "json",
+                )
+            ).get("items", [])
+            endpoint_nodes = set()
+            for endpoint_slice in slices:
+                for endpoint in endpoint_slice.get("endpoints", []):
+                    if endpoint.get("conditions", {}).get("ready") is False:
+                        continue
+                    node_name = endpoint.get("nodeName", "")
+                    if node_name:
+                        endpoint_nodes.add(node_name)
+                    for address in endpoint.get("addresses", []):
+                        mapped = address_to_node.get(address)
+                        if mapped:
+                            endpoint_nodes.add(mapped)
+
+            if not ready_nodes:
+                print("kubernetes_api_local_routing=skipped reason=no-ready-schedulable-nodes")
+                raise SystemExit(0)
+            missing = sorted(ready_nodes - endpoint_nodes)
+            if missing:
+                print(
+                    "kubernetes_api_local_routing=skipped "
+                    f"reason=nodes-without-local-api-endpoint nodes={','.join(missing)}"
+                )
+                raise SystemExit(0)
+
+            service = json.loads(run("-n", "default", "get", "service/kubernetes", "-o", "json"))
+            current = service.get("spec", {}).get("internalTrafficPolicy", "Cluster")
+            if current != "Local":
+                patch = json.dumps({"spec": {"internalTrafficPolicy": "Local"}})
+                run("-n", "default", "patch", "service/kubernetes", "--type=merge", "-p", patch)
+                print(
+                    "kubernetes_api_local_routing=enabled action=patch-local "
+                    f"nodes={','.join(sorted(ready_nodes))}"
+                )
+            else:
+                print(
+                    "kubernetes_api_local_routing=enabled action=already-local "
+                    f"nodes={','.join(sorted(ready_nodes))}"
+                )
+            PY
+          args:
+            executable: /bin/bash
+          register: platform_dns_api_local_routing
+          changed_when: "'action=patch-local' in (platform_dns_api_local_routing.stdout | default(''))"
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+          when:
+            - platform_dns_service_path_repair_effective | bool
+            - platform_dns_api_local_routing_effective | bool
+            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
 
         - name: Collect Kubernetes DNS service path state before component repair
           ansible.builtin.shell: |
@@ -2373,6 +2488,11 @@
                             fi
                             api_service_rc=0
                             run_kubernetes_api_service_check || api_service_rc="$?"
+                            if [ "${api_service_rc}" -eq 0 ]; then
+                              echo "PLATFORM_KUBERNETES_API_SERVICE_PATH=true"
+                            else
+                              echo "PLATFORM_KUBERNETES_API_SERVICE_PATH=false"
+                            fi
                             repo_rc=0
                             run_helm_repo_check || repo_rc="$?"
                             if [ "${api_service_rc}" -ne 0 ] || [ "${repo_rc}" -ne 0 ]; then

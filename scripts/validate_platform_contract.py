@@ -2670,6 +2670,11 @@ def main() -> None:
         "Remove stopped Longhorn replicas whose registered disk no longer exists",
         "len(healthy_peers) < 2",
         "action=remove-invalid-disk-reference",
+        "PLATFORM_LONGHORN_RUNTIME_EMPTY_UNSCHEDULED_REPLICA_REPAIR",
+        "Reset zero-byte unscheduled Longhorn replica placeholders",
+        "ReplicaSchedulingFailure",
+        "action=remove-empty-unscheduled-placeholder",
+        "reason=empty-volume-reschedule-timeout",
     ):
         require_text(
             longhorn_runtime_repair_text,
@@ -2813,6 +2818,12 @@ def main() -> None:
         "Kubernetes API ClusterIP TLS service-path probe",
         "https://kubernetes.default.svc",
         "platform-kubernetes-api-check",
+        "PLATFORM_KUBERNETES_API_SERVICE_PATH=true",
+        "platform_dns_kubernetes_api_service_path_ok",
+        "PLATFORM_DNS_API_LOCAL_ROUTING",
+        "Route Kubernetes API ClusterIP to local endpoints on all-server clusters",
+        "nodes-without-local-api-endpoint",
+        "action=patch-local",
     ):
         require_text(dns_repair_text, needle, f"DNS repair must support forced CNI service-path recovery: {needle}")
     cleanup_script_text = read(firewalld_cleanup_script)

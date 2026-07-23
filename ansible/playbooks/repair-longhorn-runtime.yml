@@ -9,9 +9,11 @@
     platform_longhorn_runtime_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_REPAIR_TIMEOUT') }}"
     platform_longhorn_runtime_force_restart_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART') }}"
     platform_longhorn_runtime_stale_replica_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_STALE_REPLICA_REPAIR') }}"
+    platform_longhorn_runtime_empty_unscheduled_replica_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_EMPTY_UNSCHEDULED_REPLICA_REPAIR') }}"
     platform_longhorn_runtime_repair_timeout_effective: "{{ platform_longhorn_runtime_repair_timeout | default(platform_longhorn_runtime_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_longhorn_runtime_force_restart_effective: "{{ platform_longhorn_runtime_force_restart | default(platform_longhorn_runtime_force_restart_from_env, true) | default(false, true) | bool }}"
     platform_longhorn_runtime_stale_replica_repair_effective: "{{ platform_longhorn_runtime_stale_replica_repair | default(platform_longhorn_runtime_stale_replica_repair_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_runtime_empty_unscheduled_replica_repair_effective: "{{ platform_longhorn_runtime_empty_unscheduled_replica_repair | default(platform_longhorn_runtime_empty_unscheduled_replica_repair_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Repair unhealthy Longhorn manager and CSI registration
       ansible.builtin.shell: |
@@ -465,10 +467,174 @@
       run_once: true
       when: platform_longhorn_runtime_stale_replica_repair_effective | bool
 
+    - name: Reset zero-byte unscheduled Longhorn replica placeholders
+      ansible.builtin.shell: |
+        set -o pipefail
+        python3 - "{{ platform_longhorn_runtime_repair_timeout_effective }}" <<'PY'
+        import json
+        import subprocess
+        import sys
+        import time
+
+        timeout_seconds = int(sys.argv[1])
+        kubectl = [
+            "/var/lib/rancher/rke2/bin/kubectl",
+            "--kubeconfig",
+            "/etc/rancher/rke2/rke2.yaml",
+        ]
+
+
+        def run(*args):
+            result = subprocess.run(
+                kubectl + list(args),
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                sys.stderr.write((result.stderr or "") + (result.stdout or ""))
+                raise SystemExit(result.returncode)
+            return result.stdout
+
+
+        def get_json(*args):
+            return json.loads(run(*args, "-o", "json"))
+
+
+        volumes = get_json("-n", "longhorn-system", "get", "volumes.longhorn.io").get("items", [])
+        replicas = get_json("-n", "longhorn-system", "get", "replicas.longhorn.io").get("items", [])
+        pvs = {
+            item.get("metadata", {}).get("name", ""): item
+            for item in get_json("get", "persistentvolumes").get("items", [])
+        }
+        replicas_by_volume = {}
+        for replica in replicas:
+            volume_name = replica.get("spec", {}).get("volumeName", "")
+            if volume_name:
+                replicas_by_volume.setdefault(volume_name, []).append(replica)
+
+        repaired = []
+        for volume in volumes:
+            metadata = volume.get("metadata", {})
+            status = volume.get("status", {})
+            volume_name = metadata.get("name", "")
+            if not volume_name or metadata.get("deletionTimestamp"):
+                continue
+            try:
+                actual_size = int(status.get("actualSize") or 0)
+            except (TypeError, ValueError):
+                continue
+            scheduled = next(
+                (
+                    condition
+                    for condition in status.get("conditions", [])
+                    if condition.get("type") == "Scheduled"
+                ),
+                {},
+            )
+            if not (
+                actual_size == 0
+                and status.get("state") == "detached"
+                and scheduled.get("status") == "False"
+                and scheduled.get("reason") == "ReplicaSchedulingFailure"
+            ):
+                continue
+
+            kubernetes_status = status.get("kubernetesStatus", {})
+            namespace = kubernetes_status.get("namespace", "")
+            pvc_name = kubernetes_status.get("pvcName", "")
+            pv_name = kubernetes_status.get("pvName", "")
+            if not namespace or not pvc_name or not pv_name:
+                continue
+            pvc = get_json("-n", namespace, "get", f"persistentvolumeclaim/{pvc_name}")
+            pv = pvs.get(pv_name, {})
+            csi = pv.get("spec", {}).get("csi", {})
+            if not (
+                pvc.get("status", {}).get("phase") == "Bound"
+                and not pvc.get("metadata", {}).get("deletionTimestamp")
+                and pvc.get("spec", {}).get("volumeName") == pv_name
+                and csi.get("driver") == "driver.longhorn.io"
+                and csi.get("volumeHandle") == volume_name
+            ):
+                continue
+
+            volume_replicas = replicas_by_volume.get(volume_name, [])
+            if not volume_replicas:
+                continue
+            safe_placeholders = all(
+                replica.get("status", {}).get("currentState") == "stopped"
+                and not replica.get("spec", {}).get("nodeID")
+                and not replica.get("spec", {}).get("diskID")
+                and not replica.get("metadata", {}).get("deletionTimestamp")
+                for replica in volume_replicas
+            )
+            if not safe_placeholders:
+                continue
+
+            for replica in volume_replicas:
+                replica_name = replica.get("metadata", {}).get("name", "")
+                run(
+                    "-n",
+                    "longhorn-system",
+                    "delete",
+                    f"replicas.longhorn.io/{replica_name}",
+                    "--wait=false",
+                )
+                print(
+                    f"longhorn_replica={replica_name} volume={volume_name} "
+                    "action=remove-empty-unscheduled-placeholder"
+                )
+            repaired.append((volume_name, namespace, pvc_name))
+
+        if not repaired:
+            print("longhorn_empty_unscheduled_replica_repair=not-needed")
+            raise SystemExit(0)
+
+        deadline = time.monotonic() + timeout_seconds
+        pending = {name: (namespace, pvc_name) for name, namespace, pvc_name in repaired}
+        while pending and time.monotonic() < deadline:
+            for volume_name in list(pending):
+                volume = get_json("-n", "longhorn-system", "get", f"volumes.longhorn.io/{volume_name}")
+                scheduled = next(
+                    (
+                        condition
+                        for condition in volume.get("status", {}).get("conditions", [])
+                        if condition.get("type") == "Scheduled"
+                    ),
+                    {},
+                )
+                if scheduled.get("status") == "True":
+                    namespace, pvc_name = pending.pop(volume_name)
+                    print(
+                        f"longhorn_volume={volume_name} namespace={namespace} pvc={pvc_name} "
+                        "result=rescheduled"
+                    )
+            if pending:
+                time.sleep(5)
+
+        if pending:
+            for volume_name, (namespace, pvc_name) in sorted(pending.items()):
+                print(
+                    f"longhorn_volume={volume_name} namespace={namespace} pvc={pvc_name} "
+                    "result=fail reason=empty-volume-reschedule-timeout",
+                    file=sys.stderr,
+                )
+            raise SystemExit(1)
+        PY
+      args:
+        executable: /bin/bash
+      register: platform_longhorn_empty_unscheduled_replica_repair
+      changed_when: >-
+        'action=remove-empty-unscheduled-placeholder' in
+        (platform_longhorn_empty_unscheduled_replica_repair.stdout | default(''))
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_longhorn_runtime_empty_unscheduled_replica_repair_effective | bool
+
     - name: Show focused Longhorn runtime repair result
       ansible.builtin.debug:
         msg:
           - "{{ platform_longhorn_runtime_repair.stdout_lines | default(['runtime repair did not run']) }}"
           - "{{ platform_longhorn_duplicate_runtime_repair.stdout_lines | default(['duplicate disk repair did not run']) }}"
           - "{{ platform_longhorn_stale_replica_repair.stdout_lines | default(['stale replica repair did not run']) }}"
+          - "{{ platform_longhorn_empty_unscheduled_replica_repair.stdout_lines | default(['empty unscheduled replica repair did not run']) }}"
       run_once: true
