@@ -275,6 +275,12 @@ clientImage:
   repository: bitnamilegacy/minio-client
   tag: 2025.7.21-debian-12-r2
 
+defaultInitContainers:
+  volumePermissions:
+    image:
+      repository: bitnamilegacy/os-shell
+      tag: 12-debian-12-r50
+
 auth:
   existingSecret: {yaml_string(root_secret_name)}
   rootUserSecretKey: {yaml_string(root_user_secret_key)}

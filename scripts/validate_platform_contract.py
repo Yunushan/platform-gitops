@@ -1441,6 +1441,8 @@ def main() -> None:
     premium_minio_text = read(premium_minio_values)
     for needle in (
         "mode: distributed",
+        "repository: bitnamilegacy/os-shell",
+        "tag: 12-debian-12-r50",
         "existingSecret: minio-root",
         "rootUserSecretKey: root-user",
         "rootPasswordSecretKey: root-password",

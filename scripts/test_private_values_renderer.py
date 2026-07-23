@@ -441,6 +441,8 @@ platform_step_ca_host=ca.example.test
             'rootUserSecretKey: "root-user-test"',
             'rootPasswordSecretKey: "root-password-test"',
             "mode: distributed",
+            "repository: bitnamilegacy/os-shell",
+            "tag: 12-debian-12-r50",
             "replicaCount: 4",
             "zones: 1",
             "drivesPerNode: 1",
