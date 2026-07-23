@@ -23,7 +23,10 @@
     platform_dns_coredns_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_REPLICAS') }}"
     platform_dns_coredns_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_COREDNS_ROLLOUT_TIMEOUT') }}"
     platform_dns_openbao_webhook_guard_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_OPENBAO_WEBHOOK_GUARD') }}"
-    platform_dns_api_local_routing_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_API_LOCAL_ROUTING') }}"
+    platform_dns_cilium_api_bootstrap_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CILIUM_API_BOOTSTRAP') }}"
+    platform_dns_cilium_api_host_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CILIUM_API_HOST') }}"
+    platform_dns_cilium_api_port_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CILIUM_API_PORT') }}"
+    platform_dns_cilium_api_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DNS_CILIUM_API_ROLLOUT_TIMEOUT') }}"
     platform_dns_upstreams_raw: "{{ platform_dns_upstreams | default(platform_dns_upstreams_from_env, true) | default('', true) }}"
     platform_dns_check_timeout_effective: "{{ platform_dns_check_timeout | default(platform_dns_check_timeout_from_env, true) | default(120, true) | int }}"
     platform_dns_probe_timeout_effective: "{{ platform_dns_probe_timeout | default(platform_dns_probe_timeout_from_env, true) | default(20, true) | int }}"
@@ -45,7 +48,18 @@
     platform_dns_coredns_rollout_timeout_effective: "{{ platform_dns_coredns_rollout_timeout | default(platform_dns_coredns_rollout_timeout_from_env, true) | default(300, true) | int }}"
     platform_dns_coredns_progress_deadline_effective: "{{ [((platform_dns_coredns_rollout_timeout_effective | int) * 2), 600] | max }}"
     platform_dns_openbao_webhook_guard_effective: "{{ platform_dns_openbao_webhook_guard | default(platform_dns_openbao_webhook_guard_from_env, true) | default(true, true) | bool }}"
-    platform_dns_api_local_routing_effective: "{{ platform_dns_api_local_routing | default(platform_dns_api_local_routing_from_env, true) | default(true, true) | bool }}"
+    platform_dns_cilium_api_bootstrap_effective: "{{ platform_dns_cilium_api_bootstrap | default(platform_dns_cilium_api_bootstrap_from_env, true) | default(true, true) | bool }}"
+    platform_dns_cilium_api_host_effective: >-
+      {{
+        platform_dns_cilium_api_host
+        | default(platform_dns_cilium_api_host_from_env, true)
+        | default(rke2_api_vip | default('', true), true)
+        | default(rke2_api_dns | default('', true), true)
+        | default(hostvars[rke2_first_server].ansible_host | default(rke2_first_server), true)
+      }}
+    platform_dns_cilium_api_port_effective: "{{ platform_dns_cilium_api_port | default(platform_dns_cilium_api_port_from_env, true) | default(6443, true) | int }}"
+    platform_dns_cilium_api_rollout_timeout_effective: "{{ platform_dns_cilium_api_rollout_timeout | default(platform_dns_cilium_api_rollout_timeout_from_env, true) | default(300, true) | int }}"
+    platform_dns_cilium_api_rollout_retries_effective: "{{ (((platform_dns_cilium_api_rollout_timeout_effective | int) / 5) | round(0, 'ceil') | int) + 1 }}"
     platform_dns_check_job_name: platform-dns-check
     platform_dns_service_path_job_name: platform-dns-service-path-check
     platform_dns_upstream_selection_job_name: platform-dns-upstream-select
@@ -496,57 +510,298 @@
           CoreDNS HA local routing target:
           {{ platform_dns_coredns_replicas_effective }} replicas with
           internalTrafficPolicy=Local on the kube-dns service.
+          Cilium Kubernetes API bootstrap:
+          {{
+            (platform_dns_cilium_api_host_effective ~ ':' ~ platform_dns_cilium_api_port_effective)
+            if platform_dns_cilium_api_bootstrap_effective
+            else 'disabled'
+          }}. The built-in Kubernetes Service remains on
+          internalTrafficPolicy=Cluster.
       run_once: true
 
-    - name: Normalize Kubernetes API local routing before pod service probes
+    - name: Restore Kubernetes API service cluster routing before pod service probes
       ansible.builtin.shell: |
         set -euo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
-
-        ready_node_ips="$(${K} --kubeconfig "${C}" get nodes --no-headers \
-          -o custom-columns='READY:.status.conditions[?(@.type=="Ready")].status,UNSCHEDULABLE:.spec.unschedulable,INTERNAL_IP:.status.addresses[?(@.type=="InternalIP")].address' |
-          awk '$1 == "True" && $2 != "true" && $3 != "<none>" { print $3 }')"
-        endpoint_ips="$(${K} --kubeconfig "${C}" -n default get endpointslice \
-          -l kubernetes.io/service-name=kubernetes \
-          -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{"\n"}{end}' |
-          awk 'NF' | sort -u)"
-
-        if [ -z "${ready_node_ips}" ]; then
-          echo "kubernetes_api_local_routing=skipped reason=no-ready-schedulable-nodes"
+        current="$(${K} --kubeconfig "${C}" get service/kubernetes -o jsonpath='{.spec.internalTrafficPolicy}')"
+        if [ "${current:-Cluster}" = "Cluster" ]; then
+          echo "kubernetes_api_service_routing=cluster action=unchanged"
           exit 0
         fi
-        missing=""
-        while read -r node_ip; do
-          [ -n "${node_ip}" ] || continue
-          if ! printf '%s\n' "${endpoint_ips}" | grep -Fx "${node_ip}" >/dev/null 2>&1; then
-            missing="${missing} ${node_ip}"
-          fi
-        done <<<"${ready_node_ips}"
-        if [ -n "${missing}" ]; then
-          missing_csv="$(printf '%s\n' "${missing}" | xargs | tr ' ' ',')"
-          echo "kubernetes_api_local_routing=skipped reason=nodes-without-local-api-endpoint nodes=${missing_csv}"
-          exit 0
-        fi
-
-        current="$(${K} --kubeconfig "${C}" -n default get service/kubernetes \
-          -o jsonpath='{.spec.internalTrafficPolicy}')"
-        if [ "${current:-Cluster}" = "Local" ]; then
-          echo "kubernetes_api_local_routing=enabled action=already-local"
-          exit 0
-        fi
-        ${K} --kubeconfig "${C}" -n default patch service/kubernetes --type=merge \
-          -p '{"spec":{"internalTrafficPolicy":"Local"}}'
-        echo "kubernetes_api_local_routing=enabled action=patch-local"
+        ${K} --kubeconfig "${C}" patch service/kubernetes --type=merge \
+          -p '{"spec":{"internalTrafficPolicy":"Cluster"}}'
+        echo "kubernetes_api_service_routing=cluster action=patch-cluster"
       args:
         executable: /bin/bash
-      register: platform_dns_api_local_routing_preflight
-      changed_when: "'action=patch-local' in (platform_dns_api_local_routing_preflight.stdout | default(''))"
+      register: platform_dns_kubernetes_api_cluster_routing
+      changed_when: "'action=patch-cluster' in (platform_dns_kubernetes_api_cluster_routing.stdout | default(''))"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when:
         - platform_dns_service_path_repair_effective | bool
-        - platform_dns_api_local_routing_effective | bool
+        - platform_dns_cilium_api_bootstrap_effective | bool
+
+    - name: Read existing RKE2 Cilium API bootstrap values
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - -n
+          - kube-system
+          - get
+          - helmchartconfig.helm.cattle.io/rke2-cilium
+          - -o
+          - json
+      register: platform_dns_cilium_helmchartconfig_before
+      changed_when: false
+      failed_when:
+        - platform_dns_cilium_helmchartconfig_before.rc != 0
+        - >-
+          '(NotFound)' not in
+          (platform_dns_cilium_helmchartconfig_before.stderr | default(''))
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_dns_service_path_repair_effective | bool
+        - platform_dns_cilium_api_bootstrap_effective | bool
+
+    - name: Decode existing RKE2 Cilium API bootstrap values
+      ansible.builtin.set_fact:
+        platform_dns_cilium_helmchartconfig_exists: >-
+          {{ platform_dns_cilium_helmchartconfig_before.rc == 0 }}
+        platform_dns_cilium_helmchartconfig_document: >-
+          {{
+            (platform_dns_cilium_helmchartconfig_before.stdout | from_json)
+            if platform_dns_cilium_helmchartconfig_before.rc == 0
+            else {}
+          }}
+      delegate_to: "{{ rke2_first_server }}"
+      delegate_facts: true
+      run_once: true
+      when:
+        - platform_dns_service_path_repair_effective | bool
+        - platform_dns_cilium_api_bootstrap_effective | bool
+
+    - name: Validate existing RKE2 Cilium API bootstrap values
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              hostvars[rke2_first_server]
+              .platform_dns_cilium_helmchartconfig_document
+              .get('spec', {})
+              .get('valuesContent', '{}')
+              | default('{}', true)
+              | from_yaml
+              | default({}, true)
+            ) is mapping
+          - >-
+            (
+              hostvars[rke2_first_server]
+              .platform_dns_cilium_helmchartconfig_document
+              .get('spec', {})
+              .get('values', {})
+              | default({})
+            ) is mapping
+        fail_msg: >-
+          The existing rke2-cilium HelmChartConfig contains non-mapping
+          valuesContent or structured values, so the API bootstrap endpoint
+          cannot be merged without risking unrelated Cilium settings.
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_dns_service_path_repair_effective | bool
+        - platform_dns_cilium_api_bootstrap_effective | bool
+
+    - name: Merge RKE2 Cilium API bootstrap endpoint with existing values
+      ansible.builtin.set_fact:
+        platform_dns_cilium_values_content_current: >-
+          {{
+            hostvars[rke2_first_server]
+            .platform_dns_cilium_helmchartconfig_document
+            .get('spec', {})
+            .get('valuesContent', '{}')
+            | default('{}', true)
+            | from_yaml
+            | default({}, true)
+          }}
+        platform_dns_cilium_values_content_merged: >-
+          {{
+            (
+              hostvars[rke2_first_server]
+              .platform_dns_cilium_helmchartconfig_document
+              .get('spec', {})
+              .get('valuesContent', '{}')
+              | default('{}', true)
+              | from_yaml
+              | default({}, true)
+            )
+            | combine(
+                {
+                  'k8sServiceHost': platform_dns_cilium_api_host_effective,
+                  'k8sServicePort': platform_dns_cilium_api_port_effective | int
+                },
+                recursive=true
+              )
+          }}
+        platform_dns_cilium_structured_values_current: >-
+          {{
+            hostvars[rke2_first_server]
+            .platform_dns_cilium_helmchartconfig_document
+            .get('spec', {})
+            .get('values', {})
+            | default({})
+          }}
+        platform_dns_cilium_structured_values_merged: >-
+          {{
+            (
+              hostvars[rke2_first_server]
+              .platform_dns_cilium_helmchartconfig_document
+              .get('spec', {})
+              .get('values', {})
+              | default({})
+            )
+            | combine(
+                {
+                  'k8sServiceHost': platform_dns_cilium_api_host_effective,
+                  'k8sServicePort': platform_dns_cilium_api_port_effective | int
+                },
+                recursive=true
+              )
+          }}
+      delegate_to: "{{ rke2_first_server }}"
+      delegate_facts: true
+      run_once: true
+      when:
+        - platform_dns_service_path_repair_effective | bool
+        - platform_dns_cilium_api_bootstrap_effective | bool
+
+    - name: Patch existing RKE2 Cilium API bootstrap values
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - -n
+          - kube-system
+          - patch
+          - helmchartconfig.helm.cattle.io/rke2-cilium
+          - --type=merge
+          - >-
+            --patch={{
+              {
+                'spec': {
+                  'valuesContent': (
+                    hostvars[rke2_first_server]
+                    .platform_dns_cilium_values_content_merged
+                    | to_nice_yaml(indent=2, sort_keys=false)
+                  )
+                }
+                | combine(
+                    {
+                      'values': hostvars[rke2_first_server]
+                        .platform_dns_cilium_structured_values_merged
+                    }
+                    if (
+                      'values'
+                      in hostvars[rke2_first_server]
+                        .platform_dns_cilium_helmchartconfig_document
+                        .get('spec', {})
+                    )
+                    else {}
+                  )
+              }
+              | to_json
+            }}
+      register: platform_dns_cilium_helmchartconfig_patch
+      changed_when: true
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_dns_service_path_repair_effective | bool
+        - platform_dns_cilium_api_bootstrap_effective | bool
+        - hostvars[rke2_first_server].platform_dns_cilium_helmchartconfig_exists | bool
+        - >-
+          hostvars[rke2_first_server].platform_dns_cilium_values_content_current
+          != hostvars[rke2_first_server].platform_dns_cilium_values_content_merged
+          or (
+            'values'
+            in hostvars[rke2_first_server]
+              .platform_dns_cilium_helmchartconfig_document
+              .get('spec', {})
+            and hostvars[rke2_first_server].platform_dns_cilium_structured_values_current
+              != hostvars[rke2_first_server].platform_dns_cilium_structured_values_merged
+          )
+
+    - name: Create RKE2 Cilium API bootstrap values
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - apply
+          - -f
+          - "-"
+        stdin: >-
+          {{
+            {
+              'apiVersion': 'helm.cattle.io/v1',
+              'kind': 'HelmChartConfig',
+              'metadata': {
+                'name': 'rke2-cilium',
+                'namespace': 'kube-system'
+              },
+              'spec': {
+                'valuesContent': (
+                  hostvars[rke2_first_server]
+                  .platform_dns_cilium_values_content_merged
+                  | to_nice_yaml(indent=2, sort_keys=false)
+                )
+              }
+            }
+            | to_nice_yaml(indent=2, sort_keys=false)
+          }}
+      register: platform_dns_cilium_helmchartconfig_create
+      changed_when: true
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_dns_service_path_repair_effective | bool
+        - platform_dns_cilium_api_bootstrap_effective | bool
+        - not (hostvars[rke2_first_server].platform_dns_cilium_helmchartconfig_exists | bool)
+
+    - name: Wait for Cilium API bootstrap endpoint rollout
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        host="$(${K} --kubeconfig "${C}" -n kube-system get daemonset/cilium \
+          -o jsonpath='{range .spec.template.spec.initContainers[?(@.name=="config")].env[?(@.name=="KUBERNETES_SERVICE_HOST")]}{.value}{end}')"
+        port="$(${K} --kubeconfig "${C}" -n kube-system get daemonset/cilium \
+          -o jsonpath='{range .spec.template.spec.initContainers[?(@.name=="config")].env[?(@.name=="KUBERNETES_SERVICE_PORT")]}{.value}{end}')"
+        desired="$(${K} --kubeconfig "${C}" -n kube-system get daemonset/cilium \
+          -o jsonpath='{.status.desiredNumberScheduled}')"
+        ready="$(${K} --kubeconfig "${C}" -n kube-system get daemonset/cilium \
+          -o jsonpath='{.status.numberReady}')"
+        echo "cilium_api_host=${host:-unset} cilium_api_port=${port:-unset} cilium_ready=${ready:-0}/${desired:-0}"
+        test "${host}" = "{{ platform_dns_cilium_api_host_effective }}"
+        test "${port}" = "{{ platform_dns_cilium_api_port_effective }}"
+        test "${desired:-0}" -gt 0
+        test "${ready:-0}" = "${desired}"
+      args:
+        executable: /bin/bash
+      register: platform_dns_cilium_api_bootstrap_rollout
+      changed_when: false
+      retries: "{{ platform_dns_cilium_api_rollout_retries_effective }}"
+      delay: 5
+      until: platform_dns_cilium_api_bootstrap_rollout.rc == 0
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_dns_service_path_repair_effective | bool
+        - platform_dns_cilium_api_bootstrap_effective | bool
 
     - name: Run cluster DNS check before repair
       ansible.builtin.shell: |
@@ -759,14 +1014,12 @@
       when:
         - platform_dns_check_before.rc == 0
         - not (platform_dns_force_service_path_repair_effective | bool)
-        - not (platform_dns_api_local_routing_preflight is changed)
       run_once: true
 
     - name: Repair CoreDNS upstreams when pod DNS check fails
       when: >-
         (platform_dns_force_service_path_repair_effective | bool) or
-        platform_dns_check_before.rc != 0 or
-        (platform_dns_api_local_routing_preflight is changed)
+        platform_dns_check_before.rc != 0
       block:
         - name: Collect cluster DNS diagnostics before repair
           ansible.builtin.shell: |
@@ -1329,7 +1582,6 @@
             platform_dns_service_path_repair_required: >-
               {{
                 (platform_dns_force_service_path_repair_effective | bool) or
-                (platform_dns_api_local_routing_preflight is changed) or
                 not (platform_dns_default_resolution_ok | bool) or
                 not (platform_dns_kubernetes_api_service_path_ok | bool)
               }}
@@ -1807,112 +2059,6 @@
             - platform_dns_service_path_repair_effective | bool
             - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
             - (platform_dns_service_path_firewalld_state.rc | default(1)) == 0
-
-        - name: Route Kubernetes API ClusterIP to local endpoints on all-server clusters
-          ansible.builtin.shell: |
-            set -euo pipefail
-            python3 - <<'PY'
-            import json
-            import subprocess
-            import sys
-
-            kubectl = [
-                "/var/lib/rancher/rke2/bin/kubectl",
-                "--kubeconfig",
-                "/etc/rancher/rke2/rke2.yaml",
-            ]
-
-
-            def run(*args, input_text=None):
-                result = subprocess.run(
-                    kubectl + list(args),
-                    input=input_text,
-                    text=True,
-                    capture_output=True,
-                )
-                if result.returncode != 0:
-                    sys.stderr.write((result.stderr or "") + (result.stdout or ""))
-                    raise SystemExit(result.returncode)
-                return result.stdout
-
-
-            nodes = json.loads(run("get", "nodes", "-o", "json")).get("items", [])
-            ready_nodes = set()
-            address_to_node = {}
-            for node in nodes:
-                name = node.get("metadata", {}).get("name", "")
-                conditions = {
-                    item.get("type"): item.get("status")
-                    for item in node.get("status", {}).get("conditions", [])
-                }
-                if name and conditions.get("Ready") == "True" and not node.get("spec", {}).get("unschedulable", False):
-                    ready_nodes.add(name)
-                for address in node.get("status", {}).get("addresses", []):
-                    value = address.get("address", "")
-                    if value and name:
-                        address_to_node[value] = name
-
-            slices = json.loads(
-                run(
-                    "-n",
-                    "default",
-                    "get",
-                    "endpointslice",
-                    "-l",
-                    "kubernetes.io/service-name=kubernetes",
-                    "-o",
-                    "json",
-                )
-            ).get("items", [])
-            endpoint_nodes = set()
-            for endpoint_slice in slices:
-                for endpoint in endpoint_slice.get("endpoints", []):
-                    if endpoint.get("conditions", {}).get("ready") is False:
-                        continue
-                    node_name = endpoint.get("nodeName", "")
-                    if node_name:
-                        endpoint_nodes.add(node_name)
-                    for address in endpoint.get("addresses", []):
-                        mapped = address_to_node.get(address)
-                        if mapped:
-                            endpoint_nodes.add(mapped)
-
-            if not ready_nodes:
-                print("kubernetes_api_local_routing=skipped reason=no-ready-schedulable-nodes")
-                raise SystemExit(0)
-            missing = sorted(ready_nodes - endpoint_nodes)
-            if missing:
-                print(
-                    "kubernetes_api_local_routing=skipped "
-                    f"reason=nodes-without-local-api-endpoint nodes={','.join(missing)}"
-                )
-                raise SystemExit(0)
-
-            service = json.loads(run("-n", "default", "get", "service/kubernetes", "-o", "json"))
-            current = service.get("spec", {}).get("internalTrafficPolicy", "Cluster")
-            if current != "Local":
-                patch = json.dumps({"spec": {"internalTrafficPolicy": "Local"}})
-                run("-n", "default", "patch", "service/kubernetes", "--type=merge", "-p", patch)
-                print(
-                    "kubernetes_api_local_routing=enabled action=patch-local "
-                    f"nodes={','.join(sorted(ready_nodes))}"
-                )
-            else:
-                print(
-                    "kubernetes_api_local_routing=enabled action=already-local "
-                    f"nodes={','.join(sorted(ready_nodes))}"
-                )
-            PY
-          args:
-            executable: /bin/bash
-          register: platform_dns_api_local_routing
-          changed_when: "'action=patch-local' in (platform_dns_api_local_routing.stdout | default(''))"
-          delegate_to: "{{ rke2_first_server }}"
-          run_once: true
-          when:
-            - platform_dns_service_path_repair_effective | bool
-            - platform_dns_api_local_routing_effective | bool
-            - hostvars[rke2_first_server].platform_dns_service_path_repair_required | default(false) | bool
 
         - name: Collect Kubernetes DNS service path state before component repair
           ansible.builtin.shell: |
