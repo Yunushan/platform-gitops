@@ -50,6 +50,41 @@ REQUIRED_APP_DEPENDENCIES = {
     "velero": {"longhorn"},
 }
 SERVER_SIDE_APPLY_APPS = {"kyverno", "velero"}
+RUNTIME_IGNORE_CONTRACT = {
+    "openbao": (
+        "name: openbao-agent-injector-cfg",
+        ".webhooks[]?.clientConfig.caBundle",
+    ),
+    "platform-postgres": (
+        "name: platform-databases",
+        "- /spec/finalizers",
+        "- /status",
+    ),
+    "platform-valkey": (
+        "name: platform-cache",
+        "- /spec/finalizers",
+        "- /status",
+    ),
+    "minio": (
+        "name: object-storage",
+        "- /spec/finalizers",
+        "- /status",
+    ),
+    "forgejo": (
+        "name: forgejo-admin",
+        "- /data/password",
+    ),
+    "harbor": (
+        "name: harbor-core",
+        "name: harbor-ingress",
+        "name: harbor-jobservice",
+        "name: harbor-registry",
+        "name: harbor-registry-htpasswd",
+        '"checksum/secret"',
+        '"checksum/secret-core"',
+        '"checksum/secret-jobservice"',
+    ),
+}
 REQUIRED_CLUSTER_RESOURCE_WHITELIST = {
     ("", "Namespace"),
     ("admissionregistration.k8s.io", "MutatingWebhookConfiguration"),
@@ -228,6 +263,10 @@ def check_application_doc(app_file: Path, doc: str) -> list[str]:
         problems.append(f"{label} is missing sync option CreateNamespace=true")
     if app_name in SERVER_SIDE_APPLY_APPS and "ServerSideApply=true" not in sync_options:
         problems.append(f"{label} must use server-side apply for large chart CRDs")
+    if app_file == APPLICATION_FILES[1]:
+        for needle in RUNTIME_IGNORE_CONTRACT.get(app_name, ()):
+            if needle not in doc:
+                problems.append(f"{label} is missing runtime-managed ignore contract {needle!r}")
     if not AUTOMATED_SYNC_RE.search(doc):
         problems.append(f"{label} is missing automated sync policy")
     if not PRUNE_FALSE_RE.search(doc):

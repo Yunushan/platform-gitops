@@ -172,6 +172,12 @@ metadata:
     argocd.argoproj.io/sync-wave: "5"
 spec:
   project: platform
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: openbao-agent-injector-cfg
+      jqPathExpressions:
+        - .webhooks[]?.clientConfig.caBundle
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -288,6 +294,13 @@ metadata:
     argocd.argoproj.io/sync-wave: "4"
 spec:
   project: platform
+  ignoreDifferences:
+    - group: ""
+      kind: Namespace
+      name: platform-databases
+      jsonPointers:
+        - /spec/finalizers
+        - /status
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -312,6 +325,13 @@ metadata:
     argocd.argoproj.io/sync-wave: "4"
 spec:
   project: platform
+  ignoreDifferences:
+    - group: ""
+      kind: Namespace
+      name: platform-cache
+      jsonPointers:
+        - /spec/finalizers
+        - /status
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -335,6 +355,13 @@ metadata:
     argocd.argoproj.io/sync-wave: "4"
 spec:
   project: platform
+  ignoreDifferences:
+    - group: ""
+      kind: Namespace
+      name: object-storage
+      jsonPointers:
+        - /spec/finalizers
+        - /status
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -404,6 +431,13 @@ metadata:
     argocd.argoproj.io/sync-wave: "5"
 spec:
   project: platform
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: forgejo-admin
+      namespace: forgejo
+      jsonPointers:
+        - /data/password
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -450,6 +484,59 @@ metadata:
     argocd.argoproj.io/sync-wave: "5"
 spec:
   project: platform
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: harbor-core
+      namespace: harbor
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: harbor-ingress
+      namespace: harbor
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: harbor-jobservice
+      namespace: harbor
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: harbor-registry
+      namespace: harbor
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: harbor-registry-htpasswd
+      namespace: harbor
+      jsonPointers:
+        - /data
+    - group: apps
+      kind: Deployment
+      name: harbor-core
+      namespace: harbor
+      jqPathExpressions:
+        - '.spec.template.metadata.annotations."checksum/secret"'
+        - '.spec.template.metadata.annotations."checksum/secret-jobservice"'
+    - group: apps
+      kind: Deployment
+      name: harbor-jobservice
+      namespace: harbor
+      jqPathExpressions:
+        - '.spec.template.metadata.annotations."checksum/secret"'
+        - '.spec.template.metadata.annotations."checksum/secret-core"'
+    - group: apps
+      kind: Deployment
+      name: harbor-registry
+      namespace: harbor
+      jqPathExpressions:
+        - '.spec.template.metadata.annotations."checksum/secret"'
+        - '.spec.template.metadata.annotations."checksum/secret-core"'
+        - '.spec.template.metadata.annotations."checksum/secret-jobservice"'
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
