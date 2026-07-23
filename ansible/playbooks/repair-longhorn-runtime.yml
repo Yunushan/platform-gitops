@@ -430,9 +430,6 @@
                 and not replica.get("spec", {}).get("failedAt")
                 and not replica.get("metadata", {}).get("deletionTimestamp")
             ]
-            if len(healthy_peers) < 2:
-                continue
-
             stale_replicas = [
                 replica
                 for replica in volume_replicas
@@ -441,6 +438,23 @@
                 and replica.get("status", {}).get("currentState") != "running"
                 and not replica.get("metadata", {}).get("deletionTimestamp")
             ]
+            volume_spec = volume.get("spec", {})
+            volume_status = volume.get("status", {})
+            safe_degraded_attach_recovery = (
+                len(healthy_peers) == 1
+                and len(stale_replicas) == 1
+                and len(volume_replicas) == 2
+                and int(volume_spec.get("numberOfReplicas") or 0) == 2
+                and int(volume_status.get("actualSize") or 0) > 0
+                and volume_status.get("state") == "attaching"
+                and volume_status.get("robustness") in {"unknown", "degraded"}
+                and bool(volume_spec.get("nodeID"))
+                and not volume_spec.get("fromBackup")
+                and not volume_status.get("restoreRequired")
+            )
+            if len(healthy_peers) < 2 and not safe_degraded_attach_recovery:
+                continue
+
             for replica in stale_replicas:
                 replica_name = replica.get("metadata", {}).get("name", "")
                 result = subprocess.run(
@@ -458,7 +472,8 @@
                     raise SystemExit(result.returncode)
                 print(
                     f"longhorn_stale_replica={replica_name} volume={volume_name} "
-                    f"action=remove-invalid-disk-reference healthyPeers={len(healthy_peers)}"
+                    f"action=remove-invalid-disk-reference healthyPeers={len(healthy_peers)} "
+                    f"mode={'degraded-attach-recovery' if safe_degraded_attach_recovery else 'redundant'}"
                 )
         '
       args:
