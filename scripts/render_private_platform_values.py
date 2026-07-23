@@ -268,6 +268,10 @@ console:
     repository: bitnamilegacy/minio-object-browser
     tag: 2.0.2-debian-12-r3
 
+clientImage:
+  repository: bitnamilegacy/minio-client
+  tag: 2025.7.21-debian-12-r2
+
 auth:
   existingSecret: {yaml_string(root_secret_name)}
   rootUserSecretKey: {yaml_string(root_user_secret_key)}

@@ -12,8 +12,7 @@ spec:
           command: ["/bin/sh", "-ec"]
           args:
             - |
-              escaped_url="$(printf '%s' "${HARBOR_REDIS_URL_JOBSERVICE}" | sed 's/[\\/&]/\\\\&/g')"
-              sed "s#redis_url: \".*\"#redis_url: \"${escaped_url}\"#" /source/config.yml > /target/config.yml
+              sed "s#redis_url: \".*\"#redis_url: \"${HARBOR_REDIS_URL_JOBSERVICE}\"#" /source/config.yml > /target/config.yml
           env:
             - name: HARBOR_REDIS_URL_JOBSERVICE
               valueFrom:

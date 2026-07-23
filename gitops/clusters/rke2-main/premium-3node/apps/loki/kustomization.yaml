@@ -8,3 +8,5 @@ helmCharts:
     releaseName: loki
     namespace: logging
     valuesFile: values.yaml
+patches:
+  - path: gateway-rke2-dns-patch.yaml

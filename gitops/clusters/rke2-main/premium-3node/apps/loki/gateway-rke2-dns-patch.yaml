@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-gateway
+  namespace: logging
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: configure-rke2-dns-resolver
+          image: docker.io/library/busybox:1.37.0
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              cp -R /source/. /target/
+              sed -i 's/kube-dns\.kube-system\.svc\.cluster\.local\./rke2-coredns-rke2-coredns.kube-system.svc.cluster.local./g' /target/nginx.conf
+          volumeMounts:
+            - name: config
+              mountPath: /source
+            - name: config-runtime
+              mountPath: /target
+      volumes:
+        - name: config-runtime
+          emptyDir: {}
+      containers:
+        - name: nginx
+          volumeMounts:
+            - name: config-runtime
+              mountPath: /etc/nginx

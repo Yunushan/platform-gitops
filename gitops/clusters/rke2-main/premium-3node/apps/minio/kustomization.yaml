@@ -10,4 +10,5 @@ helmCharts:
     releaseName: platform-minio
     namespace: object-storage
     valuesFile: values.yaml
-
+patches:
+  - path: image-compatibility-patch.yaml
