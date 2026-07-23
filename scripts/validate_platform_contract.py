@@ -1363,11 +1363,21 @@ def main() -> None:
             needle,
             f"premium Kyverno profile must include {needle.splitlines()[0]}",
         )
+    premium_kyverno_kustomization_text = read(premium_kyverno_kustomization)
     require_text(
-        read(premium_kyverno_kustomization),
+        premium_kyverno_kustomization_text,
         "includeCRDs: true",
         "premium Kyverno Kustomization must render chart CRDs",
     )
+    for needle in (
+        'name: ".*policies\\\\.kyverno\\\\.io"',
+        "- op: remove\n        path: /metadata/labels",
+    ):
+        require_text(
+            premium_kyverno_kustomization_text,
+            needle,
+            "premium Kyverno Kustomization must remove normalized empty labels from policy CRDs",
+        )
 
     premium_tetragon_text = read(premium_tetragon_values)
     for needle in (

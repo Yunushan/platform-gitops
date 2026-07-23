@@ -11,3 +11,12 @@ helmCharts:
     namespace: kyverno
     valuesFile: values.yaml
     includeCRDs: true
+patches:
+  - target:
+      group: apiextensions.k8s.io
+      version: v1
+      kind: CustomResourceDefinition
+      name: ".*policies\\.kyverno\\.io"
+    patch: |-
+      - op: remove
+        path: /metadata/labels
