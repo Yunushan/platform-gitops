@@ -500,6 +500,33 @@
             return json.loads(run(*args, "-o", "json"))
 
 
+        def delete_if_present(*args):
+            result = subprocess.run(
+                kubectl + ["delete", *args, "--wait=false"],
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode != 0 and "NotFound" not in (result.stderr or ""):
+                sys.stderr.write((result.stderr or "") + (result.stdout or ""))
+                raise SystemExit(result.returncode)
+
+
+        def pod_uses_claim(pod, claim_name):
+            return any(
+                volume.get("persistentVolumeClaim", {}).get("claimName") == claim_name
+                for volume in pod.get("spec", {}).get("volumes", [])
+            )
+
+
+        def pod_is_ready(pod):
+            statuses = pod.get("status", {}).get("containerStatuses", [])
+            return (
+                pod.get("status", {}).get("phase") == "Running"
+                and bool(statuses)
+                and all(status.get("ready") is True for status in statuses)
+            )
+
+
         volumes = get_json("-n", "longhorn-system", "get", "volumes.longhorn.io").get("items", [])
         replicas = get_json("-n", "longhorn-system", "get", "replicas.longhorn.io").get("items", [])
         pvs = {
@@ -583,14 +610,17 @@
                     f"longhorn_replica={replica_name} volume={volume_name} "
                     "action=remove-empty-unscheduled-placeholder"
                 )
-            repaired.append((volume_name, namespace, pvc_name))
+            repaired.append((volume_name, namespace, pvc_name, pv_name))
 
         if not repaired:
             print("longhorn_empty_unscheduled_replica_repair=not-needed")
             raise SystemExit(0)
 
         deadline = time.monotonic() + timeout_seconds
-        pending = {name: (namespace, pvc_name) for name, namespace, pvc_name in repaired}
+        pending = {
+            name: (namespace, pvc_name, pv_name)
+            for name, namespace, pvc_name, pv_name in repaired
+        }
         while pending and time.monotonic() < deadline:
             for volume_name in list(pending):
                 volume = get_json("-n", "longhorn-system", "get", f"volumes.longhorn.io/{volume_name}")
@@ -603,7 +633,7 @@
                     {},
                 )
                 if scheduled.get("status") == "True":
-                    namespace, pvc_name = pending.pop(volume_name)
+                    namespace, pvc_name, _ = pending.pop(volume_name)
                     print(
                         f"longhorn_volume={volume_name} namespace={namespace} pvc={pvc_name} "
                         "result=rescheduled"
@@ -612,10 +642,111 @@
                 time.sleep(5)
 
         if pending:
-            for volume_name, (namespace, pvc_name) in sorted(pending.items()):
+            for volume_name, (namespace, pvc_name, _) in sorted(pending.items()):
                 print(
                     f"longhorn_volume={volume_name} namespace={namespace} pvc={pvc_name} "
                     "result=fail reason=empty-volume-reschedule-timeout",
+                    file=sys.stderr,
+                )
+            raise SystemExit(1)
+
+        attachments = get_json("get", "volumeattachments.storage.k8s.io").get("items", [])
+        workload_recovery = {}
+        for volume_name, namespace, pvc_name, pv_name in repaired:
+            for attachment in attachments:
+                metadata = attachment.get("metadata", {})
+                source = attachment.get("spec", {}).get("source", {})
+                if source.get("persistentVolumeName") != pv_name:
+                    continue
+                if attachment.get("status", {}).get("attached") is True:
+                    continue
+                attachment_name = metadata.get("name", "")
+                if not attachment_name or metadata.get("deletionTimestamp"):
+                    continue
+                delete_if_present(f"volumeattachment.storage.k8s.io/{attachment_name}")
+                print(
+                    f"longhorn_volume={volume_name} volumeattachment={attachment_name} "
+                    "action=remove-stale-unattached-record"
+                )
+
+            pods = get_json("-n", namespace, "get", "pods").get("items", [])
+            for pod in pods:
+                metadata = pod.get("metadata", {})
+                pod_name = metadata.get("name", "")
+                if not pod_name or metadata.get("deletionTimestamp"):
+                    continue
+                if not pod_uses_claim(pod, pvc_name) or pod_is_ready(pod):
+                    continue
+                if not metadata.get("ownerReferences"):
+                    print(
+                        f"longhorn_volume={volume_name} namespace={namespace} pod={pod_name} "
+                        "action=retain-unmanaged-nonready-consumer"
+                    )
+                    continue
+                delete_if_present("-n", namespace, f"pod/{pod_name}")
+                workload_recovery[(namespace, pvc_name)] = volume_name
+                print(
+                    f"longhorn_volume={volume_name} namespace={namespace} pod={pod_name} "
+                    "action=refresh-controller-managed-consumer"
+                )
+
+        deadline = time.monotonic() + timeout_seconds
+        pending_workloads = dict(workload_recovery)
+        while pending_workloads and time.monotonic() < deadline:
+            for (namespace, pvc_name), volume_name in list(pending_workloads.items()):
+                volume = get_json(
+                    "-n",
+                    "longhorn-system",
+                    "get",
+                    f"volumes.longhorn.io/{volume_name}",
+                )
+                volume_ready = (
+                    volume.get("status", {}).get("state") == "attached"
+                    and volume.get("status", {}).get("robustness") == "healthy"
+                )
+                pods = get_json("-n", namespace, "get", "pods").get("items", [])
+                ready_pods = [
+                    pod
+                    for pod in pods
+                    if not pod.get("metadata", {}).get("deletionTimestamp")
+                    and pod_uses_claim(pod, pvc_name)
+                    and pod_is_ready(pod)
+                ]
+                if volume_ready and ready_pods:
+                    pod_names = ",".join(
+                        sorted(pod.get("metadata", {}).get("name", "") for pod in ready_pods)
+                    )
+                    pending_workloads.pop((namespace, pvc_name))
+                    print(
+                        f"longhorn_volume={volume_name} namespace={namespace} pvc={pvc_name} "
+                        f"pods={pod_names} result=workload-recovered"
+                    )
+            if pending_workloads:
+                time.sleep(5)
+
+        if pending_workloads:
+            for (namespace, pvc_name), volume_name in sorted(pending_workloads.items()):
+                volume = get_json(
+                    "-n",
+                    "longhorn-system",
+                    "get",
+                    f"volumes.longhorn.io/{volume_name}",
+                )
+                pods = get_json("-n", namespace, "get", "pods").get("items", [])
+                pod_state = ",".join(
+                    sorted(
+                        f"{pod.get('metadata', {}).get('name', '')}:"
+                        f"{pod.get('status', {}).get('phase', 'Unknown')}:"
+                        f"ready={pod_is_ready(pod)}"
+                        for pod in pods
+                        if pod_uses_claim(pod, pvc_name)
+                    )
+                ) or "none"
+                print(
+                    f"longhorn_volume={volume_name} namespace={namespace} pvc={pvc_name} "
+                    f"state={volume.get('status', {}).get('state', 'unknown')} "
+                    f"robustness={volume.get('status', {}).get('robustness', 'unknown')} "
+                    f"pods={pod_state} result=fail reason=empty-volume-workload-recovery-timeout",
                     file=sys.stderr,
                 )
             raise SystemExit(1)
@@ -625,6 +756,10 @@
       register: platform_longhorn_empty_unscheduled_replica_repair
       changed_when: >-
         'action=remove-empty-unscheduled-placeholder' in
+        (platform_longhorn_empty_unscheduled_replica_repair.stdout | default(''))
+        or 'action=remove-stale-unattached-record' in
+        (platform_longhorn_empty_unscheduled_replica_repair.stdout | default(''))
+        or 'action=refresh-controller-managed-consumer' in
         (platform_longhorn_empty_unscheduled_replica_repair.stdout | default(''))
       delegate_to: "{{ rke2_first_server }}"
       run_once: true

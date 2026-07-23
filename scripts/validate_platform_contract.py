@@ -2675,6 +2675,12 @@ def main() -> None:
         "ReplicaSchedulingFailure",
         "action=remove-empty-unscheduled-placeholder",
         "reason=empty-volume-reschedule-timeout",
+        "volumeattachments.storage.k8s.io",
+        "action=remove-stale-unattached-record",
+        "action=retain-unmanaged-nonready-consumer",
+        "action=refresh-controller-managed-consumer",
+        "result=workload-recovered",
+        "reason=empty-volume-workload-recovery-timeout",
     ):
         require_text(
             longhorn_runtime_repair_text,
