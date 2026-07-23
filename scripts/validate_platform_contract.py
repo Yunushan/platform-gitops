@@ -2839,13 +2839,17 @@ def main() -> None:
         "PLATFORM_DNS_CILIUM_API_BOOTSTRAP",
         "PLATFORM_DNS_CILIUM_API_HOST",
         "PLATFORM_DNS_CILIUM_API_PORT",
-        "Restore Kubernetes API service cluster routing before pod service probes",
+        "Configure node-local Kubernetes API service routing before pod service probes",
         "Read existing RKE2 Cilium API bootstrap values",
         "Merge RKE2 Cilium API bootstrap endpoint with existing values",
         "Wait for Cilium API bootstrap endpoint rollout",
         "'k8sServiceHost': platform_dns_cilium_api_host_effective",
         "'k8sServicePort': platform_dns_cilium_api_port_effective | int",
-        "action=patch-cluster",
+        "patch-endpoint-topology",
+        "kubernetes.io/service-name=kubernetes",
+        "endpoint.get(\"nodeName\", \"\")",
+        "patch-local-service",
+        "kubernetes_api_service_routing=local",
     ):
         require_text(dns_repair_text, needle, f"DNS repair must support forced CNI service-path recovery: {needle}")
     cleanup_script_text = read(firewalld_cleanup_script)

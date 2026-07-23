@@ -515,27 +515,93 @@
             (platform_dns_cilium_api_host_effective ~ ':' ~ platform_dns_cilium_api_port_effective)
             if platform_dns_cilium_api_bootstrap_effective
             else 'disabled'
-          }}. The built-in Kubernetes Service remains on
-          internalTrafficPolicy=Cluster.
+          }}. The built-in Kubernetes Service uses node-local API endpoints
+          after authoritative Endpoints topology is present.
       run_once: true
 
-    - name: Restore Kubernetes API service cluster routing before pod service probes
+    - name: Configure node-local Kubernetes API service routing before pod service probes
       ansible.builtin.shell: |
         set -euo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
-        current="$(${K} --kubeconfig "${C}" get service/kubernetes -o jsonpath='{.spec.internalTrafficPolicy}')"
-        if [ "${current:-Cluster}" = "Cluster" ]; then
-          echo "kubernetes_api_service_routing=cluster action=unchanged"
-          exit 0
+        node_map='{
+        {% for node in groups['rke2_servers'] %}
+          "{{ hostvars[node].ansible_host | default(node) }}": "{{ node }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+        }'
+
+        endpoint_patch="$(${K} --kubeconfig "${C}" -n default get endpoints/kubernetes -o json |
+          python3 -c '
+        import json
+        import sys
+
+        document = json.load(sys.stdin)
+        nodes = json.loads(sys.argv[1])
+        operations = []
+        for subset_index, subset in enumerate(document.get("subsets", [])):
+            for address_index, address in enumerate(subset.get("addresses", [])):
+                node_name = nodes.get(address.get("ip", ""))
+                if not node_name or address.get("nodeName") == node_name:
+                    continue
+                operation = "replace" if "nodeName" in address else "add"
+                operations.append(
+                    {
+                        "op": operation,
+                        "path": f"/subsets/{subset_index}/addresses/{address_index}/nodeName",
+                        "value": node_name,
+                    }
+                )
+        print(json.dumps(operations, separators=(",", ":")))
+        ' "${node_map}")"
+
+        actions=""
+        if [ "${endpoint_patch}" != "[]" ]; then
+          ${K} --kubeconfig "${C}" -n default patch endpoints/kubernetes \
+            --type=json -p "${endpoint_patch}"
+          actions="patch-endpoint-topology"
         fi
-        ${K} --kubeconfig "${C}" patch service/kubernetes --type=merge \
-          -p '{"spec":{"internalTrafficPolicy":"Cluster"}}'
-        echo "kubernetes_api_service_routing=cluster action=patch-cluster"
+
+        endpoint_slice_ready=false
+        for attempt in $(seq 1 30); do
+          if ${K} --kubeconfig "${C}" -n default get endpointslice \
+            -l kubernetes.io/service-name=kubernetes -o json |
+            python3 -c '
+        import json
+        import sys
+
+        document = json.load(sys.stdin)
+        nodes = json.loads(sys.argv[1])
+        observed = {}
+        for item in document.get("items", []):
+            for endpoint in item.get("endpoints", []):
+                for address in endpoint.get("addresses", []):
+                    observed[address] = endpoint.get("nodeName", "")
+        raise SystemExit(0 if nodes and all(observed.get(ip) == node for ip, node in nodes.items()) else 1)
+        ' "${node_map}"; then
+            endpoint_slice_ready=true
+            break
+          fi
+          sleep 1
+        done
+        if [ "${endpoint_slice_ready}" != "true" ]; then
+          echo "Kubernetes API EndpointSlice did not inherit node topology from Endpoints." >&2
+          ${K} --kubeconfig "${C}" -n default get endpointslice \
+            -l kubernetes.io/service-name=kubernetes -o wide >&2 || true
+          exit 1
+        fi
+
+        current="$(${K} --kubeconfig "${C}" get service/kubernetes -o jsonpath='{.spec.internalTrafficPolicy}')"
+        if [ "${current:-Cluster}" != "Local" ]; then
+          ${K} --kubeconfig "${C}" patch service/kubernetes --type=merge \
+            -p '{"spec":{"internalTrafficPolicy":"Local"}}'
+          actions="${actions:+${actions},}patch-local-service"
+        fi
+
+        echo "kubernetes_api_service_routing=local action=${actions:-unchanged}"
       args:
         executable: /bin/bash
-      register: platform_dns_kubernetes_api_cluster_routing
-      changed_when: "'action=patch-cluster' in (platform_dns_kubernetes_api_cluster_routing.stdout | default(''))"
+      register: platform_dns_kubernetes_api_local_routing
+      changed_when: "'action=unchanged' not in (platform_dns_kubernetes_api_local_routing.stdout | default(''))"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when:
