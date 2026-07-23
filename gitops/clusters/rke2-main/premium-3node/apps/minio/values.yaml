@@ -5,6 +5,16 @@ global:
 
 mode: distributed
 
+image:
+  # Bitnami's historical community images now live in bitnamilegacy.
+  repository: bitnamilegacy/minio
+  tag: 2025.7.23-debian-12-r3
+
+console:
+  image:
+    repository: bitnamilegacy/minio-object-browser
+    tag: 2.0.2-debian-12-r3
+
 auth:
   existingSecret: minio-root
   rootUserSecretKey: root-user
@@ -44,5 +54,8 @@ metrics:
       release: monitoring
 
 provisioning:
-  enabled: false
-
+  enabled: true
+  buckets:
+    - name: platform-loki-chunks
+    - name: platform-loki-ruler
+    - name: platform-loki-admin

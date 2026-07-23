@@ -237,6 +237,7 @@ def minio_values(
     zones: str,
     drives_per_node: str,
     metrics_enabled: bool,
+    buckets: list[str],
 ) -> str:
     metrics_block = "  enabled: false\n"
     if metrics_enabled:
@@ -256,6 +257,16 @@ global:
   defaultStorageClass: {yaml_string(storage_class)}
 
 mode: distributed
+
+image:
+  # Bitnami's historical community images now live in bitnamilegacy.
+  repository: bitnamilegacy/minio
+  tag: 2025.7.23-debian-12-r3
+
+console:
+  image:
+    repository: bitnamilegacy/minio-object-browser
+    tag: 2.0.2-debian-12-r3
 
 auth:
   existingSecret: {yaml_string(root_secret_name)}
@@ -286,8 +297,9 @@ resources:
 metrics:
 {metrics_block}
 provisioning:
-  enabled: false
-"""
+  enabled: true
+  buckets:
+{''.join(f'    - name: {yaml_string(bucket)}\n' for bucket in buckets)}"""
 
 
 def render_minio(path: Path) -> bool:
@@ -300,6 +312,7 @@ def render_minio(path: Path) -> bool:
         raise SystemExit("MINIO_ZONES must be at least 1")
     if not drives_per_node.isdigit() or int(drives_per_node) < 1:
         raise SystemExit("MINIO_DRIVES_PER_NODE must be at least 1")
+    bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
     rendered = minio_values(
         root_secret_name=os.environ.get("MINIO_ROOT_SECRET_NAME", "minio-root").strip() or "minio-root",
         root_user_secret_key=os.environ.get("MINIO_ROOT_USER_SECRET_KEY", "root-user").strip() or "root-user",
@@ -311,6 +324,11 @@ def render_minio(path: Path) -> bool:
         zones=zones,
         drives_per_node=drives_per_node,
         metrics_enabled=env_bool("MINIO_METRICS", True),
+        buckets=[
+            os.environ.get("LOKI_CHUNKS_BUCKET", f"{bucket_prefix}-loki-chunks").strip(),
+            os.environ.get("LOKI_RULER_BUCKET", f"{bucket_prefix}-loki-ruler").strip(),
+            os.environ.get("LOKI_ADMIN_BUCKET", f"{bucket_prefix}-loki-admin").strip(),
+        ],
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -339,7 +357,8 @@ global:
 
 image:
   registry: docker.io
-  repository: bitnami/keycloak
+  # Bitnami's historical community images now live in bitnamilegacy.
+  repository: {yaml_string(os.environ.get("KEYCLOAK_IMAGE_REPOSITORY", "bitnamilegacy/keycloak").strip() or "bitnamilegacy/keycloak")}
   tag: 26.3.3-debian-12-r0
 
 auth:
@@ -1608,7 +1627,9 @@ def render_loki(path: Path, inventory: dict[str, str]) -> bool:
         "PLATFORM_LOKI_HOST or platform_loki_host",
         platform_host("PLATFORM_LOKI_HOST", inventory, ("platform_loki_host",), "loki"),
     )
-    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", "https://s3.amazonaws.com").strip()
+    endpoint = os.environ.get(
+        "OBJECT_STORAGE_ENDPOINT", "http://platform-minio.object-storage.svc.cluster.local:9000"
+    ).strip()
     region = os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip() or "us-east-1"
     bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
     storage_class = os.environ.get("LOKI_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
@@ -1618,7 +1639,9 @@ def render_loki(path: Path, inventory: dict[str, str]) -> bool:
         "false",
         "no",
     }
-    insecure = os.environ.get("OBJECT_STORAGE_INSECURE", "false").strip().lower() in {"1", "true", "yes"}
+    insecure = os.environ.get(
+        "OBJECT_STORAGE_INSECURE", str(endpoint.lower().startswith("http://"))
+    ).strip().lower() in {"1", "true", "yes"}
 
     rendered = loki_bootstrap_values(
         host=host,

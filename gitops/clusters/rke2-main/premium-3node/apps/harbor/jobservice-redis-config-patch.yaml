@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: harbor-jobservice
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: inject-jobservice-redis-url
+          image: docker.io/library/busybox:1.37.0
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              escaped_url="$(printf '%s' "${HARBOR_REDIS_URL_JOBSERVICE}" | sed 's/[\\/&]/\\\\&/g')"
+              sed "s#redis_url: \".*\"#redis_url: \"${escaped_url}\"#" /source/config.yml > /target/config.yml
+          env:
+            - name: HARBOR_REDIS_URL_JOBSERVICE
+              valueFrom:
+                secretKeyRef:
+                  name: harbor-redis-url
+                  key: REDIS_URL_JOBSERVICE
+          volumeMounts:
+            - name: jobservice-config
+              mountPath: /source
+            - name: jobservice-config-runtime
+              mountPath: /target
+      volumes:
+        - name: jobservice-config-runtime
+          emptyDir: {}
+      containers:
+        - name: jobservice
+          volumeMounts:
+            - name: jobservice-config-runtime
+              mountPath: /etc/jobservice/config.yml
+              subPath: config.yml

@@ -1407,7 +1407,7 @@ def main() -> None:
 
     premium_keycloak_text = read(premium_keycloak_values)
     for needle in (
-        "repository: bitnami/keycloak",
+        "repository: bitnamilegacy/keycloak",
         "tag: 26.3.3-debian-12-r0",
         "existingSecret: keycloak-admin",
         "passwordSecretKey: admin-password",

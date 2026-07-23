@@ -8,3 +8,5 @@ helmCharts:
     releaseName: harbor
     namespace: harbor
     valuesFile: values.yaml
+patches:
+  - path: jobservice-redis-config-patch.yaml
