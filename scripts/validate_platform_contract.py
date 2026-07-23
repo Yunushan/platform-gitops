@@ -2821,6 +2821,7 @@ def main() -> None:
         "PLATFORM_KUBERNETES_API_SERVICE_PATH=true",
         "platform_dns_kubernetes_api_service_path_ok",
         "PLATFORM_DNS_API_LOCAL_ROUTING",
+        "Normalize Kubernetes API local routing before pod service probes",
         "Route Kubernetes API ClusterIP to local endpoints on all-server clusters",
         "nodes-without-local-api-endpoint",
         "action=patch-local",

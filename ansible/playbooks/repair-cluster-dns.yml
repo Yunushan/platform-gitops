@@ -498,6 +498,56 @@
           internalTrafficPolicy=Local on the kube-dns service.
       run_once: true
 
+    - name: Normalize Kubernetes API local routing before pod service probes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        ready_nodes="$(${K} --kubeconfig "${C}" get nodes --no-headers \
+          -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,UNSCHEDULABLE:.spec.unschedulable' |
+          awk '$2 == "True" && $3 != "true" { print $1 }')"
+        endpoint_nodes="$(${K} --kubeconfig "${C}" -n default get endpointslice \
+          -l kubernetes.io/service-name=kubernetes \
+          -o jsonpath='{range .items[*].endpoints[*]}{.nodeName}{"\n"}{end}' |
+          awk 'NF' | sort -u)"
+
+        if [ -z "${ready_nodes}" ]; then
+          echo "kubernetes_api_local_routing=skipped reason=no-ready-schedulable-nodes"
+          exit 0
+        fi
+        missing=""
+        while read -r node; do
+          [ -n "${node}" ] || continue
+          if ! printf '%s\n' "${endpoint_nodes}" | grep -Fx "${node}" >/dev/null 2>&1; then
+            missing="${missing} ${node}"
+          fi
+        done <<<"${ready_nodes}"
+        if [ -n "${missing}" ]; then
+          missing_csv="$(printf '%s\n' "${missing}" | xargs | tr ' ' ',')"
+          echo "kubernetes_api_local_routing=skipped reason=nodes-without-local-api-endpoint nodes=${missing_csv}"
+          exit 0
+        fi
+
+        current="$(${K} --kubeconfig "${C}" -n default get service/kubernetes \
+          -o jsonpath='{.spec.internalTrafficPolicy}')"
+        if [ "${current:-Cluster}" = "Local" ]; then
+          echo "kubernetes_api_local_routing=enabled action=already-local"
+          exit 0
+        fi
+        ${K} --kubeconfig "${C}" -n default patch service/kubernetes --type=merge \
+          -p '{"spec":{"internalTrafficPolicy":"Local"}}'
+        echo "kubernetes_api_local_routing=enabled action=patch-local"
+      args:
+        executable: /bin/bash
+      register: platform_dns_api_local_routing_preflight
+      changed_when: "'action=patch-local' in (platform_dns_api_local_routing_preflight.stdout | default(''))"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_dns_service_path_repair_effective | bool
+        - platform_dns_api_local_routing_effective | bool
+
     - name: Run cluster DNS check before repair
       ansible.builtin.shell: |
         set -e -o pipefail
