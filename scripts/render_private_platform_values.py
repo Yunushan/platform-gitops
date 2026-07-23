@@ -1576,6 +1576,7 @@ write:
     limits:
       memory: 2Gi
   persistence:
+    enableStatefulSetAutoDeletePVC: false
     storageClass: {yaml_string(storage_class)}
     size: {yaml_string(write_cache_size)}
 
@@ -1597,6 +1598,7 @@ backend:
     limits:
       memory: 2Gi
   persistence:
+    enableStatefulSetAutoDeletePVC: false
     storageClass: {yaml_string(storage_class)}
     size: {yaml_string(backend_cache_size)}
 

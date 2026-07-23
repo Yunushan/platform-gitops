@@ -663,6 +663,11 @@ platform_step_ca_host=ca.example.test
             "gateway:\n  enabled: true\n  resources:",
             "      cpu: 250m\n      memory: 1Gi",
         )
+        loki_text = paths["loki"].read_text(encoding="utf-8")
+        if loki_text.count("enableStatefulSetAutoDeletePVC: false") != 2:
+            raise AssertionError(
+                "rendered Loki values must retain both write and backend StatefulSet claims"
+            )
         assert_contains(
             paths["velero"],
             "platform-test-velero",

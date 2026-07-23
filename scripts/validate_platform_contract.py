@@ -1635,7 +1635,7 @@ def main() -> None:
     ):
         require_text(base_loki_text, needle, f"base Loki profile must include {needle.splitlines()[0]}")
     if base_loki_text.count("enableStatefulSetAutoDeletePVC: false") < 2:
-        raise ValidationError(
+        fail(
             "base Loki profile must retain both write and backend StatefulSet claims"
         )
 
@@ -1651,7 +1651,7 @@ def main() -> None:
     ):
         require_text(premium_loki_text, needle, f"premium Loki profile must include {needle.splitlines()[0]}")
     if premium_loki_text.count("enableStatefulSetAutoDeletePVC: false") < 2:
-        raise ValidationError(
+        fail(
             "premium Loki profile must retain both write and backend StatefulSet claims"
         )
 
