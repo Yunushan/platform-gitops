@@ -3604,6 +3604,8 @@ def main() -> None:
     if 'PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES:-false}"' not in read(root / "scripts/bootstrap/sync-seed-git.sh"):
         fail("seed sync must keep public-template hostname leakage detection enabled by default")
     seed_sync_text = read(root / "scripts/bootstrap/sync-seed-git.sh")
+    if 'load_env_file "${env_file}" preserve-existing' not in seed_sync_text:
+        fail("seed sync must let explicit environment overrides win over the private deployment environment file")
     if 'PLATFORM_SEED_SYNC_PUSH_ORIGIN="${PLATFORM_SEED_SYNC_PUSH_ORIGIN:-false}"' not in seed_sync_text:
         fail("seed sync must keep source remote push opt-in by default")
     if "Set PLATFORM_SEED_SYNC_PUSH_ORIGIN=true" not in seed_sync_text:

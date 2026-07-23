@@ -4,7 +4,7 @@ set -euo pipefail
 env_file="${PLATFORM_SEED_DEPLOY_ENV_FILE:-private/seed-git.env}"
 # shellcheck source=scripts/bootstrap/load-env-file.sh
 . scripts/bootstrap/load-env-file.sh
-load_env_file "${env_file}"
+load_env_file "${env_file}" preserve-existing
 
 PLATFORM_DEPLOY_BRANCH="${PLATFORM_DEPLOY_BRANCH:-main}"
 PLATFORM_PROFILE="${PLATFORM_PROFILE:-premium-3node}"
