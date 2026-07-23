@@ -8,3 +8,4 @@ helmCharts:
     releaseName: velero
     namespace: velero
     valuesFile: values.yaml
+    includeCRDs: true

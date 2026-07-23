@@ -63,3 +63,4 @@ provisioning:
     - name: platform-loki-chunks
     - name: platform-loki-ruler
     - name: platform-loki-admin
+    - name: platform-velero-backups

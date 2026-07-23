@@ -50,6 +50,7 @@ premium_platform_postgres_cluster = root / "gitops/clusters/rke2-main/premium-3n
 premium_platform_valkey_values = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/values.yaml"
 premium_keycloak_values = root / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml"
 premium_kyverno_values = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/values.yaml"
+premium_kyverno_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/kustomization.yaml"
 premium_tetragon_values = root / "gitops/clusters/rke2-main/premium-3node/apps/tetragon/values.yaml"
 premium_minio_values = root / "gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml"
 premium_external_secrets_values = root / "gitops/clusters/rke2-main/premium-3node/apps/external-secrets/values.yaml"
@@ -64,6 +65,8 @@ base_loki_values = root / "gitops/clusters/rke2-main/apps/loki/values.yaml"
 premium_loki_values = root / "gitops/clusters/rke2-main/premium-3node/apps/loki/values.yaml"
 base_velero_values = root / "gitops/clusters/rke2-main/apps/velero/values.yaml"
 premium_velero_values = root / "gitops/clusters/rke2-main/premium-3node/apps/velero/values.yaml"
+base_velero_kustomization = root / "gitops/clusters/rke2-main/apps/velero/kustomization.yaml"
+premium_velero_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/velero/kustomization.yaml"
 base_step_ca_values = root / "gitops/clusters/rke2-main/apps/step-ca/values.yaml"
 premium_step_ca_values = root / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"
 stale_premium_root_app = root / "gitops/bootstrap/root-app-premium-3node.yaml"
@@ -75,6 +78,7 @@ cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-v
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 longhorn_bootstrap_playbook = root / "ansible/playbooks/bootstrap-longhorn.yml"
 longhorn_bootstrap_runner = root / "scripts/bootstrap/run-longhorn-bootstrap.sh"
+platform_app_health_runner = root / "scripts/bootstrap/run-platform-app-health.sh"
 dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
 firewalld_cleanup_script = root / "scripts/cleanup_firewalld_cni_interfaces.py"
 verify_rke2_playbook = root / "ansible/playbooks/verify-rke2.yml"
@@ -1359,6 +1363,11 @@ def main() -> None:
             needle,
             f"premium Kyverno profile must include {needle.splitlines()[0]}",
         )
+    require_text(
+        read(premium_kyverno_kustomization),
+        "includeCRDs: true",
+        "premium Kyverno Kustomization must render chart CRDs",
+    )
 
     premium_tetragon_text = read(premium_tetragon_values)
     for needle in (
@@ -1398,6 +1407,7 @@ def main() -> None:
         "storageClass: longhorn-critical",
         "prometheusAuthType: public",
         "serviceMonitor:\n    enabled: true",
+        "name: platform-velero-backups",
     ):
         require_text(
             premium_minio_text,
@@ -1617,6 +1627,16 @@ def main() -> None:
             "serviceMonitor:\n    enabled: true",
         ):
             require_text(velero_text, needle, f"{label} must include {needle.splitlines()[0]}")
+
+    for velero_kustomization, label in (
+        (base_velero_kustomization, "base Velero Kustomization"),
+        (premium_velero_kustomization, "premium Velero Kustomization"),
+    ):
+        require_text(
+            read(velero_kustomization),
+            "includeCRDs: true",
+            f"{label} must render chart CRDs",
+        )
 
     premium_velero_text = read(premium_velero_values)
     for needle in (
@@ -2501,6 +2521,25 @@ def main() -> None:
     )
     if "platform-app-health:" not in makefile_text:
         fail("Makefile is missing platform-app-health target")
+    require_text(
+        makefile_text,
+        "bash scripts/bootstrap/run-platform-app-health.sh",
+        "platform-app-health must load its private deployment profile through the health runner",
+    )
+    platform_app_health_runner_text = read(platform_app_health_runner)
+    for needle in (
+        "load_env_file",
+        "private/platform-apps.rendered.yaml",
+        "PLATFORM_APP_HEALTH_REQUIRED_APPS",
+        "PLATFORM_APP_HEALTH_NAMESPACES",
+        "PLATFORM_APP_HEALTH_STEP_CA_API=false",
+        "ansible/playbooks/verify-platform-app-health.yml",
+    ):
+        require_text(
+            platform_app_health_runner_text,
+            needle,
+            f"platform app health runner must cover {needle}",
+        )
     if "platform-ci-health:" not in makefile_text:
         fail("Makefile is missing platform-ci-health target")
     for needle in (
@@ -2627,6 +2666,10 @@ def main() -> None:
         "storageScheduled",
         "action=remove-empty-duplicate",
         "action=fail reason=empty-duplicate-removal-timeout",
+        "PLATFORM_LONGHORN_RUNTIME_STALE_REPLICA_REPAIR",
+        "Remove stopped Longhorn replicas whose registered disk no longer exists",
+        "len(healthy_peers) < 2",
+        "action=remove-invalid-disk-reference",
     ):
         require_text(
             longhorn_runtime_repair_text,
@@ -6177,6 +6220,9 @@ def main() -> None:
         "root-password",
         "Generate or preserve Loki object storage credentials secret",
         "Generate or preserve Velero cloud credentials secret",
+        "platform_minio_root_user_secret_key",
+        "platform_minio_root_password_secret_key",
+        "set-explicit-cloud-credentials-or-create-minio-root-secret",
         "Generate or preserve Woodpecker database datasource secret",
         "Generate or preserve Grafana admin credentials secret",
         "Generate or preserve Grafana database password secret",

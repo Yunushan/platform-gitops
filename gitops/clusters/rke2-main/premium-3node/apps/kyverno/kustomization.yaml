@@ -10,4 +10,4 @@ helmCharts:
     releaseName: kyverno
     namespace: kyverno
     valuesFile: values.yaml
-
+    includeCRDs: true

@@ -448,6 +448,7 @@ platform_step_ca_host=ca.example.test
             'size: "64Gi"',
             "prometheusAuthType: public",
             "serviceMonitor:\n    enabled: true",
+            'name: "platform-test-velero"',
         )
         assert_contains(
             paths["keycloak"],

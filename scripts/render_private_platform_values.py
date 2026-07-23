@@ -332,6 +332,7 @@ def render_minio(path: Path) -> bool:
             os.environ.get("LOKI_CHUNKS_BUCKET", f"{bucket_prefix}-loki-chunks").strip(),
             os.environ.get("LOKI_RULER_BUCKET", f"{bucket_prefix}-loki-ruler").strip(),
             os.environ.get("LOKI_ADMIN_BUCKET", f"{bucket_prefix}-loki-admin").strip(),
+            os.environ.get("BACKUP_BUCKET", f"{bucket_prefix}-velero-backups").strip(),
         ],
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""

@@ -8,8 +8,10 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_longhorn_runtime_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_REPAIR_TIMEOUT') }}"
     platform_longhorn_runtime_force_restart_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART') }}"
+    platform_longhorn_runtime_stale_replica_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_STALE_REPLICA_REPAIR') }}"
     platform_longhorn_runtime_repair_timeout_effective: "{{ platform_longhorn_runtime_repair_timeout | default(platform_longhorn_runtime_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_longhorn_runtime_force_restart_effective: "{{ platform_longhorn_runtime_force_restart | default(platform_longhorn_runtime_force_restart_from_env, true) | default(false, true) | bool }}"
+    platform_longhorn_runtime_stale_replica_repair_effective: "{{ platform_longhorn_runtime_stale_replica_repair | default(platform_longhorn_runtime_stale_replica_repair_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Repair unhealthy Longhorn manager and CSI registration
       ansible.builtin.shell: |
@@ -359,9 +361,114 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Remove stopped Longhorn replicas whose registered disk no longer exists
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json |
+          python3 -c '
+        import json
+        import subprocess
+        import sys
+
+        kubectl = [
+            "/var/lib/rancher/rke2/bin/kubectl",
+            "--kubeconfig",
+            "/etc/rancher/rke2/rke2.yaml",
+            "-n",
+            "longhorn-system",
+        ]
+
+
+        def get_json(resource):
+            result = subprocess.run(
+                kubectl + ["get", resource, "-o", "json"],
+                text=True,
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                sys.stderr.write((result.stderr or "") + (result.stdout or ""))
+                raise SystemExit(result.returncode)
+            return json.loads(result.stdout)
+
+
+        nodes = json.load(sys.stdin).get("items", [])
+        valid_disk_ids = {
+            disk.get("diskUUID")
+            for node in nodes
+            for disk in (node.get("status", {}).get("diskStatus") or {}).values()
+            if disk.get("diskUUID")
+        }
+        replicas = get_json("replicas.longhorn.io").get("items", [])
+        volumes = {
+            volume.get("metadata", {}).get("name", ""): volume
+            for volume in get_json("volumes.longhorn.io").get("items", [])
+        }
+        by_volume = {}
+        for replica in replicas:
+            volume_name = replica.get("spec", {}).get("volumeName", "")
+            if volume_name:
+                by_volume.setdefault(volume_name, []).append(replica)
+
+        for volume_name, volume_replicas in sorted(by_volume.items()):
+            volume = volumes.get(volume_name)
+            if not volume or volume.get("metadata", {}).get("deletionTimestamp"):
+                continue
+
+            healthy_peers = [
+                replica
+                for replica in volume_replicas
+                if replica.get("spec", {}).get("diskID") in valid_disk_ids
+                and replica.get("status", {}).get("currentState") == "running"
+                and replica.get("spec", {}).get("healthyAt")
+                and not replica.get("spec", {}).get("failedAt")
+                and not replica.get("metadata", {}).get("deletionTimestamp")
+            ]
+            if len(healthy_peers) < 2:
+                continue
+
+            stale_replicas = [
+                replica
+                for replica in volume_replicas
+                if replica.get("spec", {}).get("diskID")
+                and replica.get("spec", {}).get("diskID") not in valid_disk_ids
+                and replica.get("status", {}).get("currentState") != "running"
+                and not replica.get("metadata", {}).get("deletionTimestamp")
+            ]
+            for replica in stale_replicas:
+                replica_name = replica.get("metadata", {}).get("name", "")
+                result = subprocess.run(
+                    kubectl
+                    + [
+                        "delete",
+                        f"replicas.longhorn.io/{replica_name}",
+                        "--wait=false",
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    sys.stderr.write((result.stderr or "") + (result.stdout or ""))
+                    raise SystemExit(result.returncode)
+                print(
+                    f"longhorn_stale_replica={replica_name} volume={volume_name} "
+                    f"action=remove-invalid-disk-reference healthyPeers={len(healthy_peers)}"
+                )
+        '
+      args:
+        executable: /bin/bash
+      register: platform_longhorn_stale_replica_repair
+      changed_when: "'action=remove-invalid-disk-reference' in platform_longhorn_stale_replica_repair.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_longhorn_runtime_stale_replica_repair_effective | bool
+
     - name: Show focused Longhorn runtime repair result
       ansible.builtin.debug:
         msg:
           - "{{ platform_longhorn_runtime_repair.stdout_lines | default(['runtime repair did not run']) }}"
           - "{{ platform_longhorn_duplicate_runtime_repair.stdout_lines | default(['duplicate disk repair did not run']) }}"
+          - "{{ platform_longhorn_stale_replica_repair.stdout_lines | default(['stale replica repair did not run']) }}"
       run_once: true

@@ -191,7 +191,7 @@ platform-app-secrets:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/configure-platform-app-secrets.yml
 
 platform-app-health:
-	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-app-health.yml
+	@bash scripts/bootstrap/run-platform-app-health.sh
 
 platform-ci-health:
 	@PLATFORM_APP_HEALTH_REQUIRED_APPS="traefik woodpecker" \
