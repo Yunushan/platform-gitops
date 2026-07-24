@@ -5,6 +5,7 @@ resources:
   - crds/postgresql.cnpg.io_backups.yaml
   - crds/postgresql.cnpg.io_clusterimagecatalogs.yaml
   - crds/postgresql.cnpg.io_clusters.yaml
+  - crds/postgresql.cnpg.io_databaseroles.yaml
   - crds/postgresql.cnpg.io_databases.yaml
   - crds/postgresql.cnpg.io_failoverquorums.yaml
   - crds/postgresql.cnpg.io_imagecatalogs.yaml
