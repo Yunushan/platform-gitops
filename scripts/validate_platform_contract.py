@@ -1293,15 +1293,25 @@ def main() -> None:
             needle,
             f"premium Longhorn priority classes must include {needle.splitlines()[0]}",
         )
-    for cloudnativepg_values, label, replicas in (
-        (base_cloudnativepg_values, "base CloudNativePG operator profile", 1),
-        (premium_cloudnativepg_values, "premium CloudNativePG operator profile", 2),
+    for cloudnativepg_values, label, replicas, rollout_values in (
+        (
+            base_cloudnativepg_values,
+            "base CloudNativePG operator profile",
+            1,
+            "maxSurge: 1\n    maxUnavailable: 0",
+        ),
+        (
+            premium_cloudnativepg_values,
+            "premium CloudNativePG operator profile",
+            2,
+            "maxSurge: 0\n    maxUnavailable: 1",
+        ),
     ):
         cloudnativepg_text = read(cloudnativepg_values)
         for needle in (
             f"replicaCount: {replicas}",
             "image:\n  tag: \"1.30.0\"",
-            "updateStrategy:\n  type: RollingUpdate\n  rollingUpdate:\n    maxSurge: 1\n    maxUnavailable: 0",
+            f"updateStrategy:\n  type: RollingUpdate\n  rollingUpdate:\n    {rollout_values}",
             "crds:\n  create: false",
             "monitoring:\n  podMonitorEnabled: false",
             "resources:\n  requests:\n    cpu: 100m\n    memory: 256Mi\n  limits:\n    memory: 512Mi",
