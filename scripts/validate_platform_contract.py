@@ -1300,7 +1300,7 @@ def main() -> None:
         cloudnativepg_text = read(cloudnativepg_values)
         for needle in (
             f"replicaCount: {replicas}",
-            "image:\n  tag: \"1.29.1\"",
+            "image:\n  tag: \"1.30.0\"",
             "updateStrategy:\n  type: RollingUpdate\n  rollingUpdate:\n    maxSurge: 1\n    maxUnavailable: 0",
             "crds:\n  create: false",
             "monitoring:\n  podMonitorEnabled: false",
