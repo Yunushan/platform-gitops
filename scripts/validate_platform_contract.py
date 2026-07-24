@@ -79,6 +79,7 @@ woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpe
 cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 empty_faulted_longhorn_claim_repair = root / "scripts/repair_empty_faulted_longhorn_claims.py"
+stuck_longhorn_attachment_repair = root / "scripts/repair_stuck_longhorn_attachments.py"
 longhorn_bootstrap_playbook = root / "ansible/playbooks/bootstrap-longhorn.yml"
 longhorn_bootstrap_runner = root / "scripts/bootstrap/run-longhorn-bootstrap.sh"
 platform_app_health_runner = root / "scripts/bootstrap/run-platform-app-health.sh"
@@ -2770,6 +2771,8 @@ def main() -> None:
         'recovery_mode = (\n                    "degraded-attach-recovery"',
         'f"mode={recovery_mode}"',
         "action=remove-invalid-disk-reference",
+        "defer_data_bearing_stuck_attachment",
+        "action=defer-invalid-disk-reference-to-attachment-repair",
         "PLATFORM_LONGHORN_RUNTIME_EMPTY_UNSCHEDULED_REPLICA_REPAIR",
         "Reset zero-byte unscheduled Longhorn replica placeholders",
         "ReplicaSchedulingFailure",
@@ -2784,6 +2787,11 @@ def main() -> None:
         "PLATFORM_LONGHORN_RUNTIME_EMPTY_FAULTED_CLAIM_REPAIR",
         "Recreate only empty faulted StatefulSet claims without recovery sources",
         "scripts/repair_empty_faulted_longhorn_claims.py",
+        "PLATFORM_LONGHORN_RUNTIME_STUCK_ATTACHMENT_REPAIR",
+        "PLATFORM_LONGHORN_RUNTIME_STUCK_ATTACHMENT_MIN_AGE",
+        "Quarantine unmapped replica blocking data-bearing Longhorn attachment",
+        "scripts/repair_stuck_longhorn_attachments.py",
+        "action=quarantine-unmapped-replica",
     ):
         require_text(
             longhorn_runtime_repair_text,
@@ -2815,6 +2823,29 @@ def main() -> None:
             empty_faulted_claim_repair_text,
             needle,
             f"empty faulted Longhorn claim repair must preserve safety gate {needle}",
+        )
+    stuck_attachment_repair_text = read(stuck_longhorn_attachment_repair)
+    for needle in (
+        'status.get("state") != "attaching"',
+        "volume-has-no-proven-data",
+        "volume-has-insufficient-declared-redundancy",
+        "volume-not-nonmigratable-rwo",
+        "volume-migration-active",
+        "engine-not-stopped-unassigned",
+        "insufficient-safe-running-replicas",
+        "unmapped-stopped-replica-cardinality-not-one",
+        "active-unsatisfied-csi-ticket-absent",
+        "old-failed-native-attachment-cardinality-not-one",
+        "pending-controller-managed-consumer-absent",
+        '"failedAt"',
+        '"lastFailedAt"',
+        "action=quarantine-unmapped-replica",
+        "attachment-reconciliation-timeout",
+    ):
+        require_text(
+            stuck_attachment_repair_text,
+            needle,
+            f"stuck Longhorn attachment repair must preserve safety gate {needle}",
         )
     longhorn_bootstrap_text = read(longhorn_bootstrap_playbook)
     for needle in (

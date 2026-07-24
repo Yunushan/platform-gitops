@@ -43,6 +43,7 @@ def test_validation_script_list() -> None:
         "scripts/test_ansible_failed_when_contract.py",
         "scripts/test_ansible_no_log_contract.py",
         "scripts/test_empty_faulted_longhorn_claim_repair.py",
+        "scripts/test_stuck_longhorn_attachment_repair.py",
         "scripts/test_policy_examples.py",
         "scripts/test_sops_age_policy.py",
         "scripts/test_supply_chain_helpers.py",

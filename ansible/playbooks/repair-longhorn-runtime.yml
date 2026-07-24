@@ -11,11 +11,15 @@
     platform_longhorn_runtime_stale_replica_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_STALE_REPLICA_REPAIR') }}"
     platform_longhorn_runtime_empty_unscheduled_replica_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_EMPTY_UNSCHEDULED_REPLICA_REPAIR') }}"
     platform_longhorn_runtime_empty_faulted_claim_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_EMPTY_FAULTED_CLAIM_REPAIR') }}"
+    platform_longhorn_runtime_stuck_attachment_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_STUCK_ATTACHMENT_REPAIR') }}"
+    platform_longhorn_runtime_stuck_attachment_min_age_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_RUNTIME_STUCK_ATTACHMENT_MIN_AGE') }}"
     platform_longhorn_runtime_repair_timeout_effective: "{{ platform_longhorn_runtime_repair_timeout | default(platform_longhorn_runtime_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_longhorn_runtime_force_restart_effective: "{{ platform_longhorn_runtime_force_restart | default(platform_longhorn_runtime_force_restart_from_env, true) | default(false, true) | bool }}"
     platform_longhorn_runtime_stale_replica_repair_effective: "{{ platform_longhorn_runtime_stale_replica_repair | default(platform_longhorn_runtime_stale_replica_repair_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_runtime_empty_unscheduled_replica_repair_effective: "{{ platform_longhorn_runtime_empty_unscheduled_replica_repair | default(platform_longhorn_runtime_empty_unscheduled_replica_repair_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_runtime_empty_faulted_claim_repair_effective: "{{ platform_longhorn_runtime_empty_faulted_claim_repair | default(platform_longhorn_runtime_empty_faulted_claim_repair_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_runtime_stuck_attachment_repair_effective: "{{ platform_longhorn_runtime_stuck_attachment_repair | default(platform_longhorn_runtime_stuck_attachment_repair_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_runtime_stuck_attachment_min_age_effective: "{{ platform_longhorn_runtime_stuck_attachment_min_age | default(platform_longhorn_runtime_stuck_attachment_min_age_from_env, true) | default(120, true) | int }}"
   tasks:
     - name: Repair unhealthy Longhorn manager and CSI registration
       ansible.builtin.shell: |
@@ -452,6 +456,28 @@
                 and not volume_spec.get("fromBackup")
                 and not volume_status.get("restoreRequired")
             )
+            defer_data_bearing_stuck_attachment = (
+                len(healthy_peers) >= 2
+                and len(stale_replicas) == 1
+                and len(volume_replicas) >= 3
+                and int(volume_spec.get("numberOfReplicas") or 0) >= 3
+                and int(volume_status.get("actualSize") or 0) > 0
+                and volume_status.get("state") == "attaching"
+                and volume_status.get("robustness") in {"unknown", "degraded"}
+                and bool(volume_spec.get("nodeID"))
+                and volume_spec.get("accessMode") == "rwo"
+                and volume_spec.get("migratable") is not True
+                and not volume_spec.get("migrationNodeID")
+                and not volume_status.get("currentMigrationNodeID")
+            )
+            if defer_data_bearing_stuck_attachment:
+                replica_name = stale_replicas[0].get("metadata", {}).get("name", "")
+                print(
+                    f"longhorn_stale_replica={replica_name} volume={volume_name} "
+                    "action=defer-invalid-disk-reference-to-attachment-repair "
+                    f"healthyPeers={len(healthy_peers)}"
+                )
+                continue
             if len(healthy_peers) < 2 and not safe_degraded_attach_recovery:
                 continue
 
@@ -787,6 +813,21 @@
       run_once: true
       when: platform_longhorn_runtime_empty_unscheduled_replica_repair_effective | bool
 
+    - name: Quarantine unmapped replica blocking data-bearing Longhorn attachment
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../../scripts/repair_stuck_longhorn_attachments.py
+          --timeout {{ platform_longhorn_runtime_repair_timeout_effective }}
+          --minimum-age {{ platform_longhorn_runtime_stuck_attachment_min_age_effective }}
+        executable: /usr/bin/python3
+      register: platform_longhorn_stuck_attachment_repair
+      changed_when: >-
+        'action=quarantine-unmapped-replica' in
+        (platform_longhorn_stuck_attachment_repair.stdout | default(''))
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_longhorn_runtime_stuck_attachment_repair_effective | bool
+
     - name: Recreate only empty faulted StatefulSet claims without recovery sources
       ansible.builtin.script:
         cmd: >-
@@ -808,5 +849,6 @@
           - "{{ platform_longhorn_duplicate_runtime_repair.stdout_lines | default(['duplicate disk repair did not run']) }}"
           - "{{ platform_longhorn_stale_replica_repair.stdout_lines | default(['stale replica repair did not run']) }}"
           - "{{ platform_longhorn_empty_unscheduled_replica_repair.stdout_lines | default(['empty unscheduled replica repair did not run']) }}"
+          - "{{ platform_longhorn_stuck_attachment_repair.stdout_lines | default(['stuck attachment replica repair did not run']) }}"
           - "{{ platform_longhorn_empty_faulted_claim_repair.stdout_lines | default(['empty faulted claim repair did not run']) }}"
       run_once: true
