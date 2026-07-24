@@ -821,6 +821,13 @@ def main() -> None:
     assert_app_file(base_apps, required_base_apps)
     assert_app_file(premium_apps, required_premium_apps)
 
+    premium_apps_text = read(premium_apps)
+    if "- /spec/imageName" in premium_apps_text:
+        fail(
+            "premium Argo CD applications must not ignore /spec/imageName; "
+            "container image upgrades must remain Git-managed"
+        )
+
     metallb_text = read(metallb_values)
     for needle in (
         "controller:\n  logLevel: info\n  resources:\n    requests:\n      cpu: 100m\n      memory: 128Mi\n    limits:\n      memory: 256Mi",

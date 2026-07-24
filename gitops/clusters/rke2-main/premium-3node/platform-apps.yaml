@@ -310,7 +310,6 @@ spec:
         - /spec/enablePDB
         - /spec/enableSuperuserAccess
         - /spec/failoverDelay
-        - /spec/imageName
         - /spec/logLevel
         - /spec/maxSyncReplicas
         - /spec/minSyncReplicas
