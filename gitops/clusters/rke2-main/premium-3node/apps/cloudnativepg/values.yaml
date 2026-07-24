@@ -3,11 +3,13 @@ replicaCount: 2
 image:
   tag: "1.30.0"
 
+# With two replicas and required hostname spreading, a surge pod needs a
+# third schedulable node. Replace one replica at a time instead.
 updateStrategy:
   type: RollingUpdate
   rollingUpdate:
-    maxSurge: 1
-    maxUnavailable: 0
+    maxSurge: 0
+    maxUnavailable: 1
 
 crds:
   create: false
