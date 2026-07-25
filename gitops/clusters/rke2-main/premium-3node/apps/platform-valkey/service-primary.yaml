@@ -4,7 +4,7 @@ metadata:
   name: platform-valkey-primary
   namespace: platform-cache
   labels:
-    app.kubernetes.io/component: primary
+    app.kubernetes.io/component: primary-proxy
     app.kubernetes.io/instance: platform-valkey
     app.kubernetes.io/name: valkey
 spec:
@@ -13,8 +13,7 @@ spec:
     - name: tcp
       port: 6379
       protocol: TCP
-      targetPort: tcp
+      targetPort: primary-proxy
   selector:
     app.kubernetes.io/instance: platform-valkey
     app.kubernetes.io/name: valkey
-    statefulset.kubernetes.io/pod-name: platform-valkey-0

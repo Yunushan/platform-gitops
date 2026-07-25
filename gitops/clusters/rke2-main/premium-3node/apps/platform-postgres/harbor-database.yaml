@@ -1,0 +1,12 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: platform-postgres-harbor
+  namespace: platform-databases
+spec:
+  name: registry
+  owner: harbor
+  cluster:
+    name: platform-postgres
+  databaseReclaimPolicy: retain
+

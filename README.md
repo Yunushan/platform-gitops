@@ -37,6 +37,7 @@
   <a href="docs/PRIVATE_DEPLOYMENT.md">Private Deployment</a> •
   <a href="docs/COMPONENT_SWITCHING.md">Change Components</a> •
   <a href="docs/FORGE_MIGRATION.md">Forge Migration</a> •
+  <a href="docs/FORGE_CUTOVER.md">Forge Cutover</a> •
   <a href="docs/SECRETS_AND_PRIVACY.md">Secrets & Privacy</a> •
   <a href="SECURITY.md">Security</a> •
   <a href="docs/USER_GUIDE.md">User Guide</a> •
@@ -126,6 +127,13 @@ Run this before calling a deployed cluster production-ready:
 PLATFORM_PROFILE=premium-3node make platform-profile-check
 make platform-production-check
 ```
+
+The production gate is fail-closed: it requires external etcd, Velero,
+CloudNativePG, and Longhorn backups inside the configured RPO plus a recent,
+independently approved restore record referenced by
+`PLATFORM_RESTORE_EVIDENCE_FILE`. Start from
+[`examples/restore-evidence.example.json`](examples/restore-evidence.example.json)
+and keep the completed record under ignored `private/` storage.
 
 Use [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) as the
 go/no-go checklist for live gates, evidence, exceptions, launch decision, and

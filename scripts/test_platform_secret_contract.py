@@ -60,6 +60,27 @@ CONTRACTS = [
         ],
     },
     {
+        "label": "Longhorn backup target credentials",
+        "env": "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME",
+        "default": "longhorn-backup-target",
+        "namespace": "longhorn-system",
+        "keys": [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_ENDPOINTS",
+            "VIRTUAL_HOSTED_STYLE",
+        ],
+        "static_file": PREMIUM_APPS / "longhorn" / "values.yaml",
+        "static_needles": [
+            "backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>",
+        ],
+        "rendered_app": "longhorn",
+        "custom_secret": "longhorn-backup-custom",
+        "rendered_needles": [
+            "backupTargetCredentialSecret: longhorn-backup-custom",
+        ],
+    },
+    {
         "label": "Harbor admin password",
         "env": "HARBOR_ADMIN_SECRET_NAME",
         "default": "harbor-admin",
@@ -94,15 +115,31 @@ CONTRACTS = [
         "env": "HARBOR_DATABASE_SECRET_NAME",
         "default": "harbor-database",
         "namespace": "harbor",
-        "keys": ["password"],
-        "static_file": None,
-        "static_needles": [],
+        "secondary_namespaces": ["platform-databases"],
+        "keys": ["username", "password"],
+        "static_file": PREMIUM_APPS / "harbor" / "values.yaml",
+        "static_needles": [
+            "database:\n  type: external",
+            "existingSecret: harbor-database",
+        ],
+        "static_related": [
+            (
+                PREMIUM_APPS / "platform-postgres" / "postgres-cluster.yaml",
+                ["- name: harbor", "name: harbor-database"],
+            ),
+            (
+                PREMIUM_APPS / "platform-postgres" / "harbor-database.yaml",
+                ["name: registry", "owner: harbor", "databaseReclaimPolicy: retain"],
+            ),
+        ],
         "rendered_app": "harbor",
         "custom_secret": "harbor-db-custom",
         "rendered_needles": [
             "database:\n  type: external",
             'existingSecret: "harbor-db-custom"',
         ],
+        "secondary_rendered_app": "cnpg",
+        "secondary_rendered_needles": ['name: "harbor"', 'name: "harbor-db-custom"'],
     },
     {
         "label": "Harbor external Redis password",
@@ -290,9 +327,23 @@ CONTRACTS = [
         "env": "GRAFANA_DATABASE_SECRET_NAME",
         "default": "grafana-database",
         "namespace": "monitoring",
-        "keys": ["password"],
-        "static_file": None,
-        "static_needles": [],
+        "secondary_namespaces": ["platform-databases"],
+        "keys": ["username", "password"],
+        "static_file": PREMIUM_APPS / "monitoring" / "values.yaml",
+        "static_needles": [
+            "grafana.ini:\n    database:\n      type: postgres",
+            "name: grafana-database",
+        ],
+        "static_related": [
+            (
+                PREMIUM_APPS / "platform-postgres" / "postgres-cluster.yaml",
+                ["- name: grafana", "name: grafana-database"],
+            ),
+            (
+                PREMIUM_APPS / "platform-postgres" / "grafana-database.yaml",
+                ["name: grafana", "owner: grafana", "databaseReclaimPolicy: retain"],
+            ),
+        ],
         "rendered_app": "monitoring",
         "custom_secret": "grafana-db-custom",
         "rendered_needles": [
@@ -301,6 +352,8 @@ CONTRACTS = [
             "grafana.ini:\n    database:\n      type: postgres",
             'password: "$__env{GF_DATABASE_PASSWORD}"',
         ],
+        "secondary_rendered_app": "cnpg",
+        "secondary_rendered_needles": ['name: "grafana"', 'name: "grafana-db-custom"'],
     },
     {
         "label": "Loki object storage",
@@ -433,6 +486,14 @@ def check_static_values() -> None:
                 needle_variants(needle),
                 f"{static_file.relative_to(ROOT)} for {contract['label']}",
             )
+        for related_file, related_needles in contract.get("static_related", []):
+            related_text = related_file.read_text(encoding="utf-8")
+            for needle in related_needles:
+                require_contains_any(
+                    related_text,
+                    needle_variants(needle),
+                    f"{related_file.relative_to(ROOT)} for {contract['label']}",
+                )
 
 
 def check_renderer_and_secret_playbook() -> None:
@@ -456,6 +517,12 @@ def check_renderer_and_secret_playbook() -> None:
             f"create namespace {contract['namespace']}",
             f"app-secret playbook namespace for {contract['label']}",
         )
+        for namespace in contract.get("secondary_namespaces", []):
+            require_contains(
+                playbook_text,
+                f"create namespace {namespace}",
+                f"app-secret playbook secondary namespace for {contract['label']}",
+            )
         for key in contract["keys"]:
             key_needles = contract.get("playbook_key_needles", [f"--from-literal={key}="])
             if not any(needle in playbook_text for needle in key_needles):
@@ -499,6 +566,8 @@ def render_with_custom_secret_names() -> dict[str, str]:
         "OBJECT_STORAGE_REGION": "eu-test-1",
         "OBJECT_STORAGE_BUCKET_PREFIX": "platform-test",
         "CNPG_BACKUP_ENABLED": "true",
+        "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn-backups@eu-test-1/",
+        "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME": "longhorn-backup-custom",
         "PLATFORM_VALKEY_AUTH_SECRET_NAME": "platform-valkey-custom",
         "PLATFORM_VALKEY_PASSWORD_KEY": "valkey-password-custom",
         "FORGEJO_DATABASE_MODE": "external",
@@ -544,7 +613,15 @@ def render_with_custom_secret_names() -> dict[str, str]:
             "velero": base / "velero-values.yaml",
             "valkey": base / "valkey-values.yaml",
             "keycloak": base / "keycloak-values.yaml",
+            "longhorn": base / "longhorn-values.yaml",
         }
+        paths["longhorn"].write_text(
+            "defaultSettings:\n"
+            '  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n'
+            "  backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>\n"
+            "  storageOverProvisioningPercentage: 100\n",
+            encoding="utf-8",
+        )
         renderer.render_platform_valkey(paths["valkey"])
         renderer.render_harbor(paths["harbor"], inventory)
         renderer.render_forgejo(paths["forgejo"], inventory)
@@ -554,6 +631,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
         renderer.render_cnpg_postgres_cluster(paths["cnpg"])
         renderer.render_velero(paths["velero"])
         renderer.render_keycloak(paths["keycloak"], inventory)
+        renderer.render_longhorn(paths["longhorn"], env["LONGHORN_BACKUP_TARGET"])
         for app, path in paths.items():
             rendered[app] = path.read_text(encoding="utf-8")
     return rendered
@@ -565,6 +643,15 @@ def check_custom_rendering() -> None:
         text = rendered[contract["rendered_app"]]
         for needle in contract["rendered_needles"]:
             require_contains(text, needle, f"custom rendered {contract['rendered_app']} values for {contract['label']}")
+        secondary_app = contract.get("secondary_rendered_app")
+        if secondary_app:
+            secondary_text = rendered[secondary_app]
+            for needle in contract.get("secondary_rendered_needles", []):
+                require_contains(
+                    secondary_text,
+                    needle,
+                    f"custom rendered {secondary_app} values for {contract['label']}",
+                )
 
 
 def main() -> int:

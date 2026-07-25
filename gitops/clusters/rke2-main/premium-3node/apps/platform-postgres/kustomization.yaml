@@ -6,3 +6,5 @@ resources:
   - postgres-cluster.yaml
   - keycloak-database.yaml
   - woodpecker-database.yaml
+  - harbor-database.yaml
+  - grafana-database.yaml

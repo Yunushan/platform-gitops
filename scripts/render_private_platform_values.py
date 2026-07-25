@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"
@@ -72,6 +73,35 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def is_cluster_local_endpoint(endpoint: str) -> bool:
+    hostname = (urlparse(endpoint).hostname or "").lower()
+    return (
+        endpoint.rstrip("/") == INTERNAL_MINIO_ENDPOINT.rstrip("/")
+        or hostname in {"localhost", "127.0.0.1", "::1"}
+        or hostname.endswith(".svc")
+        or hostname.endswith(".svc.cluster.local")
+    )
+
+
+def backup_object_storage_endpoint() -> str:
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    endpoint = first_value(
+        os.environ.get("BACKUP_OBJECT_STORAGE_ENDPOINT", "").strip(),
+        os.environ.get("OBJECT_STORAGE_ENDPOINT", "").strip(),
+    )
+    if not endpoint and not production_strict:
+        endpoint = INTERNAL_MINIO_ENDPOINT
+    if production_strict:
+        require("BACKUP_OBJECT_STORAGE_ENDPOINT or OBJECT_STORAGE_ENDPOINT", endpoint)
+        if is_cluster_local_endpoint(endpoint):
+            raise SystemExit(
+                "Production backups must use an off-cluster object-storage endpoint; "
+                "set BACKUP_OBJECT_STORAGE_ENDPOINT to external S3-compatible storage "
+                "or set PLATFORM_PRODUCTION_STRICT=false for a non-production deployment"
+            )
+    return endpoint
+
+
 def platform_domain(inventory: dict[str, str]) -> str:
     domain = env_or_inventory(
         "PLATFORM_DOMAIN",
@@ -104,6 +134,17 @@ def render_longhorn(
     backup_target: str,
     storage_over_provisioning_percentage: str | None = None,
 ) -> bool:
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    if production_strict and not backup_target:
+        raise SystemExit(
+            "LONGHORN_BACKUP_TARGET is required when PLATFORM_PRODUCTION_STRICT=true"
+        )
+    if production_strict and backup_target.lower().startswith("s3://"):
+        backup_object_storage_endpoint()
+    backup_secret_name = (
+        os.environ.get("LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME", "longhorn-backup-target").strip()
+        or "longhorn-backup-target"
+    )
     if storage_over_provisioning_percentage is None:
         storage_over_provisioning_percentage = os.environ.get(
             "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE",
@@ -122,6 +163,12 @@ def render_longhorn(
         r"^(\s*backupTarget:\s*).*$",
         lambda match: f'{match.group(1)}"{backup_target}"',
         text,
+        flags=re.MULTILINE,
+    )
+    rendered = re.sub(
+        r"^(\s*backupTargetCredentialSecret:\s*).*$",
+        lambda match: f"{match.group(1)}{backup_secret_name}",
+        rendered,
         flags=re.MULTILINE,
     )
     rendered = re.sub(
@@ -145,6 +192,8 @@ def platform_valkey_values(
     data_size: str,
     replica_count: str,
     metrics_enabled: bool,
+    image_tag: str,
+    haproxy_image: str,
 ) -> str:
     metrics_block = "  enabled: false\n"
     if metrics_enabled:
@@ -156,9 +205,19 @@ def platform_valkey_values(
       release: monitoring
 """
 
+    proxy_servers = "\n".join(
+        "          server valkey-{index} "
+        "platform-valkey-{index}.platform-valkey-headless.platform-cache.svc.cluster.local:6379 "
+        "check inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none".format(index=index)
+        for index in range(int(replica_count) + 1)
+    )
+
     return f"""# Shared platform Valkey profile rendered by scripts/render_private_platform_values.py.
 # Argo CD keeps its dedicated Redis HA; this cache is for Forgejo and Harbor.
 fullnameOverride: platform-valkey
+
+image:
+  tag: {yaml_string(image_tag)}
 
 auth:
   enabled: true
@@ -170,6 +229,8 @@ auth:
 
 valkeyConfig: |-
   appendonly yes
+  appendfsync everysec
+  aof-use-rdb-preamble yes
   save ""
 
 service:
@@ -184,6 +245,186 @@ replica:
     storageClass: {yaml_string(storage_class)}
     size: {yaml_string(data_size)}
 
+# The upstream chart provides replication but intentionally does not perform
+# failover. Persistent Sentinel sidecars elect a replacement primary, while
+# the HAProxy sidecars expose only whichever Valkey member currently reports
+# role:master. Consumers keep using platform-valkey-primary:6379.
+extraInitContainers:
+  - name: configure-ha
+    image: {yaml_string(f"valkey/valkey:{image_tag}")}
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/sh", "-ec"]
+    args:
+      - |-
+        password="$(cat /auth/{auth_secret_key})"
+        case "$password" in
+          *[!A-Za-z0-9._~-]*)
+            echo "{auth_secret_name} must use URL-safe characters for the HA proxy check" >&2
+            exit 1
+            ;;
+        esac
+
+        sentinel_dir=/data/sentinel
+        sentinel_config="$sentinel_dir/sentinel.conf"
+        mkdir -p "$sentinel_dir" /ha
+        if [ ! -s "$sentinel_config" ]; then
+          cat >"$sentinel_config" <<EOF
+        port 26379
+        bind 0.0.0.0
+        protected-mode no
+        dir $sentinel_dir
+        requirepass "$password"
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        sentinel monitor platform-valkey platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local 6379 2
+        sentinel auth-user platform-valkey default
+        sentinel auth-pass platform-valkey "$password"
+        sentinel down-after-milliseconds platform-valkey 5000
+        sentinel failover-timeout platform-valkey 60000
+        sentinel parallel-syncs platform-valkey 1
+        EOF
+        fi
+        chmod 0600 "$sentinel_config"
+
+        cat > /ha/haproxy.cfg <<EOF
+        global
+          log stdout format raw local0
+
+        defaults
+          mode tcp
+          log global
+          timeout connect 3s
+          timeout client 60s
+          timeout server 60s
+          timeout check 3s
+
+        resolvers kubernetes
+          parse-resolv-conf
+          hold valid 10s
+
+        frontend valkey-primary
+          bind :6380
+          default_backend elected-primary
+
+        backend elected-primary
+          option tcp-check
+          tcp-check connect
+          tcp-check send "AUTH default $password\\r\\n"
+          tcp-check expect string +OK
+          tcp-check send "INFO replication\\r\\n"
+          tcp-check expect string role:master
+          tcp-check send "QUIT\\r\\n"
+{proxy_servers}
+        EOF
+        chmod 0440 /ha/haproxy.cfg
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+    volumeMounts:
+      - name: valkey-data
+        mountPath: /data
+      - name: valkey-users-secret
+        mountPath: /auth
+        readOnly: true
+      - name: platform-valkey-ha-config
+        mountPath: /ha
+
+extraContainers:
+  - name: sentinel
+    image: {yaml_string(f"valkey/valkey:{image_tag}")}
+    imagePullPolicy: IfNotPresent
+    command: ["valkey-server", "/data/sentinel/sentinel.conf", "--sentinel"]
+    ports:
+      - name: sentinel
+        containerPort: 26379
+        protocol: TCP
+    readinessProbe:
+      exec:
+        command:
+          - /bin/sh
+          - -ec
+          - valkey-cli --no-auth-warning -a "$(cat /auth/{auth_secret_key})" -p 26379 ping | grep -qx PONG
+      periodSeconds: 5
+      timeoutSeconds: 3
+    livenessProbe:
+      exec:
+        command:
+          - /bin/sh
+          - -ec
+          - valkey-cli --no-auth-warning -a "$(cat /auth/{auth_secret_key})" -p 26379 ping | grep -qx PONG
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    volumeMounts:
+      - name: valkey-data
+        mountPath: /data
+      - name: valkey-users-secret
+        mountPath: /auth
+        readOnly: true
+  - name: primary-proxy
+    image: {yaml_string(haproxy_image)}
+    imagePullPolicy: IfNotPresent
+    args: ["haproxy", "-W", "-db", "-f", "/ha/haproxy.cfg"]
+    ports:
+      - name: primary-proxy
+        containerPort: 6380
+        protocol: TCP
+    readinessProbe:
+      tcpSocket:
+        port: primary-proxy
+      periodSeconds: 5
+      timeoutSeconds: 2
+    livenessProbe:
+      tcpSocket:
+        port: primary-proxy
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 2
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 99
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+    volumeMounts:
+      - name: platform-valkey-ha-config
+        mountPath: /ha
+        readOnly: true
+
+extraVolumes:
+  - name: platform-valkey-ha-config
+    emptyDir: {{}}
+
 podDisruptionBudget:
   enabled: true
   minAvailable: 2
@@ -191,7 +432,7 @@ podDisruptionBudget:
 topologySpreadConstraints:
   - maxSkew: 1
     topologyKey: kubernetes.io/hostname
-    whenUnsatisfiable: ScheduleAnyway
+    whenUnsatisfiable: DoNotSchedule
     labelSelector:
       matchLabels:
         app.kubernetes.io/instance: platform-valkey
@@ -222,6 +463,9 @@ def render_platform_valkey(path: Path) -> bool:
         data_size=os.environ.get("PLATFORM_VALKEY_DATA_SIZE", "8Gi").strip() or "8Gi",
         replica_count=replica_count,
         metrics_enabled=env_bool("PLATFORM_VALKEY_METRICS", True),
+        image_tag=os.environ.get("PLATFORM_VALKEY_IMAGE_TAG", "9.1.0").strip() or "9.1.0",
+        haproxy_image=os.environ.get("PLATFORM_VALKEY_HAPROXY_IMAGE", "haproxy:3.4.2-alpine").strip()
+        or "haproxy:3.4.2-alpine",
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -342,6 +586,9 @@ def render_minio(path: Path) -> bool:
             os.environ.get("LOKI_RULER_BUCKET", f"{bucket_prefix}-loki-ruler").strip(),
             os.environ.get("LOKI_ADMIN_BUCKET", f"{bucket_prefix}-loki-admin").strip(),
             os.environ.get("BACKUP_BUCKET", f"{bucket_prefix}-velero-backups").strip(),
+            os.environ.get("CNPG_BACKUP_BUCKET", f"{bucket_prefix}-cnpg-backups").strip(),
+            os.environ.get("LONGHORN_BACKUP_BUCKET", f"{bucket_prefix}-longhorn-backups").strip(),
+            os.environ.get("HARBOR_S3_BUCKET", f"{bucket_prefix}-harbor-registry").strip(),
         ],
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -351,8 +598,173 @@ def render_minio(path: Path) -> bool:
     return changed
 
 
+def platform_sso_enabled() -> bool:
+    return env_bool(
+        "PLATFORM_SSO_ENABLED",
+        env_bool("PLATFORM_PRODUCTION_STRICT", True),
+    )
+
+
+def keycloak_oidc_client(
+    client_id: str,
+    client_secret_env: str,
+    redirect_uris: list[str],
+    web_origins: list[str],
+    *,
+    audience: bool = False,
+) -> dict[str, object]:
+    protocol_mappers: list[dict[str, object]] = [
+        {
+            "name": "realm-roles-as-groups",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-realm-role-mapper",
+            "consentRequired": False,
+            "config": {
+                "multivalued": "true",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "groups",
+                "jsonType.label": "String",
+            },
+        }
+    ]
+    if audience:
+        protocol_mappers.append(
+            {
+                "name": f"{client_id}-audience",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-audience-mapper",
+                "consentRequired": False,
+                "config": {
+                    "included.client.audience": client_id,
+                    "id.token.claim": "true",
+                    "access.token.claim": "true",
+                },
+            }
+        )
+    return {
+        "clientId": client_id,
+        "name": client_id,
+        "enabled": True,
+        "protocol": "openid-connect",
+        "clientAuthenticatorType": "client-secret",
+        "secret": f"$(env:{client_secret_env})",
+        "publicClient": False,
+        "standardFlowEnabled": True,
+        "directAccessGrantsEnabled": False,
+        "serviceAccountsEnabled": False,
+        "frontchannelLogout": True,
+        "redirectUris": redirect_uris,
+        "webOrigins": web_origins,
+        "attributes": {
+            "pkce.code.challenge.method": "S256",
+            "post.logout.redirect.uris": "+",
+        },
+        "protocolMappers": protocol_mappers,
+    }
+
+
+def keycloak_realm_configuration(
+    realm: str,
+    bootstrap_username: str,
+    argocd_host: str,
+    grafana_host: str,
+    prometheus_host: str,
+) -> str:
+    argocd_origin = f"https://{argocd_host}"
+    grafana_origin = f"https://{grafana_host}"
+    prometheus_origin = f"https://{prometheus_host}"
+    configuration = {
+        "realm": realm,
+        "displayName": "Platform SSO",
+        "enabled": True,
+        "sslRequired": "external",
+        "registrationAllowed": False,
+        "resetPasswordAllowed": False,
+        "rememberMe": True,
+        "verifyEmail": False,
+        "loginWithEmailAllowed": True,
+        "duplicateEmailsAllowed": False,
+        "bruteForceProtected": True,
+        "failureFactor": 5,
+        "waitIncrementSeconds": 60,
+        "maxFailureWaitSeconds": 900,
+        "accessTokenLifespan": 300,
+        "ssoSessionIdleTimeout": 1800,
+        "ssoSessionMaxLifespan": 36000,
+        "eventsEnabled": True,
+        "adminEventsEnabled": True,
+        "adminEventsDetailsEnabled": True,
+        "roles": {
+            "realm": [
+                {
+                    "name": "platform-viewer",
+                    "description": "Read-only platform access",
+                },
+                {
+                    "name": "platform-admin",
+                    "description": "Platform administrator",
+                    "composite": True,
+                    "composites": {"realm": ["platform-viewer"]},
+                },
+            ]
+        },
+        "users": [
+            {
+                "username": bootstrap_username,
+                "enabled": True,
+                "emailVerified": True,
+                "email": f"{bootstrap_username}@local.invalid",
+                "realmRoles": ["platform-admin"],
+                "requiredActions": ["CONFIGURE_TOTP"],
+                "credentials": [
+                    {
+                        "type": "password",
+                        "value": "$(env:PLATFORM_SSO_BOOTSTRAP_ADMIN_PASSWORD)",
+                        "temporary": False,
+                    }
+                ],
+            }
+        ],
+        "clients": [
+            keycloak_oidc_client(
+                "argocd",
+                "PLATFORM_SSO_ARGOCD_CLIENT_SECRET",
+                [
+                    f"{argocd_origin}/auth/callback",
+                    "http://localhost:8085/auth/callback",
+                    "http://127.0.0.1:8085/auth/callback",
+                ],
+                [argocd_origin],
+            ),
+            keycloak_oidc_client(
+                "grafana",
+                "PLATFORM_SSO_GRAFANA_CLIENT_SECRET",
+                [f"{grafana_origin}/login/generic_oauth"],
+                [grafana_origin],
+            ),
+            keycloak_oidc_client(
+                "prometheus",
+                "PLATFORM_SSO_PROMETHEUS_CLIENT_SECRET",
+                [f"{prometheus_origin}/oauth2/callback"],
+                [prometheus_origin],
+                audience=True,
+            ),
+        ],
+    }
+    return json.dumps(configuration, indent=2, sort_keys=True)
+
+
 def keycloak_values(
     host: str,
+    argocd_host: str,
+    grafana_host: str,
+    prometheus_host: str,
+    sso_enabled: bool,
+    sso_realm: str,
+    sso_clients_secret_name: str,
+    sso_bootstrap_username: str,
     admin_secret_name: str,
     admin_password_key: str,
     database_host: str,
@@ -363,6 +775,39 @@ def keycloak_values(
     storage_class: str,
     replica_count: str,
 ) -> str:
+    if sso_enabled:
+        realm_json = keycloak_realm_configuration(
+            sso_realm,
+            sso_bootstrap_username,
+            argocd_host,
+            grafana_host,
+            prometheus_host,
+        )
+        indented_realm_json = "\n".join(f"      {line}" for line in realm_json.splitlines())
+        sso_block = f"""
+keycloakConfigCli:
+  enabled: true
+  automountServiceAccountToken: false
+  backoffLimit: 3
+  cleanupAfterFinished:
+    enabled: true
+    seconds: 900
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  extraEnvVars:
+    - name: IMPORT_VARSUBSTITUTION_ENABLED
+      value: "true"
+  extraEnvVarsSecret: {yaml_string(sso_clients_secret_name)}
+  configuration:
+    platform-realm.json: |
+{indented_realm_json}
+"""
+    else:
+        sso_block = "\nkeycloakConfigCli:\n  enabled: false\n"
     return f"""# Keycloak SSO profile rendered by scripts/render_private_platform_values.py.
 # Uses the shared CloudNativePG platform-postgres cluster through
 # secret/{database_secret_name}. Keep credentials out of Git.
@@ -439,6 +884,7 @@ metrics:
     namespace: monitoring
     labels:
       release: monitoring
+{sso_block.rstrip()}
 """
 
 
@@ -454,8 +900,41 @@ def render_keycloak(path: Path, inventory: dict[str, str]) -> bool:
     if not database_port.isdigit():
         raise SystemExit("KEYCLOAK_DATABASE_PORT must be numeric")
 
+    argocd_host = require(
+        "PLATFORM_ARGOCD_HOST or platform_argocd_host",
+        platform_host("PLATFORM_ARGOCD_HOST", inventory, ("platform_argocd_host",), "argocd"),
+    )
+    grafana_host = require(
+        "PLATFORM_GRAFANA_HOST or platform_grafana_host",
+        platform_host("PLATFORM_GRAFANA_HOST", inventory, ("platform_grafana_host",), "grafana"),
+    )
+    prometheus_host = require(
+        "PLATFORM_PROMETHEUS_HOST or platform_prometheus_host",
+        platform_host(
+            "PLATFORM_PROMETHEUS_HOST",
+            inventory,
+            ("platform_prometheus_host",),
+            "prometheus",
+        ),
+    )
+
     rendered = keycloak_values(
         host=host,
+        argocd_host=argocd_host,
+        grafana_host=grafana_host,
+        prometheus_host=prometheus_host,
+        sso_enabled=platform_sso_enabled(),
+        sso_realm=os.environ.get("PLATFORM_SSO_REALM", "platform").strip() or "platform",
+        sso_clients_secret_name=os.environ.get(
+            "PLATFORM_SSO_KEYCLOAK_SECRET_NAME",
+            "platform-sso-clients",
+        ).strip()
+        or "platform-sso-clients",
+        sso_bootstrap_username=os.environ.get(
+            "PLATFORM_SSO_BOOTSTRAP_ADMIN_USERNAME",
+            "platform-admin",
+        ).strip()
+        or "platform-admin",
         admin_secret_name=os.environ.get("KEYCLOAK_ADMIN_SECRET_NAME", "keycloak-admin").strip()
         or "keycloak-admin",
         admin_password_key=os.environ.get("KEYCLOAK_ADMIN_PASSWORD_KEY", "admin-password").strip()
@@ -751,18 +1230,52 @@ def render_argocd(path: Path, inventory: dict[str, str]) -> bool:
     )
 
     text = path.read_text(encoding="utf-8")
-    admin_enabled = env_bool("PLATFORM_ARGOCD_ADMIN_ENABLED", default=True)
-    if not admin_enabled and not re.search(
-        r"^\s+(?:oidc|dex)\.config:\s*\S+",
-        text,
-        flags=re.MULTILINE,
-    ):
+    sso_enabled = platform_sso_enabled()
+    admin_enabled = env_bool("PLATFORM_ARGOCD_ADMIN_ENABLED", default=not sso_enabled)
+    if not admin_enabled and not sso_enabled:
         raise SystemExit(
-            "PLATFORM_ARGOCD_ADMIN_ENABLED=false requires a configured "
-            "configs.cm oidc.config or dex.config login provider"
+            "PLATFORM_ARGOCD_ADMIN_ENABLED=false requires PLATFORM_SSO_ENABLED=true "
+            "or another configured login provider"
         )
 
     rendered = text.replace("argocd.<PLATFORM_DOMAIN>", host)
+    marker_pattern = re.compile(
+        r"(?ms)^    # BEGIN PLATFORM SSO\n.*?^    # END PLATFORM SSO\n?"
+    )
+    rendered = marker_pattern.sub("", rendered)
+    if sso_enabled:
+        keycloak_host = require(
+            "PLATFORM_KEYCLOAK_HOST or platform_keycloak_host",
+            platform_host(
+                "PLATFORM_KEYCLOAK_HOST",
+                inventory,
+                ("platform_keycloak_host",),
+                "sso",
+            ),
+        )
+        realm = os.environ.get("PLATFORM_SSO_REALM", "platform").strip() or "platform"
+        secret_name = os.environ.get(
+            "PLATFORM_SSO_ARGOCD_SECRET_NAME",
+            "platform-sso-argocd",
+        ).strip() or "platform-sso-argocd"
+        oidc_block = f"""    # BEGIN PLATFORM SSO
+    oidc.config: |
+      name: Platform SSO
+      issuer: https://{keycloak_host}/realms/{realm}
+      clientID: argocd
+      clientSecret: ${secret_name}:client-secret
+      requestedScopes: [\"openid\", \"profile\", \"email\", \"groups\"]
+    # END PLATFORM SSO
+"""
+        rendered, substitutions = re.subn(
+            r"^(  cm:\s*)$",
+            lambda match: f"{match.group(1)}\n{oidc_block.rstrip()}",
+            rendered,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        if substitutions != 1:
+            raise SystemExit("Argo CD values must define configs.cm for platform SSO")
     admin_value = "true" if admin_enabled else "false"
     admin_pattern = r"^(\s*admin\.enabled:\s*).*$"
     if re.search(admin_pattern, rendered, flags=re.MULTILINE):
@@ -831,6 +1344,14 @@ server:
   enabled: true
   statefulSet:
     replicaCount: {replica_count}
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: server
+              app.kubernetes.io/instance: woodpecker
+          topologyKey: kubernetes.io/hostname
   image:
     registry: docker.io
     repository: woodpeckerci/woodpecker-server
@@ -889,6 +1410,22 @@ server:
 agent:
   enabled: true
   replicaCount: {agent_replicas}
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: agent
+              app.kubernetes.io/instance: woodpecker
+          topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: agent
+          app.kubernetes.io/instance: woodpecker
   mapAgentSecret: false
   extraSecretNamesForEnvFrom:
     - {yaml_string(agent_secret_name)}
@@ -1004,88 +1541,21 @@ def harbor_bootstrap_values(
     redis_block: str,
     core_redis_url_env_block: str,
     dependency_note: str,
+    replicas: str,
 ) -> str:
     tls_secret_block = ""
     if tls_cert_source == "secret":
         tls_secret_block = "\n    " + "secret" + f":\n      secretName: {yaml_string(tls_secret_name)}"
-    return f"""# Harbor bootstrap profile rendered by scripts/render_private_platform_values.py.
-# {dependency_note}
-# Store HARBOR_ADMIN_PASSWORD in secret/{admin_secret_name} and secretKey in
-# secret/{secret_key_secret_name} before syncing this app.
-expose:
-  type: ingress
-  tls:
-    enabled: true
-    certSource: {yaml_string(tls_cert_source)}{tls_secret_block}
-  ingress:
-    className: traefik
-    hosts:
-      core: {yaml_string(host)}
-
-externalURL: {yaml_string(f"https://{host}")}
-
-portal:
-  replicas: 1
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      memory: 256Mi
-core:
-  replicas: 1
-{core_redis_url_env_block}
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      memory: 1Gi
-jobservice:
-  replicas: 1
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      memory: 512Mi
-registry:
-  replicas: 1
-  registry:
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        memory: 1Gi
-  controller:
-    resources:
-      requests:
-        cpu: 50m
-        memory: 128Mi
-      limits:
-        memory: 256Mi
-trivy:
-  enabled: true
-  replicas: 1
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      memory: 2Gi
-exporter:
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      memory: 256Mi
-
-updateStrategy:
-  type: Recreate
-
-persistence:
+    high_availability = int(replicas) > 1
+    component_availability = harbor_component_availability_block(replicas, high_availability)
+    job_loggers = "  jobLoggers:\n    - database\n" if high_availability else ""
+    update_strategy = "RollingUpdate" if high_availability else "Recreate"
+    if high_availability:
+        persistence_block = f"""persistence:
+  enabled: false
+{registry_storage_block}"""
+    else:
+        persistence_block = f"""persistence:
   enabled: true
   persistentVolumeClaim:
     registry:
@@ -1104,7 +1574,86 @@ persistence:
     trivy:
       storageClass: {yaml_string(storage_class)}
       size: {yaml_string(trivy_size)}
-{registry_storage_block}
+{registry_storage_block}"""
+    return f"""# Harbor bootstrap profile rendered by scripts/render_private_platform_values.py.
+# {dependency_note}
+# Store HARBOR_ADMIN_PASSWORD in secret/{admin_secret_name} and secretKey in
+# secret/{secret_key_secret_name} before syncing this app.
+expose:
+  type: ingress
+  tls:
+    enabled: true
+    certSource: {yaml_string(tls_cert_source)}{tls_secret_block}
+  ingress:
+    className: traefik
+    hosts:
+      core: {yaml_string(host)}
+
+externalURL: {yaml_string(f"https://{host}")}
+
+portal:
+{component_availability}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+core:
+{component_availability}
+{core_redis_url_env_block}
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+jobservice:
+{component_availability}
+{job_loggers}  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+registry:
+{component_availability}
+  registry:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+  controller:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+trivy:
+  enabled: true
+{component_availability}
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+exporter:
+{component_availability}
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+updateStrategy:
+  type: {update_strategy}
+
+{persistence_block}
 
 {database_block}
 
@@ -1119,6 +1668,19 @@ metrics:
   serviceMonitor:
     enabled: true
 """
+
+
+def harbor_component_availability_block(replicas: str, high_availability: bool) -> str:
+    if not high_availability:
+        return f"  replicas: {replicas}"
+    return f"""  replicas: {replicas}
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule"""
 
 
 def harbor_filesystem_storage_block() -> str:
@@ -1226,8 +1788,14 @@ def harbor_core_redis_url_env_block(secret_name: str) -> str:
 
 
 def harbor_registry_storage_settings() -> tuple[str, str, str]:
-    storage_mode = os.environ.get("HARBOR_STORAGE_MODE", "filesystem").strip().lower() or "filesystem"
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    default_mode = "s3" if production_strict else "filesystem"
+    storage_mode = os.environ.get("HARBOR_STORAGE_MODE", default_mode).strip().lower() or default_mode
     if storage_mode in {"filesystem", "local", "pvc"}:
+        if production_strict:
+            raise SystemExit(
+                "HARBOR_STORAGE_MODE must be s3 when PLATFORM_PRODUCTION_STRICT=true"
+            )
         return (
             harbor_filesystem_storage_block(),
             "filesystem registry storage for first deployment",
@@ -1238,8 +1806,17 @@ def harbor_registry_storage_settings() -> tuple[str, str, str]:
 
     endpoint = first_value(
         os.environ.get("HARBOR_S3_ENDPOINT", "").strip(),
-        os.environ.get("OBJECT_STORAGE_ENDPOINT", "https://s3.amazonaws.com").strip(),
+        os.environ.get("OBJECT_STORAGE_ENDPOINT", "").strip(),
     )
+    if production_strict:
+        require("HARBOR_S3_ENDPOINT or OBJECT_STORAGE_ENDPOINT", endpoint)
+        if is_cluster_local_endpoint(endpoint):
+            raise SystemExit(
+                "Production Harbor registry storage must use an off-cluster S3 endpoint; "
+                "set HARBOR_S3_ENDPOINT or OBJECT_STORAGE_ENDPOINT to external storage"
+            )
+    elif not endpoint:
+        endpoint = INTERNAL_MINIO_ENDPOINT
     region = first_value(
         os.environ.get("HARBOR_S3_REGION", "").strip(),
         os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip(),
@@ -1266,13 +1843,25 @@ def harbor_registry_storage_settings() -> tuple[str, str, str]:
 
 
 def harbor_database_settings() -> tuple[str, str, str]:
-    database_mode = os.environ.get("HARBOR_DATABASE_MODE", "internal").strip().lower() or "internal"
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    default_mode = "external" if production_strict else "internal"
+    database_mode = os.environ.get("HARBOR_DATABASE_MODE", default_mode).strip().lower() or default_mode
     if database_mode in {"internal", "local"}:
+        if production_strict:
+            raise SystemExit(
+                "HARBOR_DATABASE_MODE must be external when PLATFORM_PRODUCTION_STRICT=true"
+            )
         return (harbor_internal_database_block(), "internal PostgreSQL", database_mode)
     if database_mode not in {"external", "postgres", "postgresql"}:
         raise SystemExit("HARBOR_DATABASE_MODE must be internal or external")
 
-    host = require("HARBOR_DATABASE_HOST", os.environ.get("HARBOR_DATABASE_HOST", "").strip())
+    host = require(
+        "HARBOR_DATABASE_HOST",
+        os.environ.get(
+            "HARBOR_DATABASE_HOST",
+            "platform-postgres-rw.platform-databases.svc.cluster.local",
+        ).strip(),
+    )
     return (
         harbor_external_database_block(
             host=host,
@@ -1337,9 +1926,24 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
         raise SystemExit("HARBOR_TLS_CERT_SOURCE must be auto or secret")
     tls_secret_name = os.environ.get("HARBOR_TLS_SECRET_NAME", "harbor-tls").strip() or "harbor-tls"
     storage_class = os.environ.get("HARBOR_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical"
-    registry_storage_block, registry_note, _registry_mode = harbor_registry_storage_settings()
-    database_block, database_note, _database_mode = harbor_database_settings()
-    redis_block, core_redis_url_env_block, redis_note, _redis_mode = harbor_redis_settings()
+    registry_storage_block, registry_note, registry_mode = harbor_registry_storage_settings()
+    database_block, database_note, database_mode = harbor_database_settings()
+    redis_block, core_redis_url_env_block, redis_note, redis_mode = harbor_redis_settings()
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    replicas = os.environ.get("HARBOR_REPLICAS", "2" if production_strict else "1").strip()
+    if int(replicas) < 1:
+        raise SystemExit("HARBOR_REPLICAS must be at least 1")
+    if production_strict and int(replicas) < 2:
+        raise SystemExit("HARBOR_REPLICAS must be at least 2 when PLATFORM_PRODUCTION_STRICT=true")
+    if int(replicas) > 1 and (
+        database_mode not in {"external", "postgres", "postgresql"}
+        or redis_mode not in {"external", "redis", "valkey"}
+        or registry_mode not in {"s3", "object", "object-storage", "object_storage"}
+    ):
+        raise SystemExit(
+            "HARBOR_REPLICAS greater than 1 requires external PostgreSQL, external Redis/Valkey, "
+            "and S3 registry storage"
+        )
     rendered = harbor_bootstrap_values(
         host,
         tls_cert_source,
@@ -1357,12 +1961,176 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
         redis_block,
         core_redis_url_env_block,
         f"Uses {database_note}, {redis_note}, and {registry_note}.",
+        replicas,
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
     return changed
+
+
+def prometheus_oauth2_proxy_manifests(
+    prometheus_host: str,
+    keycloak_host: str,
+    realm: str,
+    secret_name: str,
+) -> str:
+    return f"""
+extraManifests:
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: prometheus-oauth2-proxy
+      namespace: monitoring
+      labels:
+        app.kubernetes.io/name: prometheus-oauth2-proxy
+        app.kubernetes.io/part-of: platform-monitoring
+    spec:
+      replicas: 2
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxUnavailable: 1
+          maxSurge: 1
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus-oauth2-proxy
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: prometheus-oauth2-proxy
+            app.kubernetes.io/part-of: platform-monitoring
+        spec:
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: prometheus-oauth2-proxy
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: oauth2-proxy
+              image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3
+              imagePullPolicy: IfNotPresent
+              args:
+                - --provider=keycloak-oidc
+                - --oidc-issuer-url=https://{keycloak_host}/realms/{realm}
+                - --client-id=prometheus
+                - --redirect-url=https://{prometheus_host}/oauth2/callback
+                - --email-domain=*
+                - --allowed-role=platform-viewer
+                - --upstream=http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+                - --http-address=0.0.0.0:4180
+                - --reverse-proxy=true
+                - --cookie-secure=true
+                - --cookie-samesite=lax
+                - --cookie-name=__Host-platform-prometheus
+                - --cookie-refresh=1h
+                - --cookie-expire=8h
+                - --scope=openid profile email groups
+                - --skip-provider-button=true
+                - --code-challenge-method=S256
+                - --set-xauthrequest=true
+                - --pass-access-token=true
+                - --silence-ping-logging=true
+              env:
+                - name: OAUTH2_PROXY_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: {yaml_string(secret_name)}
+                      key: client-secret
+                - name: OAUTH2_PROXY_COOKIE_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: {yaml_string(secret_name)}
+                      key: cookie-secret
+              ports:
+                - name: http
+                  containerPort: 4180
+              readinessProbe:
+                httpGet:
+                  path: /ready
+                  port: http
+                periodSeconds: 10
+                timeoutSeconds: 3
+              livenessProbe:
+                httpGet:
+                  path: /ping
+                  port: http
+                periodSeconds: 10
+                timeoutSeconds: 3
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: prometheus-oauth2-proxy
+      namespace: monitoring
+      labels:
+        app.kubernetes.io/name: prometheus-oauth2-proxy
+    spec:
+      selector:
+        app.kubernetes.io/name: prometheus-oauth2-proxy
+      ports:
+        - name: http
+          port: 4180
+          targetPort: http
+  - apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: prometheus-oauth2-proxy
+      namespace: monitoring
+    spec:
+      minAvailable: 1
+      unhealthyPodEvictionPolicy: AlwaysAllow
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus-oauth2-proxy
+  - apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: prometheus-authenticated
+      namespace: monitoring
+      annotations:
+        traefik.ingress.kubernetes.io/router.entrypoints: websecure
+        traefik.ingress.kubernetes.io/router.tls: "true"
+    spec:
+      ingressClassName: traefik
+      rules:
+        - host: {yaml_string(prometheus_host)}
+          http:
+            paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: prometheus-oauth2-proxy
+                    port:
+                      number: 4180
+      tls:
+        - secretName: prometheus-tls
+          hosts:
+            - {yaml_string(prometheus_host)}
+"""
 
 
 def monitoring_bootstrap_values(
@@ -1376,14 +2144,81 @@ def monitoring_bootstrap_values(
     grafana_admin_secret_name: str,
     grafana_database_block: str,
     grafana_database_note: str,
+    grafana_database_mode: str,
+    grafana_replicas: str,
+    sso_enabled: bool,
+    keycloak_host: str,
+    sso_realm: str,
+    grafana_sso_secret_name: str,
+    prometheus_sso_secret_name: str,
 ) -> str:
-    return f"""# Monitoring bootstrap profile rendered by scripts/render_private_platform_values.py.
-# {grafana_database_note}
-crds:
-  enabled: true
-
-prometheus:
-  ingress:
+    grafana_external_database = grafana_database_mode in {"postgres", "postgresql", "external"}
+    if grafana_external_database:
+        grafana_availability_block = f"""  replicas: {grafana_replicas}
+  deploymentStrategy:
+    type: RollingUpdate
+  podDisruptionBudget:
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule"""
+        grafana_persistence_block = """  persistence:
+    enabled: false"""
+    else:
+        grafana_availability_block = "  replicas: 1"
+        grafana_persistence_block = f"""  persistence:
+    enabled: true
+    type: pvc
+    storageClassName: {yaml_string(storage_class)}
+    accessModes:
+      - ReadWriteOnce
+    size: {yaml_string(grafana_size)}"""
+    if sso_enabled:
+        if "  grafana.ini:\n" in grafana_database_block:
+            grafana_database_block = grafana_database_block.replace(
+                "  grafana.ini:\n",
+                f"  envFromSecret: {yaml_string(grafana_sso_secret_name)}\n  grafana.ini:\n",
+                1,
+            )
+        else:
+            grafana_database_block = (
+                f"  envFromSecret: {yaml_string(grafana_sso_secret_name)}\n"
+                "  grafana.ini:\n"
+            )
+        grafana_database_block = grafana_database_block.rstrip() + f"""
+    server:
+      root_url: {yaml_string(f"https://{grafana_host}")}
+    auth:
+      disable_login_form: false
+      oauth_auto_login: false
+    auth.generic_oauth:
+      enabled: true
+      name: Platform SSO
+      allow_sign_up: true
+      client_id: grafana
+      client_secret: {yaml_string("$__env{GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}")}
+      scopes: openid profile email groups
+      auth_url: {yaml_string(f"https://{keycloak_host}/realms/{sso_realm}/protocol/openid-connect/auth")}
+      token_url: {yaml_string(f"https://{keycloak_host}/realms/{sso_realm}/protocol/openid-connect/token")}
+      api_url: {yaml_string(f"https://{keycloak_host}/realms/{sso_realm}/protocol/openid-connect/userinfo")}
+      use_pkce: true
+      use_refresh_token: true
+      login_attribute_path: preferred_username
+      email_attribute_path: email
+      role_attribute_path: {yaml_string("contains(groups[*], 'platform-admin') && 'GrafanaAdmin' || 'Viewer'")}
+      role_attribute_strict: true
+      allow_assign_grafana_admin: true
+"""
+        prometheus_ingress_block = "  ingress:\n    enabled: false"
+        extra_manifests = prometheus_oauth2_proxy_manifests(
+            prometheus_host,
+            keycloak_host,
+            sso_realm,
+            prometheus_sso_secret_name,
+        )
+    else:
+        prometheus_ingress_block = f"""  ingress:
     enabled: true
     ingressClassName: traefik
     hosts:
@@ -1391,9 +2226,23 @@ prometheus:
     tls:
       - secretName: prometheus-tls
         hosts:
-          - {yaml_string(prometheus_host)}
+          - {yaml_string(prometheus_host)}"""
+        extra_manifests = ""
+
+    return f"""# Monitoring bootstrap profile rendered by scripts/render_private_platform_values.py.
+# {grafana_database_note}
+crds:
+  enabled: true
+
+prometheus:
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+{prometheus_ingress_block}
   prometheusSpec:
     replicas: 2
+    podAntiAffinity: hard
+    podAntiAffinityTopologyKey: kubernetes.io/hostname
     retention: 15d
     retentionSize: {yaml_string(retention_size)}
     podMonitorSelectorNilUsesHelmValues: false
@@ -1416,8 +2265,13 @@ prometheus:
 
 alertmanager:
   enabled: true
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
   alertmanagerSpec:
     replicas: 3
+    podAntiAffinity: hard
+    podAntiAffinityTopologyKey: kubernetes.io/hostname
     resources:
       requests:
         cpu: 100m
@@ -1435,7 +2289,7 @@ alertmanager:
               storage: {yaml_string(alertmanager_size)}
 
 grafana:
-  replicas: 1
+{grafana_availability_block}
   admin:
     existingSecret: {yaml_string(grafana_admin_secret_name)}
     userKey: admin-user
@@ -1447,13 +2301,7 @@ grafana:
       memory: 256Mi
     limits:
       memory: 512Mi
-  persistence:
-    enabled: true
-    type: pvc
-    storageClassName: {yaml_string(storage_class)}
-    accessModes:
-      - ReadWriteOnce
-    size: {yaml_string(grafana_size)}
+{grafana_persistence_block}
   ingress:
     enabled: true
     ingressClassName: traefik
@@ -1475,20 +2323,34 @@ kubeScheduler:
 
 kubeControllerManager:
   enabled: true
+{extra_manifests.rstrip()}
 """
 
 
-def grafana_database_settings() -> tuple[str, str]:
-    database_mode = os.environ.get("GRAFANA_DATABASE_MODE", "sqlite").strip().lower() or "sqlite"
+def grafana_database_settings() -> tuple[str, str, str]:
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    default_mode = "postgres" if production_strict else "sqlite"
+    database_mode = os.environ.get("GRAFANA_DATABASE_MODE", default_mode).strip().lower() or default_mode
     if database_mode in {"sqlite", "internal", "local"}:
+        if production_strict:
+            raise SystemExit(
+                "GRAFANA_DATABASE_MODE must be postgres when PLATFORM_PRODUCTION_STRICT=true"
+            )
         return (
             "",
             "Uses persistent Grafana SQLite for first deployment. Set GRAFANA_DATABASE_MODE=postgres for long-term HA.",
+            "sqlite",
         )
     if database_mode not in {"postgres", "postgresql", "external"}:
         raise SystemExit("GRAFANA_DATABASE_MODE must be sqlite, postgres, postgresql, or external")
 
-    host = require("GRAFANA_DATABASE_HOST", os.environ.get("GRAFANA_DATABASE_HOST", "").strip())
+    host = require(
+        "GRAFANA_DATABASE_HOST",
+        os.environ.get(
+            "GRAFANA_DATABASE_HOST",
+            "platform-postgres-rw.platform-databases.svc.cluster.local",
+        ).strip(),
+    )
     port = os.environ.get("GRAFANA_DATABASE_PORT", "5432").strip() or "5432"
     database_host = host if ":" in host else f"{host}:{port}"
     database_name = os.environ.get("GRAFANA_DATABASE_NAME", "grafana").strip() or "grafana"
@@ -1512,6 +2374,7 @@ def grafana_database_settings() -> tuple[str, str]:
     return (
         block,
         f"Uses external PostgreSQL for Grafana state. Store the password in secret/{secret_name} key password.",
+        "postgres",
     )
 
 
@@ -1535,7 +2398,21 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
         ),
     )
     storage_class = os.environ.get("MONITORING_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
-    grafana_database_block, grafana_database_note = grafana_database_settings()
+    grafana_database_block, grafana_database_note, grafana_database_mode = grafana_database_settings()
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    sso_enabled = platform_sso_enabled()
+    keycloak_host = require(
+        "PLATFORM_KEYCLOAK_HOST or platform_keycloak_host",
+        platform_host("PLATFORM_KEYCLOAK_HOST", inventory, ("platform_keycloak_host",), "sso"),
+    ) if sso_enabled else ""
+    default_replicas = "2" if grafana_database_mode == "postgres" else "1"
+    grafana_replicas = os.environ.get("GRAFANA_REPLICAS", default_replicas).strip() or default_replicas
+    if int(grafana_replicas) < 1:
+        raise SystemExit("GRAFANA_REPLICAS must be at least 1")
+    if grafana_database_mode == "sqlite" and int(grafana_replicas) != 1:
+        raise SystemExit("GRAFANA_REPLICAS must be 1 when GRAFANA_DATABASE_MODE=sqlite")
+    if production_strict and int(grafana_replicas) < 2:
+        raise SystemExit("GRAFANA_REPLICAS must be at least 2 when PLATFORM_PRODUCTION_STRICT=true")
     rendered = monitoring_bootstrap_values(
         prometheus_host,
         grafana_host,
@@ -1547,6 +2424,15 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
         os.environ.get("GRAFANA_ADMIN_SECRET_NAME", "grafana-admin").strip() or "grafana-admin",
         grafana_database_block,
         grafana_database_note,
+        grafana_database_mode,
+        grafana_replicas,
+        sso_enabled,
+        keycloak_host,
+        os.environ.get("PLATFORM_SSO_REALM", "platform").strip() or "platform",
+        os.environ.get("PLATFORM_SSO_GRAFANA_SECRET_NAME", "platform-sso-grafana").strip()
+        or "platform-sso-grafana",
+        os.environ.get("PLATFORM_SSO_PROMETHEUS_SECRET_NAME", "platform-sso-prometheus").strip()
+        or "platform-sso-prometheus",
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -1778,14 +2664,28 @@ schedules:
     schedule: {yaml_string(schedule)}
     template:
       ttl: 720h0m0s
+      snapshotMoveData: true
       includedNamespaces:
         - argocd
         - cert-manager
+        - cnpg-system
+        - external-secrets
         - forgejo
         - harbor
+        - keycloak
         - logging
+        - longhorn-system
+        - metallb-system
         - monitoring
+        - object-storage
+        - openbao
+        - platform-cache
+        - platform-databases
+        - step-ca
+        - tetragon
+        - traefik
         - velero
+        - woodpecker
 
 metrics:
   enabled: true
@@ -1798,7 +2698,7 @@ def render_velero(path: Path) -> bool:
     provider = os.environ.get("BACKUP_PROVIDER", "aws").strip() or "aws"
     if provider != "aws":
         raise SystemExit("BACKUP_PROVIDER currently supports aws for automatic Velero rendering")
-    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", INTERNAL_MINIO_ENDPOINT).strip()
+    endpoint = backup_object_storage_endpoint()
     region = os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip() or "us-east-1"
     bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
     force_path_style = os.environ.get("OBJECT_STORAGE_FORCE_PATH_STYLE", "true").strip().lower() not in {
@@ -1838,6 +2738,7 @@ def cnpg_postgres_cluster_manifest(
     retention_policy: str,
     schedule: str,
     backup_enabled: bool,
+    image_name: str,
 ) -> str:
     backup_block = ""
     scheduled_backup_block = ""
@@ -1891,6 +2792,33 @@ spec:
         passwordSecret:
           name: {yaml_string(woodpecker_secret_name)}"""
 
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    harbor_database_mode = os.environ.get(
+        "HARBOR_DATABASE_MODE", "external" if production_strict else "internal"
+    ).strip().lower()
+    harbor_role_block = ""
+    if harbor_database_mode in {"external", "postgres", "postgresql"}:
+        harbor_role_block = f"""
+      - name: {yaml_string(os.environ.get("HARBOR_DATABASE_USER", "harbor").strip() or "harbor")}
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: {yaml_string(os.environ.get("HARBOR_DATABASE_SECRET_NAME", "harbor-database").strip() or "harbor-database")}"""
+
+    grafana_database_mode = os.environ.get(
+        "GRAFANA_DATABASE_MODE", "postgres" if production_strict else "sqlite"
+    ).strip().lower()
+    grafana_role_block = ""
+    if grafana_database_mode in {"external", "postgres", "postgresql"}:
+        grafana_role_block = f"""
+      - name: {yaml_string(os.environ.get("GRAFANA_DATABASE_USER", "grafana").strip() or "grafana")}
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: {yaml_string(os.environ.get("GRAFANA_DATABASE_SECRET_NAME", "grafana-database").strip() or "grafana-database")}"""
+
     return f"""apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -1898,6 +2826,7 @@ metadata:
   namespace: {yaml_string(namespace)}
 spec:
   instances: {instances}
+  imageName: {yaml_string(image_name)}
   primaryUpdateStrategy: unsupervised
   managed:
     roles:
@@ -1908,6 +2837,8 @@ spec:
         passwordSecret:
           name: {yaml_string(os.environ.get("KEYCLOAK_DATABASE_SECRET_NAME", "keycloak-database").strip() or "keycloak-database")}
 {woodpecker_role_block}
+{harbor_role_block}
+{grafana_role_block}
   bootstrap:
     initdb:
       database: {yaml_string(app_database)}
@@ -1924,14 +2855,19 @@ spec:
 
 
 def render_cnpg_postgres_cluster(path: Path) -> bool:
-    endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", "https://s3.amazonaws.com").strip()
     bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
     namespace = os.environ.get("CNPG_CLUSTER_NAMESPACE", "platform-databases").strip() or "platform-databases"
     name = os.environ.get("CNPG_CLUSTER_NAME", "platform-postgres").strip() or "platform-postgres"
-    backup_mode = os.environ.get("CNPG_BACKUP_ENABLED", "false").strip().lower()
+    backup_mode = os.environ.get("CNPG_BACKUP_ENABLED", "true").strip().lower()
     if backup_mode not in {"0", "1", "false", "true", "no", "yes", "disabled", "enabled"}:
         raise SystemExit("CNPG_BACKUP_ENABLED must be true or false")
     backup_enabled = backup_mode in {"1", "true", "yes", "enabled"}
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    if production_strict and not backup_enabled:
+        raise SystemExit(
+            "CNPG_BACKUP_ENABLED must remain true when PLATFORM_PRODUCTION_STRICT=true"
+        )
+    endpoint = backup_object_storage_endpoint() if backup_enabled else ""
     instances = os.environ.get("CNPG_INSTANCES", "3").strip() or "3"
     if int(instances) < 1:
         raise SystemExit("CNPG_INSTANCES must be at least 1")
@@ -1956,6 +2892,11 @@ def render_cnpg_postgres_cluster(path: Path) -> bool:
         retention_policy=os.environ.get("CNPG_RETENTION_POLICY", "30d").strip() or "30d",
         schedule=os.environ.get("CNPG_BACKUP_SCHEDULE", "0 2 * * *").strip() or "0 2 * * *",
         backup_enabled=backup_enabled,
+        image_name=os.environ.get(
+            "CNPG_POSTGRES_IMAGE",
+            "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie",
+        ).strip()
+        or "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie",
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -2260,10 +3201,17 @@ def main() -> int:
         )
         print(f"LOKI_OBJECT_STORAGE_SECRET_NAME={os.environ.get('LOKI_OBJECT_STORAGE_SECRET_NAME', 'loki-object-storage')}")
         print(f"BACKUP_PROVIDER={os.environ.get('BACKUP_PROVIDER', 'aws')}")
+        print(
+            "BACKUP_OBJECT_STORAGE_ENDPOINT="
+            + first_value(
+                os.environ.get("BACKUP_OBJECT_STORAGE_ENDPOINT", ""),
+                os.environ.get("OBJECT_STORAGE_ENDPOINT", ""),
+            )
+        )
         print(f"BACKUP_BUCKET={os.environ.get('BACKUP_BUCKET', os.environ.get('OBJECT_STORAGE_BUCKET_PREFIX', 'platform') + '-velero-backups')}")
         print(f"VELERO_CREDENTIALS_SECRET_NAME={os.environ.get('VELERO_CREDENTIALS_SECRET_NAME', 'velero-credentials')}")
         print(f"CNPG_RENDER_POSTGRES_CLUSTER={os.environ.get('CNPG_RENDER_POSTGRES_CLUSTER', 'true')}")
-        print(f"CNPG_BACKUP_ENABLED={os.environ.get('CNPG_BACKUP_ENABLED', 'false')}")
+        print(f"CNPG_BACKUP_ENABLED={os.environ.get('CNPG_BACKUP_ENABLED', 'true')}")
         print(f"CNPG_OBJECT_STORE_SECRET_NAME={os.environ.get('CNPG_OBJECT_STORE_SECRET_NAME', 'cnpg-object-store')}")
         print(
             "CNPG_BACKUP_DESTINATION="

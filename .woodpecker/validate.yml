@@ -11,6 +11,7 @@ steps:
       - python scripts/test_gitops_selection_helper.py
       - python scripts/test_bootstrap_env_loader.py
       - python scripts/test_forge_migration.py
+      - python scripts/test_forge_cutover.py
       - python scripts/test_forge_migration_live.py
       - python scripts/test_forge_migration_live_workflow.py
       - python scripts/test_private_values_renderer.py

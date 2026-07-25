@@ -70,3 +70,6 @@ provisioning:
     - name: platform-loki-ruler
     - name: platform-loki-admin
     - name: platform-velero-backups
+    - name: platform-cnpg-backups
+    - name: platform-longhorn-backups
+    - name: platform-harbor-registry

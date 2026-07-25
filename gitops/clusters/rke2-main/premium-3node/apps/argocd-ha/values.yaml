@@ -182,3 +182,5 @@ configs:
   rbac:
     policy.default: role:readonly
     scopes: "[groups]"
+    policy.csv: |
+      g, platform-admin, role:admin

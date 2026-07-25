@@ -155,6 +155,9 @@ platform_step_ca_host=ca.example.test
             renderer.render_monitoring(premium / "monitoring/values.yaml", inventory)
             renderer.render_loki(premium / "loki/values.yaml", inventory)
             renderer.render_velero(premium / "velero/values.yaml")
+            renderer.render_cnpg_postgres_cluster(
+                premium / "platform-postgres/postgres-cluster.yaml"
+            )
             renderer.render_platform_valkey(premium / "platform-valkey/values.yaml")
             renderer.render_minio(premium / "minio/values.yaml")
             renderer.render_keycloak(premium / "keycloak/values.yaml", inventory)
@@ -204,6 +207,7 @@ platform_step_ca_host=ca.example.test
             "longhorn": write(
                 repo / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/values.yaml",
                 'defaultSettings:\n  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n'
+                "  backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>\n"
                 "  storageOverProvisioningPercentage: 100\n",
             ),
             "forgejo": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml"),
@@ -226,6 +230,7 @@ platform_step_ca_host=ca.example.test
             "FORGEJO_STORAGE_CLASS": "longhorn-critical",
             "FORGEJO_IMAGE_TAG": "15.0.3-rootless",
             "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn@eu-test-1/",
+            "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME": "longhorn-backup-test",
             "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE": "275",
             "WOODPECKER_DATA_SIZE": "11Gi",
             "WOODPECKER_STORAGE_CLASS": "longhorn-standard",
@@ -245,12 +250,17 @@ platform_step_ca_host=ca.example.test
             "HARBOR_TRIVY_SIZE": "13Gi",
             "HARBOR_ADMIN_SECRET_NAME": "harbor-admin-test",
             "HARBOR_SECRET_KEY_SECRET_NAME": "harbor-secret-key-test",
+            "HARBOR_REPLICAS": "2",
+            "HARBOR_DATABASE_SECRET_NAME": "harbor-db-test",
+            "HARBOR_S3_SECRET_NAME": "harbor-s3-test",
             "MONITORING_STORAGE_CLASS": "longhorn-standard",
             "PROMETHEUS_RETENTION_SIZE": "22GB",
             "PROMETHEUS_DATA_SIZE": "60Gi",
             "ALERTMANAGER_DATA_SIZE": "12Gi",
             "GRAFANA_DATA_SIZE": "14Gi",
             "GRAFANA_ADMIN_SECRET_NAME": "grafana-admin-test",
+            "GRAFANA_REPLICAS": "2",
+            "GRAFANA_DATABASE_SECRET_NAME": "grafana-db-test",
             "OBJECT_STORAGE_ENDPOINT": "https://object.example.test",
             "OBJECT_STORAGE_REGION": "eu-test-1",
             "OBJECT_STORAGE_BUCKET_PREFIX": "platform-test",
@@ -322,18 +332,32 @@ platform_step_ca_host=ca.example.test
 
         rendered_paths = list(paths.values())
         assert_no_placeholders(rendered_paths)
-        assert_contains(paths["argocd"], "argocd.example.test", 'admin.enabled: "true"')
+        assert_contains(
+            paths["argocd"],
+            "argocd.example.test",
+            'admin.enabled: "false"',
+            "oidc.config: |",
+            "issuer: https://sso.example.test/realms/platform",
+            "clientSecret: $platform-sso-argocd:client-secret",
+            "requestedScopes: [\"openid\", \"profile\", \"email\", \"groups\"]",
+        )
 
         disabled_argocd_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/disabled-values.yaml",
             "global:\n  domain: argocd.<PLATFORM_DOMAIN>\n"
             "configs:\n  cm:\n    admin.enabled: \"true\"\n",
         )
-        with patched_env(dict(env, PLATFORM_ARGOCD_ADMIN_ENABLED="false")):
+        with patched_env(
+            dict(
+                env,
+                PLATFORM_SSO_ENABLED="false",
+                PLATFORM_ARGOCD_ADMIN_ENABLED="false",
+            )
+        ):
             try:
                 renderer.render_argocd(disabled_argocd_path, inventory)
             except SystemExit as exc:
-                if "requires a configured configs.cm" not in str(exc):
+                if "requires PLATFORM_SSO_ENABLED=true" not in str(exc):
                     raise AssertionError(f"unexpected Argo CD login validation error: {exc}") from exc
             else:
                 raise AssertionError("Argo CD renderer disabled every login method")
@@ -412,6 +436,7 @@ platform_step_ca_host=ca.example.test
         assert_contains(
             paths["longhorn"],
             "s3://platform-test-longhorn@eu-test-1/",
+            "backupTargetCredentialSecret: longhorn-backup-test",
             "storageOverProvisioningPercentage: 275",
         )
         if (
@@ -426,6 +451,7 @@ platform_step_ca_host=ca.example.test
         assert_contains(
             paths["cnpg"],
             'namespace: "platform-databases"',
+            'imageName: "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie"',
             'size: "80Gi"',
             'storageClass: "longhorn-critical"',
             'database: "forgejo"',
@@ -433,6 +459,10 @@ platform_step_ca_host=ca.example.test
             'name: "forgejo-database"',
             'name: "woodpecker"',
             'name: "woodpecker-db-test"',
+            'name: "harbor"',
+            'name: "harbor-db-test"',
+            'name: "grafana"',
+            'name: "grafana-db-test"',
             'destinationPath: "s3://platform-test-cnpg/platform-postgres"',
             'endpointURL: "https://object.example.test"',
             'name: "cnpg-object-test"',
@@ -444,11 +474,36 @@ platform_step_ca_host=ca.example.test
             paths["valkey"],
             'usersExistingSecret: "platform-valkey-test"',
             'passwordKey: "valkey-password-test"',
+            'tag: "9.1.0"',
             'storageClass: "longhorn-critical"',
             'size: "9Gi"',
             "replicas: 3",
             "podDisruptionBudget:\n  enabled: true",
+            "whenUnsatisfiable: DoNotSchedule",
+            "name: configure-ha",
+            'password="$(cat /auth/valkey-password-test)"',
+            "sentinel monitor platform-valkey",
+            "sentinel down-after-milliseconds platform-valkey 5000",
+            "name: sentinel",
+            'image: "valkey/valkey:9.1.0"',
+            "name: primary-proxy",
+            'image: "haproxy:3.4.2-alpine"',
+            "tcp-check expect string role:master",
+            "server valkey-3 platform-valkey-3.platform-valkey-headless.platform-cache.svc.cluster.local:6379",
             "serviceMonitor:\n    enabled: true",
+        )
+        assert_contains(
+            paths["keycloak"],
+            "keycloakConfigCli:",
+            "enabled: true",
+            "IMPORT_VARSUBSTITUTION_ENABLED",
+            'extraEnvVarsSecret: "platform-sso-clients"',
+            '"realm": "platform"',
+            '"clientId": "argocd"',
+            '"clientId": "grafana"',
+            '"clientId": "prometheus"',
+            '"requiredActions": [',
+            '"CONFIGURE_TOTP"',
         )
         assert_contains(
             paths["minio"],
@@ -520,6 +575,10 @@ platform_step_ca_host=ca.example.test
             "repository: woodpeckerci/woodpecker-agent",
             'tag: "v3.16.0"',
             'WOODPECKER_BACKEND_K8S_STORAGE_CLASS: "longhorn-standard"',
+            "app.kubernetes.io/name: server",
+            "app.kubernetes.io/name: agent",
+            "topologySpreadConstraints:\n    - maxSkew: 1",
+            "whenUnsatisfiable: DoNotSchedule",
         )
         rendered_woodpecker_text = paths["woodpecker"].read_text(encoding="utf-8")
         if contract_validator.count_yaml_list_scalar(rendered_woodpecker_text, "woodpecker-agent-test") != 2:
@@ -531,19 +590,25 @@ platform_step_ca_host=ca.example.test
 """
         if contract_validator.count_yaml_list_scalar(mixed_yaml_scalar_styles, "woodpecker-agent-test") != 3:
             raise AssertionError("platform contract validator rejected a valid quoted YAML Secret list item")
-        assert_contains(paths["harbor"], "registry.example.test", "harbor-admin-test", "55Gi")
+        assert_contains(paths["harbor"], "registry.example.test", "harbor-admin-test")
         assert_contains(
             paths["harbor"],
             'externalURL: "https://registry.example.test"',
-            'storageClass: "longhorn-critical"',
-            'size: "55Gi"',
-            "portal:\n  replicas: 1\n  resources:",
-            "core:\n  replicas: 1\n  # Harbor's chart cannot build the core Redis URL from existingSecret.",
-            "jobservice:\n  replicas: 1\n  resources:",
-            "registry:\n  replicas: 1\n  registry:\n    resources:",
-            "trivy:\n  enabled: true\n  replicas: 1\n  resources:",
-            "exporter:\n  resources:",
-            "database:\n  type: internal\n  internal:\n    resources:",
+            "portal:\n  replicas: 2\n  podDisruptionBudget:",
+            "core:\n  replicas: 2\n  podDisruptionBudget:",
+            "jobservice:\n  replicas: 2\n  podDisruptionBudget:",
+            "jobLoggers:\n    - database",
+            "registry:\n  replicas: 2\n  podDisruptionBudget:",
+            "trivy:\n  enabled: true\n  replicas: 2\n  podDisruptionBudget:",
+            "exporter:\n  replicas: 2\n  podDisruptionBudget:",
+            "whenUnsatisfiable: DoNotSchedule",
+            "updateStrategy:\n  type: RollingUpdate",
+            "persistence:\n  enabled: false",
+            "imageChartStorage:\n    disableredirect: true\n    type: s3",
+            'existingSecret: "harbor-s3-test"',
+            "database:\n  type: external",
+            'host: "platform-postgres-rw.platform-databases.svc.cluster.local"',
+            'existingSecret: "harbor-db-test"',
             "redis:\n  type: external",
             'addr: "platform-valkey-primary.platform-cache.svc.cluster.local:6379"',
             'existingSecret: "harbor-redis"',
@@ -600,6 +665,7 @@ platform_step_ca_host=ca.example.test
 
         internal_harbor_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/harbor/internal-values.yaml")
         internal_harbor_env = {
+            "PLATFORM_PRODUCTION_STRICT": "false",
             "HARBOR_DATABASE_MODE": "internal",
             "HARBOR_REDIS_MODE": "internal",
             "HARBOR_STORAGE_MODE": "filesystem",
@@ -620,19 +686,35 @@ platform_step_ca_host=ca.example.test
             "grafana.example.test",
             "prometheus.example.test",
             "60Gi",
-            "prometheusSpec:\n    replicas: 2\n    retention: 15d",
+            "prometheus:\n  podDisruptionBudget:\n    enabled: true\n    minAvailable: 1",
+            "prometheusSpec:\n    replicas: 2\n    podAntiAffinity: hard\n    podAntiAffinityTopologyKey: kubernetes.io/hostname",
+            "retention: 15d",
             "    resources:\n      requests:\n        cpu: 250m\n        memory: 2Gi",
         )
         assert_contains(
             paths["monitoring"],
             'storageClassName: "longhorn-standard"',
             'storage: "60Gi"',
-            'size: "14Gi"',
-            "alertmanagerSpec:\n    replicas: 3\n    resources:",
-            "grafana:\n  replicas: 1\n  admin:",
+            "alertmanager:\n  enabled: true\n  podDisruptionBudget:\n    enabled: true\n    minAvailable: 2",
+            "alertmanagerSpec:\n    replicas: 3\n    podAntiAffinity: hard\n    podAntiAffinityTopologyKey: kubernetes.io/hostname\n    resources:",
+            "grafana:\n  replicas: 2\n  deploymentStrategy:\n    type: RollingUpdate",
+            "podDisruptionBudget:\n    minAvailable: 1",
+            "whenUnsatisfiable: DoNotSchedule",
             'existingSecret: "grafana-admin-test"',
             "userKey: admin-user",
             "passwordKey: admin-password",
+            "envValueFrom:\n    GF_DATABASE_PASSWORD:",
+            'name: "grafana-db-test"',
+            "grafana.ini:\n    database:\n      type: postgres",
+            "persistence:\n    enabled: false",
+            'envFromSecret: "platform-sso-grafana"',
+            "auth.generic_oauth:",
+            "role_attribute_strict: true",
+            "extraManifests:",
+            "name: prometheus-oauth2-proxy",
+            "image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3",
+            'name: "platform-sso-prometheus"',
+            "name: prometheus-authenticated",
         )
 
         external_monitoring_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/monitoring/external-values.yaml")
@@ -646,6 +728,7 @@ platform_step_ca_host=ca.example.test
             "GRAFANA_DATABASE_USER": "grafana",
             "GRAFANA_DATABASE_SECRET_NAME": "grafana-db-test",
             "GRAFANA_DATABASE_SSL_MODE": "require",
+            "GRAFANA_REPLICAS": "2",
         }
         with patched_env(external_monitoring_env):
             renderer.render_monitoring(external_monitoring_path, inventory)
@@ -660,7 +743,27 @@ platform_step_ca_host=ca.example.test
             'user: "grafana"',
             'password: "$__env{GF_DATABASE_PASSWORD}"',
             'ssl_mode: "require"',
+            "persistence:\n    enabled: false",
         )
+
+        sqlite_monitoring_path = write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/monitoring/sqlite-values.yaml"
+        )
+        with patched_env(
+            {
+                "PLATFORM_PRODUCTION_STRICT": "false",
+                "GRAFANA_DATABASE_MODE": "sqlite",
+                "GRAFANA_REPLICAS": "1",
+            }
+        ):
+            renderer.render_monitoring(sqlite_monitoring_path, inventory)
+        assert_contains(
+            sqlite_monitoring_path,
+            "grafana:\n  replicas: 1\n  admin:",
+            "persistence:\n    enabled: true",
+            "type: pvc",
+        )
+        assert_not_contains(sqlite_monitoring_path, "GF_DATABASE_PASSWORD", "type: postgres")
         assert_contains(
             paths["loki"],
             "loki.example.test",
@@ -691,6 +794,9 @@ platform_step_ca_host=ca.example.test
             "https://object.example.test",
             "velero-cloud-test",
             'schedule: "15 2 * * *"',
+            "snapshotMoveData: true",
+            "- platform-databases",
+            "- woodpecker",
         )
         assert_contains(
             paths["velero"],
@@ -704,7 +810,7 @@ platform_step_ca_host=ca.example.test
         default_velero_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/velero/default-values.yaml"
         )
-        with patched_env({"BACKUP_PROVIDER": "aws"}):
+        with patched_env({"BACKUP_PROVIDER": "aws", "PLATFORM_PRODUCTION_STRICT": "false"}):
             renderer.render_velero(default_velero_path)
         assert_contains(
             default_velero_path,

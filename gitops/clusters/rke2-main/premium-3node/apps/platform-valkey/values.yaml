@@ -2,6 +2,9 @@
 # Argo CD keeps its dedicated Redis HA; this cache is for Forgejo and Harbor.
 fullnameOverride: platform-valkey
 
+image:
+  tag: "9.1.0"
+
 auth:
   enabled: true
   usersExistingSecret: platform-valkey-auth
@@ -12,6 +15,8 @@ auth:
 
 valkeyConfig: |-
   appendonly yes
+  appendfsync everysec
+  aof-use-rdb-preamble yes
   save ""
 
 service:
@@ -27,6 +32,188 @@ replica:
     storageClass: longhorn-critical
     size: 8Gi
 
+# The upstream chart provides replication but intentionally does not perform
+# failover. Persistent Sentinel sidecars elect a replacement primary, while
+# the HAProxy sidecars expose only whichever Valkey member currently reports
+# role:master. Consumers keep using platform-valkey-primary:6379.
+extraInitContainers:
+  - name: configure-ha
+    image: valkey/valkey:9.1.0
+    imagePullPolicy: IfNotPresent
+    command: ["/bin/sh", "-ec"]
+    args:
+      - |-
+        password="$(cat /auth/valkey-password)"
+        case "${password}" in
+          *[!A-Za-z0-9._~-]*)
+            echo "platform-valkey-auth must use URL-safe characters for the HA proxy check" >&2
+            exit 1
+            ;;
+        esac
+
+        sentinel_dir=/data/sentinel
+        sentinel_config="${sentinel_dir}/sentinel.conf"
+        mkdir -p "${sentinel_dir}" /ha
+        if [ ! -s "${sentinel_config}" ]; then
+          cat >"${sentinel_config}" <<EOF
+        port 26379
+        bind 0.0.0.0
+        protected-mode no
+        dir ${sentinel_dir}
+        requirepass "${password}"
+        sentinel resolve-hostnames yes
+        sentinel announce-hostnames yes
+        sentinel monitor platform-valkey platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local 6379 2
+        sentinel auth-user platform-valkey default
+        sentinel auth-pass platform-valkey "${password}"
+        sentinel down-after-milliseconds platform-valkey 5000
+        sentinel failover-timeout platform-valkey 60000
+        sentinel parallel-syncs platform-valkey 1
+        EOF
+        fi
+        chmod 0600 "${sentinel_config}"
+
+        cat > /ha/haproxy.cfg <<EOF
+        global
+          log stdout format raw local0
+
+        defaults
+          mode tcp
+          log global
+          timeout connect 3s
+          timeout client 60s
+          timeout server 60s
+          timeout check 3s
+
+        resolvers kubernetes
+          parse-resolv-conf
+          hold valid 10s
+
+        frontend valkey-primary
+          bind :6380
+          default_backend elected-primary
+
+        backend elected-primary
+          option tcp-check
+          tcp-check connect
+          tcp-check send "AUTH default ${password}\r\n"
+          tcp-check expect string +OK
+          tcp-check send "INFO replication\r\n"
+          tcp-check expect string role:master
+          tcp-check send "QUIT\r\n"
+          server valkey-0 platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
+          server valkey-1 platform-valkey-1.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
+          server valkey-2 platform-valkey-2.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
+        EOF
+        chmod 0440 /ha/haproxy.cfg
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+      limits:
+        memory: 64Mi
+    volumeMounts:
+      - name: valkey-data
+        mountPath: /data
+      - name: valkey-users-secret
+        mountPath: /auth
+        readOnly: true
+      - name: platform-valkey-ha-config
+        mountPath: /ha
+
+extraContainers:
+  - name: sentinel
+    image: valkey/valkey:9.1.0
+    imagePullPolicy: IfNotPresent
+    command: ["valkey-server", "/data/sentinel/sentinel.conf", "--sentinel"]
+    ports:
+      - name: sentinel
+        containerPort: 26379
+        protocol: TCP
+    readinessProbe:
+      exec:
+        command:
+          - /bin/sh
+          - -ec
+          - valkey-cli --no-auth-warning -a "$(cat /auth/valkey-password)" -p 26379 ping | grep -qx PONG
+      periodSeconds: 5
+      timeoutSeconds: 3
+    livenessProbe:
+      exec:
+        command:
+          - /bin/sh
+          - -ec
+          - valkey-cli --no-auth-warning -a "$(cat /auth/valkey-password)" -p 26379 ping | grep -qx PONG
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 3
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 1000
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    volumeMounts:
+      - name: valkey-data
+        mountPath: /data
+      - name: valkey-users-secret
+        mountPath: /auth
+        readOnly: true
+  - name: primary-proxy
+    image: haproxy:3.4.2-alpine
+    imagePullPolicy: IfNotPresent
+    args: ["haproxy", "-W", "-db", "-f", "/ha/haproxy.cfg"]
+    ports:
+      - name: primary-proxy
+        containerPort: 6380
+        protocol: TCP
+    readinessProbe:
+      tcpSocket:
+        port: primary-proxy
+      periodSeconds: 5
+      timeoutSeconds: 2
+    livenessProbe:
+      tcpSocket:
+        port: primary-proxy
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 2
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 99
+    resources:
+      requests:
+        cpu: 25m
+        memory: 32Mi
+      limits:
+        memory: 128Mi
+    volumeMounts:
+      - name: platform-valkey-ha-config
+        mountPath: /ha
+        readOnly: true
+
+extraVolumes:
+  - name: platform-valkey-ha-config
+    emptyDir: {}
+
 podDisruptionBudget:
   enabled: true
   minAvailable: 2
@@ -34,7 +221,7 @@ podDisruptionBudget:
 topologySpreadConstraints:
   - maxSkew: 1
     topologyKey: kubernetes.io/hostname
-    whenUnsatisfiable: ScheduleAnyway
+    whenUnsatisfiable: DoNotSchedule
     labelSelector:
       matchLabels:
         app.kubernetes.io/instance: platform-valkey

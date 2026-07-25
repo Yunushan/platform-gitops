@@ -37,6 +37,12 @@
     rke2_registry_check_enabled_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_ENABLED') }}"
     rke2_registry_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CHECK_TIMEOUT') }}"
     rke2_registry_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_REGISTRY_CONNECT_TIMEOUT') }}"
+    platform_production_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PRODUCTION_STRICT') }}"
+    rke2_etcd_s3_enabled_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_ENABLED') }}"
+    rke2_etcd_s3_config_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_CONFIG_SECRET_NAME') }}"
+    rke2_etcd_snapshot_schedule_cron_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_SNAPSHOT_SCHEDULE_CRON') }}"
+    rke2_etcd_snapshot_retention_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_SNAPSHOT_RETENTION') }}"
+    rke2_etcd_s3_retention_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_RETENTION') }}"
     rke2_http_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_HTTP_PROXY') | default(lookup('ansible.builtin.env', 'HTTP_PROXY'), true) }}"
     rke2_https_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_HTTPS_PROXY') | default(lookup('ansible.builtin.env', 'HTTPS_PROXY'), true) }}"
     rke2_no_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_NO_PROXY') | default(lookup('ansible.builtin.env', 'NO_PROXY'), true) }}"
@@ -47,6 +53,12 @@
     rke2_registry_check_enabled_effective: "{{ rke2_registry_check_enabled | default(rke2_registry_check_enabled_from_env, true) | default(true, true) | bool }}"
     rke2_registry_check_timeout_effective: "{{ rke2_registry_check_timeout | default(rke2_registry_check_timeout_from_env, true) | default(45, true) | int }}"
     rke2_registry_connect_timeout_effective: "{{ rke2_registry_connect_timeout | default(rke2_registry_connect_timeout_from_env, true) | default(10, true) | int }}"
+    platform_production_strict_effective: "{{ platform_production_strict | default(platform_production_strict_from_env, true) | default(false, true) | bool }}"
+    rke2_etcd_s3_enabled_effective: "{{ rke2_etcd_s3_enabled | default(rke2_etcd_s3_enabled_from_env, true) | default(platform_production_strict_effective, true) | bool }}"
+    rke2_etcd_s3_config_secret_name_effective: "{{ rke2_etcd_s3_config_secret_name | default(rke2_etcd_s3_config_secret_name_from_env, true) | default('rke2-etcd-snapshot-s3-config', true) }}"
+    rke2_etcd_snapshot_schedule_cron_effective: "{{ rke2_etcd_snapshot_schedule_cron | default(rke2_etcd_snapshot_schedule_cron_from_env, true) | default('0 */6 * * *', true) }}"
+    rke2_etcd_snapshot_retention_effective: "{{ rke2_etcd_snapshot_retention | default(rke2_etcd_snapshot_retention_from_env, true) | default(56, true) | int }}"
+    rke2_etcd_s3_retention_effective: "{{ rke2_etcd_s3_retention | default(rke2_etcd_s3_retention_from_env, true) | default(56, true) | int }}"
     rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/', 'https://quay.io/v2/', 'https://ghcr.io/v2/'], true) }}"
     rke2_http_proxy_effective: "{{ rke2_http_proxy | default(rke2_http_proxy_from_env, true) }}"
     rke2_https_proxy_effective: "{{ rke2_https_proxy | default(rke2_https_proxy_from_env, true) }}"
@@ -250,6 +262,14 @@
             - {{ component }}
           {% endfor %}
           etcd-expose-metrics: true
+          {% if rke2_etcd_s3_enabled_effective | bool %}
+          etcd-snapshot-schedule-cron: "{{ rke2_etcd_snapshot_schedule_cron_effective }}"
+          etcd-snapshot-retention: {{ rke2_etcd_snapshot_retention_effective }}
+          etcd-snapshot-compress: true
+          etcd-s3: true
+          etcd-s3-config-secret: {{ rke2_etcd_s3_config_secret_name_effective }}
+          etcd-s3-retention: {{ rke2_etcd_s3_retention_effective }}
+          {% endif %}
       no_log: true
 
     - name: Download RKE2 installer
@@ -583,6 +603,87 @@
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
+
+    - name: Reconcile RKE2 etcd S3 snapshot configuration secret
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        SECRET="{{ rke2_etcd_s3_config_secret_name_effective }}"
+
+        secret_exists=false
+        if "$K" --kubeconfig "$C" -n kube-system get "secret/${SECRET}" >/dev/null 2>&1; then
+          secret_exists=true
+        fi
+
+        supplied=0
+        for value in \
+          "${RKE2_ETCD_S3_ENDPOINT:-}" \
+          "${RKE2_ETCD_S3_ACCESS_KEY:-}" \
+          "${RKE2_ETCD_S3_SECRET_KEY:-}" \
+          "${RKE2_ETCD_S3_BUCKET:-}"; do
+          if [ -n "${value}" ]; then
+            supplied=$((supplied + 1))
+          fi
+        done
+
+        if [ "${supplied}" -eq 0 ] && [ "${secret_exists}" = "true" ]; then
+          echo "rke2_etcd_s3_secret=${SECRET} state=present"
+          exit 0
+        fi
+        if [ "${supplied}" -ne 4 ]; then
+          echo "rke2_etcd_s3_secret=${SECRET} state=missing reason=set-endpoint-access-key-secret-key-and-bucket"
+          exit 0
+        fi
+
+        "$K" --kubeconfig "$C" -n kube-system create secret generic "${SECRET}" \
+          --type=etcd.k3s.cattle.io/s3-config-secret \
+          --from-literal=etcd-s3-endpoint="${RKE2_ETCD_S3_ENDPOINT}" \
+          --from-literal=etcd-s3-skip-ssl-verify="${RKE2_ETCD_S3_SKIP_SSL_VERIFY:-false}" \
+          --from-literal=etcd-s3-access-key="${RKE2_ETCD_S3_ACCESS_KEY}" \
+          --from-literal=etcd-s3-secret-key="${RKE2_ETCD_S3_SECRET_KEY}" \
+          --from-literal=etcd-s3-bucket="${RKE2_ETCD_S3_BUCKET}" \
+          --from-literal=etcd-s3-bucket-lookup-type="${RKE2_ETCD_S3_BUCKET_LOOKUP_TYPE:-auto}" \
+          --from-literal=etcd-s3-region="${RKE2_ETCD_S3_REGION:-us-east-1}" \
+          --from-literal=etcd-s3-folder="${RKE2_ETCD_S3_FOLDER:-rke2-main}" \
+          --from-literal=etcd-s3-insecure="${RKE2_ETCD_S3_INSECURE:-false}" \
+          --from-literal=etcd-s3-timeout="${RKE2_ETCD_S3_TIMEOUT:-5m}" \
+          --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -
+
+        echo "rke2_etcd_s3_secret=${SECRET} state=reconciled"
+      args:
+        executable: /bin/bash
+      environment:
+        RKE2_ETCD_S3_ENDPOINT: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_ENDPOINT') }}"
+        RKE2_ETCD_S3_ACCESS_KEY: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_ACCESS_KEY') }}"
+        RKE2_ETCD_S3_SECRET_KEY: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_SECRET_KEY') }}"
+        RKE2_ETCD_S3_BUCKET: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_BUCKET') }}"
+        RKE2_ETCD_S3_BUCKET_LOOKUP_TYPE: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_BUCKET_LOOKUP_TYPE') }}"
+        RKE2_ETCD_S3_REGION: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_REGION') }}"
+        RKE2_ETCD_S3_FOLDER: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_FOLDER') }}"
+        RKE2_ETCD_S3_INSECURE: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_INSECURE') }}"
+        RKE2_ETCD_S3_SKIP_SSL_VERIFY: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_SKIP_SSL_VERIFY') }}"
+        RKE2_ETCD_S3_TIMEOUT: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_TIMEOUT') }}"
+      register: rke2_etcd_s3_secret_result
+      changed_when: "'state=reconciled' in rke2_etcd_s3_secret_result.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      no_log: true
+      when: rke2_etcd_s3_enabled_effective | bool
+
+    - name: Require RKE2 etcd S3 snapshot configuration in production
+      ansible.builtin.assert:
+        that:
+          - "'state=missing' not in (rke2_etcd_s3_secret_result.stdout | default('state=missing'))"
+        fail_msg: >-
+          Production RKE2 requires off-cluster etcd snapshots. Set
+          RKE2_ETCD_S3_ENDPOINT, RKE2_ETCD_S3_ACCESS_KEY,
+          RKE2_ETCD_S3_SECRET_KEY, and RKE2_ETCD_S3_BUCKET, then rerun
+          make rke2-install. Existing secret/{{ rke2_etcd_s3_config_secret_name_effective }}
+          in kube-system is preserved when credentials are intentionally omitted.
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: rke2_etcd_s3_enabled_effective | bool
 
     - name: Print cluster nodes
       ansible.builtin.debug:

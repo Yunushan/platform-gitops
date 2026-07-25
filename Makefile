@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-data-protection platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -18,6 +18,13 @@ help:
 	@echo "  forge-migration-proof-verify  Verify stored PROOF integrity and acceptance"
 	@echo "  forge-migration-live-plan  Print the redacted four-direction live acceptance manifest"
 	@echo "  forge-migration-live-run  Run opt-in GitHub/GitLab/Forgejo live migration acceptance and write LIVE_DIR proof"
+	@echo "  forge-cutover-validate  Validate the opt-in GitLab-to-Forgejo cutover PLAN"
+	@echo "  forge-cutover-discover  Inventory source/destination CI/CD surfaces into DISCOVERY proof"
+	@echo "  forge-cutover-prepare  Prepare shadow Forgejo/Woodpecker/Harbor state from approved DISCOVERY"
+	@echo "  forge-cutover-verify  Run shadow canary and write VERIFICATION proof from PREPARED proof"
+	@echo "  forge-cutover-activate  Freeze GitLab and activate Woodpecker using approved VERIFICATION"
+	@echo "  forge-cutover-rollback  Restore GitLab and disable destination authority from EVIDENCE"
+	@echo "  forge-cutover-proof-verify  Verify stored cutover PROOF integrity and acceptance"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env or inventory"
 	@echo "  platform-profile-check  Verify selected GitOps profile has no unresolved placeholders"
@@ -41,7 +48,8 @@ help:
 	@echo "  platform-woodpecker-repair  Hard-refresh/sync Woodpecker, verify runtime image tags, and run focused CI health"
 	@echo "  platform-monitoring-health  Verify focused Grafana and Prometheus readiness and ingress APIs"
 	@echo "  platform-monitoring-repair  Repair monitoring reconciliation, storage prerequisites, and ready backends"
-	@echo "  platform-production-check  Run read-only repo, RKE2, status, and platform app readiness gates"
+	@echo "  platform-data-protection  Verify off-cluster backup freshness and approved restore-drill evidence"
+	@echo "  platform-production-check  Run repo, RKE2, app, backup, and restore-evidence readiness gates"
 	@echo "  platform-longhorn-bootstrap  Load private settings, bootstrap Longhorn storage, and verify CSI/PVC readiness"
 	@echo "  platform-longhorn-runtime-repair  Repair Longhorn manager/CSI registration without blocking on storage capacity"
 	@echo "  platform-longhorn-crd-repair  Restore missing Longhorn CRDs and restart Longhorn manager"
@@ -102,6 +110,44 @@ forge-migration-live-run:
 	@test "$(FORGE_MIGRATION_LIVE)" = "1" || (echo "FORGE_MIGRATION_LIVE=1 is required for a live acceptance run" >&2; exit 2)
 	@test -n "$(LIVE_DIR)" || (echo "LIVE_DIR=/private/evidence/directory is required" >&2; exit 2)
 	@$(PYTHON) scripts/forge_migration_live.py --run --output-dir "$(LIVE_DIR)" $(if $(filter 1 true yes,$(LIVE_CLEANUP)),--cleanup,)
+
+forge-cutover-validate:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/cutover.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_cutover.py validate-plan "$(PLAN)" $(if $(PROOF),--proof "$(PROOF)",)
+
+forge-cutover-discover:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/cutover.json is required" >&2; exit 2)
+	@test -n "$(DISCOVERY)" || (echo "DISCOVERY=private/migrations/proof/discovery.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_cutover.py discover "$(PLAN)" --proof "$(DISCOVERY)"
+
+forge-cutover-prepare:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/cutover.json is required" >&2; exit 2)
+	@test -n "$(DISCOVERY)" || (echo "DISCOVERY=private/migrations/proof/discovery.json is required" >&2; exit 2)
+	@test -n "$(PREPARED)" || (echo "PREPARED=private/migrations/proof/prepared.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_cutover.py prepare "$(PLAN)" --discovery "$(DISCOVERY)" --proof "$(PREPARED)"
+
+forge-cutover-verify:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/cutover.json is required" >&2; exit 2)
+	@test -n "$(PREPARED)" || (echo "PREPARED=private/migrations/proof/prepared.json is required" >&2; exit 2)
+	@test -n "$(VERIFICATION)" || (echo "VERIFICATION=private/migrations/proof/verification.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_cutover.py verify "$(PLAN)" --prepared "$(PREPARED)" --proof "$(VERIFICATION)"
+
+forge-cutover-activate:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/cutover.json is required" >&2; exit 2)
+	@test -n "$(VERIFICATION)" || (echo "VERIFICATION=private/migrations/proof/verification.json is required" >&2; exit 2)
+	@test -n "$(ACTIVATION)" || (echo "ACTIVATION=private/migrations/proof/activation.json is required" >&2; exit 2)
+	@test -n "$(CHECKPOINT)" || (echo "CHECKPOINT=private/migrations/proof/activation-checkpoint.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_cutover.py activate "$(PLAN)" --verification "$(VERIFICATION)" --proof "$(ACTIVATION)" --checkpoint "$(CHECKPOINT)" $(if $(WORK_DIR),--work-dir "$(WORK_DIR)",)
+
+forge-cutover-rollback:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/cutover.json is required" >&2; exit 2)
+	@test -n "$(EVIDENCE)" || (echo "EVIDENCE=private/migrations/proof/activation-or-checkpoint.json is required" >&2; exit 2)
+	@test -n "$(ROLLBACK)" || (echo "ROLLBACK=private/migrations/proof/rollback.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_cutover.py rollback "$(PLAN)" --activation "$(EVIDENCE)" --proof "$(ROLLBACK)"
+
+forge-cutover-proof-verify:
+	@test -n "$(PROOF)" || (echo "PROOF=private/migrations/proof/cutover-proof.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_cutover.py verify-proof "$(PROOF)"
 
 no-secrets:
 	@$(PYTHON) scripts/validate_no_secrets.py
@@ -326,8 +372,12 @@ platform-monitoring-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-monitoring.yml
 	@$(MAKE) platform-monitoring-health
 
+platform-data-protection:
+	@bash scripts/bootstrap/run-platform-data-protection.sh
+
 platform-production-check: validate platform-profile-check rke2-verify platform-status
 	@PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh
+	@bash scripts/bootstrap/run-platform-data-protection.sh
 
 platform-longhorn-bootstrap:
 	@bash scripts/bootstrap/run-longhorn-bootstrap.sh

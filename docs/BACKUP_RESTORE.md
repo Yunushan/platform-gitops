@@ -69,6 +69,29 @@ record with:
 - Restore drill evidence with operator, date, DRILL_ID, elapsed restore time,
   and pass/fail result.
 
+Keep the machine-readable acceptance record outside public Git. Start with
+`examples/restore-evidence.example.json`, replace every example value with the
+real retained proof, and set these values in the ignored deployment env file:
+
+```bash
+PLATFORM_RESTORE_EVIDENCE_FILE=private/restore-evidence.json
+PLATFORM_RESTORE_DRILL_MAX_AGE_DAYS=92
+PLATFORM_DATA_PROTECTION_MAX_ETCD_AGE_HOURS=8
+PLATFORM_DATA_PROTECTION_MAX_BACKUP_AGE_HOURS=26
+```
+
+The operator and approver must be different people. Every required check must
+be `passed` and point to retained evidence in the private ticket, evidence
+store, or audit system. Validate the record and live backup state together:
+
+```bash
+make platform-data-protection
+```
+
+This gate rejects an in-cluster MinIO endpoint as disaster-recovery storage,
+stale or missing etcd/Velero/CloudNativePG/Longhorn backups, unhealthy WAL
+archiving, missing volume-data movement, and stale or incomplete drill proof.
+
 ## Restore Drill Scope
 
 Run the drill in an isolated test cluster, isolated recovery namespace, or
@@ -134,6 +157,9 @@ Elapsed recovery time:
 Result:
 Follow-up actions:
 ```
+
+The text template is useful during execution; the JSON record consumed by the
+production gate is the authoritative machine-readable result.
 
 ## Failure Handling
 

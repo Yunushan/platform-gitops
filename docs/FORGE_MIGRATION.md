@@ -4,6 +4,11 @@ This project treats migration as a proof-producing operation. A migration is not
 accepted because a push command succeeded; it is accepted only when the proof
 report shows the selected source and destination surfaces were verified.
 
+For the optional operational handover from GitLab CI to
+Forgejo/Woodpecker/Harbor/Argo CD, continue with the
+[GitLab to Forgejo Cutover Runbook](FORGE_CUTOVER.md). Repository migration and
+CI/CD authority cutover are separate commands by design.
+
 ## Supported Directions
 
 The current migration helper supports the Git data plane, repository labels,

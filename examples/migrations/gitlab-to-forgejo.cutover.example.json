@@ -1,0 +1,177 @@
+{
+  "version": 1,
+  "direction": "gitlab-to-forgejo",
+  "repositories": [
+    {
+      "name": "platform-app",
+      "source": {
+        "url": "https://gitlab.example.invalid/source-group/platform-app.git",
+        "api_url": "https://gitlab.example.invalid/api/v4",
+        "api_repository": "source-group/platform-app",
+        "token_env": "GITLAB_SOURCE_TOKEN"
+      },
+      "destination": {
+        "url": "https://forgejo.example.invalid/platform/platform-app.git",
+        "api_url": "https://forgejo.example.invalid/api/v1",
+        "api_repository": "platform/platform-app",
+        "token_env": "FORGEJO_DESTINATION_TOKEN",
+        "create": "required",
+        "private": true
+      },
+      "wiki": "auto",
+      "lfs": "auto",
+      "metadata": {
+        "labels": "required",
+        "milestones": "required",
+        "releases": "required",
+        "issues": "required",
+        "merge_requests": "skip",
+        "release_assets": "skip",
+        "packages": "skip",
+        "project_boards": "skip",
+        "users": "skip",
+        "teams": "skip",
+        "permissions": "skip",
+        "branch_protection": "skip",
+        "webhooks": "skip"
+      },
+      "cutover": {
+        "pipelines": {
+          "unmapped": "fail",
+          "source_globs": [
+            ".gitlab-ci.yml",
+            ".gitlab/ci/*.yml"
+          ],
+          "destination_globs": [
+            ".woodpecker.yml",
+            ".woodpecker/*.yml"
+          ],
+          "config_file": ".woodpecker.yml",
+          "deployment_gate_marker": "FORGE_CUTOVER_DEPLOYMENT_ENABLED",
+          "mappings": [
+            {
+              "source": ".gitlab-ci.yml",
+              "destinations": [
+                ".woodpecker.yml"
+              ],
+              "mode": "managed"
+            }
+          ],
+          "external_includes": []
+        },
+        "variables": {
+          "unmapped": "fail",
+          "group_ids": [],
+          "group_hierarchy": {
+            "mode": "managed"
+          },
+          "instance_scope": {
+            "mode": "manual",
+            "accepted": true,
+            "reason": "Instance variables are reviewed separately because this project token is not a GitLab instance administrator."
+          },
+          "mappings": [
+            {
+              "source": "project:CONTAINER_REGISTRY_USER:*",
+              "target": "woodpecker_secret",
+              "target_name": "CONTAINER_REGISTRY_USER",
+              "mode": "managed"
+            }
+          ]
+        },
+        "schedules": {
+          "unmapped": "fail",
+          "mappings": [
+            {
+              "source": "nightly",
+              "target_name": "nightly",
+              "schedule": "0 2 * * *",
+              "branch": "main",
+              "mode": "managed"
+            }
+          ]
+        },
+        "runner_tags": {
+          "unmapped": "fail",
+          "mappings": [
+            {
+              "source": "linux",
+              "target_labels": {
+                "platform": "linux"
+              },
+              "mode": "mapped"
+            }
+          ]
+        },
+        "protections": {
+          "unmapped": "fail",
+          "mappings": [
+            {
+              "source": "main",
+              "target": "main",
+              "settings": {
+                "enable_push": false,
+                "required_approvals": 1
+              },
+              "mode": "managed"
+            }
+          ]
+        },
+        "integrations": {
+          "unmapped": "fail",
+          "mappings": [
+            {
+              "source": "hook:Woodpecker",
+              "target": "woodpecker_webhook",
+              "mode": "managed"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "services": {
+    "woodpecker": {
+      "mode": "managed",
+      "api_url": "https://ci.example.invalid",
+      "token_env": "WOODPECKER_API_TOKEN",
+      "shadow_gate_secret": "FORGE_CUTOVER_DEPLOYMENT_ENABLED",
+      "require_approval": "pull_requests",
+      "canary_timeout_seconds": 900
+    },
+    "harbor": {
+      "mode": "managed",
+      "api_url": "https://registry.example.invalid",
+      "username_env": "HARBOR_USERNAME",
+      "password_env": "HARBOR_PASSWORD",
+      "registry_host": "registry.example.invalid",
+      "project": "platform",
+      "create_project": true,
+      "canary": {
+        "repository": "platform-app-cutover-canary",
+        "reference": "shadow"
+      }
+    },
+    "argocd": {
+      "mode": "managed",
+      "api_url": "https://argocd.example.invalid",
+      "token_env": "ARGOCD_API_TOKEN",
+      "applications": [
+        {
+          "name": "platform-app",
+          "expected_repo_url": "https://forgejo.example.invalid/platform/platform-gitops.git"
+        }
+      ]
+    }
+  },
+  "activation": {
+    "freeze": "archive",
+    "prepare_confirmation_env": "FORGE_CUTOVER_PREPARE_CONFIRM",
+    "confirmation_env": "FORGE_CUTOVER_CONFIRM",
+    "rollback_confirmation_env": "FORGE_CUTOVER_ROLLBACK_CONFIRM",
+    "live_env": "FORGE_CUTOVER_LIVE",
+    "change_ticket_env": "FORGE_CUTOVER_CHANGE_TICKET",
+    "max_verification_age_seconds": 3600,
+    "cancel_active_pipelines": false
+  }
+}

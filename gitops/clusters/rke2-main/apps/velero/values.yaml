@@ -10,7 +10,7 @@ configuration:
       bucket: <BACKUP_BUCKET>
       config:
         region: <OBJECT_STORAGE_REGION>
-        s3Url: <OBJECT_STORAGE_ENDPOINT>
+        s3Url: <BACKUP_OBJECT_STORAGE_ENDPOINT>
         s3ForcePathStyle: "true"
   volumeSnapshotLocation:
     - name: default
@@ -47,14 +47,28 @@ schedules:
     schedule: <VELERO_DAILY_BACKUP_CRON>
     template:
       ttl: 720h0m0s
+      snapshotMoveData: true
       includedNamespaces:
         - argocd
         - cert-manager
+        - cnpg-system
+        - external-secrets
         - forgejo
         - harbor
+        - keycloak
         - logging
+        - longhorn-system
+        - metallb-system
         - monitoring
+        - object-storage
+        - openbao
+        - platform-cache
+        - platform-databases
+        - step-ca
+        - tetragon
+        - traefik
         - velero
+        - woodpecker
 
 metrics:
   enabled: true

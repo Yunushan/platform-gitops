@@ -1,0 +1,36 @@
+---
+- name: Verify production data protection
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_data_protection_max_backup_age_hours_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DATA_PROTECTION_MAX_BACKUP_AGE_HOURS') }}"
+    platform_data_protection_max_etcd_age_hours_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_DATA_PROTECTION_MAX_ETCD_AGE_HOURS') }}"
+    platform_data_protection_max_backup_age_hours: "{{ platform_data_protection_max_backup_age_hours_from_env | default(26, true) | int }}"
+    platform_data_protection_max_etcd_age_hours: "{{ platform_data_protection_max_etcd_age_hours_from_env | default(8, true) | int }}"
+  tasks:
+    - name: Validate data-protection age limits
+      ansible.builtin.assert:
+        that:
+          - platform_data_protection_max_backup_age_hours | int > 0
+          - platform_data_protection_max_etcd_age_hours | int > 0
+        fail_msg: Data-protection backup age limits must be positive integers.
+      run_once: true
+
+    - name: Verify live production data protection
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../../scripts/verify_platform_data_protection.py
+          --max-backup-age-hours {{ platform_data_protection_max_backup_age_hours }}
+          --max-etcd-age-hours {{ platform_data_protection_max_etcd_age_hours }}
+        executable: /usr/bin/python3
+      register: platform_data_protection_result
+      changed_when: false
+      run_once: true
+      delegate_to: "{{ rke2_first_server }}"
+
+    - name: Show successful production data-protection verification
+      ansible.builtin.debug:
+        msg: "{{ platform_data_protection_result.stdout_lines }}"
+      run_once: true

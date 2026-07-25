@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "drillId": "drill-example-2026-q1",
+  "completedAt": "2026-01-15T12:30:00Z",
+  "operator": "platform-operator@example.test",
+  "approver": "service-owner@example.test",
+  "profile": "premium-3node",
+  "result": "passed",
+  "rpoHours": 24,
+  "rtoMinutes": 240,
+  "elapsedMinutes": 93,
+  "checks": {
+    "etcd": {"status": "passed", "evidence": "ticket://DR-1001/etcd"},
+    "velero": {"status": "passed", "evidence": "ticket://DR-1001/velero"},
+    "cloudnativepg": {"status": "passed", "evidence": "ticket://DR-1001/postgres"},
+    "longhorn": {"status": "passed", "evidence": "ticket://DR-1001/longhorn"},
+    "forgejo": {"status": "passed", "evidence": "ticket://DR-1001/forgejo"},
+    "harbor": {"status": "passed", "evidence": "ticket://DR-1001/harbor"},
+    "secrets": {"status": "passed", "evidence": "ticket://DR-1001/secrets"},
+    "argocd": {"status": "passed", "evidence": "ticket://DR-1001/argocd"},
+    "ingress": {"status": "passed", "evidence": "ticket://DR-1001/ingress"},
+    "certificates": {"status": "passed", "evidence": "ticket://DR-1001/certificates"}
+  }
+}

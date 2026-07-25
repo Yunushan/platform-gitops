@@ -37,6 +37,9 @@ base_forgejo_values = root / "gitops/clusters/rke2-main/apps/forgejo/values.yaml
 premium_forgejo_values = root / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml"
 base_woodpecker_values = root / "gitops/clusters/rke2-main/apps/woodpecker/values.yaml"
 premium_woodpecker_values = root / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"
+premium_woodpecker_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/kustomization.yaml"
+premium_woodpecker_server_pdb = root / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/server-pdb.yaml"
+premium_woodpecker_agent_pdb = root / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/agent-pdb.yaml"
 base_cert_manager_values = root / "gitops/clusters/rke2-main/apps/cert-manager/values.yaml"
 premium_cert_manager_values = root / "gitops/clusters/rke2-main/premium-3node/apps/cert-manager/values.yaml"
 base_traefik_values = root / "gitops/clusters/rke2-main/apps/traefik/values.yaml"
@@ -48,6 +51,7 @@ base_cloudnativepg_values = root / "gitops/clusters/rke2-main/apps/cloudnativepg
 premium_cloudnativepg_values = root / "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/values.yaml"
 premium_platform_postgres_cluster = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-postgres/postgres-cluster.yaml"
 premium_platform_valkey_values = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/values.yaml"
+premium_platform_valkey_primary_service = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/service-primary.yaml"
 premium_keycloak_values = root / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml"
 premium_kyverno_values = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/values.yaml"
 premium_kyverno_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/kustomization.yaml"
@@ -1146,6 +1150,9 @@ def main() -> None:
         "- woodpecker-forgejo-oauth",
         "createAgentSecret: false",
         "mapAgentSecret: false",
+        "app.kubernetes.io/name: server\n              app.kubernetes.io/instance: woodpecker\n          topologyKey: kubernetes.io/hostname",
+        "app.kubernetes.io/name: agent\n              app.kubernetes.io/instance: woodpecker\n          topologyKey: kubernetes.io/hostname",
+        "topologySpreadConstraints:\n    - maxSkew: 1\n      topologyKey: kubernetes.io/hostname\n      whenUnsatisfiable: DoNotSchedule",
         "ingressClassName: traefik",
         "traefik.ingress.kubernetes.io/router.entrypoints: websecure",
         "traefik.ingress.kubernetes.io/router.tls: \"true\"",
@@ -1164,6 +1171,29 @@ def main() -> None:
         require_text(premium_woodpecker_text, needle, f"premium Woodpecker profile must include {needle.splitlines()[0]}")
     if count_yaml_list_scalar(premium_woodpecker_text, "woodpecker-agent-secret") != 2:
         fail("premium Woodpecker profile must map the same managed agent secret into server and agent")
+    premium_woodpecker_kustomization_text = read(premium_woodpecker_kustomization)
+    for resource_name, resource_path, workload_name in (
+        ("server-pdb.yaml", premium_woodpecker_server_pdb, "server"),
+        ("agent-pdb.yaml", premium_woodpecker_agent_pdb, "agent"),
+    ):
+        require_text(
+            premium_woodpecker_kustomization_text,
+            f"- {resource_name}",
+            f"premium Woodpecker kustomization must include {resource_name}",
+        )
+        pdb_text = read(resource_path)
+        for needle in (
+            "kind: PodDisruptionBudget",
+            "maxUnavailable: 1",
+            "unhealthyPodEvictionPolicy: AlwaysAllow",
+            f"app.kubernetes.io/name: {workload_name}",
+            "app.kubernetes.io/instance: woodpecker",
+        ):
+            require_text(
+                pdb_text,
+                needle,
+                f"premium Woodpecker {workload_name} PDB must include {needle}",
+            )
     require_woodpecker_role_image_pin(
         premium_woodpecker_text,
         "server",
@@ -1240,7 +1270,8 @@ def main() -> None:
     premium_longhorn_text = read(premium_longhorn_values)
     for needle in (
         "persistence:\n  defaultClass: false",
-        "backupTargetCredentialSecret: longhorn-backup-target",
+        "backupTarget: \"<LONGHORN_BACKUP_TARGET>\"",
+        "backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>",
         "createDefaultDiskLabeledNodes: false",
         "defaultReplicaCount: 2",
         "defaultDataLocality: best-effort",
@@ -1371,13 +1402,23 @@ def main() -> None:
     premium_platform_valkey_text = read(premium_platform_valkey_values)
     for needle in (
         "fullnameOverride: platform-valkey",
+        'tag: "9.1.0"',
         "usersExistingSecret: platform-valkey-auth",
         "passwordKey: valkey-password",
         "replicas: 2",
         "podDisruptionBudget:\n  enabled: true",
         "minAvailable: 2",
+        "whenUnsatisfiable: DoNotSchedule",
         "storageClass: longhorn-critical",
         "size: 8Gi",
+        "name: configure-ha",
+        'password="$(cat /auth/valkey-password)"',
+        "sentinel monitor platform-valkey",
+        "sentinel down-after-milliseconds platform-valkey 5000",
+        "name: sentinel",
+        "name: primary-proxy",
+        "image: haproxy:3.4.2-alpine",
+        "tcp-check expect string role:master",
         "serviceMonitor:\n    enabled: true",
     ):
         require_text(
@@ -1385,6 +1426,23 @@ def main() -> None:
             needle,
             f"premium platform Valkey profile must include {needle.splitlines()[0]}",
         )
+
+    premium_platform_valkey_primary_service_text = read(premium_platform_valkey_primary_service)
+    for needle in (
+        "name: platform-valkey-primary",
+        "app.kubernetes.io/component: primary-proxy",
+        "targetPort: primary-proxy",
+    ):
+        require_text(
+            premium_platform_valkey_primary_service_text,
+            needle,
+            f"premium platform Valkey primary Service must include {needle}",
+        )
+    reject_text(
+        premium_platform_valkey_primary_service_text,
+        "statefulset.kubernetes.io/pod-name",
+        "premium platform Valkey primary Service must not pin traffic to pod 0",
+    )
 
     premium_kyverno_text = read(premium_kyverno_values)
     for needle in (
@@ -1574,10 +1632,6 @@ def main() -> None:
         for needle in (
             "expose:\n  type: ingress\n  tls:\n    enabled: true\n    certSource: auto",
             "externalURL: https://harbor.<PLATFORM_DOMAIN>",
-            "updateStrategy:\n  type: Recreate",
-            "persistence:\n  enabled: true",
-            "imageChartStorage:\n    type: filesystem",
-            "database:\n  type: internal\n  internal:\n    resources:",
             "existingSecretAdminPassword: harbor-admin",
             "existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD",
             "existingSecretSecretKey: harbor-secret-key",
@@ -1586,12 +1640,12 @@ def main() -> None:
             require_text(harbor_text, needle, f"{label} must include {needle.splitlines()[0]}")
 
     base_harbor_text = read(base_harbor_values)
-    require_text(
-        base_harbor_text,
-        "redis:\n  type: internal\n  internal:\n    resources:",
-        "base Harbor profile must keep internal Redis as the template default",
-    )
     for needle in (
+        "updateStrategy:\n  type: Recreate",
+        "persistence:\n  enabled: true",
+        "imageChartStorage:\n    type: filesystem",
+        "database:\n  type: internal\n  internal:\n    resources:",
+        "redis:\n  type: internal\n  internal:\n    resources:",
         "storageClass: <HARBOR_STORAGE_CLASS>",
         "size: <HARBOR_REGISTRY_SIZE>",
         "size: <HARBOR_JOBLOG_SIZE>",
@@ -1603,19 +1657,39 @@ def main() -> None:
 
     premium_harbor_text = read(premium_harbor_values)
     for needle in (
-        "portal:\n  replicas: 1\n  resources:",
-        "core:\n  replicas: 1\n  # Harbor's chart cannot build the core Redis URL from existingSecret.",
+        "portal:\n  replicas: 2\n  podDisruptionBudget:\n    enabled: true\n    minAvailable: 1",
+        "core:\n  replicas: 2\n  podDisruptionBudget:\n    enabled: true\n    minAvailable: 1",
         "extraEnvVars:\n    - name: _REDIS_URL_CORE\n      valueFrom:\n        secretKeyRef:\n          name: harbor-redis-url\n          key: REDIS_URL_CORE",
-        "jobservice:\n  replicas: 1\n  resources:",
-        "registry:\n  replicas: 1\n  registry:\n    resources:",
+        "jobservice:\n  replicas: 2\n  podDisruptionBudget:",
+        "jobLoggers:\n    - database",
+        "registry:\n  replicas: 2\n  podDisruptionBudget:",
         "  controller:\n    resources:",
-        "trivy:\n  enabled: true\n  replicas: 1\n  resources:",
-        "exporter:\n  resources:",
+        "trivy:\n  enabled: true\n  replicas: 2\n  podDisruptionBudget:",
+        "exporter:\n  replicas: 2\n  podDisruptionBudget:",
+        "topologyKey: kubernetes.io/hostname\n      whenUnsatisfiable: DoNotSchedule",
+        "updateStrategy:\n  type: RollingUpdate",
+        "persistence:\n  enabled: false",
+        "imageChartStorage:\n    disableredirect: true\n    type: s3",
+        "regionendpoint: <HARBOR_S3_ENDPOINT>",
+        "existingSecret: <HARBOR_S3_SECRET_NAME>",
+        "database:\n  type: external",
+        "host: platform-postgres-rw.platform-databases.svc.cluster.local",
+        "existingSecret: harbor-database",
         "redis:\n  type: external",
         "addr: platform-valkey-primary.platform-cache.svc.cluster.local:6379",
         "existingSecret: harbor-redis",
     ):
         require_text(premium_harbor_text, needle, f"premium Harbor profile must include {needle.splitlines()[0]}")
+    for forbidden in (
+        "imageChartStorage:\n    type: filesystem",
+        "database:\n  type: internal",
+        "updateStrategy:\n  type: Recreate",
+    ):
+        reject_text(
+            premium_harbor_text,
+            forbidden,
+            f"premium Harbor profile must not include {forbidden.splitlines()[0]}",
+        )
     base_monitoring_text = read(base_monitoring_values)
     for needle in (
         "crds:\n  enabled: true",
@@ -1639,12 +1713,22 @@ def main() -> None:
 
     premium_monitoring_text = read(premium_monitoring_values)
     for needle in (
-        "prometheusSpec:\n    replicas: 2\n    retention: 15d",
+        "prometheus:\n  podDisruptionBudget:\n    enabled: true\n    minAvailable: 1",
+        "prometheusSpec:\n    replicas: 2\n    podAntiAffinity: hard\n    podAntiAffinityTopologyKey: kubernetes.io/hostname",
+        "retention: 15d",
         "    resources:\n      requests:\n        cpu: 250m\n        memory: 2Gi\n      limits:\n        memory: 4Gi",
-        "alertmanagerSpec:\n    replicas: 3\n    resources:\n      requests:\n        cpu: 100m\n        memory: 256Mi",
-        "grafana:\n  replicas: 1\n  admin:",
+        "alertmanager:\n  enabled: true\n  podDisruptionBudget:\n    enabled: true\n    minAvailable: 2",
+        "alertmanagerSpec:\n    replicas: 3\n    podAntiAffinity: hard\n    podAntiAffinityTopologyKey: kubernetes.io/hostname\n    resources:\n      requests:\n        cpu: 100m\n        memory: 256Mi",
+        "grafana:\n  replicas: 2\n  deploymentStrategy:\n    type: RollingUpdate",
+        "podDisruptionBudget:\n    minAvailable: 1",
+        "topologyKey: kubernetes.io/hostname\n      whenUnsatisfiable: DoNotSchedule",
         "resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi",
         "admin:\n    existingSecret: grafana-admin\n    userKey: admin-user\n    passwordKey: admin-password",
+        "envValueFrom:\n    GF_DATABASE_PASSWORD:",
+        "name: grafana-database\n        key: password",
+        "grafana.ini:\n    database:\n      type: postgres",
+        "host: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
+        "persistence:\n    enabled: false",
         "storageClassName: longhorn-standard",
         "podMonitorSelectorNilUsesHelmValues: false",
         "serviceMonitorSelectorNilUsesHelmValues: false",
@@ -1654,6 +1738,11 @@ def main() -> None:
             needle,
             f"premium monitoring profile must include {needle.splitlines()[0]}",
         )
+    reject_text(
+        premium_monitoring_text,
+        "persistence:\n    enabled: true",
+        "premium Grafana must not use a single-writer PVC",
+    )
     base_loki_text = read(base_loki_values)
     for needle in (
         "deploymentMode: SimpleScalable",
@@ -1703,12 +1792,13 @@ def main() -> None:
             "defaultVolumesToFsBackup: false",
             "provider: <BACKUP_PROVIDER>",
             "bucket: <BACKUP_BUCKET>",
-            "s3Url: <OBJECT_STORAGE_ENDPOINT>",
+            "s3Url: <BACKUP_OBJECT_STORAGE_ENDPOINT>",
             "existingSecret: velero-credentials",
             "deployNodeAgent: true",
             "resources:\n  requests:\n    cpu: 100m\n    memory: 256Mi\n  limits:\n    memory: 512Mi",
             "nodeAgent:\n  resources:\n    requests:\n      cpu: 250m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
             "snapshotsEnabled: true",
+            "snapshotMoveData: true",
             "platform-daily:",
             "schedule: <VELERO_DAILY_BACKUP_CRON>",
             "serviceMonitor:\n    enabled: true",
@@ -1731,6 +1821,7 @@ def main() -> None:
         "resources:\n  requests:\n    cpu: 100m\n    memory: 256Mi\n  limits:\n    memory: 512Mi",
         "nodeAgent:\n  resources:\n    requests:\n      cpu: 250m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
         "snapshotsEnabled: true",
+        "snapshotMoveData: true",
         "platform-daily:",
         "existingSecret: velero-credentials",
         "serviceMonitor:\n    enabled: true",
@@ -6137,8 +6228,8 @@ def main() -> None:
         'tag: "v3.16.0"',
         "SQLite-backed Woodpecker accepted multiple server replicas",
         "Woodpecker renderer accepted a mutable image tag",
-        "portal:\\n  replicas: 1\\n  resources:",
-        "registry:\\n  replicas: 1\\n  registry:\\n    resources:",
+        "portal:\\n  replicas: 2\\n  podDisruptionBudget:",
+        "registry:\\n  replicas: 2\\n  podDisruptionBudget:",
         "database:\\n  type: internal\\n  internal:\\n    resources:",
         "redis:\\n  type: internal\\n  internal:\\n    resources:",
         "HARBOR_DATABASE_MODE",
@@ -6154,8 +6245,9 @@ def main() -> None:
         "grafana-db-test",
         "GF_DATABASE_PASSWORD",
         'password: "$__env{GF_DATABASE_PASSWORD}"',
-        "prometheusSpec:\\n    replicas: 2\\n    retention: 15d",
-        "alertmanagerSpec:\\n    replicas: 3\\n    resources:",
+        "prometheusSpec:\\n    replicas: 2\\n    podAntiAffinity: hard",
+        "alertmanagerSpec:\\n    replicas: 3\\n    podAntiAffinity: hard",
+        "grafana:\\n  replicas: 2\\n  deploymentStrategy:\\n    type: RollingUpdate",
         "grafana:\\n  replicas: 1\\n  admin:",
         "write:\\n  replicas: 3\\n  resources:",
         "read:\\n  replicas: 3\\n  resources:",
@@ -6631,13 +6723,26 @@ def main() -> None:
             "CNPG_OBJECT_STORE_SECRET_NAME=cnpg-object-store",
             "CNPG_BACKUP_DESTINATION=s3://platform-cnpg-backups/platform-postgres",
             "CNPG_RENDER_POSTGRES_CLUSTER=true",
-            "CNPG_BACKUP_ENABLED=false",
-            "PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=false",
+            "CNPG_BACKUP_ENABLED=true",
+            "CNPG_POSTGRES_IMAGE=ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie",
+            "PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=true",
             "CNPG_S3_ACCESS_KEY_ID",
             "CNPG_S3_SECRET_ACCESS_KEY",
         ):
             if needle not in env_text:
                 fail(f"{env_example.relative_to(root)} must document CloudNativePG private rendering/secret value: {needle}")
+        for needle in (
+            "PLATFORM_PRODUCTION_STRICT=true",
+            "LONGHORN_BACKUP_TARGET=s3://platform-longhorn-backups@us-east-1/",
+            "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME=longhorn-backup-target",
+            "BACKUP_OBJECT_STORAGE_ENDPOINT=https://s3.amazonaws.com",
+            "PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true",
+            "PLATFORM_APP_SECRET_REQUIRE_LONGHORN_BACKUP=true",
+            "LONGHORN_BACKUP_ACCESS_KEY_ID",
+            "LONGHORN_BACKUP_SECRET_ACCESS_KEY",
+        ):
+            if needle not in env_text:
+                fail(f"{env_example.relative_to(root)} must document production backup value: {needle}")
         for needle in (
             "FORGEJO_REDIS_MODE=redis",
             "FORGEJO_REDIS_SECRET_NAME=forgejo-redis",

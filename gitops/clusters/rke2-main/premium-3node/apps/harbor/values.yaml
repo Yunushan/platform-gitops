@@ -1,7 +1,5 @@
-# Harbor bootstrap profile rendered by scripts/render_private_platform_values.py.
-# Uses internal PostgreSQL, external Redis, and filesystem registry storage for first deployment.
-# Store HARBOR_ADMIN_PASSWORD in secret/harbor-admin and secretKey in
-# secret/harbor-secret-key before syncing this app.
+# Harbor premium profile rendered by scripts/render_private_platform_values.py.
+# Uses CloudNativePG, shared Valkey, and off-cluster S3-compatible registry storage.
 expose:
   type: ingress
   tls:
@@ -15,7 +13,14 @@ expose:
 externalURL: https://harbor.<PLATFORM_DOMAIN>
 
 portal:
-  replicas: 1
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
   resources:
     requests:
       cpu: 50m
@@ -23,7 +28,14 @@ portal:
     limits:
       memory: 256Mi
 core:
-  replicas: 1
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
   # Harbor's chart cannot build the core Redis URL from existingSecret.
   # Keep the URL, including the password, in generated Secret data instead.
   extraEnvVars:
@@ -39,7 +51,16 @@ core:
     limits:
       memory: 1Gi
 jobservice:
-  replicas: 1
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+  jobLoggers:
+    - database
   resources:
     requests:
       cpu: 100m
@@ -47,7 +68,14 @@ jobservice:
     limits:
       memory: 512Mi
 registry:
-  replicas: 1
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
   registry:
     resources:
       requests:
@@ -64,7 +92,14 @@ registry:
         memory: 256Mi
 trivy:
   enabled: true
-  replicas: 1
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
   resources:
     requests:
       cpu: 250m
@@ -72,6 +107,14 @@ trivy:
     limits:
       memory: 2Gi
 exporter:
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
   resources:
     requests:
       cpu: 50m
@@ -80,41 +123,34 @@ exporter:
       memory: 256Mi
 
 updateStrategy:
-  type: Recreate
+  type: RollingUpdate
 
+# Stateful data is external. Local Harbor volumes are reconstructible caches only.
 persistence:
-  enabled: true
-  persistentVolumeClaim:
-    registry:
-      storageClass: longhorn-critical
-      size: 50Gi
-    jobservice:
-      jobLog:
-        storageClass: longhorn-critical
-        size: 5Gi
-    database:
-      storageClass: longhorn-critical
-      size: 10Gi
-    redis:
-      storageClass: longhorn-critical
-      size: 5Gi
-    trivy:
-      storageClass: longhorn-critical
-      size: 10Gi
+  enabled: false
   imageChartStorage:
-    type: filesystem
-    filesystem:
-      rootdirectory: /storage
+    disableredirect: true
+    type: s3
+    s3:
+      region: <HARBOR_S3_REGION>
+      bucket: <HARBOR_S3_BUCKET>
+      regionendpoint: <HARBOR_S3_ENDPOINT>
+      secure: true
+      skipverify: false
+      v4auth: true
+      existingSecret: <HARBOR_S3_SECRET_NAME>
 
 database:
-  type: internal
-  internal:
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        memory: 1Gi
+  type: external
+  external:
+    host: platform-postgres-rw.platform-databases.svc.cluster.local
+    port: "5432"
+    username: harbor
+    coreDatabase: registry
+    existingSecret: harbor-database
+    sslmode: disable
+    maxIdleConns: 100
+    maxOpenConns: 900
 
 redis:
   type: external

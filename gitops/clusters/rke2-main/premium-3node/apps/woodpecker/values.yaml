@@ -8,6 +8,14 @@ server:
   enabled: true
   statefulSet:
     replicaCount: 3
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: server
+              app.kubernetes.io/instance: woodpecker
+          topologyKey: kubernetes.io/hostname
   image:
     registry: docker.io
     repository: woodpeckerci/woodpecker-server
@@ -66,6 +74,22 @@ server:
 agent:
   enabled: true
   replicaCount: 3
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: agent
+              app.kubernetes.io/instance: woodpecker
+          topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: agent
+          app.kubernetes.io/instance: woodpecker
   mapAgentSecret: false
   extraSecretNamesForEnvFrom:
     - woodpecker-agent-secret

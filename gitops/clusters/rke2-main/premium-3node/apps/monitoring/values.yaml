@@ -1,10 +1,12 @@
 crds:
   enabled: true
 
-# Monitoring bootstrap profile rendered by scripts/render_private_platform_values.py.
-# Uses persistent Grafana SQLite for first deployment. Switch Grafana to external
-# PostgreSQL for long-term HA.
+# Monitoring premium profile rendered by scripts/render_private_platform_values.py.
+# Grafana stores durable state in the shared CloudNativePG cluster.
 prometheus:
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   ingress:
     enabled: true
     ingressClassName: traefik
@@ -16,11 +18,12 @@ prometheus:
           - prometheus.<PLATFORM_DOMAIN>
   prometheusSpec:
     replicas: 2
+    podAntiAffinity: hard
+    podAntiAffinityTopologyKey: kubernetes.io/hostname
     retention: 15d
     retentionSize: 20GB
     podMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelectorNilUsesHelmValues: false
-    # Keep both HA replicas schedulable on the three-node premium baseline.
     resources:
       requests:
         cpu: 250m
@@ -39,8 +42,13 @@ prometheus:
 
 alertmanager:
   enabled: true
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
   alertmanagerSpec:
     replicas: 3
+    podAntiAffinity: hard
+    podAntiAffinityTopologyKey: kubernetes.io/hostname
     resources:
       requests:
         cpu: 100m
@@ -58,11 +66,32 @@ alertmanager:
               storage: 10Gi
 
 grafana:
-  replicas: 1
+  replicas: 2
+  deploymentStrategy:
+    type: RollingUpdate
+  podDisruptionBudget:
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
   admin:
     existingSecret: grafana-admin
     userKey: admin-user
     passwordKey: admin-password
+  envValueFrom:
+    GF_DATABASE_PASSWORD:
+      secretKeyRef:
+        name: grafana-database
+        key: password
+  grafana.ini:
+    database:
+      type: postgres
+      host: platform-postgres-rw.platform-databases.svc.cluster.local:5432
+      name: grafana
+      user: grafana
+      password: $__env{GF_DATABASE_PASSWORD}
+      ssl_mode: disable
   resources:
     requests:
       cpu: 100m
@@ -70,12 +99,7 @@ grafana:
     limits:
       memory: 512Mi
   persistence:
-    enabled: true
-    type: pvc
-    storageClassName: longhorn-standard
-    accessModes:
-      - ReadWriteOnce
-    size: 10Gi
+    enabled: false
   ingress:
     enabled: true
     ingressClassName: traefik

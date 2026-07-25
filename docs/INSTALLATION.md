@@ -736,8 +736,11 @@ make platform-production-check
 ```
 
 It runs repository validation, RKE2 verification, the platform status report,
-the selected GitOps profile placeholder check, and the platform app health gate
-in one command. Repository validation also rejects mutable explicit image or
+the selected GitOps profile placeholder check, the platform app health gate,
+live off-cluster backup freshness checks, and restore-evidence validation in
+one command. Set `PLATFORM_RESTORE_EVIDENCE_FILE` to a completed private record
+based on `examples/restore-evidence.example.json`; the production gate refuses
+to pass without recent, independently approved restore proof. Repository validation also rejects mutable explicit image or
 chart tags such as `latest`, `next`, `nightly`, `dev`, or branch-style tags in
 curated GitOps app manifests.
 Use `docs/PRODUCTION_READINESS.md` as the final go/no-go checklist that ties
