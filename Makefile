@@ -391,7 +391,8 @@ platform-policy-readiness:
 platform-production-evidence:
 	@bash scripts/bootstrap/run-platform-production-evidence.sh
 
-platform-production-check: validate platform-profile-check rke2-verify platform-status platform-policy-readiness platform-tls-verify
+platform-production-check: validate platform-profile-check rke2-verify platform-status platform-tls-verify
+	@PLATFORM_POLICY_ENFORCEMENT=Enforce $(MAKE) platform-policy-readiness
 	@PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh
 	@bash scripts/bootstrap/run-platform-data-protection.sh
 

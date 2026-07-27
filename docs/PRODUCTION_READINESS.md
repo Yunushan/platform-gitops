@@ -52,7 +52,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 |---|---|
 | Repository validation passed | `python scripts/run_validation.py` or `make validate` |
 | Secret scan passed | `make no-secrets` or `python scripts/validate_no_secrets.py` |
-| Policy readiness reviewed | `make platform-policy-readiness`; Enforce mode requires zero managed violations |
+| Policy enforcement accepted | `PLATFORM_POLICY_ENFORCEMENT=Enforce make platform-policy-readiness`; both managed policies must be live in `Enforce` mode with zero violations |
 | Profile validation passed | `PLATFORM_PROFILE=<PROFILE> make platform-profile-check` |
 | Live production gate passed | `PLATFORM_PROFILE=<PROFILE> make platform-production-check` |
 | Wildcard TLS deployed | `PLATFORM_WILDCARD_TLS_CERT_FILE=<CERT> PLATFORM_WILDCARD_TLS_KEY_FILE=<KEY> make platform-tls` |
@@ -90,7 +90,7 @@ PLATFORM_PROFILE=<PROFILE> make platform-profile-check
 make rke2-verify
 make platform-status
 make platform-app-health
-make platform-policy-readiness
+PLATFORM_POLICY_ENFORCEMENT=Enforce make platform-policy-readiness
 PLATFORM_PROFILE=<PROFILE> make platform-production-check
 ```
 

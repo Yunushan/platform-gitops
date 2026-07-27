@@ -23,6 +23,26 @@
       loop: "{{ platform_managed_cluster_policies }}"
       changed_when: false
 
+    - name: Read managed Kyverno policy enforcement actions
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get clusterpolicy {{ item }} -o jsonpath={.spec.validationFailureAction}
+      loop: "{{ platform_managed_cluster_policies }}"
+      register: platform_policy_actions
+      changed_when: false
+
+    - name: Require managed Kyverno policy actions to match the requested mode
+      ansible.builtin.assert:
+        that:
+          - (item.stdout | trim | lower) == platform_policy_enforcement_effective
+        fail_msg: >-
+          Managed Kyverno policy {{ item.item }} is {{ item.stdout | trim | default('unset', true) }},
+          but PLATFORM_POLICY_ENFORCEMENT requires {{ platform_policy_enforcement_effective }}.
+          Render private values, sync the platform-policies Application, and rerun this gate.
+      loop: "{{ platform_policy_actions.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
     - name: Classify managed Kyverno policy violations
       ansible.builtin.shell: |
         set -euo pipefail

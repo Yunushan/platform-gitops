@@ -2597,6 +2597,7 @@ def main() -> None:
         "require-workload-baseline",
         "policyreports.wgpolicyk8s.io",
         "managed_policy_violations",
+        "validationFailureAction",
     ):
         require_text(
             policy_readiness_text,
@@ -6282,6 +6283,11 @@ def main() -> None:
         makefile_text,
         "PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh",
         "platform-production-check must force strict production-mode app health",
+    )
+    require_text(
+        makefile_text,
+        "PLATFORM_POLICY_ENFORCEMENT=Enforce $(MAKE) platform-policy-readiness",
+        "platform production check must require live Kyverno Enforce mode",
     )
     for needle in (
         "def render_loki(",
