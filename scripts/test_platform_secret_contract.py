@@ -547,6 +547,30 @@ def check_renderer_and_secret_playbook() -> None:
             "Velero MinIO credential reconciliation",
         )
 
+    for needle in (
+        "platform_sso_keycloak_secret_name",
+        "platform_sso_argocd_secret_name",
+        "platform_sso_grafana_secret_name",
+        "platform_sso_prometheus_secret_name",
+        "--from-literal=PLATFORM_SSO_BOOTSTRAP_ADMIN_PASSWORD=",
+        "--from-literal=PLATFORM_SSO_ARGOCD_CLIENT_SECRET=",
+        "--from-literal=GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=",
+        "--from-literal=cookie-secret=",
+        "app.kubernetes.io/part-of=argocd",
+    ):
+        require_contains(playbook_text, needle, "platform SSO secret automation")
+    for needle in (
+        "platform_sso_enabled",
+        "keycloakConfigCli:",
+        "platform-sso-argocd",
+        "platform-sso-grafana",
+        "platform-sso-prometheus",
+        "disable_login_form: true",
+        "oauth_auto_login: true",
+        "prometheus-oauth2-proxy",
+    ):
+        require_contains(renderer_text, needle, "platform SSO renderer contract")
+
 
 def render_with_custom_secret_names() -> dict[str, str]:
     renderer = load_renderer()
@@ -583,6 +607,10 @@ def render_with_custom_secret_names() -> dict[str, str]:
         "WOODPECKER_DATABASE_SECRET_NAME": "woodpecker-db-custom",
         "KEYCLOAK_ADMIN_SECRET_NAME": "keycloak-admin-custom",
         "KEYCLOAK_DATABASE_SECRET_NAME": "keycloak-db-custom",
+        "PLATFORM_SSO_KEYCLOAK_SECRET_NAME": "platform-sso-clients-custom",
+        "PLATFORM_SSO_ARGOCD_SECRET_NAME": "platform-sso-argocd-custom",
+        "PLATFORM_SSO_GRAFANA_SECRET_NAME": "platform-sso-grafana-custom",
+        "PLATFORM_SSO_PROMETHEUS_SECRET_NAME": "platform-sso-prometheus-custom",
         "GRAFANA_ADMIN_SECRET_NAME": "grafana-admin-custom",
         "GRAFANA_DATABASE_MODE": "postgres",
         "GRAFANA_DATABASE_HOST": "grafana-postgres.example.test",
@@ -593,6 +621,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
     }
     inventory = {
         "platform_ci_host": "ci.example.test",
+        "platform_argocd_host": "argocd.example.test",
         "platform_git_host": "git.example.test",
         "platform_grafana_host": "grafana.example.test",
         "platform_loki_host": "loki.example.test",
@@ -613,6 +642,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
             "velero": base / "velero-values.yaml",
             "valkey": base / "valkey-values.yaml",
             "keycloak": base / "keycloak-values.yaml",
+            "argocd": base / "argocd-values.yaml",
             "longhorn": base / "longhorn-values.yaml",
         }
         paths["longhorn"].write_text(
@@ -620,6 +650,10 @@ def render_with_custom_secret_names() -> dict[str, str]:
             '  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n'
             "  backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>\n"
             "  storageOverProvisioningPercentage: 100\n",
+            encoding="utf-8",
+        )
+        paths["argocd"].write_text(
+            (PREMIUM_APPS / "argocd-ha" / "values.yaml").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
         renderer.render_platform_valkey(paths["valkey"])
@@ -631,6 +665,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
         renderer.render_cnpg_postgres_cluster(paths["cnpg"])
         renderer.render_velero(paths["velero"])
         renderer.render_keycloak(paths["keycloak"], inventory)
+        renderer.render_argocd(paths["argocd"], inventory)
         renderer.render_longhorn(paths["longhorn"], env["LONGHORN_BACKUP_TARGET"])
         for app, path in paths.items():
             rendered[app] = path.read_text(encoding="utf-8")
@@ -652,6 +687,23 @@ def check_custom_rendering() -> None:
                     needle,
                     f"custom rendered {secondary_app} values for {contract['label']}",
                 )
+    require_contains(
+        rendered["keycloak"],
+        'extraEnvVarsSecret: "platform-sso-clients-custom"',
+        "custom rendered Keycloak SSO secret",
+    )
+    require_contains(
+        rendered["argocd"],
+        "clientSecret: $" + "platform-sso-argocd-custom:client-secret",
+        "custom rendered Argo CD SSO secret",
+    )
+    for needle in (
+        'envFromSecret: "platform-sso-grafana-custom"',
+        'name: "platform-sso-prometheus-custom"',
+        "disable_login_form: true",
+        "oauth_auto_login: true",
+    ):
+        require_contains(rendered["monitoring"], needle, "custom rendered monitoring SSO secrets")
 
 
 def main() -> int:

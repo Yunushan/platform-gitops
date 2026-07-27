@@ -8,7 +8,9 @@ prometheus:
     enabled: true
     minAvailable: 1
   ingress:
-    enabled: true
+    # The private renderer replaces this with an OAuth2 Proxy ingress.
+    # Never expose Prometheus directly from the premium profile.
+    enabled: false
     ingressClassName: traefik
     hosts:
       - prometheus.<PLATFORM_DOMAIN>
@@ -84,6 +86,7 @@ grafana:
       secretKeyRef:
         name: grafana-database
         key: password
+  envFromSecret: platform-sso-grafana
   grafana.ini:
     database:
       type: postgres
@@ -92,6 +95,29 @@ grafana:
       user: grafana
       password: $__env{GF_DATABASE_PASSWORD}
       ssl_mode: disable
+    server:
+      root_url: https://grafana.<PLATFORM_DOMAIN>
+    auth:
+      # Local Grafana passwords must not bypass the central identity provider.
+      disable_login_form: true
+      oauth_auto_login: true
+    auth.generic_oauth:
+      enabled: true
+      name: Platform SSO
+      allow_sign_up: true
+      client_id: grafana
+      client_secret: $__env{GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}
+      scopes: openid profile email groups
+      auth_url: https://sso.<PLATFORM_DOMAIN>/realms/platform/protocol/openid-connect/auth
+      token_url: https://sso.<PLATFORM_DOMAIN>/realms/platform/protocol/openid-connect/token
+      api_url: https://sso.<PLATFORM_DOMAIN>/realms/platform/protocol/openid-connect/userinfo
+      use_pkce: true
+      use_refresh_token: true
+      login_attribute_path: preferred_username
+      email_attribute_path: email
+      role_attribute_path: "contains(groups[*], 'platform-admin') && 'GrafanaAdmin' || 'Viewer'"
+      role_attribute_strict: true
+      allow_assign_grafana_admin: true
   resources:
     requests:
       cpu: 100m
@@ -121,3 +147,160 @@ kubeScheduler:
 
 kubeControllerManager:
   enabled: true
+
+# oauth2-proxy is the only external Prometheus path in the premium profile.
+# The private renderer keeps this resource aligned with custom host and secret
+# names, while this template remains secure by default.
+extraManifests:
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: prometheus-oauth2-proxy
+      namespace: monitoring
+      labels:
+        app.kubernetes.io/name: prometheus-oauth2-proxy
+        app.kubernetes.io/part-of: platform-monitoring
+    spec:
+      replicas: 2
+      strategy:
+        type: RollingUpdate
+        rollingUpdate:
+          maxUnavailable: 1
+          maxSurge: 1
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus-oauth2-proxy
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: prometheus-oauth2-proxy
+            app.kubernetes.io/part-of: platform-monitoring
+        spec:
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: prometheus-oauth2-proxy
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: oauth2-proxy
+              image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3
+              imagePullPolicy: IfNotPresent
+              args:
+                - --provider=keycloak-oidc
+                - --oidc-issuer-url=https://sso.<PLATFORM_DOMAIN>/realms/platform
+                - --client-id=prometheus
+                - --redirect-url=https://prometheus.<PLATFORM_DOMAIN>/oauth2/callback
+                - --email-domain=*
+                - --allowed-role=platform-viewer
+                - --upstream=http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090
+                - --http-address=0.0.0.0:4180
+                - --reverse-proxy=true
+                - --cookie-secure=true
+                - --cookie-samesite=lax
+                - --cookie-name=__Host-platform-prometheus
+                - --cookie-refresh=1h
+                - --cookie-expire=8h
+                - --scope=openid profile email groups
+                - --skip-provider-button=true
+                - --code-challenge-method=S256
+                - --set-xauthrequest=true
+                - --pass-access-token=true
+                - --silence-ping-logging=true
+              env:
+                - name: OAUTH2_PROXY_CLIENT_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-sso-prometheus
+                      key: client-secret
+                - name: OAUTH2_PROXY_COOKIE_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: platform-sso-prometheus
+                      key: cookie-secret
+              ports:
+                - name: http
+                  containerPort: 4180
+              readinessProbe:
+                httpGet:
+                  path: /ready
+                  port: http
+                periodSeconds: 10
+                timeoutSeconds: 3
+              livenessProbe:
+                httpGet:
+                  path: /ping
+                  port: http
+                periodSeconds: 10
+                timeoutSeconds: 3
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+  - apiVersion: v1
+    kind: Service
+    metadata:
+      name: prometheus-oauth2-proxy
+      namespace: monitoring
+      labels:
+        app.kubernetes.io/name: prometheus-oauth2-proxy
+    spec:
+      selector:
+        app.kubernetes.io/name: prometheus-oauth2-proxy
+      ports:
+        - name: http
+          port: 4180
+          targetPort: http
+  - apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: prometheus-oauth2-proxy
+      namespace: monitoring
+    spec:
+      minAvailable: 1
+      unhealthyPodEvictionPolicy: AlwaysAllow
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus-oauth2-proxy
+  - apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: prometheus-authenticated
+      namespace: monitoring
+      annotations:
+        traefik.ingress.kubernetes.io/router.entrypoints: websecure
+        traefik.ingress.kubernetes.io/router.tls: "true"
+    spec:
+      ingressClassName: traefik
+      rules:
+        - host: prometheus.<PLATFORM_DOMAIN>
+          http:
+            paths:
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: prometheus-oauth2-proxy
+                    port:
+                      number: 4180
+      tls:
+        - secretName: prometheus-tls
+          hosts:
+            - prometheus.<PLATFORM_DOMAIN>

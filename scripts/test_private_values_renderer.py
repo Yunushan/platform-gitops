@@ -162,6 +162,12 @@ platform_step_ca_host=ca.example.test
             renderer.render_minio(premium / "minio/values.yaml")
             renderer.render_keycloak(premium / "keycloak/values.yaml", inventory)
             renderer.render_step_ca(premium / "step-ca/values.yaml", inventory)
+            renderer.render_platform_policy_enforcement(
+                [
+                    premium / "platform-policies/no-plaintext-secrets.yaml",
+                    premium / "platform-policies/require-workload-baseline.yaml",
+                ]
+            )
 
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -223,6 +229,14 @@ platform_step_ca_host=ca.example.test
             "minio": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml"),
             "keycloak": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml"),
             "step_ca": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"),
+            "secret_policy": write(
+                repo / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/no-plaintext-secrets.yaml",
+                "spec:\n  validationFailureAction: Audit\n",
+            ),
+            "workload_policy": write(
+                repo / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-workload-baseline.yaml",
+                "spec:\n  validationFailureAction: Audit\n",
+            ),
         }
 
         env = {
@@ -303,6 +317,7 @@ platform_step_ca_host=ca.example.test
             "KEYCLOAK_DATABASE_USER": "keycloak",
             "KEYCLOAK_REPLICAS": "2",
             "KEYCLOAK_STORAGE_CLASS": "longhorn-critical",
+            "PLATFORM_SSO_BOOTSTRAP_ADMIN_USERNAME": "platform-bootstrap-test",
             "STEP_CA_MODE": "bootstrap",
             "STEP_CA_NAME": "Platform Test CA",
             "STEP_CA_DNS_NAMES": "ca.example.test,step-ca.step-ca.svc.cluster.local",
@@ -329,6 +344,9 @@ platform_step_ca_host=ca.example.test
             renderer.render_minio(paths["minio"])
             renderer.render_keycloak(paths["keycloak"], inventory)
             renderer.render_step_ca(paths["step_ca"], inventory)
+            renderer.render_platform_policy_enforcement(
+                [paths["secret_policy"], paths["workload_policy"]]
+            )
 
         rendered_paths = list(paths.values())
         assert_no_placeholders(rendered_paths)
@@ -338,9 +356,25 @@ platform_step_ca_host=ca.example.test
             'admin.enabled: "false"',
             "oidc.config: |",
             "issuer: https://sso.example.test/realms/platform",
-            "clientSecret: $platform-sso-argocd:client-secret",
+            "clientSecret: $" + "platform-sso-argocd:client-secret",
             "requestedScopes: [\"openid\", \"profile\", \"email\", \"groups\"]",
         )
+        assert_contains(paths["secret_policy"], "validationFailureAction: Audit")
+        assert_contains(paths["workload_policy"], "validationFailureAction: Audit")
+        with patched_env(dict(env, PLATFORM_POLICY_ENFORCEMENT="Enforce")):
+            renderer.render_platform_policy_enforcement(
+                [paths["secret_policy"], paths["workload_policy"]]
+            )
+        assert_contains(paths["secret_policy"], "validationFailureAction: Enforce")
+        assert_contains(paths["workload_policy"], "validationFailureAction: Enforce")
+        with patched_env(dict(env, PLATFORM_POLICY_ENFORCEMENT="invalid")):
+            try:
+                renderer.render_platform_policy_enforcement([paths["secret_policy"]])
+            except SystemExit as exc:
+                if "must be Audit or Enforce" not in str(exc):
+                    raise AssertionError(f"unexpected policy-mode validation error: {exc}") from exc
+            else:
+                raise AssertionError("policy renderer accepted an unsupported enforcement mode")
 
         disabled_argocd_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/disabled-values.yaml",
@@ -502,6 +536,7 @@ platform_step_ca_host=ca.example.test
             '"clientId": "argocd"',
             '"clientId": "grafana"',
             '"clientId": "prometheus"',
+            '"username": "platform-bootstrap-test"',
             '"requiredActions": [',
             '"CONFIGURE_TOTP"',
         )
@@ -544,6 +579,19 @@ platform_step_ca_host=ca.example.test
                     raise AssertionError(f"unexpected Keycloak replica validation error: {exc}") from exc
             else:
                 raise AssertionError("Keycloak renderer accepted a single premium replica")
+        legacy_sso_username_path = write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/legacy-sso-values.yaml",
+            paths["keycloak"].read_text(encoding="utf-8"),
+        )
+        legacy_sso_env = dict(env)
+        legacy_sso_env.pop("PLATFORM_SSO_BOOTSTRAP_ADMIN_USERNAME")
+        legacy_sso_env["PLATFORM_SSO_BOOTSTRAP_USERNAME"] = "legacy-platform-admin"
+        with patched_env(legacy_sso_env):
+            renderer.render_keycloak(legacy_sso_username_path, inventory)
+        assert_contains(
+            legacy_sso_username_path,
+            '"username": "legacy-platform-admin"',
+        )
         invalid_minio_env = dict(env, MINIO_REPLICA_COUNT="3")
         with patched_env(invalid_minio_env):
             try:
@@ -708,6 +756,8 @@ platform_step_ca_host=ca.example.test
             "grafana.ini:\n    database:\n      type: postgres",
             "persistence:\n    enabled: false",
             'envFromSecret: "platform-sso-grafana"',
+            "disable_login_form: true",
+            "oauth_auto_login: true",
             "auth.generic_oauth:",
             "role_attribute_strict: true",
             "extraManifests:",

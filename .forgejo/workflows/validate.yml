@@ -46,6 +46,10 @@ jobs:
         run: python scripts/test_supply_chain_helpers.py
       - name: Test backup and restore runbook
         run: python scripts/test_backup_restore_runbook.py
+      - name: Test data protection contract
+        run: python scripts/test_data_protection_contract.py
+      - name: Test production evidence validator
+        run: python scripts/test_production_evidence.py
       - name: Test business continuity runbook
         run: python scripts/test_business_continuity.py
       - name: Test service catalog

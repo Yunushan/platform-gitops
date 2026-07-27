@@ -75,3 +75,157 @@ metrics:
     namespace: monitoring
     labels:
       release: monitoring
+
+# Declarative platform realm. Client credentials are generated in the ignored
+# deployment path by make platform-app-secrets, never stored in Git.
+keycloakConfigCli:
+  enabled: true
+  automountServiceAccountToken: false
+  backoffLimit: 3
+  cleanupAfterFinished:
+    enabled: true
+    seconds: 900
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  extraEnvVars:
+    - name: IMPORT_VARSUBSTITUTION_ENABLED
+      value: "true"
+  extraEnvVarsSecret: platform-sso-clients
+  configuration:
+    platform-realm.json: |
+      {
+        "realm": "platform",
+        "enabled": true,
+        "sslRequired": "external",
+        "registrationAllowed": false,
+        "bruteForceProtected": true,
+        "roles": {
+          "realm": [
+            {"name": "platform-viewer"},
+            {
+              "name": "platform-admin",
+              "composite": true,
+              "composites": {"realm": ["platform-viewer"]}
+            }
+          ]
+        },
+        "users": [
+          {
+            "username": "platform-admin",
+            "enabled": true,
+            "email": "platform-admin@local.invalid",
+            "emailVerified": true,
+            "realmRoles": ["platform-admin"],
+            "requiredActions": ["CONFIGURE_TOTP"],
+            "credentials": [
+              {
+                "type": "password",
+                "value": "$(env:PLATFORM_SSO_BOOTSTRAP_ADMIN_PASSWORD)",
+                "temporary": false
+              }
+            ]
+          }
+        ],
+        "clients": [
+          {
+            "clientId": "argocd",
+            "protocol": "openid-connect",
+            "clientAuthenticatorType": "client-secret",
+            "secret": "$(env:PLATFORM_SSO_ARGOCD_CLIENT_SECRET)",
+            "publicClient": false,
+            "standardFlowEnabled": true,
+            "directAccessGrantsEnabled": false,
+            "redirectUris": [
+              "https://argocd.<PLATFORM_DOMAIN>/auth/callback",
+              "http://localhost:8085/auth/callback",
+              "http://127.0.0.1:8085/auth/callback"
+            ],
+            "webOrigins": ["https://argocd.<PLATFORM_DOMAIN>"],
+            "protocolMappers": [
+              {
+                "name": "realm-roles-as-groups",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-usermodel-realm-role-mapper",
+                "consentRequired": false,
+                "config": {
+                  "multivalued": "true",
+                  "userinfo.token.claim": "true",
+                  "id.token.claim": "true",
+                  "access.token.claim": "true",
+                  "claim.name": "groups",
+                  "jsonType.label": "String"
+                }
+              }
+            ]
+          },
+          {
+            "clientId": "grafana",
+            "protocol": "openid-connect",
+            "clientAuthenticatorType": "client-secret",
+            "secret": "$(env:PLATFORM_SSO_GRAFANA_CLIENT_SECRET)",
+            "publicClient": false,
+            "standardFlowEnabled": true,
+            "directAccessGrantsEnabled": false,
+            "redirectUris": ["https://grafana.<PLATFORM_DOMAIN>/login/generic_oauth"],
+            "webOrigins": ["https://grafana.<PLATFORM_DOMAIN>"],
+            "protocolMappers": [
+              {
+                "name": "realm-roles-as-groups",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-usermodel-realm-role-mapper",
+                "consentRequired": false,
+                "config": {
+                  "multivalued": "true",
+                  "userinfo.token.claim": "true",
+                  "id.token.claim": "true",
+                  "access.token.claim": "true",
+                  "claim.name": "groups",
+                  "jsonType.label": "String"
+                }
+              }
+            ]
+          },
+          {
+            "clientId": "prometheus",
+            "protocol": "openid-connect",
+            "clientAuthenticatorType": "client-secret",
+            "secret": "$(env:PLATFORM_SSO_PROMETHEUS_CLIENT_SECRET)",
+            "publicClient": false,
+            "standardFlowEnabled": true,
+            "directAccessGrantsEnabled": false,
+            "redirectUris": ["https://prometheus.<PLATFORM_DOMAIN>/oauth2/callback"],
+            "webOrigins": ["https://prometheus.<PLATFORM_DOMAIN>"],
+            "protocolMappers": [
+              {
+                "name": "realm-roles-as-groups",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-usermodel-realm-role-mapper",
+                "consentRequired": false,
+                "config": {
+                  "multivalued": "true",
+                  "userinfo.token.claim": "true",
+                  "id.token.claim": "true",
+                  "access.token.claim": "true",
+                  "claim.name": "groups",
+                  "jsonType.label": "String"
+                }
+              },
+              {
+                "name": "prometheus-audience",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-audience-mapper",
+                "consentRequired": false,
+                "config": {
+                  "included.client.audience": "prometheus",
+                  "id.token.claim": "true",
+                  "access.token.claim": "true"
+                }
+              }
+            ]
+          }
+        ]
+      }

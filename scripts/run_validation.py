@@ -31,6 +31,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_supply_chain_helpers.py",
     "scripts/test_backup_restore_runbook.py",
     "scripts/test_data_protection_contract.py",
+    "scripts/test_production_evidence.py",
     "scripts/test_business_continuity.py",
     "scripts/test_service_catalog.py",
     "scripts/test_architecture_decisions.py",

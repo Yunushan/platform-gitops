@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-data-protection platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-production-evidence platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -48,7 +48,11 @@ help:
 	@echo "  platform-woodpecker-repair  Hard-refresh/sync Woodpecker, verify runtime image tags, and run focused CI health"
 	@echo "  platform-monitoring-health  Verify focused Grafana and Prometheus readiness and ingress APIs"
 	@echo "  platform-monitoring-repair  Repair monitoring reconciliation, storage prerequisites, and ready backends"
+	@echo "  platform-tls  Validate and distribute a pre-issued wildcard TLS certificate without storing it in Git"
+	@echo "  platform-tls-verify  Verify TLS Secrets, hostname coverage, expiry, and the certificate served by the ingress VIP"
 	@echo "  platform-data-protection  Verify off-cluster backup freshness and approved restore-drill evidence"
+	@echo "  platform-policy-readiness  Report Kyverno baseline violations; block Enforce promotion while violations exist"
+	@echo "  platform-production-evidence  Run production gates and retain commit-bound, independently approved evidence"
 	@echo "  platform-production-check  Run repo, RKE2, app, backup, and restore-evidence readiness gates"
 	@echo "  platform-longhorn-bootstrap  Load private settings, bootstrap Longhorn storage, and verify CSI/PVC readiness"
 	@echo "  platform-longhorn-runtime-repair  Repair Longhorn manager/CSI registration without blocking on storage capacity"
@@ -372,10 +376,22 @@ platform-monitoring-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-monitoring.yml
 	@$(MAKE) platform-monitoring-health
 
+platform-tls:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/manage-platform-tls.yml
+
+platform-tls-verify:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-tls.yml
+
 platform-data-protection:
 	@bash scripts/bootstrap/run-platform-data-protection.sh
 
-platform-production-check: validate platform-profile-check rke2-verify platform-status
+platform-policy-readiness:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-policy-readiness.yml
+
+platform-production-evidence:
+	@bash scripts/bootstrap/run-platform-production-evidence.sh
+
+platform-production-check: validate platform-profile-check rke2-verify platform-status platform-policy-readiness platform-tls-verify
 	@PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh
 	@bash scripts/bootstrap/run-platform-data-protection.sh
 

@@ -10,10 +10,12 @@
     rke2_verify_api_vip_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERIFY_API_VIP') }}"
     rke2_api_vip_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_VIP') }}"
     rke2_api_dns_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_DNS') }}"
+    rke2_verify_secrets_encryption_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERIFY_SECRETS_ENCRYPTION') }}"
     rke2_verify_timeout_effective: "{{ rke2_verify_timeout | default(rke2_verify_timeout_from_env, true) | default(120, true) | int }}"
     rke2_verify_api_vip_effective: "{{ rke2_verify_api_vip | default(rke2_verify_api_vip_from_env, true) | default(true, true) | bool }}"
     rke2_api_vip_effective: "{{ rke2_api_vip | default(rke2_api_vip_from_env, true) | default('', true) }}"
     rke2_api_dns_effective: "{{ rke2_api_dns | default(rke2_api_dns_from_env, true) | default('', true) }}"
+    rke2_verify_secrets_encryption_effective: "{{ rke2_verify_secrets_encryption | default(rke2_verify_secrets_encryption_from_env, true) | default(true, true) | bool }}"
     rke2_verify_poll_interval: 10
   tasks:
     - name: Require rke2-server service active on every node
@@ -41,6 +43,25 @@
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
+
+    - name: Verify RKE2 Secret encryption at rest
+      ansible.builtin.command: rke2 secrets-encrypt status
+      register: rke2_verify_secrets_encryption_status
+      changed_when: false
+      failed_when: >-
+        rke2_verify_secrets_encryption_status.rc != 0 or
+        'Encryption Status: Enabled' not in rke2_verify_secrets_encryption_status.stdout or
+        'Server Encryption Hashes: All hashes match' not in rke2_verify_secrets_encryption_status.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: rke2_verify_secrets_encryption_effective | bool
+
+    - name: Print verified RKE2 Secret encryption state
+      ansible.builtin.debug:
+        var: rke2_verify_secrets_encryption_status.stdout_lines
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: rke2_verify_secrets_encryption_effective | bool
 
     - name: Verify configured API VIP and DNS path
       when: rke2_verify_api_vip_effective | bool

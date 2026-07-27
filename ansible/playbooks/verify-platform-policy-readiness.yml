@@ -1,0 +1,64 @@
+---
+- name: Verify platform policy enforcement readiness
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: false
+  vars:
+    platform_policy_enforcement_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_POLICY_ENFORCEMENT') }}"
+    platform_policy_enforcement_effective: "{{ platform_policy_enforcement | default(platform_policy_enforcement_from_env, true) | default('Audit', true) | lower }}"
+    platform_managed_cluster_policies:
+      - require-private-secret-workflow
+      - require-workload-baseline
+  tasks:
+    - name: Require a supported platform policy enforcement mode
+      ansible.builtin.assert:
+        that:
+          - platform_policy_enforcement_effective in ['audit', 'enforce']
+        fail_msg: "PLATFORM_POLICY_ENFORCEMENT must be Audit or Enforce."
+
+    - name: Require the managed Kyverno policies
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get clusterpolicy {{ item }}
+      loop: "{{ platform_managed_cluster_policies }}"
+      changed_when: false
+
+    - name: Classify managed Kyverno policy violations
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        "$K" --kubeconfig "$C" get policyreports.wgpolicyk8s.io -A -o json |
+          python3 - '{{ platform_policy_enforcement_effective }}' <<'PY'
+        import json
+        import sys
+
+        mode = sys.argv[1]
+        managed = {"require-private-secret-workflow", "require-workload-baseline"}
+        report = json.load(sys.stdin)
+        failures = []
+        for item in report.get("items", []):
+            namespace = item.get("metadata", {}).get("namespace", "")
+            resource = item.get("scope", {}).get("name", "")
+            for result in item.get("results", []):
+                if result.get("policy") in managed and result.get("result") == "fail":
+                    failures.append(
+                        f"namespace={namespace or '<cluster>'} resource={resource or '<unknown>'} "
+                        f"policy={result.get('policy')} rule={result.get('rule', '<unknown>')}"
+                    )
+        print(f"platform_policy_enforcement={mode}")
+        print(f"managed_policy_violations={len(failures)}")
+        for failure in failures[:100]:
+            print(failure)
+        if mode == "enforce" and failures:
+            raise SystemExit(2)
+        PY
+      args:
+        executable: /bin/bash
+      register: platform_policy_readiness
+      changed_when: false
+      failed_when: platform_policy_readiness.rc != 0
+
+    - name: Print managed Kyverno policy readiness
+      ansible.builtin.debug:
+        var: platform_policy_readiness.stdout_lines

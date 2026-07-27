@@ -40,6 +40,7 @@ The readiness decision covers:
 | Support and lifecycle | Supported OS, component versions, upgrade path, and exceptions are reviewed through `docs/PLATFORM_SUPPORT.md` |
 | Access control | Human roles, robot accounts, branch protection, and break-glass flow are reviewed |
 | Security and supply chain | SOPS or external secrets, policy examples, image/chart pinning, CI SHA pinning, and update review are in place |
+| Admission controls | Kyverno managed-policy reports are reviewed; Enforce promotion has zero managed violations |
 | Operations | Owners, maintenance windows, incident response, alerting, capacity, compliance evidence, and release promotion are current |
 
 ## Go/No-Go Checklist
@@ -51,8 +52,12 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 |---|---|
 | Repository validation passed | `python scripts/run_validation.py` or `make validate` |
 | Secret scan passed | `make no-secrets` or `python scripts/validate_no_secrets.py` |
+| Policy readiness reviewed | `make platform-policy-readiness`; Enforce mode requires zero managed violations |
 | Profile validation passed | `PLATFORM_PROFILE=<PROFILE> make platform-profile-check` |
 | Live production gate passed | `PLATFORM_PROFILE=<PROFILE> make platform-production-check` |
+| Wildcard TLS deployed | `PLATFORM_WILDCARD_TLS_CERT_FILE=<CERT> PLATFORM_WILDCARD_TLS_KEY_FILE=<KEY> make platform-tls` |
+| TLS boundary verified | `make platform-tls-verify` |
+| Commit-bound acceptance retained | `PLATFORM_RELEASE_ID=<ID> PLATFORM_EVIDENCE_OPERATOR=<OPERATOR> PLATFORM_EVIDENCE_APPROVER=<APPROVER> make platform-production-evidence` |
 | App health gate passed | `make platform-app-health` |
 | RKE2 verification passed | `make rke2-verify` or production gate output |
 | Platform status reviewed | `make platform-status` |
@@ -85,8 +90,24 @@ PLATFORM_PROFILE=<PROFILE> make platform-profile-check
 make rke2-verify
 make platform-status
 make platform-app-health
+make platform-policy-readiness
 PLATFORM_PROFILE=<PROFILE> make platform-production-check
 ```
+
+After the production gate passes, retain a fresh private record that binds the
+gate output to the exact Git revision and requires a distinct operator and
+approver:
+
+```bash
+PLATFORM_RELEASE_ID=<APPROVED_CHANGE_ID> \
+PLATFORM_EVIDENCE_OPERATOR=<OPERATOR_ID> \
+PLATFORM_EVIDENCE_APPROVER=<INDEPENDENT_APPROVER_ID> \
+make platform-production-evidence
+```
+
+The command writes a JSON record and hashed log below the ignored
+`private/production-evidence/` directory. It never creates a passing record
+when a gate fails.
 
 When proving the exact private GitOps source, run the production gate with the
 same repository URL used to register Argo CD Applications:

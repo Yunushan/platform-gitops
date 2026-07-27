@@ -1,0 +1,154 @@
+---
+- name: Validate and distribute a pre-issued wildcard TLS certificate
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_domain_effective: "{{ platform_domain | default(rke2_platform_domain | default((rke2_api_dns | default('', true)) | regex_replace('^api[.]', ''), true), true) }}"
+    platform_tls_certificate_file_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WILDCARD_TLS_CERT_FILE') }}"
+    platform_tls_key_file_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WILDCARD_TLS_KEY_FILE') }}"
+    platform_tls_min_validity_days_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WILDCARD_TLS_MIN_VALIDITY_DAYS') }}"
+    platform_tls_certificate_file_effective: "{{ platform_tls_certificate_file | default(platform_tls_certificate_file_from_env, true) }}"
+    platform_tls_key_file_effective: "{{ platform_tls_key_file | default(platform_tls_key_file_from_env, true) }}"
+    platform_tls_min_validity_days_effective: "{{ platform_tls_min_validity_days | default(platform_tls_min_validity_days_from_env, true) | default(30, true) | int }}"
+    platform_tls_remote_directory: /run/platform-gitops-tls
+  vars_files:
+    - ../vars/platform-hostnames.yml
+  tasks:
+    - name: Require wildcard TLS source files
+      ansible.builtin.assert:
+        that:
+          - platform_tls_certificate_file_effective | length > 0
+          - platform_tls_key_file_effective | length > 0
+          - platform_tls_min_validity_days_effective | int > 0
+        fail_msg: >-
+          Set PLATFORM_WILDCARD_TLS_CERT_FILE and PLATFORM_WILDCARD_TLS_KEY_FILE
+          to ignored local PEM paths before running make platform-tls.
+      run_once: true
+
+    - name: Check wildcard TLS source files on the Ansible controller
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ platform_tls_certificate_file_effective }}"
+        - "{{ platform_tls_key_file_effective }}"
+      register: platform_tls_source_stats
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Require readable wildcard TLS source files
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - item.stat.readable
+        fail_msg: "Wildcard TLS source file is not a readable regular file: {{ item.item }}"
+      loop: "{{ platform_tls_source_stats.results }}"
+      run_once: true
+
+    - name: Create temporary wildcard TLS directory on first server
+      ansible.builtin.file:
+        path: "{{ platform_tls_remote_directory }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Copy wildcard TLS certificate to first server
+      ansible.builtin.copy:
+        src: "{{ platform_tls_certificate_file_effective }}"
+        dest: "{{ platform_tls_remote_directory }}/tls.crt"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Copy wildcard TLS key to first server
+      ansible.builtin.copy:
+        src: "{{ platform_tls_key_file_effective }}"
+        dest: "{{ platform_tls_remote_directory }}/tls.key"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Validate wildcard TLS material and apply namespace-local secrets
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cert="{{ platform_tls_remote_directory }}/tls.crt"
+        key="{{ platform_tls_remote_directory }}/tls.key"
+        minimum_validity_seconds=$(({{ platform_tls_min_validity_days_effective | int }} * 86400))
+        cleanup() {
+          rm -rf "{{ platform_tls_remote_directory }}"
+        }
+        trap cleanup EXIT
+
+        openssl x509 -in "${cert}" -noout -subject -issuer -dates
+        openssl x509 -in "${cert}" -noout -checkend "${minimum_validity_seconds}"
+        test "$(openssl x509 -in "${cert}" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | awk '{print $1}')" = \
+          "$(openssl pkey -in "${key}" -pubout -outform DER | sha256sum | awk '{print $1}')"
+
+        for host in \
+          "{{ platform_argocd_host_effective }}" \
+          "{{ platform_forgejo_host_effective }}" \
+          "{{ platform_woodpecker_host_effective }}" \
+          "{{ platform_harbor_host_effective }}" \
+          "{{ platform_keycloak_host_effective }}" \
+          "{{ platform_grafana_host_effective }}" \
+          "{{ platform_prometheus_host_effective }}" \
+          "{{ platform_loki_host_effective }}"
+        do
+          output="$(openssl x509 -in "${cert}" -noout -checkhost "${host}")"
+          printf 'host=%s certificate_check=%s\n' "${host}" "${output}"
+          printf '%s' "${output}" | grep -F 'does match' >/dev/null
+        done
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        changed=0
+
+        while IFS=: read -r namespace secret; do
+          namespace_result="$("$K" --kubeconfig "$C" create namespace "${namespace}" --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -)"
+          secret_result="$("$K" --kubeconfig "$C" -n "${namespace}" create secret tls "${secret}" \
+            --cert="${cert}" \
+            --key="${key}" \
+            --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -)"
+          case "${namespace_result} ${secret_result}" in
+            *" created"*|*" configured"*) changed=1 ;;
+          esac
+          echo "tls_secret=${namespace}/${secret} state=applied"
+        done <<'TARGETS'
+        argocd:argocd-server-tls
+        forgejo:forgejo-tls
+        woodpecker:woodpecker-tls
+        harbor:harbor-tls
+        keycloak:keycloak-tls
+        monitoring:grafana-tls
+        monitoring:prometheus-tls
+        logging:loki-tls
+        TARGETS
+        echo "platform_tls_changed=${changed}"
+      args:
+        executable: /bin/bash
+      register: platform_tls_apply_result
+      changed_when: "'platform_tls_changed=1' in platform_tls_apply_result.stdout"
+      no_log: true
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Show wildcard TLS distribution summary
+      ansible.builtin.debug:
+        msg: >-
+          Validated a matching wildcard certificate/key pair and applied
+          namespace-local TLS Secrets for Argo CD, Forgejo, Woodpecker, Harbor,
+          Keycloak, Grafana, Prometheus, and Loki. Private source files were
+          removed from the server after the Kubernetes Secrets were updated.
+      run_once: true

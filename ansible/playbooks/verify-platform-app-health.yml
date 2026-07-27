@@ -32,6 +32,7 @@
     platform_app_health_forgejo_production_secrets_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS') }}"
     platform_app_health_grafana_database_secret_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET') }}"
     platform_app_health_cnpg_object_storage_secret_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_CNPG_OBJECT_STORAGE_SECRET') }}"
+    platform_app_health_sso_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SSO') }}"
     platform_app_health_argocd_runtime_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_ARGOCD_RUNTIME') }}"
     platform_app_health_longhorn_runtime_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_LONGHORN_RUNTIME') }}"
     platform_app_health_ha_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HA_REPLICAS') }}"
@@ -58,6 +59,11 @@
     platform_woodpecker_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_SECRET_NAME') }}"
     platform_keycloak_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_ADMIN_SECRET_NAME') }}"
     platform_keycloak_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'KEYCLOAK_DATABASE_SECRET_NAME') }}"
+    platform_sso_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SSO_ENABLED') }}"
+    platform_sso_keycloak_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SSO_KEYCLOAK_SECRET_NAME') }}"
+    platform_sso_argocd_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SSO_ARGOCD_SECRET_NAME') }}"
+    platform_sso_grafana_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SSO_GRAFANA_SECRET_NAME') }}"
+    platform_sso_prometheus_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_SSO_PROMETHEUS_SECRET_NAME') }}"
     platform_grafana_admin_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'GRAFANA_ADMIN_SECRET_NAME') }}"
     platform_grafana_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'GRAFANA_DATABASE_SECRET_NAME') }}"
     platform_loki_object_storage_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'LOKI_OBJECT_STORAGE_SECRET_NAME') }}"
@@ -88,6 +94,7 @@
     platform_app_health_forgejo_production_secrets_effective: "{{ platform_app_health_forgejo_production_secrets | default(platform_app_health_forgejo_production_secrets_from_env, true) | default(false, true) | bool }}"
     platform_app_health_grafana_database_secret_effective: "{{ platform_app_health_grafana_database_secret | default(platform_app_health_grafana_database_secret_from_env, true) | default(false, true) | bool }}"
     platform_app_health_cnpg_object_storage_secret_effective: "{{ platform_app_health_cnpg_object_storage_secret | default(platform_app_health_cnpg_object_storage_secret_from_env, true) | default(false, true) | bool }}"
+    platform_app_health_sso_effective: "{{ platform_app_health_sso | default(platform_app_health_sso_from_env, true) | default(platform_sso_enabled_from_env, true) | default(true, true) | bool }}"
     platform_app_health_argocd_runtime_effective: "{{ platform_app_health_argocd_runtime | default(platform_app_health_argocd_runtime_from_env, true) | default(true, true) | bool }}"
     platform_app_health_longhorn_runtime_effective: "{{ platform_app_health_longhorn_runtime | default(platform_app_health_longhorn_runtime_from_env, true) | default(true, true) | bool }}"
     platform_app_health_ha_replicas_effective: "{{ platform_app_health_ha_replicas | default(platform_app_health_ha_replicas_from_env, true) | default(true, true) | bool }}"
@@ -113,6 +120,10 @@
     platform_woodpecker_database_secret_name_effective: "{{ platform_woodpecker_database_secret_name | default(platform_woodpecker_database_secret_name_from_env, true) | default('woodpecker-database', true) }}"
     platform_keycloak_admin_secret_name_effective: "{{ platform_keycloak_admin_secret_name | default(platform_keycloak_admin_secret_name_from_env, true) | default('keycloak-admin', true) }}"
     platform_keycloak_database_secret_name_effective: "{{ platform_keycloak_database_secret_name | default(platform_keycloak_database_secret_name_from_env, true) | default('keycloak-database', true) }}"
+    platform_sso_keycloak_secret_name_effective: "{{ platform_sso_keycloak_secret_name | default(platform_sso_keycloak_secret_name_from_env, true) | default('platform-sso-clients', true) }}"
+    platform_sso_argocd_secret_name_effective: "{{ platform_sso_argocd_secret_name | default(platform_sso_argocd_secret_name_from_env, true) | default('platform-sso-argocd', true) }}"
+    platform_sso_grafana_secret_name_effective: "{{ platform_sso_grafana_secret_name | default(platform_sso_grafana_secret_name_from_env, true) | default('platform-sso-grafana', true) }}"
+    platform_sso_prometheus_secret_name_effective: "{{ platform_sso_prometheus_secret_name | default(platform_sso_prometheus_secret_name_from_env, true) | default('platform-sso-prometheus', true) }}"
     platform_grafana_admin_secret_name_effective: "{{ platform_grafana_admin_secret_name | default(platform_grafana_admin_secret_name_from_env, true) | default('grafana-admin', true) }}"
     platform_grafana_database_secret_name_effective: "{{ platform_grafana_database_secret_name | default(platform_grafana_database_secret_name_from_env, true) | default('grafana-database', true) }}"
     platform_loki_object_storage_secret_name_effective: "{{ platform_loki_object_storage_secret_name | default(platform_loki_object_storage_secret_name_from_env, true) | default('loki-object-storage', true) }}"
@@ -1786,6 +1797,28 @@
               ;;
           esac
 
+          if [ "{{ platform_app_health_sso_effective | ternary('true', 'false') }}" = "true" ]; then
+            check_secret_contract keycloak "{{ platform_sso_keycloak_secret_name_effective }}" \
+              PLATFORM_SSO_BOOTSTRAP_ADMIN_PASSWORD \
+              PLATFORM_SSO_ARGOCD_CLIENT_SECRET \
+              PLATFORM_SSO_GRAFANA_CLIENT_SECRET \
+              PLATFORM_SSO_PROMETHEUS_CLIENT_SECRET \
+              PLATFORM_SSO_PROMETHEUS_COOKIE_SECRET
+            check_secret_contract argocd "{{ platform_sso_argocd_secret_name_effective }}" client-secret
+            argocd_sso_label="$("$K" --kubeconfig "$C" -n argocd get "secret/{{ platform_sso_argocd_secret_name_effective }}" \
+              -o 'jsonpath={.metadata.labels.app\.kubernetes\.io/part-of}' 2>/dev/null || true)"
+            if [ "${argocd_sso_label}" != "argocd" ]; then
+              echo "result=fail reason=argocd-sso-secret-missing-required-label expected=app.kubernetes.io/part-of=argocd"
+              failed=1
+            else
+              echo "argocd_sso_secret_label=app.kubernetes.io/part-of=argocd"
+            fi
+            check_secret_contract monitoring "{{ platform_sso_grafana_secret_name_effective }}" GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET
+            check_secret_contract monitoring "{{ platform_sso_prometheus_secret_name_effective }}" client-secret cookie-secret
+          else
+            echo "result=skip reason=platform-sso-secret-contract-disabled"
+          fi
+
           case " ${required_apps} " in
             *" monitoring "*)
               check_secret_contract monitoring "{{ platform_grafana_admin_secret_name_effective }}" admin-user admin-password
@@ -2445,7 +2478,7 @@
         var: platform_app_health_registry_api_probe.stdout_lines
       run_once: true
 
-    - name: Probe monitoring APIs from Ansible controller
+    - name: Verify monitoring public authentication boundary from Ansible controller
       ansible.builtin.shell: |
         set -u
         VIP="{{ rke2_ingress_vip_effective }}"
@@ -2469,27 +2502,26 @@
           exit 1
         fi
 
-        probe_api() {
+        probe_auth_boundary() {
           app="$1"
           host="$2"
-          path="$3"
-          expected_body_pattern="$4"
           case " ${GUI_APPS} " in
             *" ${app} "*) ;;
             *)
-              echo "===== ${app} monitoring API from Ansible controller ====="
+              echo "===== ${app} monitoring authentication boundary from Ansible controller ====="
               echo "result=skip reason=not-required-by-platform-app-health-gui-apps"
               return
               ;;
           esac
 
-          body_file="$(mktemp)"
+          headers_file="$(mktemp)"
           error_file="$(mktemp)"
-          url="https://${host}${path}"
-          echo "===== ${app} monitoring API from Ansible controller ====="
+          url="https://${host}/"
+          echo "===== ${app} monitoring authentication boundary from Ansible controller ====="
           echo "url=${url} vip=${VIP}"
 
-          code="$(curl --silent --show-error --insecure --output "${body_file}" \
+          code="$(curl --silent --show-error --insecure --output /dev/null \
+            --dump-header "${headers_file}" \
             --write-out '%{http_code}' \
             --connect-timeout "${CONNECT_TIMEOUT}" \
             --max-time "${MAX_TIME}" \
@@ -2503,28 +2535,20 @@
           fi
 
           case "${code}" in
-            200) ;;
+            302|303|307|401|403)
+              echo "authentication_boundary=protected"
+              echo "result=ok"
+              ;;
             *)
-              echo "result=fail reason=unexpected-monitoring-api-http-code"
+              echo "result=fail reason=monitoring-public-authentication-not-enforced"
               failed=1
-              rm -f "${body_file}" "${error_file}"
-              return
               ;;
           esac
-
-          if grep -Eiq "${expected_body_pattern}" "${body_file}"; then
-            echo "body_match=ok"
-            echo "result=ok"
-          else
-            echo "body_match=missing"
-            echo "result=fail reason=unexpected-monitoring-api-body"
-            failed=1
-          fi
-          rm -f "${body_file}" "${error_file}"
+          rm -f "${headers_file}" "${error_file}"
         }
 
-        probe_api grafana "${GRAFANA_HOST}" /api/health '"database"[[:space:]]*:[[:space:]]*"ok"'
-        probe_api prometheus "${PROMETHEUS_HOST}" /-/ready 'ready|Ready'
+        probe_auth_boundary grafana "${GRAFANA_HOST}"
+        probe_auth_boundary prometheus "${PROMETHEUS_HOST}"
 
         exit "${failed}"
       args:
@@ -2536,7 +2560,7 @@
       become: false
       run_once: true
 
-    - name: Print monitoring API probe results
+    - name: Print monitoring authentication boundary results
       ansible.builtin.debug:
         var: platform_app_health_monitoring_api_probe.stdout_lines
       run_once: true
@@ -3293,8 +3317,8 @@
           It also fails when a configured GUI host has no
           Ingress/IngressRoute or no ready backend endpoints, when the Harbor
           `/v2/` registry API does not answer with the Docker Distribution API
-          header, when Grafana `/api/health` or Prometheus `/-/ready` does not
-          return healthy content through the app VIP, when Loki does not answer
+          header, when Grafana or Prometheus accepts an unauthenticated public
+          request instead of redirecting or rejecting it, when Loki does not answer
           a known `/ready` endpoint, when Velero BackupStorageLocations are not
           Available, when no enabled Velero backup schedule exists, or when a
           pod pinned to any RKE2 node cannot reach the Argo CD or Woodpecker
@@ -3395,5 +3419,5 @@
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey app secrets exist with required keys; Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana /api/health and Prometheus /-/ready answer through the app VIP when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey and SSO secrets exist with required keys; Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana and Prometheus deny or redirect unauthenticated public access when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
       run_once: true

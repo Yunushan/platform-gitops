@@ -57,6 +57,12 @@ premium_kyverno_values = root / "gitops/clusters/rke2-main/premium-3node/apps/ky
 premium_kyverno_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/kustomization.yaml"
 premium_no_plaintext_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/no-plaintext-secrets.yaml"
 premium_workload_baseline_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-workload-baseline.yaml"
+policy_readiness_playbook = root / "ansible/playbooks/verify-platform-policy-readiness.yml"
+platform_tls_playbook = root / "ansible/playbooks/manage-platform-tls.yml"
+platform_tls_verify_playbook = root / "ansible/playbooks/verify-platform-tls.yml"
+production_evidence_script = root / "scripts/verify_production_evidence.py"
+production_evidence_runner = root / "scripts/bootstrap/run-platform-production-evidence.sh"
+production_evidence_test = root / "scripts/test_production_evidence.py"
 premium_tetragon_values = root / "gitops/clusters/rke2-main/premium-3node/apps/tetragon/values.yaml"
 premium_minio_values = root / "gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml"
 premium_external_secrets_values = root / "gitops/clusters/rke2-main/premium-3node/apps/external-secrets/values.yaml"
@@ -1573,6 +1579,11 @@ def main() -> None:
         "secretName: keycloak-tls",
         "networkPolicy:\n  enabled: true",
         "serviceMonitor:\n    enabled: true",
+        "keycloakConfigCli:",
+        "IMPORT_VARSUBSTITUTION_ENABLED",
+        "extraEnvVarsSecret: platform-sso-clients",
+        '"protocolMapper": "oidc-usermodel-realm-role-mapper"',
+        '"name": "prometheus-audience"',
     ):
         require_text(
             premium_keycloak_text,
@@ -1986,7 +1997,7 @@ def main() -> None:
         "Verify configured GUI ingress backend endpoints",
         "Probe configured GUI app ingress from Ansible controller",
         "Probe Harbor registry API from Ansible controller",
-        "Probe monitoring APIs from Ansible controller",
+        "Verify monitoring public authentication boundary from Ansible controller",
         "Probe configured GUI HTTP redirects from Ansible controller",
         "Probe configured GUI app ingress from every RKE2 node",
         "Probe Argo CD and Woodpecker ClusterIP service paths from every RKE2 node",
@@ -2122,7 +2133,7 @@ def main() -> None:
         )
     require_text(
         health_text,
-        "generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey app secrets exist with required keys",
+        "generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey and SSO secrets exist with required keys",
         "platform-app-health success message must include generated app secret readiness",
     )
     require_text(
@@ -2346,13 +2357,10 @@ def main() -> None:
         "platform-app-health must fail when a GUI host has no ingress route",
     )
     for needle in (
-        "/api/health",
-        "/-/ready",
-        '"database"[[:space:]]*:[[:space:]]*"ok"',
-        "unexpected-monitoring-api-http-code",
-        "unexpected-monitoring-api-body",
+        "monitoring-public-authentication-not-enforced",
+        "authentication_boundary=protected",
         "PLATFORM_APP_HEALTH_MONITORING_API=false make platform-app-health",
-        "Grafana /api/health and Prometheus /-/ready answer through the app VIP",
+        "Grafana and Prometheus deny or redirect unauthenticated public access",
     ):
         require_text(
             health_text,
@@ -2547,6 +2555,124 @@ def main() -> None:
             verify_rke2_text,
             needle,
             f"rke2-verify must provide production API VIP/DNS proof: {needle}",
+        )
+
+    install_rke2_text = read(root / "ansible" / "playbooks" / "install-rke2.yml")
+    for needle in (
+        "Write RKE2 Kubernetes API audit policy",
+        "audit-policy-file=/etc/rancher/rke2/audit-policy.yaml",
+        "audit-log-path=/var/lib/rancher/rke2/server/logs/audit.log",
+        "RKE2_AUDIT_POLICY_ENABLED",
+        "rke2_audit_policy_enabled_effective",
+        "Verify RKE2 Secret encryption at rest",
+        "rke2 secrets-encrypt status",
+        "Server Encryption Hashes: All hashes match",
+        "RKE2_VERIFY_SECRETS_ENCRYPTION",
+        "Require immutable RKE2 release inputs in production",
+        "RKE2_INSTALL_SCRIPT_SHA256",
+        "Do not use the moving stable channel",
+    ):
+        require_text(
+            install_rke2_text,
+            needle,
+            f"RKE2 production install must retain API audit evidence: {needle}",
+        )
+
+    for needle in (
+        "Verify RKE2 Secret encryption at rest",
+        "rke2 secrets-encrypt status",
+        "Encryption Status: Enabled",
+        "Server Encryption Hashes: All hashes match",
+    ):
+        require_text(
+            verify_rke2_text,
+            needle,
+            f"rke2-verify must retain Secret-encryption proof: {needle}",
+        )
+
+    policy_readiness_text = read(policy_readiness_playbook)
+    for needle in (
+        "PLATFORM_POLICY_ENFORCEMENT",
+        "require-private-secret-workflow",
+        "require-workload-baseline",
+        "policyreports.wgpolicyk8s.io",
+        "managed_policy_violations",
+    ):
+        require_text(
+            policy_readiness_text,
+            needle,
+            f"policy readiness gate must retain enforcement proof: {needle}",
+        )
+
+    platform_tls_text = read(platform_tls_playbook)
+    for needle in (
+        "PLATFORM_WILDCARD_TLS_CERT_FILE",
+        "PLATFORM_WILDCARD_TLS_KEY_FILE",
+        "openssl x509",
+        "openssl pkey",
+        "checkhost",
+        "argocd:argocd-server-tls",
+        "keycloak:keycloak-tls",
+        "platform_tls_remote_directory",
+        "trap cleanup EXIT",
+    ):
+        require_text(
+            platform_tls_text,
+            needle,
+            f"wildcard TLS automation must retain certificate safety controls: {needle}",
+        )
+
+    platform_tls_verify_text = read(platform_tls_verify_playbook)
+    for needle in (
+        "rke2_ingress_vip_effective",
+        "openssl s_client",
+        "-servername",
+        "checkhost",
+        "expected_fingerprint",
+        "served_fingerprint",
+        "trap cleanup EXIT",
+        "keycloak keycloak-tls",
+    ):
+        require_text(
+            platform_tls_verify_text,
+            needle,
+            f"TLS verification gate must retain ingress proof: {needle}",
+        )
+
+    for path in (
+        production_evidence_script,
+        production_evidence_runner,
+        production_evidence_test,
+    ):
+        if not path.is_file():
+            fail(f"production evidence gate is missing required file: {path.relative_to(root)}")
+
+    production_evidence_text = read(production_evidence_script)
+    for needle in (
+        "REQUIRED_GATES",
+        "logSha256",
+        "operator and approver must be different people",
+        "commit must be a 40-character lowercase Git SHA",
+    ):
+        require_text(
+            production_evidence_text,
+            needle,
+            f"production evidence validator must retain release proof: {needle}",
+        )
+
+    production_evidence_runner_text = read(production_evidence_runner)
+    for needle in (
+        "PLATFORM_RELEASE_ID",
+        "PLATFORM_EVIDENCE_OPERATOR",
+        "PLATFORM_EVIDENCE_APPROVER",
+        "make platform-production-check",
+        "sha256sum",
+        "verify_production_evidence.py",
+    ):
+        require_text(
+            production_evidence_runner_text,
+            needle,
+            f"production evidence runner must retain release proof: {needle}",
         )
 
     host_entries = re.findall(r"(?m)^\s+- app:\s*([A-Za-z0-9_.-]+)\s*$", read(root / "ansible/vars/platform-hostnames.yml"))
@@ -6128,11 +6254,27 @@ def main() -> None:
         fail("platform-ci-health target must run the focused Argo CD/Woodpecker health gate")
     if "platform-production-check:" not in makefile_text:
         fail("Makefile is missing platform-production-check target")
+    require_text(
+        makefile_text,
+        "platform-tls:",
+        "Makefile is missing the pre-issued wildcard TLS target",
+    )
+    require_text(
+        makefile_text,
+        "ansible/playbooks/manage-platform-tls.yml",
+        "platform-tls must invoke the managed wildcard TLS workflow",
+    )
     if "RKE2_VERIFY_API_VIP=false $(MAKE) rke2-verify" not in makefile_text:
         fail("platform-bootstrap must run the initial pre-VIP rke2-verify with RKE2_VERIFY_API_VIP=false")
     if "@$(MAKE) rke2-api-vip" not in makefile_text or "@$(MAKE) rke2-verify" not in makefile_text:
         fail("platform-bootstrap must deploy the API VIP and then run the strict rke2-verify gate")
-    for target in ("validate", "platform-profile-check", "rke2-verify", "platform-status"):
+    for target in (
+        "validate",
+        "platform-profile-check",
+        "rke2-verify",
+        "platform-status",
+        "platform-tls-verify",
+    ):
         production_target = re.search(r"(?m)^platform-production-check:.*$", makefile_text)
         if not production_target or target not in production_target.group(0):
             fail(f"platform-production-check must depend on {target}")

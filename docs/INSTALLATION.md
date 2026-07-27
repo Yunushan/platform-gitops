@@ -101,6 +101,37 @@ RKE2_REGISTRY_CHECK_ENABLED=false make rke2-install
 
 If internet access requires an HTTP proxy, set `rke2_http_proxy`, `rke2_https_proxy`, and `rke2_no_proxy` in ignored local inventory, or export `RKE2_HTTP_PROXY`, `RKE2_HTTPS_PROXY`, and `RKE2_NO_PROXY` before running `make rke2-install`. The install playbook writes `/etc/default/rke2-server` for the RKE2 systemd service.
 
+When `PLATFORM_PRODUCTION_STRICT=true`, the install also enables Kubernetes API
+audit logging with a metadata-only policy at
+`/etc/rancher/rke2/audit-policy.yaml`. Audit logs are retained under
+`/var/lib/rancher/rke2/server/logs/audit.log` with a 30-day/10-file/100-MiB
+rotation default. Adjust `RKE2_AUDIT_LOG_MAXAGE`, `RKE2_AUDIT_LOG_MAXBACKUP`,
+and `RKE2_AUDIT_LOG_MAXSIZE` in the ignored deployment environment. Metadata
+logging intentionally avoids retaining request bodies such as Secret content.
+
+For `PLATFORM_PRODUCTION_STRICT=true`, use an immutable RKE2 version and an
+approved installer digest. Set `RKE2_VERSION` to the reviewed release and
+`RKE2_INSTALL_SCRIPT_SHA256` to the 64-character SHA-256 recorded by your
+change review or internal mirror. The installer refuses the moving `stable`
+channel and an unchecked bootstrap script in strict mode. Keep those values in
+the ignored private deployment environment and update them only through the
+documented upgrade process.
+
+RKE2 encrypts Kubernetes Secret data at rest. Every `make rke2-install` and
+`make rke2-verify` run now checks `rke2 secrets-encrypt status` and requires
+both `Encryption Status: Enabled` and matching encryption hashes across the HA
+servers. Leave `RKE2_VERIFY_SECRETS_ENCRYPTION=true` in production. Set it to
+`false` only during a documented, time-bounded legacy migration; restore the
+gate immediately afterwards. Plan any encryption-key rotation with a current
+etcd snapshot and the RKE2 rotation procedure.
+
+Kyverno policy promotion is deliberate. Keep `PLATFORM_POLICY_ENFORCEMENT=Audit`
+while remediating report findings. Run `make platform-policy-readiness` to show
+violations from the two managed baseline policies. Only after it reports zero
+violations should you set `PLATFORM_POLICY_ENFORCEMENT=Enforce`, rerender private
+values, sync GitOps, and rerun the same target. In Enforce mode the readiness
+target fails rather than allowing a policy mode change with known violations.
+
 If bootstrap is interrupted or nodes fail to join after the first server starts, use the safe recovery flow:
 
 ```bash
@@ -335,6 +366,28 @@ default. `platform-app-secrets` generates `keycloak/keycloak-admin`,
 `keycloak/keycloak-database`, and the matching
 `platform-databases/keycloak-database` CloudNativePG role password secret unless
 you provide `KEYCLOAK_ADMIN_PASSWORD` or `KEYCLOAK_DATABASE_PASSWORD`.
+
+### Central SSO and monitoring access
+
+The production profile enables Keycloak-backed SSO by default. During
+`make platform-app-secrets`, it creates a private Keycloak realm import secret,
+an Argo CD OIDC secret, a Grafana OIDC secret, and an OAuth2 Proxy secret for
+Prometheus. None of their values are committed to Git.
+
+The bootstrap account is `platform-admin`; its generated password is available
+only from the Kubernetes secret and the user must enroll TOTP on first sign-in:
+
+```bash
+kubectl -n keycloak get secret platform-sso-clients \
+  -o go-template='{{ index .data "PLATFORM_SSO_BOOTSTRAP_ADMIN_PASSWORD" }}' | base64 -d; echo
+```
+
+Grafana redirects users to Keycloak and its local password form is disabled.
+Prometheus is not exposed directly: unauthenticated traffic is routed through
+OAuth2 Proxy and must be redirected to Keycloak or rejected. Keep
+`PLATFORM_SSO_ENABLED=true` for production. Turning it off is a temporary
+break-glass compatibility option only and must be accompanied by an explicit
+review of Argo CD, Grafana, and Prometheus public access.
 
 Woodpecker defaults to PostgreSQL-backed HA for the 3-node premium profile.
 `platform-app-secrets` generates `woodpecker/woodpecker-database` and the
@@ -787,38 +840,24 @@ PLATFORM_APP_HEALTH_CERTIFICATES="argocd/argocd-server-tls" make platform-app-he
 PLATFORM_APP_HEALTH_TRUST_BUNDLES="platform-public-roots" make platform-app-health
 ```
 
-To deploy a pre-issued wildcard certificate, create the same TLS certificate in
-each application namespace using the secret name expected by that ingress. Keep
-the certificate and private key in an ignored local path, not Git:
+To deploy a pre-issued wildcard certificate, keep the certificate and private
+key in ignored local paths, then let the TLS target validate the matching key,
+minimum remaining validity, and coverage for every platform hostname before it
+creates namespace-local Secrets. Neither input is committed and the temporary
+server copy is removed automatically:
 
 ```bash
-CERT=/secure/path/wildcard.crt
-KEY=/secure/path/wildcard.key
-K=/var/lib/rancher/rke2/bin/kubectl
-C=/etc/rancher/rke2/rke2.yaml
-
-for item in \
-  argocd/argocd-server-tls \
-  forgejo/forgejo-tls \
-  woodpecker/woodpecker-tls \
-  monitoring/grafana-tls \
-  monitoring/prometheus-tls \
-  logging/loki-tls
-do
-  ns="${item%/*}"
-  secret="${item#*/}"
-  "$K" --kubeconfig "$C" create namespace "$ns" --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -
-  "$K" --kubeconfig "$C" -n "$ns" create secret tls "$secret" \
-    --cert="$CERT" \
-    --key="$KEY" \
-    --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -
-done
+PLATFORM_WILDCARD_TLS_CERT_FILE=/secure/path/wildcard.crt \
+PLATFORM_WILDCARD_TLS_KEY_FILE=/secure/path/wildcard.key \
+PLATFORM_WILDCARD_TLS_MIN_VALIDITY_DAYS=30 \
+make platform-tls
 ```
 
-For Harbor, set `HARBOR_TLS_CERT_SOURCE=secret` and
-`HARBOR_TLS_SECRET_NAME=harbor-tls` before rendering Harbor values, then create
-`secret/harbor-tls` in the `harbor` namespace with the same `kubectl create
-secret tls` pattern.
+The target updates `argocd-server-tls`, `forgejo-tls`, `woodpecker-tls`,
+`harbor-tls`, `keycloak-tls`, `grafana-tls`, `prometheus-tls`, and `loki-tls`
+in their respective namespaces. Set `HARBOR_TLS_CERT_SOURCE=secret` and
+`HARBOR_TLS_SECRET_NAME=harbor-tls` before rendering Harbor values so it uses
+the same managed wildcard Secret.
 
 When step-ca is required, the health gate probes its in-cluster HTTPS
 `/health` endpoint through the ClusterIP service. To skip that during a

@@ -17,12 +17,14 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     rke2_api_endpoint_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_ENDPOINT') }}"
     rke2_version_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERSION') }}"
+    rke2_install_script_sha256_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_INSTALL_SCRIPT_SHA256') }}"
     rke2_channel_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_CHANNEL') }}"
     rke2_token_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_TOKEN') }}"
     rke2_join_endpoint_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_JOIN_ENDPOINT') }}"
     rke2_api_endpoint_effective: "{{ rke2_api_endpoint | default(rke2_api_dns | default(rke2_api_endpoint_from_env, true), true) }}"
     rke2_join_endpoint_effective: "{{ rke2_join_endpoint | default(rke2_join_endpoint_from_env, true) | default(rke2_api_endpoint_effective, true) }}"
     rke2_version_effective: "{{ rke2_version | default(rke2_version_from_env, true) }}"
+    rke2_install_script_sha256_effective: "{{ rke2_install_script_sha256 | default(rke2_install_script_sha256_from_env, true) | lower }}"
     rke2_channel_effective: "{{ rke2_channel | default(rke2_channel_from_env, true) | default('stable', true) }}"
     rke2_cni_effective: "{{ rke2_cni | default('cilium', true) }}"
     rke2_token_file: "{{ lookup('ansible.builtin.env', 'HOME') }}/.config/platform-gitops/rke2-token"
@@ -43,6 +45,11 @@
     rke2_etcd_snapshot_schedule_cron_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_SNAPSHOT_SCHEDULE_CRON') }}"
     rke2_etcd_snapshot_retention_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_SNAPSHOT_RETENTION') }}"
     rke2_etcd_s3_retention_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_ETCD_S3_RETENTION') }}"
+    rke2_audit_policy_enabled_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_AUDIT_POLICY_ENABLED') }}"
+    rke2_audit_log_maxage_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_AUDIT_LOG_MAXAGE') }}"
+    rke2_audit_log_maxbackup_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_AUDIT_LOG_MAXBACKUP') }}"
+    rke2_audit_log_maxsize_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_AUDIT_LOG_MAXSIZE') }}"
+    rke2_verify_secrets_encryption_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERIFY_SECRETS_ENCRYPTION') }}"
     rke2_http_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_HTTP_PROXY') | default(lookup('ansible.builtin.env', 'HTTP_PROXY'), true) }}"
     rke2_https_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_HTTPS_PROXY') | default(lookup('ansible.builtin.env', 'HTTPS_PROXY'), true) }}"
     rke2_no_proxy_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_NO_PROXY') | default(lookup('ansible.builtin.env', 'NO_PROXY'), true) }}"
@@ -59,6 +66,11 @@
     rke2_etcd_snapshot_schedule_cron_effective: "{{ rke2_etcd_snapshot_schedule_cron | default(rke2_etcd_snapshot_schedule_cron_from_env, true) | default('0 */6 * * *', true) }}"
     rke2_etcd_snapshot_retention_effective: "{{ rke2_etcd_snapshot_retention | default(rke2_etcd_snapshot_retention_from_env, true) | default(56, true) | int }}"
     rke2_etcd_s3_retention_effective: "{{ rke2_etcd_s3_retention | default(rke2_etcd_s3_retention_from_env, true) | default(56, true) | int }}"
+    rke2_audit_policy_enabled_effective: "{{ rke2_audit_policy_enabled | default(rke2_audit_policy_enabled_from_env, true) | default(platform_production_strict_effective, true) | bool }}"
+    rke2_audit_log_maxage_effective: "{{ rke2_audit_log_maxage | default(rke2_audit_log_maxage_from_env, true) | default(30, true) | int }}"
+    rke2_audit_log_maxbackup_effective: "{{ rke2_audit_log_maxbackup | default(rke2_audit_log_maxbackup_from_env, true) | default(10, true) | int }}"
+    rke2_audit_log_maxsize_effective: "{{ rke2_audit_log_maxsize | default(rke2_audit_log_maxsize_from_env, true) | default(100, true) | int }}"
+    rke2_verify_secrets_encryption_effective: "{{ rke2_verify_secrets_encryption | default(rke2_verify_secrets_encryption_from_env, true) | default(true, true) | bool }}"
     rke2_registry_check_urls_effective: "{{ rke2_registry_check_urls | default(['https://registry-1.docker.io/v2/', 'https://auth.docker.io/token', 'https://production.cloudflare.docker.com/', 'https://quay.io/v2/', 'https://ghcr.io/v2/'], true) }}"
     rke2_http_proxy_effective: "{{ rke2_http_proxy | default(rke2_http_proxy_from_env, true) }}"
     rke2_https_proxy_effective: "{{ rke2_https_proxy | default(rke2_https_proxy_from_env, true) }}"
@@ -93,6 +105,19 @@
     rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
     rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|x509:|certificate signed by unknown authority'
   pre_tasks:
+    - name: Require immutable RKE2 release inputs in production
+      ansible.builtin.assert:
+        that:
+          - rke2_version_effective is match('^v?[0-9]+[.][0-9]+[.][0-9]+[+]rke2r[0-9]+$')
+          - rke2_install_script_sha256_effective is match('^[a-f0-9]{64}$')
+        fail_msg: >-
+          PLATFORM_PRODUCTION_STRICT=true requires an exact RKE2_VERSION such as
+          v1.35.6+rke2r1 and the approved SHA-256 of the reviewed installer in
+          RKE2_INSTALL_SCRIPT_SHA256. Do not use the moving stable channel or an
+          unverified bootstrap script for a production control plane.
+      when: platform_production_strict_effective | bool
+      run_once: true
+
     - name: Require an API endpoint or DNS name
       ansible.builtin.assert:
         that:
@@ -235,6 +260,32 @@
         group: root
         mode: "0755"
 
+    - name: Create RKE2 audit log directory
+      ansible.builtin.file:
+        path: /var/lib/rancher/rke2/server/logs
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+      when: rke2_audit_policy_enabled_effective | bool
+
+    - name: Write RKE2 Kubernetes API audit policy
+      ansible.builtin.copy:
+        dest: /etc/rancher/rke2/audit-policy.yaml
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          apiVersion: audit.k8s.io/v1
+          kind: Policy
+          omitStages:
+            - RequestReceived
+          rules:
+            # Metadata retains the who/what/when evidence without logging
+            # Secret payloads, exec command arguments, or request bodies.
+            - level: Metadata
+      when: rke2_audit_policy_enabled_effective | bool
+
     - name: Write RKE2 server configuration
       ansible.builtin.copy:
         dest: /etc/rancher/rke2/config.yaml
@@ -262,6 +313,14 @@
             - {{ component }}
           {% endfor %}
           etcd-expose-metrics: true
+          {% if rke2_audit_policy_enabled_effective | bool %}
+          kube-apiserver-arg:
+            - audit-policy-file=/etc/rancher/rke2/audit-policy.yaml
+            - audit-log-path=/var/lib/rancher/rke2/server/logs/audit.log
+            - audit-log-maxage={{ rke2_audit_log_maxage_effective }}
+            - audit-log-maxbackup={{ rke2_audit_log_maxbackup_effective }}
+            - audit-log-maxsize={{ rke2_audit_log_maxsize_effective }}
+          {% endif %}
           {% if rke2_etcd_s3_enabled_effective | bool %}
           etcd-snapshot-schedule-cron: "{{ rke2_etcd_snapshot_schedule_cron_effective }}"
           etcd-snapshot-retention: {{ rke2_etcd_snapshot_retention_effective }}
@@ -280,6 +339,7 @@
         group: root
         mode: "0755"
         timeout: 60
+        checksum: "{{ (rke2_install_script_sha256_effective | length > 0) | ternary('sha256:' + rke2_install_script_sha256_effective, omit) }}"
       environment: "{{ rke2_proxy_environment_effective }}"
 
     - name: Build RKE2 installer environment
@@ -596,6 +656,25 @@
           ansible.builtin.fail:
             msg: "Not all RKE2 nodes became Ready within {{ rke2_start_timeout_effective }} seconds. Review Cilium/image-pull diagnostics above."
           run_once: true
+
+    - name: Verify RKE2 Secret encryption at rest
+      ansible.builtin.command: rke2 secrets-encrypt status
+      register: rke2_secrets_encryption_status
+      changed_when: false
+      failed_when: >-
+        rke2_secrets_encryption_status.rc != 0 or
+        'Encryption Status: Enabled' not in rke2_secrets_encryption_status.stdout or
+        'Server Encryption Hashes: All hashes match' not in rke2_secrets_encryption_status.stdout
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: rke2_verify_secrets_encryption_effective | bool
+
+    - name: Print verified RKE2 Secret encryption state
+      ansible.builtin.debug:
+        var: rke2_secrets_encryption_status.stdout_lines
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: rke2_verify_secrets_encryption_effective | bool
 
     - name: Show cluster nodes
       ansible.builtin.command: /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes -o wide

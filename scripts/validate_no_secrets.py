@@ -18,7 +18,7 @@ exclude_dirs = {
 secret_assignment = re.compile(r"""(?ix)
     \b(password|passwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)\b
     \s*[:=]\s*
-    (?!<[^>]+>)(?!\$\{[^}]+\})(?!changeme\b)(?!example\b)(?!dummy\b)(?!false\b)(?!true\b)(?!null\b)(?!from_secret\b)(?!"?<[^>]+>"?)
+    (?!<[^>]+>)(?!\$\{[^}]+\})(?![A-Za-z_][A-Za-z0-9_.]*\s*\()(?!changeme\b)(?!example\b)(?!dummy\b)(?!false\b)(?!true\b)(?!null\b)(?!from_secret\b)(?!"?<[^>]+>"?)
     ['"]?([A-Za-z0-9_./+=:@!#$%^&*~-]{8,})['"]?
 """)
 private_key = re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')

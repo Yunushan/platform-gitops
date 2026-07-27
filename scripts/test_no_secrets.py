@@ -57,6 +57,7 @@ token: ${PLATFORM_TOKEN}
     assert_problem(f"vip: {private_ip}\n", "private IP-like value")
     assert_problem(f"ansible_user: {private_user}\n", "private node username")
     assert_problem(f"password: {fake_secret}\n", "possible plaintext secret")
+    assert_clean("secret = kube.json('get', 'secret', secret_name)\n")
     if scanner.should_scan(root / ".shell-syntax-leftover" / "script.sh"):
         raise AssertionError("expected stale shell syntax temp directories to be skipped")
     if scanner.should_scan(root / ".ansible-shell-syntax-leftover" / "block.sh"):

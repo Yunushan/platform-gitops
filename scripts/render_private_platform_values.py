@@ -932,7 +932,7 @@ def render_keycloak(path: Path, inventory: dict[str, str]) -> bool:
         or "platform-sso-clients",
         sso_bootstrap_username=os.environ.get(
             "PLATFORM_SSO_BOOTSTRAP_ADMIN_USERNAME",
-            "platform-admin",
+            os.environ.get("PLATFORM_SSO_BOOTSTRAP_USERNAME", "platform-admin"),
         ).strip()
         or "platform-admin",
         admin_secret_name=os.environ.get("KEYCLOAK_ADMIN_SECRET_NAME", "keycloak-admin").strip()
@@ -2190,8 +2190,8 @@ def monitoring_bootstrap_values(
     server:
       root_url: {yaml_string(f"https://{grafana_host}")}
     auth:
-      disable_login_form: false
-      oauth_auto_login: false
+      disable_login_form: true
+      oauth_auto_login: true
     auth.generic_oauth:
       enabled: true
       name: Platform SSO
@@ -3016,6 +3016,31 @@ def render_step_ca(path: Path, inventory: dict[str, str]) -> bool:
     return changed
 
 
+def render_platform_policy_enforcement(paths: list[Path]) -> bool:
+    """Render a deliberate Kyverno policy mode into the private deployment."""
+    configured = os.environ.get("PLATFORM_POLICY_ENFORCEMENT", "Audit").strip().lower()
+    modes = {"audit": "Audit", "enforce": "Enforce"}
+    if configured not in modes:
+        raise SystemExit("PLATFORM_POLICY_ENFORCEMENT must be Audit or Enforce")
+
+    changed = False
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        rendered, replacements = re.subn(
+            r"(?m)^(\s*validationFailureAction:\s*)(Audit|Enforce)\s*$",
+            lambda match: f"{match.group(1)}{modes[configured]}",
+            text,
+        )
+        if replacements != 1:
+            raise SystemExit(
+                f"expected exactly one validationFailureAction in {path}; found {replacements}"
+            )
+        if rendered != text:
+            path.write_text(rendered, encoding="utf-8")
+            changed = True
+    return changed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, default=Path("inventory/hosts.local.ini"))
@@ -3083,6 +3108,16 @@ def main() -> int:
         "--step-ca-values",
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"),
+    )
+    parser.add_argument(
+        "--platform-secret-policy",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/platform-policies/no-plaintext-secrets.yaml"),
+    )
+    parser.add_argument(
+        "--platform-workload-policy",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-workload-baseline.yaml"),
     )
     parser.add_argument("--skip-longhorn", action="store_true")
     parser.add_argument("--skip-argocd", action="store_true")
@@ -3241,6 +3276,7 @@ def main() -> int:
         )
         print(f"STEP_CA_STORAGE_CLASS={os.environ.get('STEP_CA_STORAGE_CLASS', 'longhorn-critical')}")
         print(f"STEP_CA_DB_SIZE={os.environ.get('STEP_CA_DB_SIZE', '10Gi')}")
+        print(f"PLATFORM_POLICY_ENFORCEMENT={os.environ.get('PLATFORM_POLICY_ENFORCEMENT', 'Audit')}")
         return 0 if host else 1
 
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
@@ -3301,6 +3337,10 @@ def main() -> int:
 
     if not args.skip_step_ca and render_step_ca(args.step_ca_values, inventory):
         changed.append(str(args.step_ca_values))
+
+    policy_paths = [args.platform_secret_policy, args.platform_workload_policy]
+    if all(path.exists() for path in policy_paths) and render_platform_policy_enforcement(policy_paths):
+        changed.extend(str(path) for path in policy_paths)
 
     if changed:
         print("Rendered private platform values:")

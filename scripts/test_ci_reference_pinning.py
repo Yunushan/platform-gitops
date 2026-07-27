@@ -125,6 +125,14 @@ def main() -> int:
         problems.extend(scan_ci_file(path))
     for path in DOCKERFILES:
         problems.extend(scan_dockerfile(path))
+    github_validation = ROOT / ".github" / "workflows" / "validate.yml"
+    github_validation_text = github_validation.read_text(encoding="utf-8")
+    for needle in (
+        "permissions:\n  contents: read",
+        "concurrency:\n  group: validate-${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: true",
+    ):
+        if needle not in github_validation_text:
+            problems.append(f"{rel_path(github_validation)}: missing workflow security control: {needle.splitlines()[0]}")
 
     if problems:
         print("CI reference pinning validation failed:")

@@ -23,6 +23,8 @@ validate:
     - python scripts/test_sops_age_policy.py
     - python scripts/test_supply_chain_helpers.py
     - python scripts/test_backup_restore_runbook.py
+    - python scripts/test_data_protection_contract.py
+    - python scripts/test_production_evidence.py
     - python scripts/test_business_continuity.py
     - python scripts/test_service_catalog.py
     - python scripts/test_architecture_decisions.py
