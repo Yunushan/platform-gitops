@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets security-scan supply-chain-posture supply-chain-verify github-governance-plan github-governance-security-apply github-governance-apply github-governance-verify rendered-schema-verify policy-cel-verify forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify forge-transition-validate forge-transition-discover forge-transition-prepare forge-transition-verify-shadow forge-transition-enter forge-transition-status forge-transition-reconcile forge-transition-relay forge-transition-fallback forge-transition-finalize forge-transition-failback forge-transition-rollback forge-transition-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-network-isolation-verify platform-internal-tls-verify platform-observability-verify platform-capacity-verify platform-image-inventory-verify platform-production-evidence platform-production-score platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-forgejo-recovery-drill platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture supply-chain-verify github-governance-plan github-governance-security-apply github-governance-apply github-governance-verify rendered-schema-verify policy-cel-verify forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify forge-transition-validate forge-transition-discover forge-transition-prepare forge-transition-verify-shadow forge-transition-enter forge-transition-status forge-transition-reconcile forge-transition-relay forge-transition-fallback forge-transition-finalize forge-transition-failback forge-transition-rollback forge-transition-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-network-isolation-verify platform-internal-tls-verify platform-openbao-status platform-openbao-verify platform-observability-verify platform-capacity-verify platform-image-inventory-verify platform-production-evidence platform-production-score platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-forgejo-recovery-drill platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -74,6 +74,8 @@ help:
 	@echo "  platform-policy-readiness  Verify Kyverno CEL baselines and optional signed-image admission"
 	@echo "  platform-network-isolation-verify  Prove premium default-deny policies allow trusted and block untrusted service paths"
 	@echo "  platform-internal-tls-verify  Prove managed trust and verified OpenBao/PostgreSQL service TLS"
+	@echo "  platform-openbao-status  Print sanitized OpenBao replica, seal, HA, and cluster-identity state"
+	@echo "  platform-openbao-verify  Require three Ready, initialized, unsealed OpenBao HA replicas"
 	@echo "  platform-observability-verify  Prove authenticated Loki ingestion, retention, Alloy collection, and alert delivery"
 	@echo "  platform-capacity-verify  Fail when node, scheduler, or Longhorn headroom is below production thresholds"
 	@echo "  platform-image-inventory-verify  Reconcile exact rendered/live image digests with signatures and admission scope"
@@ -522,6 +524,12 @@ platform-network-isolation-verify:
 platform-internal-tls-verify:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-internal-tls.yml
 
+platform-openbao-status:
+	@PLATFORM_OPENBAO_VERIFY_STRICT=false ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-openbao.yml
+
+platform-openbao-verify:
+	@PLATFORM_OPENBAO_VERIFY_STRICT=true ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-openbao.yml
+
 platform-observability-verify:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-observability.yml
 
@@ -543,6 +551,7 @@ platform-production-check: validate platform-profile-check rke2-verify platform-
 	@PLATFORM_POLICY_ENFORCEMENT=Enforce PLATFORM_IMAGE_INTEGRITY_MODE=Enforce PLATFORM_IMAGE_INTEGRITY_REQUIRED=true $(MAKE) platform-policy-readiness
 	@$(MAKE) platform-network-isolation-verify
 	@$(MAKE) platform-internal-tls-verify
+	@$(MAKE) platform-openbao-verify
 	@PLATFORM_ALERT_DELIVERY_TEST=true $(MAKE) platform-observability-verify
 	@$(MAKE) platform-capacity-verify
 	@PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh

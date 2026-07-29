@@ -281,7 +281,7 @@ python scripts/verify_supply_chain_evidence.py \
   --strict
 ```
 
-The schema-v4 production evidence generator copies the exact image inventory
+The schema-v5 production evidence generator copies the exact image inventory
 report into its private packet and binds it by SHA-256. Retain that packet. Do not
 commit private registry inventories, internal identities, credentials, or
 private operational reports to this public repository.

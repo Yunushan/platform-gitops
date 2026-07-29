@@ -147,7 +147,7 @@ import os
 from pathlib import Path
 
 document = {
-    "schemaVersion": 4,
+    "schemaVersion": 5,
     "releaseId": os.environ["PLATFORM_RELEASE_ID"],
     "completedAt": os.environ["PLATFORM_EVIDENCE_COMPLETED_AT"],
     "operator": os.environ["PLATFORM_EVIDENCE_OPERATOR"],
@@ -182,6 +182,7 @@ document = {
         "policyReadiness": "passed",
         "networkIsolation": "passed",
         "internalTls": "passed",
+        "openbaoReadiness": "passed",
         "observability": "passed",
         "capacity": "passed",
         "applicationHealth": "passed",

@@ -1,0 +1,168 @@
+---
+- name: Verify OpenBao production readiness
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_openbao_verify_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_OPENBAO_VERIFY_STRICT') }}"
+    platform_openbao_verify_strict_effective: "{{ platform_openbao_verify_strict | default(platform_openbao_verify_strict_from_env, true) | default(true, true) | bool }}"
+  tasks:
+    - name: Inspect OpenBao HA seal and replica state
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          K=/var/lib/rancher/rke2/bin/kubectl
+          C=/etc/rancher/rke2/rke2.yaml
+          namespace=openbao
+          statefulset=openbao
+          strict="{{ platform_openbao_verify_strict_effective | ternary('true', 'false') }}"
+          cluster_ids_file="$(mktemp)"
+          status_error_file="$(mktemp)"
+          cleanup() {
+            rm -f "${cluster_ids_file}" "${status_error_file}"
+          }
+          trap cleanup EXIT
+
+          if ! "$K" --kubeconfig "$C" -n "${namespace}" get "statefulset/${statefulset}" >/dev/null 2>&1; then
+            echo "result=fail reason=openbao-statefulset-absent strict=${strict}"
+            if [ "${strict}" = "true" ]; then
+              exit 1
+            fi
+            exit 0
+          fi
+
+          desired="$("$K" --kubeconfig "$C" -n "${namespace}" get "statefulset/${statefulset}" -o jsonpath='{.spec.replicas}')"
+          current="$("$K" --kubeconfig "$C" -n "${namespace}" get "statefulset/${statefulset}" -o jsonpath='{.status.currentReplicas}')"
+          updated="$("$K" --kubeconfig "$C" -n "${namespace}" get "statefulset/${statefulset}" -o jsonpath='{.status.updatedReplicas}')"
+          ready="$("$K" --kubeconfig "$C" -n "${namespace}" get "statefulset/${statefulset}" -o jsonpath='{.status.readyReplicas}')"
+          desired="${desired:-0}"
+          current="${current:-0}"
+          updated="${updated:-0}"
+          ready="${ready:-0}"
+
+          mapfile -t pods < <(
+            "$K" --kubeconfig "$C" -n "${namespace}" get pods \
+              -l app.kubernetes.io/name=openbao,component=server \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort
+          )
+
+          initialized_count=0
+          unsealed_count=0
+          ha_count=0
+          status_failures=0
+          for pod in "${pods[@]}"; do
+            set +e
+            status="$("$K" --kubeconfig "$C" -n "${namespace}" exec "pod/${pod}" -c openbao -- \
+              bao status -format=json 2>"${status_error_file}")"
+            status_rc=$?
+            set -e
+            if [ "${status_rc}" -ne 0 ] && [ "${status_rc}" -ne 2 ]; then
+              echo "pod=${pod} status=unavailable rc=${status_rc}"
+              status_failures=$((status_failures + 1))
+              continue
+            fi
+
+            set +e
+            parsed="$(printf '%s' "${status}" | python3 -c 'import json, sys; document = json.load(sys.stdin); all(isinstance(document.get(name), bool) for name in ("initialized", "sealed", "ha_enabled")) or sys.exit(3); isinstance(document.get("cluster_id", ""), str) or sys.exit(3); values = (str(document["initialized"]).lower(), str(document["sealed"]).lower(), str(document["ha_enabled"]).lower(), document.get("cluster_id") or "", str(document.get("version") or "unknown")); print("|".join(values))' 2>/dev/null)"
+            parse_rc=$?
+            set -e
+            if [ "${parse_rc}" -ne 0 ]; then
+              echo "pod=${pod} status=invalid-json"
+              status_failures=$((status_failures + 1))
+              continue
+            fi
+
+            IFS='|' read -r initialized sealed ha_enabled cluster_id version <<<"${parsed}"
+            if [ "${initialized}" = "true" ]; then
+              initialized_count=$((initialized_count + 1))
+            fi
+            if [ "${sealed}" = "false" ]; then
+              unsealed_count=$((unsealed_count + 1))
+            fi
+            if [ "${ha_enabled}" = "true" ]; then
+              ha_count=$((ha_count + 1))
+            fi
+            cluster_id_hash=none
+            if [ -n "${cluster_id}" ]; then
+              printf '%s\n' "${cluster_id}" >>"${cluster_ids_file}"
+              cluster_id_hash="$(printf '%s' "${cluster_id}" | sha256sum | awk '{print $1}')"
+            fi
+            echo "pod=${pod} initialized=${initialized} sealed=${sealed} ha_enabled=${ha_enabled} cluster_id_sha256=${cluster_id_hash} version=${version}"
+          done
+
+          pod_count="$(printf '%s\n' "${pods[@]}" | sed '/^$/d' | wc -l | tr -d ' ')"
+          unique_cluster_ids="$(sort -u "${cluster_ids_file}" | sed '/^$/d' | wc -l | tr -d ' ')"
+          echo "openbao_replicas desired=${desired} current=${current} updated=${updated} ready=${ready} pods=${pod_count}"
+          echo "openbao_status initialized=${initialized_count} unsealed=${unsealed_count} ha_enabled=${ha_count} unique_cluster_ids=${unique_cluster_ids} failures=${status_failures}"
+
+          failures=0
+          [ "${desired}" -ge 3 ] || failures=$((failures + 1))
+          [ "${current}" -eq "${desired}" ] || failures=$((failures + 1))
+          [ "${updated}" -eq "${desired}" ] || failures=$((failures + 1))
+          [ "${ready}" -eq "${desired}" ] || failures=$((failures + 1))
+          [ "${pod_count}" -eq "${desired}" ] || failures=$((failures + 1))
+          [ "${initialized_count}" -eq "${desired}" ] || failures=$((failures + 1))
+          [ "${unsealed_count}" -eq "${desired}" ] || failures=$((failures + 1))
+          [ "${ha_count}" -eq "${desired}" ] || failures=$((failures + 1))
+          [ "${unique_cluster_ids}" -eq 1 ] || failures=$((failures + 1))
+          [ "${status_failures}" -eq 0 ] || failures=$((failures + 1))
+
+          if [ "${failures}" -ne 0 ]; then
+            echo "result=fail reason=openbao-production-readiness-incomplete checks_failed=${failures} strict=${strict}"
+            if [ "${strict}" = "true" ]; then
+              exit 1
+            fi
+            exit 0
+          fi
+
+          echo "result=pass reason=openbao-production-ready"
+        executable: /bin/bash
+      register: platform_openbao_verify_result
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print OpenBao production readiness state
+      ansible.builtin.debug:
+        var: platform_openbao_verify_result.stdout_lines
+      run_once: true
+
+    - name: Stop when OpenBao production readiness is incomplete
+      ansible.builtin.fail:
+        msg: |-
+          OpenBao is not production-ready.
+
+          Production requires at least three current and Ready StatefulSet
+          replicas. Every replica must be initialized, unsealed, HA-enabled,
+          and report the same non-empty cluster identifier.
+
+          Review the sanitized state above. Complete the approved OpenBao
+          initialization/unseal ceremony or repair the failed replica before
+          rerunning:
+
+          make platform-openbao-verify
+      when: platform_openbao_verify_result.rc != 0
+      run_once: true
+
+    - name: Show successful OpenBao production verification
+      ansible.builtin.debug:
+        msg: >-
+          OpenBao has at least three current and Ready replicas; every replica
+          is initialized, unsealed, HA-enabled, and reports one shared cluster
+          identity.
+      when: "'result=pass reason=openbao-production-ready' in platform_openbao_verify_result.stdout"
+      run_once: true
+
+    - name: Show non-strict OpenBao diagnostic result
+      ansible.builtin.debug:
+        msg: >-
+          OpenBao is not production-ready. This status-only run returned
+          successfully because PLATFORM_OPENBAO_VERIFY_STRICT=false; production
+          evidence always invokes the strict verifier.
+      when:
+        - platform_openbao_verify_result.rc == 0
+        - "'result=fail reason=openbao-production-readiness-incomplete' in platform_openbao_verify_result.stdout or 'result=fail reason=openbao-statefulset-absent' in platform_openbao_verify_result.stdout"
+      run_once: true

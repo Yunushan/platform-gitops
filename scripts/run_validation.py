@@ -34,6 +34,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_pod_security_contract.py",
     "scripts/test_network_policy_contract.py",
     "scripts/test_internal_tls_contract.py",
+    "scripts/test_openbao_readiness_contract.py",
     "scripts/test_observability_contract.py",
     "scripts/test_capacity_runtime_contract.py",
     "scripts/test_rendered_schema_contract.py",

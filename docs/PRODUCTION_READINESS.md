@@ -59,6 +59,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | Image integrity enforcement accepted | `PLATFORM_IMAGE_INTEGRITY_MODE=Enforce PLATFORM_IMAGE_INTEGRITY_REQUIRED=true PLATFORM_IMAGE_INTEGRITY_CANARY_IMAGE=<SIGNED_DIGEST> make platform-policy-readiness`; the ImageValidatingPolicy must be Ready and fail closed, the signed digest must be admitted, and a derived unverifiable digest must be rejected by that policy |
 | East-west isolation verified | `make platform-network-isolation-verify`; all premium policies exist, the trusted database path works, and the untrusted path is denied |
 | Internal transport TLS verified | `make platform-internal-tls-verify`; managed trust is Ready, OpenBao/PostgreSQL/Valkey identities verify without insecure skips, Valkey clients use `rediss://`, and plaintext Valkey commands are rejected |
+| OpenBao HA readiness verified | `make platform-openbao-verify`; at least three current and Ready replicas are initialized, unsealed, HA-enabled, and report one shared non-empty cluster identity |
 | Observability delivery verified | `make platform-observability-verify`; Loki rejects anonymous requests, Alloy logs are queryable, retention is active, and Alertmanager configuration is valid. The production gate also sends a synthetic alert and requires a successful delivery metric |
 | Supply-chain evidence verified | `COSIGN_IMAGES_FILE=<PRIVATE_INVENTORY> make supply-chain-verify`; scanners pass, the SPDX SBOM is non-empty, Scorecard meets threshold, and digest-bound Cosign verification succeeds |
 | Exact image inventory reconciled | `PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE=<PRIVATE_EXCEPTIONS> make platform-image-inventory-verify`; every rendered and live runtime image resolves to one digest, private images are signed and admission-enforced, and any upstream admission gap has current independent approval plus hash-bound vulnerability evidence |
@@ -110,6 +111,7 @@ PLATFORM_IMAGE_INTEGRITY_CANARY_IMAGE=<PRIVATE_REGISTRY>/<IMAGE>@sha256:<64_HEX_
 make platform-policy-readiness
 make platform-network-isolation-verify
 make platform-internal-tls-verify
+make platform-openbao-verify
 make platform-observability-verify
 make platform-capacity-verify
 make rendered-schema-verify
@@ -124,16 +126,16 @@ make platform-forgejo-recovery-drill
 PLATFORM_PROFILE=<PROFILE> make platform-production-check
 ```
 
-After the production gate passes, retain a fresh private schema-v4 record that
+After the production gate passes, retain a fresh private schema-v5 record that
 binds every repository, profile, schema, supply-chain, cluster, security,
-observability, capacity, application, and data-protection gate to the exact Git
-revision and requires a distinct operator and approver. The generator rejects a
-dirty or detached checkout and requires `HEAD` to exactly match a fetched remote
-tracking ref; it stores the branch, Git tree, remote name, and a non-secret hash
-of the remote URL. It also copies the exact rendered/live image reconciliation
-into the private packet and binds that artifact by SHA-256. Earlier
-schema-v1/v2/v3 records remain historical evidence but do not certify the
-current gate set:
+OpenBao, observability, capacity, application, and data-protection gate to the
+exact Git revision and requires a distinct operator and approver. The generator
+rejects a dirty or detached checkout and requires `HEAD` to exactly match a
+fetched remote tracking ref; it stores the branch, Git tree, remote name, and a
+non-secret hash of the remote URL. It also copies the exact rendered/live image
+reconciliation into the private packet and binds that artifact by SHA-256.
+Earlier schema-v1/v2/v3/v4 records remain historical evidence but do not
+certify the current gate set:
 
 ```bash
 PLATFORM_RELEASE_ID=<APPROVED_CHANGE_ID> \

@@ -33,6 +33,7 @@ REQUIRED_GATES = (
     "policyReadiness",
     "networkIsolation",
     "internalTls",
+    "openbaoReadiness",
     "observability",
     "capacity",
     "applicationHealth",
@@ -98,8 +99,8 @@ def validate_evidence(
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise EvidenceError("production evidence must be a JSON object")
-    if document.get("schemaVersion") != 4:
-        raise EvidenceError("schemaVersion must be 4")
+    if document.get("schemaVersion") != 5:
+        raise EvidenceError("schemaVersion must be 5")
 
     release_id = nonempty(document, "releaseId")
     profile = nonempty(document, "profile")

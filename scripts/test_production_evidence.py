@@ -84,7 +84,7 @@ def fixture(root: Path, now: datetime) -> dict[str, object]:
         encoding="utf-8",
     )
     return {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "releaseId": "release-test",
         "completedAt": (now - timedelta(minutes=15)).isoformat(),
         "operator": "operator@example.test",

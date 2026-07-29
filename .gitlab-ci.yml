@@ -27,6 +27,7 @@ validate:
     - python scripts/test_pod_security_contract.py
     - python scripts/test_network_policy_contract.py
     - python scripts/test_internal_tls_contract.py
+    - python scripts/test_openbao_readiness_contract.py
     - python scripts/test_observability_contract.py
     - python scripts/test_capacity_runtime_contract.py
     - python scripts/test_rendered_schema_contract.py

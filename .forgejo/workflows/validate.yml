@@ -54,6 +54,8 @@ jobs:
         run: python scripts/test_network_policy_contract.py
       - name: Test managed internal TLS
         run: python scripts/test_internal_tls_contract.py
+      - name: Test OpenBao production readiness
+        run: python scripts/test_openbao_readiness_contract.py
       - name: Test production observability
         run: python scripts/test_observability_contract.py
       - name: Test runtime capacity gate

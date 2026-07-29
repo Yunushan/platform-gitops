@@ -323,6 +323,12 @@ StatefulSet ordinals. After the first server is initialized and unsealed, later
 ordinals join the same Raft cluster automatically; with the default Shamir seal,
 each joined server must still be unsealed by the approved key custodians.
 
+Use `make platform-openbao-status` for a sanitized diagnostic that does not
+require a token and does not expose the cluster identifier. Production
+acceptance uses `make platform-openbao-verify` and fails unless at least three
+current and Ready replicas are initialized, unsealed, HA-enabled, and report one
+shared cluster identity. The verifier hashes that identity before printing it.
+
 OpenBao agent injection is fail-closed and namespace opt-in. Enable it only
 after the injector has ready endpoints by labeling an application namespace:
 
