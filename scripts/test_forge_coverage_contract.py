@@ -40,7 +40,7 @@ def main() -> int:
     )
     require(
         script,
-        'MINIMUM="${FORGE_COVERAGE_MIN:-79.0}"',
+        'MINIMUM="${FORGE_COVERAGE_MIN:-81.0}"',
         'PYTHON_BIN="${PYTHON_BIN:-python}"',
         "scripts/test_forge_migration.py",
         "scripts/test_forge_cutover.py",
@@ -52,8 +52,8 @@ def main() -> int:
         label="scripts/forge-coverage.sh",
     )
     threshold_match = re.search(r"FORGE_COVERAGE_MIN:-([0-9.]+)", script)
-    if threshold_match is None or float(threshold_match.group(1)) < 79.0:
-        raise AssertionError("forge branch-coverage threshold must not fall below the measured 79.0% ratchet")
+    if threshold_match is None or float(threshold_match.group(1)) < 81.0:
+        raise AssertionError("forge branch-coverage threshold must not fall below the measured 81.0% ratchet")
     require(
         workflow,
         "coverage==7.15.2",
@@ -64,7 +64,7 @@ def main() -> int:
         label=".github/workflows/validate.yml",
     )
 
-    print("Forge subprocess branch-coverage contract passed at a 79.0% minimum.")
+    print("Forge subprocess branch-coverage contract passed at an 81.0% minimum.")
     return 0
 
 

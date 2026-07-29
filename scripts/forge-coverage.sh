@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="${FORGE_COVERAGE_OUTPUT_DIR:-${ROOT}/rendered/coverage}"
-MINIMUM="${FORGE_COVERAGE_MIN:-79.0}"
+MINIMUM="${FORGE_COVERAGE_MIN:-81.0}"
 CONFIG="${ROOT}/.coveragerc"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 

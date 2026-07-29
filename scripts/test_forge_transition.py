@@ -1407,6 +1407,275 @@ def test_source_authority_relay_and_recovery_helpers() -> None:
     if not recovered[0]["verified"] or recovered_state["phase"] != "finalized":
         fail("failed failback recovery did not restore finalized authority")
 
+
+def test_relay_reconciliation_and_operational_helpers() -> None:
+    plan = parsed_plan("gitlab")
+    repo = plan.repositories[0]
+    github_repo = parsed_plan("github").repositories[0]
+
+    gitlab_inventory = {"name": repo.migration.name, "verified": True}
+    with mock.patch(
+        "forge_transition.cutover.discover_repository",
+        return_value=gitlab_inventory,
+    ) as discover_gitlab:
+        discovered = transition.discover_repository(repo, verify_destination=True)
+    if discovered != gitlab_inventory:
+        fail("GitLab transition discovery did not use the shared cutover inventory")
+    discover_gitlab.assert_called_once_with(repo.cutover_repo, verify_destination=True)
+
+    github_inventory = {"name": github_repo.migration.name, "verified": True}
+    with mock.patch("forge_transition.github_discover", return_value=github_inventory):
+        discovered = transition.discover_repository(github_repo)
+    if discovered != github_inventory:
+        fail("GitHub transition discovery did not use the GitHub inventory")
+
+    with mock.patch(
+        "forge_transition.paged_list",
+        return_value=[
+            {"id": 1, "status": "queued"},
+            {"id": 2, "status": "in_progress"},
+            {"id": 3, "status": "completed"},
+        ],
+    ):
+        active_runs = transition.github_active_runs(github_repo)
+    if [item["id"] for item in active_runs] != [1, 2]:
+        fail(f"GitHub active-run filtering is wrong: {active_runs}")
+
+    gitlab_calls: list[tuple[str, str, object]] = []
+
+    def restore_gitlab_request(
+        _target: object,
+        method: str,
+        path: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        gitlab_calls.append((method, path, kwargs.get("body")))
+        return {"archived": True} if method == "GET" else {}
+
+    with (
+        mock.patch(
+            "forge_transition.migration.api_request",
+            side_effect=restore_gitlab_request,
+        ),
+        mock.patch(
+            "forge_transition.verify_source_authority",
+            return_value={"verified": True},
+        ),
+    ):
+        restored = transition.restore_source_repository(repo, {"archived": False})
+    if not restored["verified"] or not any(
+        method == "POST" and path.endswith("/unarchive")
+        for method, path, _body in gitlab_calls
+    ):
+        fail("GitLab source restoration did not unarchive the repository")
+
+    github_calls: list[tuple[str, str, object]] = []
+
+    def restore_github_request(
+        _target: object,
+        method: str,
+        path: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        github_calls.append((method, path, kwargs.get("body")))
+        return {}
+
+    with (
+        mock.patch(
+            "forge_transition.migration.api_request",
+            side_effect=restore_github_request,
+        ),
+        mock.patch(
+            "forge_transition.verify_source_authority",
+            return_value={"verified": True},
+        ),
+    ):
+        transition.restore_source_repository(github_repo, {"archived": True})
+    if not any(
+        method == "PATCH" and body == {"archived": True}
+        for method, _path, body in github_calls
+    ):
+        fail("GitHub source restoration did not restore the archived state")
+
+    with mock.patch(
+        "forge_transition.cutover.set_destination_authority",
+        return_value={"verified": True},
+    ) as authority_setter:
+        authority = transition.set_destination_authority(plan, repo, True)
+    if not authority["verified"]:
+        fail("destination authority wrapper lost the verification result")
+    authority_setter.assert_called_once()
+
+    approved = {"name": "platform-app", "nested": {"verified": True}}
+    if not transition.inventory_matches(approved, copy.deepcopy(approved)):
+        fail("equivalent transition inventories did not match")
+    if transition.inventory_matches(approved, {"name": "different"}):
+        fail("different transition inventories unexpectedly matched")
+
+    native_repo = native_gitlab_plan().repositories[0]
+    with mock.patch("forge_transition.find_gitlab_push_mirror", return_value=None):
+        expect_transition_error(
+            lambda: transition.force_gitlab_push_mirror(native_repo),
+            "managed GitLab push mirror is missing",
+        )
+
+    mirror_calls: list[tuple[str, str, object]] = []
+
+    def force_mirror_request(
+        _target: object,
+        method: str,
+        path: str,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        mirror_calls.append((method, path, kwargs.get("body")))
+        if method == "GET":
+            return {
+                "enabled": True,
+                "update_status": "finished",
+                "last_successful_update_at": transition.utc_now(),
+                "last_error": "",
+            }
+        return {}
+
+    with (
+        mock.patch("forge_transition.find_gitlab_push_mirror", return_value={"id": 41}),
+        mock.patch(
+            "forge_transition.migration.api_request",
+            side_effect=force_mirror_request,
+        ),
+    ):
+        forced = transition.force_gitlab_push_mirror(native_repo)
+    if not forced["verified"] or not any(
+        method == "POST" and path.endswith("/sync")
+        for method, path, _body in mirror_calls
+    ):
+        fail("native GitLab mirror force-sync did not verify")
+
+    def disable_mirror_request(
+        _target: object,
+        method: str,
+        _path: str,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        return {"enabled": False, "last_error": ""} if method == "GET" else {}
+
+    with (
+        mock.patch("forge_transition.find_gitlab_push_mirror", return_value={"id": 41}),
+        mock.patch(
+            "forge_transition.migration.api_request",
+            side_effect=disable_mirror_request,
+        ),
+    ):
+        disabled = transition.set_native_relay_enabled(native_repo, False)
+    if disabled["enabled"] or not disabled["verified"]:
+        fail("native GitLab mirror was not disabled and verified")
+
+    with mock.patch(
+        "forge_transition.sync_git_data",
+        return_value={"verified": True},
+    ):
+        external_reconcile = transition.reconcile_repository(repo, Path("work"))
+    if external_reconcile["native"] is not None or not external_reconcile["verified"]:
+        fail("external relay reconciliation did not verify")
+
+    with (
+        mock.patch(
+            "forge_transition.force_gitlab_push_mirror",
+            return_value={"verified": True},
+        ),
+        mock.patch(
+            "forge_transition.sync_git_data",
+            return_value={"verified": True},
+        ),
+    ):
+        native_reconcile = transition.reconcile_repository(native_repo, Path("work"))
+    if native_reconcile["native"] is None or not native_reconcile["verified"]:
+        fail("native relay reconciliation did not verify")
+
+    state = transition.initial_state(plan)
+    successful_result = {
+        "name": repo.migration.name,
+        "synced_at": transition.utc_now(),
+        "verified": True,
+    }
+    with mock.patch(
+        "forge_transition.reconcile_repository",
+        return_value=successful_result,
+    ):
+        repositories, successful_state = transition.reconcile_plan(plan, state, Path("work"))
+    if not repositories[0]["verified"] or successful_state["consecutive_failures"] != 0:
+        fail("successful relay reconciliation did not reset the failure counter")
+    if not successful_state.get("last_success_at") or not successful_state["verified"]:
+        fail("successful relay reconciliation did not retain success evidence")
+
+    with mock.patch(
+        "forge_transition.reconcile_repository",
+        side_effect=transition.migration.MigrationError("provider request failed"),
+    ):
+        repositories, failed_state = transition.reconcile_plan(plan, state, Path("work"))
+    if repositories[0]["verified"] or failed_state["consecutive_failures"] != 1:
+        fail("failed relay reconciliation did not increment the failure counter")
+    if not failed_state.get("last_error_at") or failed_state["verified"]:
+        fail("failed relay reconciliation did not persist failure evidence")
+
+    verified = {"verified": True}
+    service = transition.cutover.ServiceTarget(
+        "woodpecker",
+        "https://ci.example.invalid",
+        token_env="WOODPECKER_API_TOKEN",
+    )
+    with (
+        mock.patch("forge_transition.cutover_plan_view", return_value=object()),
+        mock.patch("forge_transition.discover_repository", return_value=verified),
+        mock.patch("forge_transition.migration.verify_repo", return_value=verified),
+        mock.patch("forge_transition.cutover.service_target", return_value=service),
+        mock.patch("forge_transition.api_base", return_value=(object(), "repos/platform")),
+        mock.patch(
+            "forge_transition.migration.api_request",
+            return_value={"full_name": "platform/platform-app"},
+        ),
+        mock.patch("forge_transition.cutover.woodpecker_lookup", return_value={"id": 7}),
+        mock.patch("forge_transition.cutover.service_request", return_value=[]),
+        mock.patch(
+            "forge_transition.cutover.verify_woodpecker_configuration",
+            return_value=verified,
+        ),
+        mock.patch(
+            "forge_transition.cutover.verify_runner_capabilities",
+            return_value=verified,
+        ),
+        mock.patch(
+            "forge_transition.cutover.verify_destination_protections",
+            return_value=verified,
+        ),
+        mock.patch(
+            "forge_transition.cutover.verify_destination_integrations",
+            return_value=verified,
+        ),
+        mock.patch("forge_transition.verify_destination_access", return_value=verified),
+        mock.patch("forge_transition.cutover.verify_harbor_canary", return_value=verified),
+        mock.patch("forge_transition.cutover.verify_argocd", return_value=verified),
+        mock.patch("forge_transition.verify_source_authority", return_value=verified),
+    ):
+        for phase in ("shadow", "transition", "finalized", "rolled-back"):
+            operational = transition.verify_operational_repository(plan, repo, phase)
+            if not operational["verified"] or operational["phase"] != phase:
+                fail(f"operational verification failed for phase {phase}")
+
+    with mock.patch(
+        "forge_transition.migration.migrate_repo",
+        return_value={"verified": True},
+    ):
+        reverse = transition.reverse_sync_repository(repo, Path("work"))
+    if reverse["direction"] != "forgejo-to-gitlab" or not reverse["verified"]:
+        fail("reverse failback synchronization wrapper did not verify")
+
+    recovery_plan = parsed_plan()
+    recovery_state = transition.initial_state(recovery_plan)
+    recovery_state["phase"] = "finalized"
+    recovery_state["finalize_snapshots"] = {
+        recovery_plan.repositories[0].migration.name: {"archived": False}
+    }
     with (
         mock.patch("forge_transition.set_destination_access", return_value={"verified": True}),
         mock.patch("forge_transition.set_native_relay_enabled", return_value={"verified": True}),
@@ -1707,6 +1976,7 @@ def main() -> int:
     test_validation_confirmation_and_proof_edges()
     test_github_inventory_and_destination_access()
     test_source_authority_relay_and_recovery_helpers()
+    test_relay_reconciliation_and_operational_helpers()
     test_prepare_verify_and_command_surfaces()
     print("Forge transition self-test passed.")
     return 0

@@ -21,7 +21,7 @@ pull request:
 - `scripts/verify_supply_chain_evidence.py` rejects malformed or empty SBOMs.
 - Kustomize and Helm render every complete base and premium application, then
   Kubeconform validates built-in Kubernetes objects against the target schema.
-- Coverage.py traces Python subprocesses and enforces the measured 79.0% branch
+- Coverage.py traces Python subprocesses and enforces the measured 81.0% branch
   coverage ratchet across the forge migration, cutover, and transition engines.
 - The SBOM is retained as a workflow artifact for 30 days.
 
@@ -61,7 +61,7 @@ bash scripts/forge-coverage.sh
 ```
 
 The gate writes `rendered/coverage/forge-coverage.json` and
-`rendered/coverage/forge-coverage.xml` before enforcing the 79.0% minimum.
+`rendered/coverage/forge-coverage.xml` before enforcing the 81.0% minimum.
 `FORGE_COVERAGE_MIN` can raise the threshold for a branch, but lowering the
 repository default requires an explicit reviewed source change. GitHub retains
 the coverage directory as a workflow artifact for 30 days.

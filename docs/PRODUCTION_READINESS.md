@@ -51,7 +51,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | Check | Required evidence |
 |---|---|
 | Repository validation passed | `python scripts/run_validation.py` or `make validate` |
-| Migration parser robustness passed | The pinned ClusterFuzzLite workflow has no unresolved crashes, and `bash scripts/forge-coverage.sh` passes the 79.0% subprocess branch-coverage ratchet with retained JSON/XML evidence |
+| Migration parser robustness passed | The pinned ClusterFuzzLite workflow has no unresolved crashes, and `bash scripts/forge-coverage.sh` passes the 81.0% subprocess branch-coverage ratchet with retained JSON/XML evidence |
 | Rendered Kubernetes schemas passed | `make rendered-schema-verify`; the exact private profile renders without skipped applications and built-in objects pass strict Kubeconform validation |
 | Active admission policies compiled | `KYVERNO_BIN=<KYVERNO_1_18_1_BINARY> make policy-cel-verify`; compliant, violating, second-rule, and privileged-namespace fixtures produce the expected decisions, and the stable image policy compiles without registry access |
 | Secret scan passed | `make no-secrets` or `python scripts/validate_no_secrets.py` |
