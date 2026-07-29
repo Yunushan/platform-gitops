@@ -19,3 +19,6 @@ Dockerfile text eol=lf
 *.ini text eol=lf
 *.cfg text eol=lf
 *.md text eol=lf
+
+# Preserve immutable vendored Helm chart bytes and upstream whitespace.
+**/charts/** -text whitespace=-trailing-space,-blank-at-eof
