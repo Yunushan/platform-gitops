@@ -153,6 +153,24 @@ server:
 
         storage "raft" {
           path = "/openbao/data"
+
+          retry_join {
+            leader_api_addr = "https://openbao-0.openbao-internal.openbao.svc.cluster.local:8200"
+            leader_tls_servername = "openbao-0.openbao-internal.openbao.svc.cluster.local"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
+
+          retry_join {
+            leader_api_addr = "https://openbao-1.openbao-internal.openbao.svc.cluster.local:8200"
+            leader_tls_servername = "openbao-1.openbao-internal.openbao.svc.cluster.local"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
+
+          retry_join {
+            leader_api_addr = "https://openbao-2.openbao-internal.openbao.svc.cluster.local:8200"
+            leader_tls_servername = "openbao-2.openbao-internal.openbao.svc.cluster.local"
+            leader_ca_cert_file = "/openbao/tls/ca.crt"
+          }
         }
 
         service_registration "kubernetes" {}

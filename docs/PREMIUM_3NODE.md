@@ -318,6 +318,11 @@ Kubernetes Secrets. OpenBao is deployed internally in HA Raft mode with
 retained Longhorn data and audit PVCs, but it is not exposed through public
 ingress by default.
 
+The Raft configuration declares TLS-verified `retry_join` targets for all three
+StatefulSet ordinals. After the first server is initialized and unsealed, later
+ordinals join the same Raft cluster automatically; with the default Shamir seal,
+each joined server must still be unsealed by the approved key custodians.
+
 OpenBao agent injection is fail-closed and namespace opt-in. Enable it only
 after the injector has ready endpoints by labeling an application namespace:
 

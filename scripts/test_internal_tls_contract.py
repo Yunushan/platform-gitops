@@ -110,11 +110,20 @@ def main() -> int:
         "tls_key_file = \"/openbao/tls/tls.key\"",
         "tls_min_version = \"tls12\"",
         "tls_max_version = \"tls13\"",
+        "leader_api_addr = \"https://openbao-0.openbao-internal.openbao.svc.cluster.local:8200\"",
+        "leader_api_addr = \"https://openbao-1.openbao-internal.openbao.svc.cluster.local:8200\"",
+        "leader_api_addr = \"https://openbao-2.openbao-internal.openbao.svc.cluster.local:8200\"",
+        "leader_tls_servername = \"openbao-0.openbao-internal.openbao.svc.cluster.local\"",
+        "leader_tls_servername = \"openbao-1.openbao-internal.openbao.svc.cluster.local\"",
+        "leader_tls_servername = \"openbao-2.openbao-internal.openbao.svc.cluster.local\"",
+        "leader_ca_cert_file = \"/openbao/tls/ca.crt\"",
         "name: certificate-reloader",
         "kill -HUP",
         "serverName: openbao.openbao.svc.cluster.local",
     ):
         require(openbao_values, needle, "OpenBao TLS values")
+    if openbao_values.count("retry_join {") != 3:
+        raise AssertionError("OpenBao TLS values must declare one retry_join target per HA replica")
     forbid(openbao_values, "tls_disable = 1", "OpenBao TLS values")
     forbid(openbao_values, "insecureSkipVerify: true", "OpenBao TLS values")
 
