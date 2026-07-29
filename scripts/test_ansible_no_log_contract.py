@@ -19,6 +19,9 @@ NO_LOG_RE = re.compile(r"^(?P<indent>\s*)no_log:\s*(?P<value>.+?)\s*(?:#.*)?$")
 ALLOWED_NO_LOG_TASKS = {
     ("ansible/playbooks/bootstrap-argocd.yml", "Register private Git repository credentials when provided"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve shared platform Valkey auth secret"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Longhorn volume encryption key"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Fetch Longhorn encryption key into ignored controller comparison file"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Preserve or create Longhorn encryption recovery file without overwriting mismatch"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve MinIO root credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Harbor bootstrap secrets"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Harbor external database password secret"),
@@ -34,6 +37,8 @@ ALLOWED_NO_LOG_TASKS = {
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Forgejo Redis URI secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve CloudNativePG object storage credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Loki object storage credentials secret"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Loki gateway and client credentials"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Alertmanager routing configuration"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Velero cloud credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Longhorn backup target credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Woodpecker shared agent secret"),

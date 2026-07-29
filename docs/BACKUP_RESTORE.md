@@ -32,6 +32,10 @@ Keep the following outside the cluster and outside plaintext Git:
 - Backup storage credentials.
 - SOPS age private key material.
 - Object storage recovery credentials.
+- The `longhorn-system/longhorn-crypto` volume-encryption key and its recovery
+  metadata. `platform-app-secrets` maintains the Git-ignored controller copy at
+  `LONGHORN_ENCRYPTION_RECOVERY_FILE`; replicate it into a separate encrypted
+  failure domain.
 - CA private keys and step-ca passwords when step-ca is enabled.
 - RKE2 etcd snapshot decryption material if snapshot encryption is enabled.
 
@@ -62,27 +66,42 @@ record with:
 - Velero BackupStorageLocation phase and latest backup name.
 - CloudNativePG backup and WAL archive status.
 - Longhorn backup target status and at least one successful volume backup.
+- An isolated restore proving the externally escrowed Longhorn encryption key
+  can unlock a restored encrypted volume without exposing the key in evidence.
 - Forgejo repository backup/export proof.
+- A current Forgejo active-passive recovery drill proving a new pod UID, the
+  same service/PVC/PV/image identities, healthy attached Longhorn storage, and
+  service recovery inside its accepted RTO.
 - Harbor registry metadata backup and object storage backup proof.
 - SOPS or external secret recovery proof, including the holder of the age
   private key or equivalent decrypt authority.
 - Restore drill evidence with operator, date, DRILL_ID, elapsed restore time,
   and pass/fail result.
 
-Keep the machine-readable acceptance record outside public Git. Start with
-`examples/restore-evidence.example.json`, replace every example value with the
-real retained proof, and set these values in the ignored deployment env file:
+Keep the machine-readable acceptance record outside public Git. Start with the
+schema-v2 `examples/restore-evidence.example.json`, replace every example value
+with real retained proof, and set these values in the ignored deployment env
+file. Schema v1 records are historical only and fail the production gate:
 
 ```bash
 PLATFORM_RESTORE_EVIDENCE_FILE=private/restore-evidence.json
 PLATFORM_RESTORE_DRILL_MAX_AGE_DAYS=92
+PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE=private/forgejo-recovery-evidence.json
+PLATFORM_FORGEJO_RECOVERY_MAX_AGE_DAYS=92
+PLATFORM_FORGEJO_RECOVERY_MAX_RTO_SECONDS=300
 PLATFORM_DATA_PROTECTION_MAX_ETCD_AGE_HOURS=8
 PLATFORM_DATA_PROTECTION_MAX_BACKUP_AGE_HOURS=26
 ```
 
 The operator and approver must be different people. Every required check must
-be `passed` and point to retained evidence in the private ticket, evidence
-store, or audit system. Validate the record and live backup state together:
+be `passed` and contain an approved evidence URI, SHA-256 digest, and timestamp.
+The `longhornEncryptionKey` check must point to proof that recovery personnel
+retrieved the escrowed key and mounted restored encrypted data; the evidence
+must never contain the key itself.
+The gate derives actual RPO/RTO from backup, recovery-start, and completion
+timestamps; requires an isolated cluster or disposable lab in another failure
+domain; and requires successful failover and reconciled failback proof.
+Validate the record and live backup state together:
 
 ```bash
 make platform-data-protection
@@ -90,7 +109,26 @@ make platform-data-protection
 
 This gate rejects an in-cluster MinIO endpoint as disaster-recovery storage,
 stale or missing etcd/Velero/CloudNativePG/Longhorn backups, unhealthy WAL
-archiving, missing volume-data movement, and stale or incomplete drill proof.
+archiving, missing volume-data movement, stale or incomplete restore proof, and
+Forgejo recovery evidence that is stale, belongs to another profile or commit,
+exceeds RTO, reuses the old pod or node, changes persistent identities, lacks
+encrypted Longhorn CSI key references, or leaves the source node cordoned.
+
+Create the separate availability record only during an approved maintenance
+window. Start with `examples/forgejo-recovery-evidence.example.json` for the
+schema, but let the drill produce the real record:
+
+```bash
+PLATFORM_FORGEJO_RECOVERY_OPERATOR="${OPERATOR_ID:?set OPERATOR_ID}" \
+PLATFORM_FORGEJO_RECOVERY_APPROVER="${INDEPENDENT_APPROVER_ID:?set INDEPENDENT_APPROVER_ID}" \
+PLATFORM_FORGEJO_RECOVERY_CONFIRMATION=FAILOVER_FORGEJO_SINGLETON \
+make platform-forgejo-recovery-drill
+```
+
+The drill requires at least two Ready, schedulable nodes. It cordons the current
+Forgejo node, deletes only the managed singleton pod, requires the replacement
+to become healthy on another preflight-eligible node within the RTO, and always
+uncordons the source node. A cleanup failure prevents passing evidence.
 
 ## Restore Drill Scope
 
@@ -139,20 +177,30 @@ Use a private record like this:
 
 ```text
 DRILL_ID:
-Date:
+Source Git commit:
 Operator:
-Cluster/profile:
+Approver:
+Profile:
+Backup completed at:
+Recovery started at:
+Recovery completed at:
+Recovery target and failure domain:
 RPO target:
 RTO target:
 Latest etcd snapshot:
 Latest Velero backup:
 Latest CloudNativePG backup/WAL point:
 Latest Longhorn volume backup:
+Object storage verified:
 Forgejo repository verified:
 Harbor image verified:
 SOPS or external secret recovery verified:
 Argo CD sync verified:
 Ingress/FQDN verified:
+Certificate/trust verified:
+Failover DNS/VIP/TLS and consistency verified:
+Failback backup and reconciliation verified:
+Evidence URI, SHA-256, and verification time for every item:
 Elapsed recovery time:
 Result:
 Follow-up actions:

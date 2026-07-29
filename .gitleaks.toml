@@ -17,3 +17,36 @@ paths = [
   '''.*\.example(\.yaml|\.yml|\.ini|\.env)?$'''
 ]
 
+[[allowlists]]
+description = "Health-check diagnostic prose misclassified as a generic API key"
+regexTarget = "line"
+regexes = [
+  '''path, Harbor registry API path, Grafana/Prometheus monitoring API path,'''
+]
+
+[[allowlists]]
+description = "Longhorn dm-crypt cipher algorithm constant"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = [
+  '''--from-literal=CRYPTO_KEY_CIPHER=aes-xts-plain64'''
+]
+paths = [
+  '''^ansible/playbooks/configure-platform-app-secrets[.]yml$'''
+]
+
+[[allowlists]]
+description = "Literal-ellipsis private-key examples in exact vendored chart documentation"
+condition = "AND"
+targetRules = ["private-key"]
+regexTarget = "match"
+regexes = [
+  '''(?s)-----BEGIN (?:ENCRYPTED |EC |RSA |OPENSSH )?PRIVATE KEY-----.*[.][.][.].*-----END (?:ENCRYPTED |EC |RSA |OPENSSH )?PRIVATE KEY-----'''
+]
+paths = [
+  '''^gitops/clusters/rke2-main/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$''',
+  '''^gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10[.]0[.]0/argo-cd/values[.]yaml$''',
+  '''^gitops/clusters/rke2-main/premium-3node/apps/keycloak/charts/keycloak-25[.]2[.]0/keycloak/README[.]md$''',
+  '''^gitops/clusters/rke2-main/premium-3node/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$'''
+]

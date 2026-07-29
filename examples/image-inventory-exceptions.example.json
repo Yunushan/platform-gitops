@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "exceptions": [
+    {
+      "id": "upstream-image-2026q3",
+      "image": "docker.io/example/upstream@sha256:<64_HEX_CHARACTERS>",
+      "sourceImage": "docker.io/example/upstream:1.2.3",
+      "owner": "platform-security",
+      "approvedBy": "risk-approver",
+      "ticket": "RISK-1234",
+      "reason": "Upstream does not publish a signature accepted by the platform admission key.",
+      "createdAt": "2026-07-01",
+      "expiresAt": "2026-09-29",
+      "vulnerabilityReport": "private/supply-chain/reports/upstream-1.2.3.trivy.json",
+      "vulnerabilityReportSha256": "<64_HEX_CHARACTERS>"
+    }
+  ]
+}

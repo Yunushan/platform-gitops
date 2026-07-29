@@ -11,20 +11,34 @@ rules:
 
   - id: kubernetes-latest-image-tag
     languages:
-      - yaml
+      - generic
     severity: WARNING
     message: Avoid mutable latest image tags in Kubernetes manifests; pin a version or digest.
-    pattern-regex: 'image:\s*[''"]?[^''"\s]+:latest[''"]?'
+    pattern-regex: '(?m)^[ \t]*image:[ \t]*[''"]?[^''"\s]+:latest[''"]?[ \t]*(?:#.*)?$'
+    paths:
+      include:
+        - "**/*.yaml"
+        - "**/*.yml"
     metadata:
       category: supply-chain
       confidence: medium
 
   - id: kubernetes-privileged-container
     languages:
-      - yaml
+      - generic
     severity: WARNING
     message: Privileged containers require an explicit security review and a documented exception.
-    pattern-regex: 'privileged:\s*true\b'
+    pattern-regex: '(?m)^[ \t]*privileged:[ \t]*true[ \t]*(?:#.*)?$'
+    paths:
+      include:
+        - "**/*.yaml"
+        - "**/*.yml"
+      exclude:
+        # Longhorn requires host storage access. Keep these reviewed exceptions
+        # bound to the exact vendored chart version so upgrades force re-review.
+        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn/templates/daemonset-sa.yaml"
+        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn/templates/preupgrade-job.yaml"
+        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn/templates/psp.yaml"
     metadata:
       category: policy
       confidence: medium

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Validate private restore-drill evidence used by the production gate."""
+"""Validate private restore and continuity evidence used by the production gate."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 REQUIRED_CHECKS = (
@@ -17,6 +19,8 @@ REQUIRED_CHECKS = (
     "velero",
     "cloudnativepg",
     "longhorn",
+    "longhornEncryptionKey",
+    "objectStorage",
     "forgejo",
     "harbor",
     "secrets",
@@ -24,10 +28,13 @@ REQUIRED_CHECKS = (
     "ingress",
     "certificates",
 )
+EVIDENCE_SCHEMES = {"evidence", "https", "s3", "ticket"}
+SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
 
 
 class EvidenceError(ValueError):
-    """Raised when restore-drill evidence is incomplete or stale."""
+    """Raised when restore or continuity evidence is incomplete or stale."""
 
 
 def parse_timestamp(value: Any, label: str) -> datetime:
@@ -59,6 +66,41 @@ def nonempty_string(document: dict[str, Any], name: str) -> str:
     return value.strip()
 
 
+def require_true(document: dict[str, Any], name: str, label: str) -> None:
+    if document.get(name) is not True:
+        raise EvidenceError(f"{label}.{name} must be true")
+
+
+def validate_proof(
+    value: Any,
+    *,
+    label: str,
+    recovery_started_at: datetime,
+    completed_at: datetime,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise EvidenceError(f"{label} must be an object")
+    if nonempty_string(value, "status").lower() != "passed":
+        raise EvidenceError(f"{label}.status must be passed")
+    proof = value.get("evidence")
+    if not isinstance(proof, dict):
+        raise EvidenceError(f"{label}.evidence must be an object")
+    uri = nonempty_string(proof, "uri")
+    parsed = urlparse(uri)
+    if parsed.scheme.lower() not in EVIDENCE_SCHEMES or not (parsed.netloc or parsed.path):
+        allowed = ", ".join(sorted(EVIDENCE_SCHEMES))
+        raise EvidenceError(f"{label}.evidence.uri must use an approved scheme: {allowed}")
+    digest = nonempty_string(proof, "sha256").lower()
+    if not SHA256_RE.fullmatch(digest):
+        raise EvidenceError(f"{label}.evidence.sha256 must be a lowercase SHA-256")
+    verified_at = parse_timestamp(proof.get("verifiedAt"), f"{label}.evidence.verifiedAt")
+    if verified_at < recovery_started_at - timedelta(minutes=5):
+        raise EvidenceError(f"{label}.evidence.verifiedAt predates the recovery exercise")
+    if verified_at > completed_at + timedelta(minutes=5):
+        raise EvidenceError(f"{label}.evidence.verifiedAt is after drill completion")
+    return {"uri": uri, "sha256": digest, "verified_at": verified_at}
+
+
 def validate_evidence(
     document: Any,
     *,
@@ -68,15 +110,17 @@ def validate_evidence(
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise EvidenceError("restore evidence must be a JSON object")
-    if document.get("schemaVersion") != 1:
-        raise EvidenceError("schemaVersion must be 1")
+    if document.get("schemaVersion") != 2:
+        raise EvidenceError("schemaVersion must be 2")
 
     drill_id = nonempty_string(document, "drillId")
     operator = nonempty_string(document, "operator")
     approver = nonempty_string(document, "approver")
     profile = nonempty_string(document, "profile")
-    result = nonempty_string(document, "result").lower()
-    if result != "passed":
+    source_commit = nonempty_string(document, "sourceCommit").lower()
+    if not COMMIT_RE.fullmatch(source_commit):
+        raise EvidenceError("sourceCommit must be a 40-character lowercase Git SHA")
+    if nonempty_string(document, "result").lower() != "passed":
         raise EvidenceError("result must be passed")
     if operator.casefold() == approver.casefold():
         raise EvidenceError("operator and approver must be different people")
@@ -85,10 +129,18 @@ def validate_evidence(
             f"profile {profile!r} does not match expected profile {expected_profile!r}"
         )
 
+    backup_completed_at = parse_timestamp(document.get("backupCompletedAt"), "backupCompletedAt")
+    recovery_started_at = parse_timestamp(
+        document.get("recoveryStartedAt"), "recoveryStartedAt"
+    )
     completed_at = parse_timestamp(document.get("completedAt"), "completedAt")
     now_utc = now.astimezone(timezone.utc)
     if completed_at > now_utc + timedelta(minutes=5):
         raise EvidenceError("completedAt is in the future")
+    if recovery_started_at > completed_at:
+        raise EvidenceError("recoveryStartedAt must not be after completedAt")
+    if backup_completed_at > recovery_started_at + timedelta(minutes=5):
+        raise EvidenceError("backupCompletedAt must not be after recoveryStartedAt")
     age = now_utc - completed_at
     if age > timedelta(days=max_age_days):
         raise EvidenceError(
@@ -98,10 +150,36 @@ def validate_evidence(
     rpo_hours = positive_number(document, "rpoHours")
     rto_minutes = positive_number(document, "rtoMinutes")
     elapsed_minutes = positive_number(document, "elapsedMinutes")
-    if elapsed_minutes > rto_minutes:
+    measured_rpo_hours = max(
+        0.0,
+        (recovery_started_at - backup_completed_at).total_seconds() / 3600,
+    )
+    measured_elapsed_minutes = (completed_at - recovery_started_at).total_seconds() / 60
+    if measured_rpo_hours > rpo_hours:
         raise EvidenceError(
-            f"elapsedMinutes {elapsed_minutes:g} exceeds rtoMinutes {rto_minutes:g}"
+            f"measured backup age {measured_rpo_hours:g}h exceeds rpoHours {rpo_hours:g}"
         )
+    if measured_elapsed_minutes > rto_minutes:
+        raise EvidenceError(
+            f"measured recovery time {measured_elapsed_minutes:g}m exceeds rtoMinutes {rto_minutes:g}"
+        )
+    if abs(measured_elapsed_minutes - elapsed_minutes) > 1:
+        raise EvidenceError(
+            "elapsedMinutes does not match recoveryStartedAt/completedAt within one minute"
+        )
+
+    target = document.get("recoveryTarget")
+    if not isinstance(target, dict):
+        raise EvidenceError("recoveryTarget must be an object")
+    target_type = nonempty_string(target, "type")
+    if target_type not in {"isolated-cluster", "disposable-lab"}:
+        raise EvidenceError(
+            "recoveryTarget.type must be isolated-cluster or disposable-lab"
+        )
+    nonempty_string(target, "identifier")
+    if target.get("isProduction") is not False:
+        raise EvidenceError("recoveryTarget.isProduction must be false")
+    require_true(target, "failureDomainSeparated", "recoveryTarget")
 
     checks = document.get("checks")
     if not isinstance(checks, dict):
@@ -110,30 +188,62 @@ def validate_evidence(
     if unknown:
         raise EvidenceError(f"checks contains unsupported entries: {', '.join(unknown)}")
     for name in REQUIRED_CHECKS:
-        check = checks.get(name)
-        if not isinstance(check, dict):
-            raise EvidenceError(f"checks.{name} must be an object")
-        status = str(check.get("status", "")).strip().lower()
-        evidence = str(check.get("evidence", "")).strip()
-        if status != "passed":
-            raise EvidenceError(f"checks.{name}.status must be passed")
-        if not evidence:
-            raise EvidenceError(f"checks.{name}.evidence must identify retained proof")
+        validate_proof(
+            checks.get(name),
+            label=f"checks.{name}",
+            recovery_started_at=recovery_started_at,
+            completed_at=completed_at,
+        )
+
+    continuity = document.get("continuity")
+    if not isinstance(continuity, dict):
+        raise EvidenceError("continuity must be an object")
+    unknown_continuity = sorted(set(continuity) - {"failover", "failback"})
+    if unknown_continuity:
+        raise EvidenceError(
+            f"continuity contains unsupported entries: {', '.join(unknown_continuity)}"
+        )
+    failover = continuity.get("failover")
+    validate_proof(
+        failover,
+        label="continuity.failover",
+        recovery_started_at=recovery_started_at,
+        completed_at=completed_at,
+    )
+    if not isinstance(failover, dict):
+        raise EvidenceError("continuity.failover must be an object")
+    require_true(failover, "dnsVipTlsValidated", "continuity.failover")
+    require_true(failover, "dataConsistencyValidated", "continuity.failover")
+
+    failback = continuity.get("failback")
+    validate_proof(
+        failback,
+        label="continuity.failback",
+        recovery_started_at=recovery_started_at,
+        completed_at=completed_at,
+    )
+    if not isinstance(failback, dict):
+        raise EvidenceError("continuity.failback must be an object")
+    require_true(failback, "currentBackupValidated", "continuity.failback")
+    require_true(failback, "dataReconciled", "continuity.failback")
 
     return {
         "drill_id": drill_id,
         "profile": profile,
+        "source_commit": source_commit,
         "completed_at": completed_at,
         "age_days": age.total_seconds() / 86400,
         "rpo_hours": rpo_hours,
+        "measured_rpo_hours": measured_rpo_hours,
         "rto_minutes": rto_minutes,
-        "elapsed_minutes": elapsed_minutes,
+        "elapsed_minutes": measured_elapsed_minutes,
+        "recovery_target": target_type,
     }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate recent, independently approved restore-drill evidence."
+        description="Validate recent, independently approved restore and continuity evidence."
     )
     parser.add_argument("evidence_file", type=Path)
     parser.add_argument(
@@ -169,11 +279,11 @@ def main() -> int:
         return 1
 
     print(
-        "Restore evidence accepted: "
+        "Restore and continuity evidence accepted: "
         f"drill={summary['drill_id']} profile={summary['profile']} "
-        f"completed={summary['completed_at'].isoformat()} "
+        f"commit={summary['source_commit']} target={summary['recovery_target']} "
         f"elapsed={summary['elapsed_minutes']:g}m/{summary['rto_minutes']:g}m "
-        f"rpo={summary['rpo_hours']:g}h"
+        f"backup_age={summary['measured_rpo_hours']:g}h/{summary['rpo_hours']:g}h"
     )
     return 0
 

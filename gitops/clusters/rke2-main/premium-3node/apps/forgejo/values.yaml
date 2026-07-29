@@ -7,6 +7,14 @@ replicaCount: 1
 strategy:
   type: Recreate
 
+podDisruptionBudget:
+  minAvailable: 1
+
+deployment:
+  env:
+    - name: SSL_CERT_FILE
+      value: /etc/ssl/platform/ca-certificates.crt
+
 image:
   rootless: true
 
@@ -32,7 +40,30 @@ redis-cluster:
 persistence:
   enabled: true
   size: 20Gi
-  storageClass: longhorn-critical
+  storageClass: longhorn-critical-encrypted
+
+extraVolumes:
+  - name: platform-postgres-ca
+    configMap:
+      name: platform-internal-roots
+      items:
+        - key: ca-certificates.crt
+          path: root.crt
+        - key: ca-certificates.crt
+          path: ca-certificates.crt
+
+extraContainerVolumeMounts:
+  - name: platform-postgres-ca
+    mountPath: /data/gitea/git/.postgresql
+    readOnly: true
+  - name: platform-postgres-ca
+    mountPath: /etc/ssl/platform
+    readOnly: true
+
+extraInitVolumeMounts:
+  - name: platform-postgres-ca
+    mountPath: /data/gitea/git/.postgresql
+    readOnly: true
 
 gitea:
   additionalConfigFromEnvs:
@@ -67,7 +98,7 @@ gitea:
       HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432
       NAME: forgejo
       USER: forgejo
-      SSL_MODE: disable
+      SSL_MODE: verify-full
     session:
       PROVIDER: db
     cache:

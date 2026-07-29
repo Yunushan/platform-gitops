@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-allow-external-git-egress
+  labels:
+    app.kubernetes.io/part-of: platform-network-isolation
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 22
+        - protocol: TCP
+          port: 9418

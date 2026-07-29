@@ -3,6 +3,12 @@
 
 replicaCount: 1
 
+strategy:
+  type: Recreate
+
+podDisruptionBudget:
+  minAvailable: 1
+
 image:
   rootless: true
 

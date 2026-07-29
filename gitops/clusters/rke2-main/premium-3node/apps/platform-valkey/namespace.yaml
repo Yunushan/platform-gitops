@@ -2,4 +2,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: platform-cache
-
+  labels:
+    app.kubernetes.io/part-of: platform
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

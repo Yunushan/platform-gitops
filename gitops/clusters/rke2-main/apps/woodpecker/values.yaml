@@ -18,7 +18,7 @@ server:
     WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>
     WOODPECKER_SERVER_ADDR: ":8000"
     WOODPECKER_GRPC_ADDR: ":9000"
-    WOODPECKER_LOG_LEVEL: "debug"
+    WOODPECKER_LOG_LEVEL: "info"
   probes:
     liveness:
       timeoutSeconds: 10

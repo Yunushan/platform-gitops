@@ -78,10 +78,17 @@ Before promoting to the next environment, collect evidence for:
   `PLATFORM_PROFILE=<PROFILE> make platform-profile-check`.
 - Artifact provenance, image tag or digest, scan result, and signature or
   attestation state when enabled.
+- Exact rendered-to-runtime image reconciliation with no unresolved live
+  digests. Private-registry images must be signed and admission-enforced;
+  external images require a current reviewed exception bound to a Trivy
+  report.
 - Argo CD Application sync and health in the source environment.
 - Relevant smoke, integration, or user acceptance tests.
 - No open critical or expired exceptions from `docs/COMPLIANCE_AUDIT.md`.
 - Backup and restore prerequisites for stateful changes.
+- The exact Argo CD deletion diff and a named, time-stamped prune approval when
+  the promotion removes managed resources; use the one-Application procedure
+  in `docs/OPERATIONS.md`.
 - Capacity impact review from `docs/CAPACITY_PLANNING.md` and alerting impact
   review for high-load or noisy changes.
 
@@ -198,9 +205,13 @@ Keep private evidence for:
 - Change owner, approver, and release window.
 - Source and target environment.
 - Git commit SHA, image digest or release tag, and chart version.
+- Hash-bound rendered/live image inventory report and any approved external
+  image exceptions used by the release.
 - Pull request review and required validation checks.
 - Secret scan result.
 - Argo CD sync and health result.
+- Argo CD deletion diff, approver, approval timestamp, and post-prune health
+  when the release removed managed resources.
 - `make platform-status`.
 - `make platform-app-health`.
 - `PLATFORM_PROFILE=<PROFILE> make platform-production-check`.

@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ignored-by-target-selector
+spec:
+  template:
+    spec:
+      volumes:
+        - name: ca-bundle-certs
+          secret: null
+          configMap:
+            name: platform-internal-roots
+            items:
+              - key: ca-certificates.crt
+                path: ca.crt

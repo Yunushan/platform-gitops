@@ -13,11 +13,20 @@ auth:
       passwordKey: valkey-password
       permissions: "~* &* +@all"
 
+tls:
+  enabled: true
+  existingSecret: platform-valkey-tls
+  serverPublicKey: tls.crt
+  serverKey: tls.key
+  caPublicKey: ca.crt
+  requireClientCertificate: false
+
 valkeyConfig: |-
   appendonly yes
   appendfsync everysec
   aof-use-rdb-preamble yes
   save ""
+  tls-auto-reload-interval 300
 
 service:
   type: ClusterIP
@@ -29,7 +38,7 @@ replica:
   replicas: 2
   minReplicasToWrite: 1
   persistence:
-    storageClass: longhorn-critical
+    storageClass: longhorn-critical-encrypted
     size: 8Gi
 
 # The upstream chart provides replication but intentionally does not perform
@@ -54,23 +63,60 @@ extraInitContainers:
         sentinel_dir=/data/sentinel
         sentinel_config="${sentinel_dir}/sentinel.conf"
         mkdir -p "${sentinel_dir}" /ha
-        if [ ! -s "${sentinel_config}" ]; then
-          cat >"${sentinel_config}" <<EOF
-        port 26379
+
+        # Sentinel rewrites this persistent file after elections. Preserve its
+        # dynamic topology while replacing transport and credential settings.
+        sentinel_body="$(mktemp "${sentinel_dir}/sentinel.conf.body.XXXXXX")"
+        if [ -s "${sentinel_config}" ]; then
+          awk '
+            $1 == "port" || $1 == "tls-port" ||
+            $1 == "tls-cert-file" || $1 == "tls-key-file" ||
+            $1 == "tls-ca-cert-file" || $1 == "tls-auth-clients" ||
+            $1 == "tls-replication" || $1 == "tls-auto-reload-interval" ||
+            $1 == "bind" || $1 == "protected-mode" || $1 == "dir" ||
+            $1 == "requirepass" { next }
+            $1 == "sentinel" &&
+              ($2 == "resolve-hostnames" || $2 == "announce-hostnames") { next }
+            $1 == "sentinel" && $3 == "platform-valkey" &&
+              ($2 == "auth-user" || $2 == "auth-pass" ||
+               $2 == "down-after-milliseconds" || $2 == "failover-timeout" ||
+               $2 == "parallel-syncs") { next }
+            { print }
+          ' "${sentinel_config}" >"${sentinel_body}"
+        else
+          : >"${sentinel_body}"
+        fi
+        if ! awk '$1 == "sentinel" && $2 == "monitor" && $3 == "platform-valkey" { found=1 } END { exit !found }' \
+          "${sentinel_body}"; then
+          echo "sentinel monitor platform-valkey platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local 6379 2" \
+            >>"${sentinel_body}"
+        fi
+
+        cat >"${sentinel_config}" <<EOF
+        port 0
+        tls-port 26379
+        tls-cert-file /tls/tls.crt
+        tls-key-file /tls/tls.key
+        tls-ca-cert-file /tls/ca.crt
+        tls-auth-clients no
+        tls-replication yes
+        tls-auto-reload-interval 300
         bind 0.0.0.0
         protected-mode no
         dir ${sentinel_dir}
         requirepass "${password}"
         sentinel resolve-hostnames yes
         sentinel announce-hostnames yes
-        sentinel monitor platform-valkey platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local 6379 2
+        EOF
+        cat "${sentinel_body}" >>"${sentinel_config}"
+        cat >>"${sentinel_config}" <<EOF
         sentinel auth-user platform-valkey default
         sentinel auth-pass platform-valkey "${password}"
         sentinel down-after-milliseconds platform-valkey 5000
         sentinel failover-timeout platform-valkey 60000
         sentinel parallel-syncs platform-valkey 1
         EOF
-        fi
+        rm -f "${sentinel_body}"
         chmod 0600 "${sentinel_config}"
 
         cat > /ha/haproxy.cfg <<EOF
@@ -101,9 +147,9 @@ extraInitContainers:
           tcp-check send "INFO replication\r\n"
           tcp-check expect string role:master
           tcp-check send "QUIT\r\n"
-          server valkey-0 platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
-          server valkey-1 platform-valkey-1.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
-          server valkey-2 platform-valkey-2.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
+          server valkey-0 platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check check-ssl check-sni platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local verify required verifyhost platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local ca-file /trust/ca-certificates.crt inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
+          server valkey-1 platform-valkey-1.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check check-ssl check-sni platform-valkey-1.platform-valkey-headless.platform-cache.svc.cluster.local verify required verifyhost platform-valkey-1.platform-valkey-headless.platform-cache.svc.cluster.local ca-file /trust/ca-certificates.crt inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
+          server valkey-2 platform-valkey-2.platform-valkey-headless.platform-cache.svc.cluster.local:6379 check check-ssl check-sni platform-valkey-2.platform-valkey-headless.platform-cache.svc.cluster.local verify required verifyhost platform-valkey-2.platform-valkey-headless.platform-cache.svc.cluster.local ca-file /trust/ca-certificates.crt inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none
         EOF
         chmod 0440 /ha/haproxy.cfg
     securityContext:
@@ -142,7 +188,7 @@ extraContainers:
         command:
           - /bin/sh
           - -ec
-          - valkey-cli --no-auth-warning -a "$(cat /auth/valkey-password)" -p 26379 ping | grep -qx PONG
+          - valkey-cli --tls --cacert /tls/ca.crt -h localhost --user default --no-auth-warning -a "$(cat /auth/valkey-password)" -p 26379 ping | grep -qx PONG
       periodSeconds: 5
       timeoutSeconds: 3
     livenessProbe:
@@ -150,7 +196,7 @@ extraContainers:
         command:
           - /bin/sh
           - -ec
-          - valkey-cli --no-auth-warning -a "$(cat /auth/valkey-password)" -p 26379 ping | grep -qx PONG
+          - valkey-cli --tls --cacert /tls/ca.crt -h localhost --user default --no-auth-warning -a "$(cat /auth/valkey-password)" -p 26379 ping | grep -qx PONG
       initialDelaySeconds: 10
       periodSeconds: 10
       timeoutSeconds: 3
@@ -172,6 +218,9 @@ extraContainers:
         mountPath: /data
       - name: valkey-users-secret
         mountPath: /auth
+        readOnly: true
+      - name: platform-valkey-tls
+        mountPath: /tls
         readOnly: true
   - name: primary-proxy
     image: haproxy:3.4.2-alpine
@@ -209,10 +258,16 @@ extraContainers:
       - name: platform-valkey-ha-config
         mountPath: /ha
         readOnly: true
+      - name: platform-internal-roots
+        mountPath: /trust
+        readOnly: true
 
 extraVolumes:
   - name: platform-valkey-ha-config
     emptyDir: {}
+  - name: platform-internal-roots
+    configMap:
+      name: platform-internal-roots
 
 podDisruptionBudget:
   enabled: true
@@ -236,12 +291,22 @@ resources:
 
 metrics:
   enabled: true
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      memory: 256Mi
+  exporter:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+    extraVolumeMounts:
+      - name: platform-internal-roots
+        mountPath: /trust
+        readOnly: true
+    extraEnvs:
+      REDIS_ADDR: rediss://localhost:6379
+      REDIS_USER: default
+      REDIS_EXPORTER_TLS_CA_CERT_FILE: /trust/ca-certificates.crt
+      REDIS_EXPORTER_SKIP_TLS_VERIFICATION: "false"
   serviceMonitor:
     enabled: true
     namespace: monitoring

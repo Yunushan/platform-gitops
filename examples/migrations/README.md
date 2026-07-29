@@ -30,3 +30,18 @@ make forge-migration-proof-verify PROOF=private/migrations/proof.json
 ```
 
 See `docs/FORGE_MIGRATION.md` for the acceptance and evidence policy.
+
+## Optional CI/CD Coexistence
+
+The transition examples are separate from the portable repository-only plans:
+
+- `gitlab-to-forgejo.transition.example.json`
+- `github-to-forgejo.transition.example.json`
+
+They model a shadow period followed by a state in which source Git remains
+writable, source CI is disabled, commits continue to relay into Forgejo, and
+Woodpecker/Argo CD are the only deployment authority. They are never used by
+platform bootstrap. Copy one to `private/`, keep all credentials in the named
+environment variables, and follow `docs/FORGE_TRANSITION.md`. The workflow
+includes a relay-preserving temporary fallback, a full pre-finalization
+rollback, and a verified Forgejo-to-source failback after finalization.

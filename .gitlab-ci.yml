@@ -15,16 +15,34 @@ validate:
     - python scripts/test_bootstrap_env_loader.py
     - python scripts/test_forge_migration.py
     - python scripts/test_forge_cutover.py
+    - python scripts/test_forge_transition.py
+    - python scripts/test_forge_fuzz_contract.py
+    - python scripts/test_forge_coverage_contract.py
     - python scripts/test_forge_migration_live.py
     - python scripts/test_forge_migration_live_workflow.py
     - python scripts/test_private_values_renderer.py
     - python scripts/test_platform_secret_contract.py
     - python scripts/test_policy_examples.py
+    - python scripts/test_image_integrity_contract.py
+    - python scripts/test_pod_security_contract.py
+    - python scripts/test_network_policy_contract.py
+    - python scripts/test_internal_tls_contract.py
+    - python scripts/test_observability_contract.py
+    - python scripts/test_capacity_runtime_contract.py
+    - python scripts/test_rendered_schema_contract.py
     - python scripts/test_sops_age_policy.py
     - python scripts/test_supply_chain_helpers.py
+    - python scripts/test_supply_chain_evidence.py
+    - python scripts/test_image_inventory_evidence.py
+    - python scripts/test_release_workflow.py
+    - python scripts/test_github_release_ref.py
+    - python scripts/test_github_governance.py
+    - python scripts/test_github_governance_configuration.py
+    - python scripts/test_dependency_review_workflow.py
     - python scripts/test_backup_restore_runbook.py
     - python scripts/test_data_protection_contract.py
     - python scripts/test_production_evidence.py
+    - python scripts/test_production_readiness_score.py
     - python scripts/test_business_continuity.py
     - python scripts/test_service_catalog.py
     - python scripts/test_architecture_decisions.py
@@ -59,6 +77,7 @@ validate:
     - python scripts/test_example_templates.py
     - python scripts/test_ansible_playbook_references.py
     - python scripts/test_gitops_application_contract.py
+    - python scripts/test_argocd_project_isolation.py
     - python scripts/test_kustomization_references.py
     - python scripts/test_gitops_helm_chart_pinning.py
     - python scripts/test_gitops_image_pinning.py

@@ -33,6 +33,7 @@ def main() -> int:
         "## Readiness Scope",
         "## Go/No-Go Checklist",
         "## Required Live Gates",
+        "## 100-Point Production Gate",
         "## Component Acceptance Matrix",
         "## Exceptions and Deferrals",
         "## Launch Decision",
@@ -62,9 +63,21 @@ def main() -> int:
         "python scripts/validate_no_secrets.py",
         "PLATFORM_PROFILE=<PROFILE> make platform-profile-check",
         "PLATFORM_PROFILE=<PROFILE> make platform-production-check",
+        "make platform-production-score",
+        "Final production score passed",
+        "GITHUB_GOVERNANCE_EVIDENCE_FILE",
+        "GITHUB_RELEASE_EVIDENCE_FILE",
+        "GITHUB_RELEASE_CHECKSUMS_FILE",
+        "GITHUB_RELEASE_CHECKSUM_BUNDLE_FILE",
+        "PLATFORM_EXPECTED_COMMIT",
         "make platform-app-health",
         "make rke2-verify",
         "make platform-status",
+        "PLATFORM_IMAGE_INTEGRITY_MODE=Enforce",
+        "PLATFORM_IMAGE_INTEGRITY_REQUIRED=true",
+        "PLATFORM_IMAGE_INTEGRITY_CANARY_IMAGE",
+        "make platform-image-inventory-verify",
+        "PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE",
         "PLATFORM_REPO_URL=<PRIVATE_REPO_URL> make platform-production-check",
     ):
         require(doc, gate, "required live gates")
@@ -97,6 +110,7 @@ def main() -> int:
         "Velero and object storage",
         "Prometheus, Grafana, and Loki",
         "cert-manager and trust-manager",
+        "Kyverno admission",
         "step-ca",
     ):
         require(doc, component, "component acceptance matrix")

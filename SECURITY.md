@@ -38,7 +38,10 @@ owners, and patch windows in their private operations records.
 
 ## Reporting a Vulnerability
 
-Use a private security report through your Git hosting platform when available.
+Use a private security report through
+[GitHub private vulnerability reporting](https://github.com/Yunushan/platform-gitops/security/advisories/new)
+for this public repository. Fork owners should replace that link with their
+own private reporting channel.
 For private organizational deployments, use your internal security process and
 include the platform maintainers only through approved private channels.
 
@@ -97,15 +100,17 @@ The repository includes:
 - `renovate.json` for dependency tracking, grouped Helm updates, and Docker
   digest pinning.
 - CI workflows pinned to full commit SHAs for third-party Actions-style steps.
-- `policies/kyverno/verify-signed-images.example.yaml` as an opt-in
-  Cosign/Kyverno verification example.
+- `policies/kyverno/verify-signed-images.example.yaml` as a stable
+  Cosign/Kyverno verification example, plus a separately managed premium
+  image-integrity Application with Audit-to-Deny promotion.
 - Validation for pinned Helm charts and curated image tags/digests.
 - `scripts/validate_no_secrets.py` and `make no-secrets` for public-safety
   scanning.
 
 Private deployments should decide when updates are promoted, how images are
-signed, where SBOMs and attestations are stored, and which namespaces enforce
-signature verification.
+signed, where SBOMs and attestations are stored, and which registry scope is
+enforced. Production promotion requires a signed digest admission canary and
+proof that an invalid digest is rejected; see `docs/SUPPLY_CHAIN.md`.
 
 ## Secure Configuration Baseline
 
@@ -115,6 +120,11 @@ Before production use:
 - Run `make no-secrets`.
 - Run `PLATFORM_PROFILE=premium-3node make platform-production-check` against
   the target cluster.
+- Retain the hash-bound rendered/live image inventory and review every
+  external-image exception before release approval.
+- For GitHub releases, verify live branch, tag, environment, Actions, and
+  security controls with `make github-governance-verify`; see
+  `docs/REPOSITORY_GOVERNANCE.md`.
 - Complete the go/no-go checklist in `docs/PRODUCTION_READINESS.md`.
 - Complete the restore drill in `docs/BACKUP_RESTORE.md`.
 - Complete the continuity exercise in `docs/BUSINESS_CONTINUITY.md`.

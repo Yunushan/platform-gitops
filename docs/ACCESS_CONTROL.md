@@ -98,6 +98,15 @@ Use Argo CD projects to limit:
 - Destination clusters.
 - Destination namespaces.
 - Cluster-scoped resources.
+
+The supplied GitOps tree separates these powers. `platform` is reserved for
+operators that install reviewed CRDs, webhooks, cluster RBAC, ingress/storage
+classes, or other cluster-scoped resources. `platform-services` contains
+Forgejo, Woodpecker, Harbor, Keycloak, MinIO, platform PostgreSQL, platform
+Valkey, and step-ca; it may target only their explicit namespaces and may create
+only Namespace as a cluster-scoped kind. Moving an application between these
+projects is a privileged architecture change and must be reviewed against its
+fully rendered manifests.
 - Sync windows when required by change control.
 
 Keep the built-in admin account for bootstrap and emergency access only when

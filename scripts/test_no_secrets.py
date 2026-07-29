@@ -58,6 +58,14 @@ token: ${PLATFORM_TOKEN}
     assert_problem(f"ansible_user: {private_user}\n", "private node username")
     assert_problem(f"password: {fake_secret}\n", "possible plaintext secret")
     assert_clean("secret = kube.json('get', 'secret', secret_name)\n")
+    assert_clean("secret:\n  secretName: platform-managed-secret\n")
+    assert_clean("privateKey:\n  algorithm: ECDSA\n  rotationPolicy: Always\n")
+    for schema_identifier in (
+        "repository-secret:DEPLOY_KEY",
+        "environment-secret:REGISTRY_TOKEN",
+        "organization-secret:SIGNING_KEY",
+    ):
+        assert_clean(f"source: {schema_identifier}\n")
     if scanner.should_scan(root / ".shell-syntax-leftover" / "script.sh"):
         raise AssertionError("expected stale shell syntax temp directories to be skipped")
     if scanner.should_scan(root / ".ansible-shell-syntax-leftover" / "block.sh"):
@@ -67,6 +75,12 @@ token: ${PLATFORM_TOKEN}
     for local_dir in ("private", "rendered", "secrets"):
         if scanner.should_scan(root / local_dir / "fixture.yaml"):
             raise AssertionError(f"expected {local_dir} directory to be skipped")
+    if scanner.should_scan(root / "gitops/apps/example/charts/vendor/README.md"):
+        raise AssertionError("expected vendored chart README files to be skipped")
+    if not scanner.should_scan(root / "docs/README.md"):
+        raise AssertionError("expected first-party README files to remain scanned")
+    if not scanner.should_scan(root / "gitops/apps/example/charts/vendor/credentials.txt"):
+        raise AssertionError("expected non-README vendored chart files to remain scanned")
 
     print("Secret/privacy scanner self-test passed.")
     return 0

@@ -1,0 +1,39 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: platform-internal-bootstrap
+  namespace: cert-manager
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-internal-root-ca
+  namespace: cert-manager
+spec:
+  secretName: platform-internal-root-ca
+  commonName: Platform Internal Root CA
+  duration: 43800h
+  renewBefore: 8760h
+  isCA: true
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Never
+  usages:
+    - cert sign
+    - crl sign
+    - digital signature
+  issuerRef:
+    name: platform-internal-bootstrap
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: platform-internal-ca
+spec:
+  ca:
+    secretName: platform-internal-root-ca

@@ -99,9 +99,9 @@ Key boundary checks:
 |---|---|---|
 | Secret leakage | Private key, kubeconfig, token, internal hostname, or private IP committed to a public repo | `.gitignore`, ignored local files, SOPS, `make no-secrets`, pull request public-safety checks |
 | Unauthorized production change | A risky manifest or chart value is merged without owner review | Pull requests, `.github/CODEOWNERS.example` copied to private CODEOWNERS, branch protection, required reviews |
-| Supply-chain compromise | Unreviewed chart, image, or CI Action change reaches production | Pinned chart versions, curated image pinning, CI SHA pinning, Renovate dashboard approval, optional Cosign/Kyverno verification |
+| Supply-chain compromise | Unreviewed chart, image, or CI Action change reaches production | Pinned chart versions, curated image pinning, CI SHA pinning, Renovate dashboard approval, staged Cosign/Kyverno verification, and signed/invalid admission canary proof |
 | CI credential misuse | A compromised CI job pushes images or edits desired state | Scoped robot accounts, protected branches, isolated runners, secret rotation, no direct cluster deploy from CI |
-| Argo CD over-privilege | One application can mutate unrelated namespaces or cluster resources | Argo CD projects, namespace scoping, reviewed cluster-scoped resources, drift review |
+| Argo CD over-privilege | One application can mutate unrelated namespaces or cluster resources | A namespace-only AppProject for ordinary services, a separate reviewed operator project, explicit destinations, drift review |
 | Ingress or VIP exposure | Wrong host routes to a sensitive service or bypasses TLS expectations | Traefik/ingress validation, app VIP checks, HTTP to HTTPS redirect checks, DNS review |
 | Storage or database loss | PVC, Longhorn volume, or PostgreSQL data is deleted or corrupted | Backup policies, restore drills, storage class review, maintenance windows |
 | Backup target compromise | Backup credentials allow destructive or exfiltration access | Scoped object storage credentials, retention policy, credential rotation, restore evidence |

@@ -68,6 +68,16 @@ For production acceptance or post-upgrade proof, run:
 PLATFORM_PROFILE=premium-3node make platform-production-check
 ```
 
+The command includes `platform-image-inventory-verify`. Supply the exact
+rendered-manifest summary and Cosign verification report produced for the
+release through `PLATFORM_RENDERED_MANIFEST_SUMMARY` and
+`COSIGN_VERIFICATION_REPORT`. When an upstream image is outside the private
+registry, also supply the reviewed private exception file through
+`PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE`. The image gate fails when a
+rendered image cannot be resolved to an observed or explicitly reviewed
+digest, a live image has no digest, a private-registry image is unsigned, or
+an external image lacks a current admission exception.
+
 Before approving launch, use `docs/PRODUCTION_READINESS.md` to collect the
 go/no-go evidence package, open exceptions, launch decision, and post-launch
 validation plan.
@@ -90,6 +100,83 @@ Use `make platform-app-health` for broad platform changes and
 `make platform-ci-health` for Argo CD or Woodpecker-only changes.
 Use `docs/RELEASE_PROMOTION.md` for dev, staging, production promotion gates,
 rollback or roll-forward planning, hotfixes, freezes, and release evidence.
+
+## Controlled Pruning
+
+Argo CD automatically reconciles creates and updates, but every Application
+uses `Prune=confirm`. A resource removed from Git is therefore held for an
+explicit, time-stamped deletion approval. `PruneLast=true` applies approved
+deletions only after the other sync phases succeed,
+`PrunePropagationPolicy=foreground` waits for dependants, and
+`allowEmpty=false` prevents an empty render from deleting an entire
+Application.
+
+Run `make platform-app-health` after registration or a policy change. Its live
+Application probe verifies that pruning, self-healing, empty-target protection,
+confirmation, final-wave ordering, and foreground propagation are present on
+the objects Argo CD is actually reconciling. Do not treat a static manifest
+check alone as production proof.
+
+The same health gate verifies that the singleton Forgejo deployment still uses
+the non-overlapping `Recreate` strategy and a `minAvailable: 1`
+PodDisruptionBudget. This protects its RWO volume during voluntary disruption;
+it does not make Forgejo highly available during node loss or upgrades.
+
+Prove the active-passive recovery path before production and at least
+quarterly. This command intentionally cordons the current Forgejo node and
+deletes only the managed singleton pod after checking that another Ready,
+schedulable node exists and that the Deployment, PDB, service endpoint,
+immutable image, PVC, encrypted PV, CSI key references, and Longhorn volume are
+healthy:
+
+```bash
+PLATFORM_FORGEJO_RECOVERY_OPERATOR="${OPERATOR_ID:?set OPERATOR_ID}" \
+PLATFORM_FORGEJO_RECOVERY_APPROVER="${INDEPENDENT_APPROVER_ID:?set INDEPENDENT_APPROVER_ID}" \
+PLATFORM_FORGEJO_RECOVERY_CONFIRMATION=FAILOVER_FORGEJO_SINGLETON \
+make platform-forgejo-recovery-drill
+```
+
+The drill waits for a different pod UID on a different node, requires
+`/api/healthz` to return HTTP 200 through the same ClusterIP, verifies the same
+persistent and runtime image identities, and fails if recovery exceeds
+`PLATFORM_FORGEJO_RECOVERY_MAX_RTO_SECONDS`. A `finally` cleanup path uncordons
+the source node; failed cleanup prevents passing evidence. It writes ignored
+private evidence to `PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE`. Routine health
+checks never run this disruptive drill.
+
+Before approving a prune:
+
+1. Review the exact resources marked for deletion in the Argo CD diff.
+2. Confirm the deletion is present in the approved pull request and change
+   ticket.
+3. Confirm current backups and restore evidence for every stateful resource.
+4. Record a named approver who is different from the change author where the
+   production control policy requires separation of duties.
+
+Approve one Application at a time from an RKE2 server:
+
+```bash
+K=/var/lib/rancher/rke2/bin/kubectl
+C=/etc/rancher/rke2/rke2.yaml
+APP="${APP:?export APP with the Argo CD Application name}"
+APPROVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+"$K" --kubeconfig "$C" -n argocd annotate application "$APP" \
+  argocd.argoproj.io/deletion-approved="$APPROVED_AT" --overwrite
+```
+
+Wait for that Application to become `Synced` and `Healthy`, verify the
+remaining resources, then remove the approval marker:
+
+```bash
+"$K" --kubeconfig "$C" -n argocd annotate application "$APP" \
+  argocd.argoproj.io/deletion-approved-
+```
+
+Never pre-approve every Application, reuse an old approval as a standing
+authorization, or approve pruning while the rendered profile is incomplete.
+Record the diff, approval time, sync result, and post-change health in private
+release evidence.
 
 ## Maintenance Windows
 
@@ -259,6 +346,8 @@ deployment reviews.
 Keep private evidence for:
 
 - Latest `make platform-production-check`.
+- Hash-bound rendered/live image inventory report retained by the schema-v4
+  production evidence packet.
 - Latest `make platform-app-health`.
 - Latest production readiness go/no-go record from `docs/PRODUCTION_READINESS.md`.
 - Latest service catalog ownership and dependency review from `docs/SERVICE_CATALOG.md`.
@@ -269,6 +358,8 @@ Keep private evidence for:
 - Latest capacity planning review from `docs/CAPACITY_PLANNING.md`.
 - Latest compliance and audit evidence review from `docs/COMPLIANCE_AUDIT.md`.
 - Latest release and environment promotion evidence from `docs/RELEASE_PROMOTION.md`.
+- Latest sanitized GitHub governance evidence from
+  `docs/REPOSITORY_GOVERNANCE.md` when GitHub publishes the release.
 - Latest Alertmanager receiver and routing test from `docs/ALERTING.md`.
 - Latest credential rotation.
 - Latest maintenance window.

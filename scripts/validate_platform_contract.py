@@ -51,18 +51,38 @@ base_cloudnativepg_values = root / "gitops/clusters/rke2-main/apps/cloudnativepg
 premium_cloudnativepg_values = root / "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/values.yaml"
 premium_platform_postgres_cluster = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-postgres/postgres-cluster.yaml"
 premium_platform_valkey_values = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/values.yaml"
+premium_platform_valkey_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/kustomization.yaml"
+premium_platform_valkey_certificate = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/server-certificate.yaml"
 premium_platform_valkey_primary_service = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/service-primary.yaml"
 premium_keycloak_values = root / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml"
 premium_kyverno_values = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/values.yaml"
 premium_kyverno_kustomization = root / "gitops/clusters/rke2-main/premium-3node/apps/kyverno/kustomization.yaml"
 premium_no_plaintext_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/no-plaintext-secrets.yaml"
+premium_pod_security_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-pod-security-baseline.yaml"
 premium_workload_baseline_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-workload-baseline.yaml"
+premium_image_integrity_policy = root / "gitops/clusters/rke2-main/premium-3node/apps/platform-image-integrity/verify-platform-images.yaml"
 policy_readiness_playbook = root / "ansible/playbooks/verify-platform-policy-readiness.yml"
+active_policy_verifier = root / "scripts/verify_active_kyverno_policies.py"
+kyverno_cli_installer = root / "scripts/bootstrap/install-kyverno-cli.sh"
+github_validate_workflow = root / ".github/workflows/validate.yml"
+github_release_workflow = root / ".github/workflows/release.yml"
 platform_tls_playbook = root / "ansible/playbooks/manage-platform-tls.yml"
 platform_tls_verify_playbook = root / "ansible/playbooks/verify-platform-tls.yml"
 production_evidence_script = root / "scripts/verify_production_evidence.py"
 production_evidence_runner = root / "scripts/bootstrap/run-platform-production-evidence.sh"
 production_evidence_test = root / "scripts/test_production_evidence.py"
+image_inventory_capture = root / "scripts/capture_live_image_inventory.py"
+image_inventory_reconciler = root / "scripts/reconcile_image_inventory.py"
+image_inventory_validator = root / "scripts/verify_image_inventory_evidence.py"
+image_inventory_test = root / "scripts/test_image_inventory_evidence.py"
+image_inventory_wrapper = root / "scripts/bootstrap/run-platform-image-inventory.sh"
+image_inventory_playbook = root / "ansible/playbooks/capture-platform-image-inventory.yml"
+image_inventory_example = root / "examples/image-inventory-exceptions.example.json"
+forgejo_recovery_runner = root / "scripts/run_forgejo_recovery_drill.py"
+forgejo_recovery_validator = root / "scripts/verify_forgejo_recovery_evidence.py"
+forgejo_recovery_wrapper = root / "scripts/bootstrap/run-forgejo-recovery-drill.sh"
+forgejo_recovery_playbook = root / "ansible/playbooks/run-forgejo-recovery-drill.yml"
+forgejo_recovery_example = root / "examples/forgejo-recovery-evidence.example.json"
 premium_tetragon_values = root / "gitops/clusters/rke2-main/premium-3node/apps/tetragon/values.yaml"
 premium_minio_values = root / "gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml"
 premium_external_secrets_values = root / "gitops/clusters/rke2-main/premium-3node/apps/external-secrets/values.yaml"
@@ -112,6 +132,8 @@ platform_secret_contract_test = root / "scripts/test_platform_secret_contract.py
 policy_examples_test = root / "scripts/test_policy_examples.py"
 sops_age_policy_test = root / "scripts/test_sops_age_policy.py"
 supply_chain_helpers_test = root / "scripts/test_supply_chain_helpers.py"
+supply_chain_evidence_test = root / "scripts/test_supply_chain_evidence.py"
+supply_chain_evidence_validator = root / "scripts/verify_supply_chain_evidence.py"
 security_scan_script = root / "scripts/security-scan.sh"
 supply_chain_posture_script = root / "scripts/supply-chain-posture.sh"
 gitleaks_config = root / ".gitleaks.toml"
@@ -216,6 +238,7 @@ required_premium_apps = [
     "step-ca",
     "kyverno",
     "platform-policies",
+    "platform-image-integrity",
     "tetragon",
     "external-secrets",
     "openbao",
@@ -225,7 +248,6 @@ required_premium_apps = [
     "cloudnativepg",
     "platform-postgres",
     "platform-valkey",
-    "minio",
     "keycloak",
     "argocd-ha",
     "forgejo",
@@ -250,6 +272,9 @@ required_storage_classes = [
     "longhorn-standard",
     "longhorn-critical",
     "longhorn-cache",
+    "longhorn-standard-encrypted",
+    "longhorn-critical-encrypted",
+    "longhorn-cache-encrypted",
 ]
 
 
@@ -331,12 +356,12 @@ def application_documents(path: Path) -> list[dict[str, str]]:
         if "kind: Application" not in raw_doc:
             continue
         metadata_name = re.search(
-            r"(?ms)^metadata:\s*\n(?:^\s+.*\n)*?^\s+name:\s*([A-Za-z0-9_.-]+)\s*$",
+            r"(?m)^  name:\s*([A-Za-z0-9_.-]+)\s*$",
             raw_doc,
         )
         source_path = SOURCE_PATH_RE.search(raw_doc)
         destination_namespace = re.search(
-            r"(?ms)^  destination:\s*\n(?:^\s+.*\n)*?^\s+namespace:\s*([A-Za-z0-9_.-]+)\s*$",
+            r"(?m)^    namespace:\s*([A-Za-z0-9_.-]+)\s*$",
             raw_doc,
         )
         repo_url = re.search(r"(?m)^\s+repoURL:\s*([^\s#]+)\s*$", raw_doc)
@@ -511,7 +536,7 @@ def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
         "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
         "NAME: forgejo",
         "USER: forgejo",
-        "SSL_MODE: disable",
+        "SSL_MODE: verify-full",
         "PROVIDER: db",
     }:
         return True
@@ -737,6 +762,7 @@ def assert_profile_catalog() -> None:
             "gitops/clusters/rke2-main/premium-3node/apps/step-ca",
             "gitops/clusters/rke2-main/premium-3node/apps/kyverno",
             "gitops/clusters/rke2-main/premium-3node/apps/platform-policies",
+            "gitops/clusters/rke2-main/premium-3node/apps/platform-image-integrity",
             "gitops/clusters/rke2-main/premium-3node/apps/tetragon",
             "gitops/clusters/rke2-main/premium-3node/apps/external-secrets",
             "gitops/clusters/rke2-main/premium-3node/apps/openbao",
@@ -746,7 +772,6 @@ def assert_profile_catalog() -> None:
             "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg",
             "gitops/clusters/rke2-main/premium-3node/apps/platform-postgres",
             "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey",
-            "gitops/clusters/rke2-main/premium-3node/apps/minio",
             "gitops/clusters/rke2-main/premium-3node/apps/keycloak",
             "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha",
             "gitops/clusters/rke2-main/premium-3node/apps/forgejo",
@@ -755,6 +780,9 @@ def assert_profile_catalog() -> None:
             "gitops/clusters/rke2-main/premium-3node/apps/monitoring",
             "gitops/clusters/rke2-main/premium-3node/apps/loki",
             "gitops/clusters/rke2-main/premium-3node/apps/velero",
+        ],
+        "premium-3node-lab": [
+            "gitops/clusters/rke2-main/premium-3node/apps/minio",
         ],
     }
     required_profile_removals = {
@@ -832,6 +860,11 @@ def main() -> None:
     assert_app_file(premium_apps, required_premium_apps)
 
     premium_apps_text = read(premium_apps)
+    reject_text(
+        premium_apps_text,
+        "path: gitops/clusters/rke2-main/premium-3node/apps/minio",
+        "premium production application set must not register archived MinIO; use premium-3node-lab only for non-production testing",
+    )
     if "- /spec/imageName" in premium_apps_text:
         fail(
             "premium Argo CD applications must not ignore /spec/imageName; "
@@ -1037,6 +1070,8 @@ def main() -> None:
     premium_forgejo_text = read(premium_forgejo_values)
     for needle in (
         "replicaCount: 1",
+        "strategy:\n  type: Recreate",
+        "podDisruptionBudget:\n  minAvailable: 1",
         "image:\n  rootless: true",
         "ingress:\n  enabled: true\n  className: traefik",
         "host: forgejo.<PLATFORM_DOMAIN>",
@@ -1050,10 +1085,11 @@ def main() -> None:
     for needle in (
         "replicaCount: 1",
         "strategy:\n  type: Recreate",
+        "podDisruptionBudget:\n  minAvailable: 1",
         "image:\n  rootless: true",
         "ingress:\n  enabled: true\n  className: traefik",
         "secretName: forgejo-tls",
-        "persistence:\n  enabled: true\n  size: 20Gi\n  storageClass: longhorn-critical",
+        "persistence:\n  enabled: true\n  size: 20Gi\n  storageClass: longhorn-critical-encrypted",
         "DOMAIN: forgejo.<PLATFORM_DOMAIN>",
         "ROOT_URL: https://forgejo.<PLATFORM_DOMAIN>/",
         "SSH_DOMAIN: forgejo.<PLATFORM_DOMAIN>",
@@ -1068,7 +1104,13 @@ def main() -> None:
         "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
         "NAME: forgejo",
         "USER: forgejo",
-        "SSL_MODE: disable",
+        "SSL_MODE: verify-full",
+        "name: platform-postgres-ca",
+        "name: platform-internal-roots",
+        "mountPath: /data/gitea/git/.postgresql",
+        "name: SSL_CERT_FILE",
+        "value: /etc/ssl/platform/ca-certificates.crt",
+        "mountPath: /etc/ssl/platform",
         "PROVIDER: db",
         "GITEA__cache__HOST",
         "name: forgejo-redis",
@@ -1086,7 +1128,7 @@ def main() -> None:
         "WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>",
         'WOODPECKER_SERVER_ADDR: ":8000"',
         'WOODPECKER_GRPC_ADDR: ":9000"',
-        'WOODPECKER_LOG_LEVEL: "debug"',
+        'WOODPECKER_LOG_LEVEL: "info"',
         "probes:\n    liveness:\n      timeoutSeconds: 10\n      periodSeconds: 10\n      successThreshold: 1\n      failureThreshold: 30",
         "ingressClassName: traefik",
         "traefik.ingress.kubernetes.io/router.entrypoints: websecure",
@@ -1150,7 +1192,7 @@ def main() -> None:
         "WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>",
         'WOODPECKER_SERVER_ADDR: ":8000"',
         'WOODPECKER_GRPC_ADDR: ":9000"',
-        'WOODPECKER_LOG_LEVEL: "debug"',
+        'WOODPECKER_LOG_LEVEL: "info"',
         "probes:\n    liveness:\n      timeoutSeconds: 10\n      periodSeconds: 10\n      successThreshold: 1\n      failureThreshold: 30",
         "- woodpecker-agent-secret",
         "- woodpecker-forgejo-oauth",
@@ -1163,11 +1205,11 @@ def main() -> None:
         "traefik.ingress.kubernetes.io/router.entrypoints: websecure",
         "traefik.ingress.kubernetes.io/router.tls: \"true\"",
         "secretName: woodpecker-tls",
-        "persistentVolume:\n    enabled: true\n    size: 10Gi\n    storageClass: longhorn-standard",
+        "persistentVolume:\n    enabled: true\n    size: 10Gi\n    storageClass: longhorn-standard-encrypted",
         "  resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
         "WOODPECKER_BACKEND: kubernetes",
         "WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker",
-        "WOODPECKER_BACKEND_K8S_STORAGE_CLASS: longhorn-standard",
+        "WOODPECKER_BACKEND_K8S_STORAGE_CLASS: longhorn-standard-encrypted",
         "WOODPECKER_BACKEND_K8S_VOLUME_SIZE: 10G",
         "WOODPECKER_BACKEND_K8S_STORAGE_RWX: \"false\"",
         "WOODPECKER_MAX_WORKFLOWS: \"2\"",
@@ -1307,7 +1349,8 @@ def main() -> None:
         )
     premium_longhorn_storageclasses_text = read(premium_longhorn_storageclasses)
     for needle in (
-        "name: longhorn-standard",
+        'name: longhorn-standard\n  annotations:\n    storageclass.kubernetes.io/is-default-class: "false"',
+        "name: longhorn-standard-encrypted",
         'storageclass.kubernetes.io/is-default-class: "true"',
         "provisioner: driver.longhorn.io",
         "allowVolumeExpansion: true",
@@ -1315,11 +1358,19 @@ def main() -> None:
         "volumeBindingMode: WaitForFirstConsumer",
         'numberOfReplicas: "2"',
         "name: longhorn-critical",
+        "name: longhorn-critical-encrypted",
         'numberOfReplicas: "3"',
         "name: longhorn-cache",
+        "name: longhorn-cache-encrypted",
         "reclaimPolicy: Delete",
         'numberOfReplicas: "1"',
         "dataLocality: best-effort",
+        'encrypted: "true"',
+        "csi.storage.k8s.io/provisioner-secret-name: longhorn-crypto",
+        "csi.storage.k8s.io/node-publish-secret-name: longhorn-crypto",
+        "csi.storage.k8s.io/node-stage-secret-name: longhorn-crypto",
+        "csi.storage.k8s.io/node-expand-secret-name: longhorn-crypto",
+        "csi.storage.k8s.io/node-expand-secret-namespace: longhorn-system",
     ):
         require_text(
             premium_longhorn_storageclasses_text,
@@ -1396,7 +1447,7 @@ def main() -> None:
         "name: keycloak-database",
         "name: woodpecker",
         "name: woodpecker-database",
-        "storageClass: longhorn-critical",
+        "storageClass: longhorn-critical-encrypted",
         "enablePodMonitor: true",
     ):
         require_text(
@@ -1405,26 +1456,58 @@ def main() -> None:
             f"premium platform PostgreSQL cluster must include {needle.splitlines()[0]}",
         )
 
+    premium_platform_valkey_kustomization_text = read(premium_platform_valkey_kustomization)
+    require_text(
+        premium_platform_valkey_kustomization_text,
+        "- server-certificate.yaml",
+        "premium platform Valkey profile must include its managed TLS Certificate",
+    )
+    premium_platform_valkey_certificate_text = read(premium_platform_valkey_certificate)
+    for needle in (
+        "name: platform-valkey-server",
+        "secretName: platform-valkey-tls",
+        "rotationPolicy: Always",
+        "platform-valkey-primary.platform-cache.svc.cluster.local",
+        '"*.platform-valkey-headless.platform-cache.svc.cluster.local"',
+        "name: platform-internal-ca",
+    ):
+        require_text(
+            premium_platform_valkey_certificate_text,
+            needle,
+            f"premium platform Valkey Certificate must include {needle}",
+        )
+
     premium_platform_valkey_text = read(premium_platform_valkey_values)
     for needle in (
         "fullnameOverride: platform-valkey",
         'tag: "9.1.0"',
         "usersExistingSecret: platform-valkey-auth",
         "passwordKey: valkey-password",
+        "tls:\n  enabled: true",
+        "existingSecret: platform-valkey-tls",
+        "requireClientCertificate: false",
+        "tls-auto-reload-interval 300",
         "replicas: 2",
         "podDisruptionBudget:\n  enabled: true",
         "minAvailable: 2",
         "whenUnsatisfiable: DoNotSchedule",
-        "storageClass: longhorn-critical",
+        "storageClass: longhorn-critical-encrypted",
         "size: 8Gi",
         "name: configure-ha",
         'password="$(cat /auth/valkey-password)"',
         "sentinel monitor platform-valkey",
         "sentinel down-after-milliseconds platform-valkey 5000",
+        "tls-port 26379",
+        "tls-replication yes",
         "name: sentinel",
         "name: primary-proxy",
         "image: haproxy:3.4.2-alpine",
         "tcp-check expect string role:master",
+        "check-ssl",
+        "verify required",
+        "ca-file /trust/ca-certificates.crt",
+        "REDIS_ADDR: rediss://localhost:6379",
+        'REDIS_EXPORTER_SKIP_TLS_VERIFICATION: "false"',
         "serviceMonitor:\n    enabled: true",
     ):
         require_text(
@@ -1466,6 +1549,12 @@ def main() -> None:
             needle,
             f"premium Kyverno profile must include {needle.splitlines()[0]}",
         )
+    kyverno_secret_reader = "resources:\n            - secrets\n          verbs:\n            - get"
+    if premium_kyverno_text.count(kyverno_secret_reader) != 2:
+        fail(
+            "premium Kyverno admission and background controllers must each have "
+            "exactly get-only Secret access for Pod imagePullSecrets"
+        )
     premium_kyverno_kustomization_text = read(premium_kyverno_kustomization)
     require_text(
         premium_kyverno_kustomization_text,
@@ -1484,30 +1573,69 @@ def main() -> None:
 
     policy_default_contracts = (
         (premium_no_plaintext_policy, 1),
-        (premium_workload_baseline_policy, 3),
+        (premium_pod_security_policy, 2),
+        (premium_workload_baseline_policy, 1),
     )
-    for policy_path, expected_rule_count in policy_default_contracts:
+    for policy_path, expected_validation_count in policy_default_contracts:
         policy_text = read(policy_path)
         for needle in (
-            "spec:\n  admission: true\n  emitWarning: false",
-            "validationFailureAction: Audit",
-            "background: true",
+            "apiVersion: policies.kyverno.io/v1",
+            "kind: ValidatingPolicy",
+            "admission:\n      enabled: true",
+            "background:\n      enabled: true",
+            "failurePolicy: Fail",
+            "validationActions:\n    - Audit",
+            "matchConstraints:",
+            "validations:",
         ):
             require_text(
                 policy_text,
                 needle,
-                f"{policy_path.relative_to(root)} must make Kyverno admission defaults explicit",
+                f"{policy_path.relative_to(root)} must use the stable Kyverno CEL admission contract",
             )
-        if policy_text.count("skipBackgroundRequests: true") != expected_rule_count:
+        if policy_text.count("- expression:") != expected_validation_count:
             fail(
-                f"{policy_path.relative_to(root)} must set skipBackgroundRequests on all "
-                f"{expected_rule_count} rule(s)"
+                f"{policy_path.relative_to(root)} must define exactly "
+                f"{expected_validation_count} CEL validation(s)"
             )
-        if policy_text.count("allowExistingViolations: true") != expected_rule_count:
-            fail(
-                f"{policy_path.relative_to(root)} must set allowExistingViolations on all "
-                f"{expected_rule_count} validation rule(s)"
-            )
+    platform_policy_kustomization_text = read(
+        root / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/kustomization.yaml"
+    )
+    require_text(
+        platform_policy_kustomization_text,
+        "require-pod-security-baseline.yaml",
+        "platform policy Kustomization must include the stable pod security policy",
+    )
+    if "namespace:" in platform_policy_kustomization_text:
+        fail("cluster-scoped platform policy Kustomization must not inject metadata.namespace")
+
+    premium_image_integrity_text = read(premium_image_integrity_policy)
+    for needle in (
+        "apiVersion: policies.kyverno.io/v1",
+        "kind: ImageValidatingPolicy",
+        "name: verify-platform-image-signatures",
+        "validationActions:\n    - Audit",
+        "failurePolicy: Fail",
+        "image.registry == '<PLATFORM_IMAGE_REGISTRY>'",
+        "<PLATFORM_COSIGN_PUBLIC_KEY>",
+        "<PLATFORM_COSIGN_REKOR_URL>",
+        "insecureIgnoreTlog: false",
+        "mutateDigest: true",
+        "required: true",
+        "verifyDigest: true",
+        "verifyImageSignatures(image, [attestors.platformCosign])",
+    ):
+        require_text(
+            premium_image_integrity_text,
+            needle,
+            f"premium image-integrity policy must retain {needle}",
+        )
+    for forbidden in ("kind: ClusterPolicy", "verifyImages:", "PRIVATE KEY"):
+        reject_text(
+            premium_image_integrity_text,
+            forbidden,
+            f"premium image-integrity policy must not retain {forbidden}",
+        )
 
     premium_tetragon_text = read(premium_tetragon_values)
     for needle in (
@@ -1546,7 +1674,7 @@ def main() -> None:
         "rootUserSecretKey: root-user",
         "rootPasswordSecretKey: root-password",
         "replicaCount: 4",
-        "storageClass: longhorn-critical",
+        "storageClass: longhorn-critical-encrypted",
         "prometheusAuthType: public",
         "serviceMonitor:\n    enabled: true",
         "name: platform-velero-backups",
@@ -1559,8 +1687,19 @@ def main() -> None:
 
     premium_keycloak_text = read(premium_keycloak_values)
     for needle in (
-        "repository: bitnamilegacy/keycloak",
-        "tag: 26.3.3-debian-12-r0",
+        "security:\n    allowInsecureImages: true",
+        "registry: quay.io",
+        "repository: keycloak/keycloak",
+        'tag: "26.7.0"',
+        "command:\n  - /opt/keycloak/bin/kc.sh",
+        "args:\n  - start",
+        "automountServiceAccountToken: false",
+        "runAsUser: 1000",
+        "runAsGroup: 0",
+        "readOnlyRootFilesystem: false",
+        "defaultInitContainers:\n  prepareWriteDirs:\n    enabled: false",
+        "name: KC_DB\n    value: postgres",
+        "startupProbe:\n  enabled: true",
         "existingSecret: keycloak-admin",
         "passwordSecretKey: admin-password",
         "production: true",
@@ -1580,6 +1719,10 @@ def main() -> None:
         "networkPolicy:\n  enabled: true",
         "serviceMonitor:\n    enabled: true",
         "keycloakConfigCli:",
+        "repository: adorsys/keycloak-config-cli",
+        'tag: "6.5.1"',
+        "- /app/keycloak-config-cli.jar",
+        "runAsUser: 65534",
         "IMPORT_VARSUBSTITUTION_ENABLED",
         "extraEnvVarsSecret: platform-sso-clients",
         '"protocolMapper": "oidc-usermodel-realm-role-mapper"',
@@ -1590,6 +1733,11 @@ def main() -> None:
             needle,
             f"premium Keycloak profile must include {needle.splitlines()[0]}",
         )
+    reject_text(
+        premium_keycloak_text,
+        "bitnamilegacy/keycloak",
+        "premium Keycloak profile must not use the unsupported Bitnami legacy image",
+    )
 
     premium_external_secrets_text = read(premium_external_secrets_values)
     for needle in (
@@ -1617,9 +1765,9 @@ def main() -> None:
         "key: kubernetes.io/metadata.name\n          operator: NotIn",
         "server:\n  enabled: true",
         "statefulSet:\n    securityContext:\n      container:\n        allowPrivilegeEscalation: false\n        capabilities:\n          drop:\n            - ALL",
-        "dataStorage:\n    enabled: true\n    size: 20Gi\n    storageClass: longhorn-critical",
+        "dataStorage:\n    enabled: true\n    size: 20Gi\n    storageClass: longhorn-critical-encrypted",
         "persistentVolumeClaimRetentionPolicy:\n      whenDeleted: Retain\n      whenScaled: Retain",
-        "auditStorage:\n    enabled: true\n    size: 10Gi\n    storageClass: longhorn-critical",
+        "auditStorage:\n    enabled: true\n    size: 10Gi\n    storageClass: longhorn-critical-encrypted",
         "standalone:\n    enabled: false",
         "ha:\n    enabled: true\n    replicas: 3",
         "raft:\n      enabled: true\n      setNodeId: true",
@@ -1688,6 +1836,7 @@ def main() -> None:
         "existingSecret: harbor-database",
         "redis:\n  type: external",
         "addr: platform-valkey-primary.platform-cache.svc.cluster.local:6379",
+        "tlsOptions:\n      enable: true",
         "existingSecret: harbor-redis",
     ):
         require_text(premium_harbor_text, needle, f"premium Harbor profile must include {needle.splitlines()[0]}")
@@ -1729,7 +1878,7 @@ def main() -> None:
         "retention: 15d",
         "    resources:\n      requests:\n        cpu: 250m\n        memory: 2Gi\n      limits:\n        memory: 4Gi",
         "alertmanager:\n  enabled: true\n  podDisruptionBudget:\n    enabled: true\n    minAvailable: 2",
-        "alertmanagerSpec:\n    replicas: 3\n    podAntiAffinity: hard\n    podAntiAffinityTopologyKey: kubernetes.io/hostname\n    resources:\n      requests:\n        cpu: 100m\n        memory: 256Mi",
+        "alertmanagerSpec:\n    useExistingSecret: true\n    configSecret: alertmanager-platform-config\n    replicas: 3\n    podAntiAffinity: hard\n    podAntiAffinityTopologyKey: kubernetes.io/hostname\n    resources:\n      requests:\n        cpu: 100m\n        memory: 256Mi",
         "grafana:\n  replicas: 2\n  deploymentStrategy:\n    type: RollingUpdate",
         "podDisruptionBudget:\n    minAvailable: 1",
         "topologyKey: kubernetes.io/hostname\n      whenUnsatisfiable: DoNotSchedule",
@@ -1740,7 +1889,7 @@ def main() -> None:
         "grafana.ini:\n    database:\n      type: postgres",
         "host: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
         "persistence:\n    enabled: false",
-        "storageClassName: longhorn-standard",
+        "storageClassName: longhorn-standard-encrypted",
         "podMonitorSelectorNilUsesHelmValues: false",
         "serviceMonitorSelectorNilUsesHelmValues: false",
     ):
@@ -1784,7 +1933,8 @@ def main() -> None:
         "write:\n  replicas: 3\n  resources:\n    requests:\n      cpu: 250m\n      memory: 1Gi",
         "read:\n  replicas: 3\n  resources:\n    requests:\n      cpu: 250m\n      memory: 512Mi",
         "backend:\n  replicas: 3\n  resources:\n    requests:\n      cpu: 250m\n      memory: 1Gi",
-        "gateway:\n  enabled: true\n  resources:\n    requests:\n      cpu: 100m\n      memory: 128Mi",
+        "gateway:\n  enabled: true\n  replicas: 3\n  basicAuth:\n    enabled: true\n    existingSecret: loki-gateway-basic-auth",
+        "resources:\n    requests:\n      cpu: 100m\n      memory: 128Mi",
         "serviceMonitor:\n    enabled: true",
     ):
         require_text(premium_loki_text, needle, f"premium Loki profile must include {needle.splitlines()[0]}")
@@ -1972,16 +2122,26 @@ def main() -> None:
         fail("platform-app-health must expose Argo CD runtime component/service enforcement")
     if "platform_app_health_argocd_runtime_effective" not in health_text:
         fail("platform-app-health must default Argo CD runtime checks through an effective variable")
+    if "PLATFORM_APP_HEALTH_ARGOCD_GUARDED_PRUNE" not in health_text:
+        fail("platform-app-health must expose live Argo CD guarded pruning enforcement")
+    if "platform_app_health_argocd_guarded_prune_effective" not in health_text:
+        fail("platform-app-health must default live Argo CD guarded pruning checks through an effective variable")
+    if "PLATFORM_APP_HEALTH_FORGEJO_SINGLETON_SAFETY" not in health_text:
+        fail("platform-app-health must expose Forgejo singleton disruption-safety enforcement")
+    if "platform_app_health_forgejo_singleton_safety_effective" not in health_text:
+        fail("platform-app-health must default Forgejo singleton disruption-safety checks through an effective variable")
     if "PLATFORM_APP_HEALTH_HTTP_REDIRECT" not in health_text:
         fail("platform-app-health must expose HTTP-to-HTTPS redirect enforcement")
     if "platform_app_health_http_redirect_effective" not in health_text:
         fail("platform-app-health must default HTTP redirect enforcement through an effective variable")
     for task_name in (
         "Verify Argo CD platform application health",
+        "Verify live Argo CD Applications use guarded pruning",
         "Verify Argo CD application source repositories are production-safe",
         "Verify platform namespace pod readiness",
         "Verify Argo CD runtime component coverage",
         "Verify critical HA workload replica coverage",
+        "Verify Forgejo singleton disruption safeguards",
         "Verify Woodpecker runtime image tags",
         "Verify cert-manager Certificate readiness",
         "Verify trust-manager Bundle readiness",
@@ -2007,10 +2167,12 @@ def main() -> None:
         require_text(health_text, f"- name: {task_name}", f"platform-app-health is missing task: {task_name}")
     for result_name in (
         "platform_app_health_argocd_app_probe",
+        "platform_app_health_argocd_guarded_prune_probe",
         "platform_app_health_argocd_source_probe",
         "platform_app_health_pod_probe",
         "platform_app_health_argocd_runtime_probe",
         "platform_app_health_ha_replica_probe",
+        "platform_app_health_forgejo_singleton_safety_probe",
         "platform_app_health_woodpecker_image_probe",
         "platform_app_health_certificate_probe",
         "platform_app_health_trust_bundle_probe",
@@ -2068,6 +2230,52 @@ def main() -> None:
         health_text,
         "no active or failed operations",
         "platform-app-health success message must mention clean Argo CD operations",
+    )
+    require_text(
+        health_text,
+        "live Argo CD Applications enable self-healing and approval-gated foreground pruning in the final sync wave with empty-target protection",
+        "platform-app-health success message must include live guarded pruning policy",
+    )
+    for needle in (
+        "automated.prune=true",
+        "automated.selfHeal=true",
+        "automated.allowEmpty=false",
+        "Prune=confirm",
+        "PruneLast=true",
+        "PrunePropagationPolicy=foreground",
+        "reason=unguarded-pruning-policy",
+        "PLATFORM_APP_HEALTH_ARGOCD_GUARDED_PRUNE=false make platform-app-health",
+    ):
+        require_text(
+            health_text,
+            needle,
+            f"platform-app-health must verify live Argo CD guarded pruning: {needle}",
+        )
+    for needle in (
+        "forgejo_replicas=",
+        "rollout_strategy=",
+        "min_available=",
+        "reason=forgejo-singleton-overlapping-rollout-risk",
+        "reason=missing-forgejo-singleton-pdb",
+        "PLATFORM_APP_HEALTH_FORGEJO_SINGLETON_SAFETY=false make platform-app-health",
+        "singleton Forgejo uses a Recreate rollout and a minAvailable=1 PodDisruptionBudget",
+    ):
+        require_text(
+            health_text,
+            needle,
+            f"platform-app-health must verify live Forgejo singleton safeguards: {needle}",
+        )
+    operations_text = read(operations_doc)
+    require_text(
+        operations_text,
+        "Its live\nApplication probe verifies that pruning, self-healing, empty-target protection,\nconfirmation, final-wave ordering, and foreground propagation",
+        "operations runbook must require live guarded-pruning verification",
+    )
+    production_readiness_text = read(production_readiness_doc)
+    require_text(
+        production_readiness_text,
+        "make platform-app-health` proves every live Application has self-healing plus approval-gated, last-wave foreground pruning",
+        "production readiness checklist must require live guarded-pruning evidence",
     )
     require_text(
         health_text,
@@ -2594,16 +2802,74 @@ def main() -> None:
     for needle in (
         "PLATFORM_POLICY_ENFORCEMENT",
         "require-private-secret-workflow",
+        "require-pod-security-baseline",
         "require-workload-baseline",
+        "validatingpolicy.policies.kyverno.io",
+        "validationActions[0]",
+        "conditionStatus.ready",
+        "clusterpolicy.kyverno.io",
+        "approve its guarded prune",
         "policyreports.wgpolicyk8s.io",
         "managed_policy_violations",
-        "validationFailureAction",
+        "platform_policy_validation_action",
+        "PLATFORM_IMAGE_INTEGRITY_REQUIRED",
+        "PLATFORM_IMAGE_INTEGRITY_CANARY_IMAGE",
+        "imagevalidatingpolicy.policies.kyverno.io",
+        "create --dry-run=server",
+        "unsigned-image-was-admitted",
+        "signed_image_admission=passed",
+        "unverifiable_image_rejection=passed",
     ):
         require_text(
             policy_readiness_text,
             needle,
             f"policy readiness gate must retain enforcement proof: {needle}",
         )
+
+    active_policy_verifier_text = read(active_policy_verifier)
+    for needle in (
+        "Kyverno CLI is required",
+        "no-plaintext-secrets.yaml",
+        "require-pod-security-baseline.yaml",
+        "require-workload-baseline.yaml",
+        "compliant.yaml",
+        "violating.yaml",
+        "privilege-escalation.yaml",
+        "privileged-namespace.yaml",
+        "verify-platform-images.yaml",
+        "render_image_policy",
+        'if "error: 0" not in output',
+        "Active Kyverno CEL and image policy verification passed",
+    ):
+        require_text(
+            active_policy_verifier_text,
+            needle,
+            f"active Kyverno policy verifier must cover {needle}",
+        )
+    kyverno_cli_installer_text = read(kyverno_cli_installer)
+    for needle in (
+        'version="1.18.1"',
+        'sha256="5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c"',
+        "releases/download/v${version}/${archive_name}",
+        "sha256sum --check --strict",
+    ):
+        require_text(
+            kyverno_cli_installer_text,
+            needle,
+            f"Kyverno CLI installer must retain pinned artifact proof: {needle}",
+        )
+    for workflow_path in (github_validate_workflow, github_release_workflow):
+        workflow_text = read(workflow_path)
+        for needle in (
+            "scripts/bootstrap/install-kyverno-cli.sh",
+            "python scripts/verify_active_kyverno_policies.py",
+            "KYVERNO_BIN: ${{ runner.temp }}/platform-tools/kyverno",
+        ):
+            require_text(
+                workflow_text,
+                needle,
+                f"{workflow_path.relative_to(root)} must enforce active CEL policy proof",
+            )
 
     platform_tls_text = read(platform_tls_playbook)
     for needle in (
@@ -2644,16 +2910,88 @@ def main() -> None:
         production_evidence_script,
         production_evidence_runner,
         production_evidence_test,
+        image_inventory_capture,
+        image_inventory_reconciler,
+        image_inventory_validator,
+        image_inventory_test,
+        image_inventory_wrapper,
+        image_inventory_playbook,
+        image_inventory_example,
     ):
         if not path.is_file():
             fail(f"production evidence gate is missing required file: {path.relative_to(root)}")
 
+    for path in (
+        forgejo_recovery_runner,
+        forgejo_recovery_validator,
+        forgejo_recovery_wrapper,
+        forgejo_recovery_playbook,
+        forgejo_recovery_example,
+    ):
+        if not path.is_file():
+            fail(f"Forgejo failover proof is missing required file: {path.relative_to(root)}")
+
+    forgejo_recovery_runner_text = read(forgejo_recovery_runner)
+    for needle in (
+        'CONFIRMATION = "FAILOVER_FORGEJO_SINGLETON"',
+        'kube.run("cordon", source_node)',
+        'kube.run("uncordon", source_node)',
+        '"schemaVersion": 2',
+        '"recoveryMode": "node-failover"',
+        '"sourceNodeRestoredSchedulable"',
+        '"encryptionSecretRefs"',
+    ):
+        require_text(
+            forgejo_recovery_runner_text,
+            needle,
+            f"Forgejo failover runner must retain production proof: {needle}",
+        )
+
+    forgejo_recovery_validator_text = read(forgejo_recovery_validator)
+    for needle in (
+        "schemaVersion must be 2",
+        "sourceNode and targetNode must differ",
+        "Forgejo must recover on a different node",
+        "sourceNodeRestoredSchedulable must be true",
+        "encryptionSecretRefs",
+    ):
+        require_text(
+            forgejo_recovery_validator_text,
+            needle,
+            f"Forgejo failover validator must retain production proof: {needle}",
+        )
+
+    for path in (
+        forgejo_recovery_wrapper,
+        forgejo_recovery_playbook,
+        backup_restore_doc,
+        operations_doc,
+        production_readiness_doc,
+    ):
+        require_text(
+            read(path),
+            "FAILOVER_FORGEJO_SINGLETON",
+            f"Forgejo failover surface must require explicit approval: {path.relative_to(root)}",
+        )
+
     production_evidence_text = read(production_evidence_script)
     for needle in (
         "REQUIRED_GATES",
+        '"sourceProvenance"',
+        '"profile"',
+        '"renderedSchema"',
+        '"supplyChain"',
+        '"runtimeImageInventory"',
+        '"networkIsolation"',
+        '"internalTls"',
+        '"observability"',
+        '"capacity"',
         "logSha256",
         "operator and approver must be different people",
         "commit must be a 40-character lowercase Git SHA",
+        "source.clean must be true",
+        "source.expectedRef must belong to source.remote",
+        "retained image inventory hash does not match imageInventory.sha256",
     ):
         require_text(
             production_evidence_text,
@@ -2666,7 +3004,21 @@ def main() -> None:
         "PLATFORM_RELEASE_ID",
         "PLATFORM_EVIDENCE_OPERATOR",
         "PLATFORM_EVIDENCE_APPROVER",
+        "PLATFORM_PRODUCTION_EVIDENCE_EXPECTED_REF",
+        "git status --porcelain=v1 --untracked-files=all",
+        "refs/remotes/",
+        "HEAD to exactly match",
         "make platform-production-check",
+        '"schemaVersion": 4',
+        '"sourceProvenance": "passed"',
+        '"renderedSchema": "passed"',
+        '"supplyChain": "passed"',
+        '"runtimeImageInventory": "passed"',
+        '"imageInventory"',
+        '"networkIsolation": "passed"',
+        '"internalTls": "passed"',
+        '"observability": "passed"',
+        '"capacity": "passed"',
         "sha256sum",
         "verify_production_evidence.py",
     ):
@@ -2674,6 +3026,61 @@ def main() -> None:
             production_evidence_runner_text,
             needle,
             f"production evidence runner must retain release proof: {needle}",
+        )
+
+    image_inventory_capture_text = read(image_inventory_capture)
+    for needle in (
+        'CONTAINER_GROUPS = (',
+        '"initContainerStatuses"',
+        '"ephemeralContainerStatuses"',
+        '"digestImage"',
+        '"unresolved"',
+    ):
+        require_text(
+            image_inventory_capture_text,
+            needle,
+            f"live image capture must retain sanitized digest proof: {needle}",
+        )
+
+    image_inventory_reconciler_text = read(image_inventory_reconciler)
+    for needle in (
+        "rendered images were neither observed live nor resolved by exception",
+        "private/supply-chain",
+        "must expire within 90 days",
+        "image coverage is incomplete",
+        '"signatureVerified"',
+        '"admissionEnforced"',
+    ):
+        require_text(
+            image_inventory_reconciler_text,
+            needle,
+            f"image inventory reconciler must fail closed: {needle}",
+        )
+
+    image_inventory_validator_text = read(image_inventory_validator)
+    for needle in (
+        "private-registry image lacks signature or admission coverage",
+        "outside-registry image lacks an admission-scope exception",
+        "rendered.unresolved must be zero",
+        "live.unresolved must be zero",
+    ):
+        require_text(
+            image_inventory_validator_text,
+            needle,
+            f"image inventory evidence validator must fail closed: {needle}",
+        )
+
+    image_inventory_wrapper_text = read(image_inventory_wrapper)
+    for needle in (
+        "capture-platform-image-inventory.yml",
+        "reconcile_image_inventory.py",
+        "verify_image_inventory_evidence.py",
+        "PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE",
+    ):
+        require_text(
+            image_inventory_wrapper_text,
+            needle,
+            f"image inventory wrapper must retain production proof: {needle}",
         )
 
     host_entries = re.findall(r"(?m)^\s+- app:\s*([A-Za-z0-9_.-]+)\s*$", read(root / "ansible/vars/platform-hostnames.yml"))
@@ -3596,6 +4003,16 @@ def main() -> None:
     )
     require_text(
         validate_project_text,
+        "scripts/test_image_integrity_contract.py",
+        "project validator must require the image-integrity contract self-test",
+    )
+    require_text(
+        validate_project_text,
+        "scripts/test_pod_security_contract.py",
+        "project validator must require the pod-security contract self-test",
+    )
+    require_text(
+        validate_project_text,
         "scripts/test_sops_age_policy.py",
         "project validator must require the SOPS age policy self-test",
     )
@@ -3603,6 +4020,26 @@ def main() -> None:
         validate_project_text,
         "scripts/test_supply_chain_helpers.py",
         "project validator must require the supply-chain helper self-test",
+    )
+    require_text(
+        validate_project_text,
+        "scripts/test_supply_chain_evidence.py",
+        "project validator must require the supply-chain evidence self-test",
+    )
+    require_text(
+        validate_project_text,
+        "scripts/test_image_inventory_evidence.py",
+        "project validator must require exact runtime image reconciliation",
+    )
+    require_text(
+        validate_project_text,
+        "scripts/test_capacity_runtime_contract.py",
+        "project validator must require the runtime capacity contract self-test",
+    )
+    require_text(
+        validate_project_text,
+        "scripts/test_rendered_schema_contract.py",
+        "project validator must require the rendered schema contract self-test",
     )
     require_text(
         validate_project_text,
@@ -3880,7 +4317,24 @@ def main() -> None:
     for config_path, required_needles in (
         (gitleaks_config, ("[extend]", "useDefault = true", "allowlists")),
         (semgrep_config, ("rules:", "shell-curl-pipe-shell", "kubernetes-latest-image-tag", "kubernetes-privileged-container")),
-        (trivy_config, ("scanners:", "vuln", "secret", "misconfig", "skip-dirs:")),
+        (
+            trivy_config,
+            (
+                "scan:",
+                "scanners:",
+                "vuln",
+                "secret",
+                "misconfig",
+                "skip-dirs:",
+                '"**/charts"',
+                "scripts/fixtures",
+                "skip-files:",
+                '"**/*-patch.yaml"',
+                ".clusterfuzzlite/Dockerfile",
+                "vulnerability:",
+                "ignore-unfixed: true",
+            ),
+        ),
     ):
         config_text = read(config_path)
         for needle in required_needles:
@@ -3908,8 +4362,16 @@ def main() -> None:
         "scripts/test_private_values_renderer.py",
         "scripts/test_platform_secret_contract.py",
         "scripts/test_policy_examples.py",
+        "scripts/test_image_integrity_contract.py",
+        "scripts/test_pod_security_contract.py",
         "scripts/test_sops_age_policy.py",
         "scripts/test_supply_chain_helpers.py",
+        "scripts/test_supply_chain_evidence.py",
+        "scripts/test_image_inventory_evidence.py",
+        "scripts/test_github_governance.py",
+        "scripts/test_github_governance_configuration.py",
+        "scripts/test_capacity_runtime_contract.py",
+        "scripts/test_rendered_schema_contract.py",
         "scripts/test_backup_restore_runbook.py",
         "scripts/test_business_continuity.py",
         "scripts/test_service_catalog.py",
@@ -4039,8 +4501,14 @@ def main() -> None:
             "scripts/test_private_values_renderer.py",
             "scripts/test_platform_secret_contract.py",
             "scripts/test_policy_examples.py",
+            "scripts/test_image_integrity_contract.py",
+            "scripts/test_pod_security_contract.py",
             "scripts/test_sops_age_policy.py",
             "scripts/test_supply_chain_helpers.py",
+            "scripts/test_supply_chain_evidence.py",
+            "scripts/test_image_inventory_evidence.py",
+            "scripts/test_capacity_runtime_contract.py",
+            "scripts/test_rendered_schema_contract.py",
             "scripts/test_backup_restore_runbook.py",
             "scripts/test_business_continuity.py",
             "scripts/test_service_catalog.py",
@@ -4119,8 +4587,14 @@ def main() -> None:
         "scripts/test_ansible_failed_when_contract.py",
         "scripts/test_ansible_no_log_contract.py",
         "scripts/test_policy_examples.py",
+        "scripts/test_image_integrity_contract.py",
+        "scripts/test_pod_security_contract.py",
         "scripts/test_sops_age_policy.py",
         "scripts/test_supply_chain_helpers.py",
+        "scripts/test_supply_chain_evidence.py",
+        "scripts/test_image_inventory_evidence.py",
+        "scripts/test_capacity_runtime_contract.py",
+        "scripts/test_rendered_schema_contract.py",
         "scripts/test_backup_restore_runbook.py",
         "scripts/test_business_continuity.py",
         "scripts/test_service_catalog.py",
@@ -4157,8 +4631,11 @@ def main() -> None:
         "network/default-deny.example.yaml",
         "network/allow-platform-dns-and-ingress.example.yaml",
         "validationFailureAction: Audit",
-        "verifyImages:",
+        "ImageValidatingPolicy",
+        "matchImageReferences:",
+        "validationActions:",
         "validationFailureAction: Enforce",
+        "validationActions:\\n    - Deny",
         "platform.gitops/secret-source",
         "replace placeholders such as `<NAMESPACE>`",
         "unexpected policy example(s) without contract coverage",
@@ -4244,15 +4721,41 @@ def main() -> None:
         "pinDigests",
         "dependencyDashboardApproval",
         "verify-signed-images.example.yaml",
-        "verifyImages:",
-        "failureAction: Audit",
-        "publicKeys: k8s://<NAMESPACE>/<COSIGN_PUBLIC_KEY_SECRET>",
+        "ImageValidatingPolicy",
+        "matchImageReferences:",
+        "validationActions:",
+        "<COSIGN_PUBLIC_KEY>",
         "Supply-chain helper validation passed",
     ):
         require_text(
             supply_chain_helpers_test_text,
             needle,
             f"supply-chain helper self-test must cover {needle}",
+        )
+    supply_chain_evidence_test_text = read(supply_chain_evidence_test)
+    for needle in (
+        "Supply-chain evidence validator self-test passed.",
+        "below-threshold Scorecard",
+        "tag-only Cosign image",
+        "empty SBOM",
+    ):
+        require_text(
+            supply_chain_evidence_test_text,
+            needle,
+            f"supply-chain evidence self-test must cover {needle}",
+        )
+    supply_chain_evidence_validator_text = read(supply_chain_evidence_validator)
+    for needle in (
+        "validate_sbom",
+        "validate_scorecard",
+        "validate_signature_report",
+        "strict evidence requires an OpenSSF Scorecard report",
+        "strict evidence requires a Cosign signature report",
+    ):
+        require_text(
+            supply_chain_evidence_validator_text,
+            needle,
+            f"supply-chain evidence validator must include {needle}",
         )
     backup_restore_runbook_test_text = read(backup_restore_runbook_test)
     for needle in (
@@ -5646,7 +6149,7 @@ def main() -> None:
         "branch protection",
         "required reviews",
         "Renovate dashboard approval",
-        "optional Cosign/Kyverno verification",
+        "staged Cosign/Kyverno verification",
         "restore drills",
         "platform-production-check",
         "docs/DATA_CLASSIFICATION.md",
@@ -5899,15 +6402,18 @@ def main() -> None:
             "allowPrivilegeEscalation: false",
         ),
         "policies/kyverno/verify-signed-images.example.yaml": (
-            "kind: ClusterPolicy",
-            "verifyImages:",
-            "imageReferences:",
-            '"<REGISTRY>/<PROJECT>/*"',
-            "failureAction: Audit",
+            "apiVersion: policies.kyverno.io/v1",
+            "kind: ImageValidatingPolicy",
+            "matchImageReferences:",
+            "image.registry == '<REGISTRY>'",
+            "validationActions:",
+            "- Audit",
+            "failurePolicy: Fail",
             "mutateDigest: true",
+            "required: true",
             "verifyDigest: true",
             "attestors:",
-            "publicKeys: k8s://<NAMESPACE>/<COSIGN_PUBLIC_KEY_SECRET>",
+            "<COSIGN_PUBLIC_KEY>",
             "https://rekor.sigstore.dev",
         ),
         "policies/network/default-deny.example.yaml": (
@@ -6075,8 +6581,12 @@ def main() -> None:
         "MONITORING_FLAG_RE",
         "source_enables_monitoring_crds",
         "AUTOMATED_SYNC_RE",
-        "PRUNE_FALSE_RE",
+        "PRUNE_TRUE_RE",
         "SELF_HEAL_TRUE_RE",
+        "ALLOW_EMPTY_FALSE_RE",
+        "REQUIRED_PRUNE_SYNC_OPTIONS",
+        "check_root_application_contract",
+        "check_pruning_runbook",
         "project_list_items",
         "application_destination_namespaces",
         "check_project_contract",
@@ -6089,7 +6599,9 @@ def main() -> None:
         "check_inferred_monitoring_dependencies",
         "enables ServiceMonitor/PodMonitor resources",
         "argocd.argoproj.io/sync-wave",
-        "must keep automated prune disabled",
+        "must enable automated prune behind explicit confirmation",
+        "must keep automated allowEmpty disabled",
+        "is missing guarded prune sync option",
         "must keep automated selfHeal enabled",
         "check_dependency_waves",
         "must be after dependency",
@@ -6286,13 +6798,34 @@ def main() -> None:
     )
     require_text(
         makefile_text,
-        "PLATFORM_POLICY_ENFORCEMENT=Enforce $(MAKE) platform-policy-readiness",
-        "platform production check must require live Kyverno Enforce mode",
+        "policy-cel-verify:\n\t@$(PYTHON) scripts/verify_active_kyverno_policies.py",
+        "Makefile must expose the active Kyverno CEL verification target",
+    )
+    require_text(
+        makefile_text,
+        "\t@$(MAKE) policy-cel-verify",
+        "platform-production-check must compile and behavior-test active Kyverno CEL policies",
+    )
+    require_text(
+        makefile_text,
+        "platform-image-inventory-verify: rendered-schema-verify supply-chain-verify",
+        "image inventory gate must depend on exact rendering and signature evidence",
+    )
+    require_text(
+        makefile_text,
+        "\t@$(MAKE) platform-image-inventory-verify",
+        "platform production check must reconcile rendered and live runtime images",
+    )
+    require_text(
+        makefile_text,
+        "PLATFORM_POLICY_ENFORCEMENT=Enforce PLATFORM_IMAGE_INTEGRITY_MODE=Enforce PLATFORM_IMAGE_INTEGRITY_REQUIRED=true $(MAKE) platform-policy-readiness",
+        "platform production check must require live Kyverno and image-integrity Enforce mode",
     )
     for needle in (
         "def render_loki(",
         "def render_velero(",
         "def render_cnpg_postgres_cluster(",
+        "def render_platform_image_integrity(",
         "--loki-values",
         "--velero-values",
         "--cnpg-postgres-cluster",
@@ -6301,6 +6834,8 @@ def main() -> None:
         "CNPG_OBJECT_STORE_SECRET_NAME",
         "CNPG_RENDER_POSTGRES_CLUSTER",
         "CNPG_BACKUP_ENABLED",
+        "PLATFORM_IMAGE_INTEGRITY_MODE",
+        "PLATFORM_COSIGN_PUBLIC_KEY_FILE",
         "WOODPECKER_DATABASE_MODE",
         "WOODPECKER_DATABASE_SECRET_NAME",
         "WOODPECKER_IMAGE_TAG",
@@ -6394,13 +6929,13 @@ def main() -> None:
         "GF_DATABASE_PASSWORD",
         'password: "$__env{GF_DATABASE_PASSWORD}"',
         "prometheusSpec:\\n    replicas: 2\\n    podAntiAffinity: hard",
-        "alertmanagerSpec:\\n    replicas: 3\\n    podAntiAffinity: hard",
+        "alertmanagerSpec:\\n    useExistingSecret: true\\n    configSecret: alertmanager-platform-config\\n    replicas: 3\\n    podAntiAffinity: hard",
         "grafana:\\n  replicas: 2\\n  deploymentStrategy:\\n    type: RollingUpdate",
         "grafana:\\n  replicas: 1\\n  admin:",
         "write:\\n  replicas: 3\\n  resources:",
         "read:\\n  replicas: 3\\n  resources:",
         "backend:\\n  replicas: 3\\n  resources:",
-        "gateway:\\n  enabled: true\\n  resources:",
+        "gateway:\\n  enabled: true\\n  replicas: 3\\n  basicAuth:\\n    enabled: true\\n    existingSecret: loki-gateway-basic-auth",
         "deployNodeAgent: true\\n\\nresources:",
         "nodeAgent:\\n  resources:",
         "service:\\n  type: ClusterIP\\n  port: 443\\n  targetPort: 9000",
@@ -6712,6 +7247,10 @@ def main() -> None:
         "FORGEJO_REDIS_HOST",
         "FORGEJO_REDIS_PASSWORD",
         "FORGEJO_REDIS_TLS",
+        "HARBOR_REDIS_TLS",
+        "FORGEJO_REDIS_TLS:-true",
+        "HARBOR_REDIS_TLS:-true",
+        'scheme = "rediss"',
         "WOODPECKER_DATABASE_DATASOURCE",
         "WOODPECKER_DATABASE_HOST",
         "WOODPECKER_DATABASE_PASSWORD",
@@ -6849,6 +7388,13 @@ def main() -> None:
             fail(f"{doc.relative_to(root)} must document private Woodpecker image tag pinning")
         if "PLATFORM_SEED_SYNC_PUSH_ORIGIN" not in doc_text:
             fail(f"{doc.relative_to(root)} must document seed sync source remote push opt-in")
+    for doc in (installation_doc, premium_doc, root / "docs/PRIVATE_DEPLOYMENT.md"):
+        doc_text = read(doc)
+        if "FORGEJO_DATABASE_SSL_MODE=disable" in doc_text:
+            fail(
+                f"{doc.relative_to(root)} must not override production Forgejo "
+                "database TLS verification"
+            )
     for doc in (installation_doc, premium_doc):
         doc_text = read(doc)
         for setting in (
@@ -6883,9 +7429,13 @@ def main() -> None:
             "PLATFORM_PRODUCTION_STRICT=true",
             "LONGHORN_BACKUP_TARGET=s3://platform-longhorn-backups@us-east-1/",
             "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME=longhorn-backup-target",
+            "LONGHORN_ENCRYPTION_SECRET_NAME=longhorn-crypto",
+            "LONGHORN_ENCRYPTION_AUTO_GENERATE=true",
+            "LONGHORN_ENCRYPTION_RECOVERY_FILE=private/longhorn-encryption.key",
             "BACKUP_OBJECT_STORAGE_ENDPOINT=https://s3.amazonaws.com",
             "PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true",
             "PLATFORM_APP_SECRET_REQUIRE_LONGHORN_BACKUP=true",
+            "PLATFORM_APP_SECRET_REQUIRE_LONGHORN_ENCRYPTION=true",
             "LONGHORN_BACKUP_ACCESS_KEY_ID",
             "LONGHORN_BACKUP_SECRET_ACCESS_KEY",
         ):
@@ -6897,10 +7447,12 @@ def main() -> None:
             "PLATFORM_VALKEY_AUTH_SECRET_NAME=platform-valkey-auth",
             "PLATFORM_VALKEY_PASSWORD_KEY=valkey-password",
             "PLATFORM_VALKEY_PRIMARY_HOST=platform-valkey-primary.platform-cache.svc.cluster.local",
+            "FORGEJO_REDIS_TLS=true",
             "PLATFORM_VALKEY_REPLICA_COUNT=3",
             "PLATFORM_VALKEY_AUTO_GENERATE=true",
             "HARBOR_REDIS_MODE=external",
             "HARBOR_REDIS_ADDR=platform-valkey-primary.platform-cache.svc.cluster.local:6379",
+            "HARBOR_REDIS_TLS=true",
             "HARBOR_REDIS_SECRET_NAME=harbor-redis",
         ):
             if needle not in env_text:
@@ -6910,7 +7462,7 @@ def main() -> None:
             "MINIO_ROOT_USER=platform-admin",
             "MINIO_ROOT_AUTO_GENERATE=true",
             "MINIO_DATA_SIZE=50Gi",
-            "MINIO_STORAGE_CLASS=longhorn-critical",
+            "MINIO_STORAGE_CLASS=longhorn-critical-encrypted",
             "MINIO_REPLICA_COUNT=4",
             "MINIO_ZONES=1",
             "MINIO_DRIVES_PER_NODE=1",

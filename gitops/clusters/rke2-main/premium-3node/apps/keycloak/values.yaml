@@ -1,13 +1,64 @@
 # Central OSS identity provider for platform SSO. The premium default uses the
 # shared CloudNativePG platform-postgres cluster through secret/keycloak-database.
 global:
-  defaultStorageClass: longhorn-critical
+  defaultStorageClass: longhorn-critical-encrypted
+  # The vendored chart validates Bitnami repository names. Runtime image
+  # admission and signatures are enforced separately by platform policy.
+  security:
+    allowInsecureImages: true
 
 image:
-  registry: docker.io
-  # Bitnami's historical community images now live in bitnamilegacy.
-  repository: bitnamilegacy/keycloak
-  tag: 26.3.3-debian-12-r0
+  registry: quay.io
+  repository: keycloak/keycloak
+  tag: "26.7.0"
+
+# The upstream image uses a different filesystem layout and UID than the
+# historical Bitnami image. A standard production start applies the PostgreSQL
+# build option at boot; use a pre-optimized private image before enabling a
+# read-only root filesystem.
+command:
+  - /opt/keycloak/bin/kc.sh
+args:
+  - start
+
+automountServiceAccountToken: false
+
+podSecurityContext:
+  enabled: true
+  fsGroupChangePolicy: OnRootMismatch
+  fsGroup: 0
+
+containerSecurityContext:
+  enabled: true
+  runAsUser: 1000
+  runAsGroup: 0
+  runAsNonRoot: true
+  privileged: false
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+defaultInitContainers:
+  prepareWriteDirs:
+    enabled: false
+
+extraEnvVars:
+  - name: KC_DB
+    value: postgres
+  - name: KC_HEALTH_ENABLED
+    value: "true"
+
+startupProbe:
+  enabled: true
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+  successThreshold: 1
 
 auth:
   adminUser: admin
@@ -45,7 +96,17 @@ externalDatabase:
   existingSecret: keycloak-database
   existingSecretUserKey: username
   existingSecretPasswordKey: password
-  extraParams: sslmode=disable
+  extraParams: sslmode=verify-full&sslrootcert=/etc/ssl/platform-postgres/ca-certificates.crt
+
+extraVolumes:
+  - name: platform-postgres-ca
+    configMap:
+      name: platform-internal-roots
+
+extraVolumeMounts:
+  - name: platform-postgres-ca
+    mountPath: /etc/ssl/platform-postgres
+    readOnly: true
 
 ingress:
   enabled: true
@@ -80,6 +141,32 @@ metrics:
 # deployment path by make platform-app-secrets, never stored in Git.
 keycloakConfigCli:
   enabled: true
+  image:
+    registry: quay.io
+    repository: adorsys/keycloak-config-cli
+    tag: "6.5.1"
+  command:
+    - java
+  args:
+    - -jar
+    - /app/keycloak-config-cli.jar
+  podSecurityContext:
+    enabled: true
+    fsGroupChangePolicy: OnRootMismatch
+    fsGroup: 65534
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    privileged: false
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
   automountServiceAccountToken: false
   backoffLimit: 3
   cleanupAfterFinished:

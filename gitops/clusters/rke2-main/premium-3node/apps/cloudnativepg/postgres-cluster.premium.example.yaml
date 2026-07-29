@@ -14,7 +14,7 @@ spec:
         name: forgejo-database
   storage:
     size: <POSTGRES_DATA_SIZE>
-    storageClass: longhorn-critical
+    storageClass: longhorn-critical-encrypted
   monitoring:
     enablePodMonitor: true
   backup:

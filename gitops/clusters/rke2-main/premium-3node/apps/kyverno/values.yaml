@@ -19,6 +19,17 @@ features:
 
 admissionController:
   replicas: 3
+  rbac:
+    clusterRole:
+      extraResources:
+        # Kyverno 1.18 resolves Pod imagePullSecrets while verifying private
+        # registry signatures. Grant only read-by-name, never list or watch.
+        - apiGroups:
+            - ""
+          resources:
+            - secrets
+          verbs:
+            - get
   podDisruptionBudget:
     enabled: true
     minAvailable: 2
@@ -36,6 +47,15 @@ admissionController:
 
 backgroundController:
   replicas: 2
+  rbac:
+    clusterRole:
+      extraResources:
+        - apiGroups:
+            - ""
+          resources:
+            - secrets
+          verbs:
+            - get
   podDisruptionBudget:
     enabled: true
     minAvailable: 1

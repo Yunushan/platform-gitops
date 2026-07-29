@@ -10,6 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CI_FILES = (
     ROOT / ".github" / "workflows" / "validate.yml",
+    ROOT / ".github" / "workflows" / "fuzz.yml",
+    ROOT / ".github" / "workflows" / "scorecard.yml",
+    ROOT / ".github" / "workflows" / "release.yml",
     ROOT / ".gitea" / "workflows" / "validate.yml",
     ROOT / ".forgejo" / "workflows" / "validate.yml",
     ROOT / ".gitlab-ci.yml",
@@ -20,7 +23,7 @@ CI_FILES = (
     ROOT / "examples" / "service-template" / ".gitlab-ci.yml",
     ROOT / "examples" / "service-template" / ".woodpecker.yml",
 )
-DOCKERFILES = tuple((ROOT / "examples").rglob("Dockerfile"))
+DOCKERFILES = tuple(ROOT.rglob("Dockerfile"))
 MUTABLE_REFS = {
     "latest",
     "main",
@@ -38,6 +41,7 @@ MUTABLE_REFS = {
 }
 MUTABLE_PREFIXES = tuple(f"{ref}-" for ref in MUTABLE_REFS)
 ACTION_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+IMAGE_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 USES_RE = re.compile(r"^\s*-\s+uses:\s*(?P<ref>\S+)\s*(?:#.*)?$")
 IMAGE_RE = re.compile(r"^\s*image:\s*(?P<image>\S+)\s*(?:#.*)?$")
 FROM_RE = re.compile(r"^\s*FROM\s+(?P<image>\S+)(?:\s+AS\s+\S+)?\s*(?:#.*)?$", re.I)
@@ -115,7 +119,11 @@ def scan_dockerfile(path: Path) -> list[str]:
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         match = FROM_RE.match(line)
         if match:
-            problems.extend(check_image_ref(path, line_number, match.group("image")))
+            image = strip_quotes(match.group("image"))
+            if not IMAGE_DIGEST_RE.search(image):
+                problems.append(
+                    f"{rel_path(path)}:{line_number}: Dockerfile base image must pin a lowercase sha256 digest: {image}"
+                )
     return problems
 
 

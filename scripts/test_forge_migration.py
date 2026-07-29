@@ -1458,6 +1458,121 @@ def test_change_request_plan_contract() -> None:
     raise AssertionError("GitLab source unexpectedly accepted pull_requests instead of merge_requests")
 
 
+def test_api_read_retry_is_bounded_and_write_safe() -> None:
+    target = migration.ApiTarget(
+        provider="forgejo",
+        api_url="http://127.0.0.1:1",
+        repository="owner/repository",
+        token_env=None,
+    )
+    original_urlopen = migration.urlopen
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"result":"ok"}'
+
+    calls = 0
+
+    def flaky_read(_request, timeout: int):
+        nonlocal calls
+        if timeout != 30:
+            raise AssertionError("migration API timeout changed unexpectedly")
+        calls += 1
+        if calls < 3:
+            raise ConnectionResetError("transient reset")
+        return Response()
+
+    try:
+        migration.urlopen = flaky_read
+        payload = migration.api_request(target, "GET", "repos/owner/repository")
+        if payload != {"result": "ok"} or calls != 3:
+            raise AssertionError(f"GET retry did not recover exactly once bounded: calls={calls}")
+
+        calls = 0
+
+        def failed_write(_request, timeout: int):
+            nonlocal calls
+            calls += 1
+            raise ConnectionResetError("ambiguous write reset")
+
+        migration.urlopen = failed_write
+        try:
+            migration.api_request(target, "POST", "repos/owner/repository/issues", body={"title": "x"})
+        except migration.MigrationError:
+            pass
+        else:
+            raise AssertionError("ambiguous metadata write unexpectedly succeeded")
+        if calls != 1:
+            raise AssertionError(f"non-idempotent write was retried: calls={calls}")
+    finally:
+        migration.urlopen = original_urlopen
+
+
+def test_plan_rejects_literal_credentials() -> None:
+    def base_plan() -> dict[str, object]:
+        return {
+            "direction": "gitlab-to-forgejo",
+            "repositories": [
+                {
+                    "name": "credential-contract",
+                    "source": {
+                        "url": "https://gitlab.example.test/source/repository.git",
+                        "token_env": "GITLAB_SOURCE_TOKEN",
+                    },
+                    "destination": {
+                        "url": "https://forgejo.example.test/destination/repository.git",
+                        "token_env": "FORGEJO_DESTINATION_TOKEN",
+                    },
+                }
+            ],
+            "services": {
+                "registry": {
+                    "username_env": "REGISTRY_USERNAME",
+                    "password_env": "REGISTRY_PASSWORD",
+                }
+            },
+        }
+
+    migration.parse_plan(base_plan())
+
+    for key in sorted(migration.SENSITIVE_LITERAL_KEYS):
+        unsafe = base_plan()
+        unsafe["repositories"][0]["source"][key] = "plaintext"  # type: ignore[index]
+        try:
+            migration.parse_plan(unsafe)
+        except migration.MigrationError as exc:
+            if "must not contain credential" not in str(exc):
+                raise AssertionError(f"unexpected credential validation error for {key}: {exc}") from exc
+        else:
+            raise AssertionError(f"literal credential key {key!r} unexpectedly passed plan validation")
+
+    for url in (
+        "https://user:password@gitlab.example.test/source/repository.git",
+        "https://token@gitlab.example.test/source/repository.git",
+    ):
+        unsafe = base_plan()
+        unsafe["repositories"][0]["source"]["url"] = url  # type: ignore[index]
+        try:
+            migration.parse_plan(unsafe)
+        except migration.MigrationError as exc:
+            if "must not embed credentials in a URL" not in str(exc):
+                raise AssertionError(f"unexpected URL credential validation error: {exc}") from exc
+        else:
+            raise AssertionError(f"credential-bearing URL unexpectedly passed plan validation: {url}")
+
+    ssh_plan = base_plan()
+    ssh_plan["repositories"][0]["source"]["url"] = "ssh://git@gitlab.example.test/source/repository.git"  # type: ignore[index]
+    migration.parse_plan(ssh_plan)
+
+
 def main() -> int:
     if not shutil.which("git"):
         print("git is required for forge migration tests", file=sys.stderr)
@@ -1469,6 +1584,8 @@ def main() -> int:
     test_required_metadata_fails_closed()
     test_nonportable_change_requests_fail_closed()
     test_change_request_plan_contract()
+    test_api_read_retry_is_bounded_and_write_safe()
+    test_plan_rejects_literal_credentials()
     print("Forge migration helper self-test passed.")
     return 0
 

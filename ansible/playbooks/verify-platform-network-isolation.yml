@@ -1,0 +1,268 @@
+---
+- name: Verify premium platform network isolation
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: false
+  vars:
+    platform_network_probe_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NETWORK_PROBE_IMAGE') }}"
+    platform_network_probe_image_effective: >-
+      {{ platform_network_probe_image
+         | default(platform_network_probe_image_from_env, true)
+         | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}
+    platform_network_isolated_namespaces:
+      - argocd
+      - forgejo
+      - harbor
+      - keycloak
+      - logging
+      - monitoring
+      - object-storage
+      - openbao
+      - platform-cache
+      - platform-databases
+      - step-ca
+      - woodpecker
+    platform_network_required_policies:
+      - platform-default-deny
+      - platform-allow-same-namespace
+      - platform-allow-dns
+      - platform-allow-ingress
+      - platform-allow-egress
+    platform_network_required_data_policies:
+      - namespace: platform-databases
+        name: platform-allow-postgres-clients
+      - namespace: platform-cache
+        name: platform-allow-valkey-clients
+      - namespace: forgejo
+        name: platform-allow-postgres-egress
+      - namespace: forgejo
+        name: platform-allow-valkey-egress
+      - namespace: harbor
+        name: platform-allow-postgres-egress
+      - namespace: harbor
+        name: platform-allow-valkey-egress
+      - namespace: keycloak
+        name: platform-allow-postgres-egress
+      - namespace: monitoring
+        name: platform-allow-postgres-egress
+      - namespace: woodpecker
+        name: platform-allow-postgres-egress
+    platform_network_required_role_policies:
+      argocd:
+        - platform-allow-external-web-egress
+        - platform-allow-external-git-egress
+        - platform-allow-kubernetes-api-egress
+      forgejo:
+        - platform-allow-external-web-egress
+        - platform-allow-external-git-egress
+        - platform-allow-external-smtp-egress
+        - platform-allow-external-database-egress
+      woodpecker:
+        - platform-allow-external-web-egress
+        - platform-allow-external-git-egress
+        - platform-allow-external-database-egress
+        - platform-allow-kubernetes-api-egress
+      harbor:
+        - platform-allow-external-web-egress
+        - platform-allow-external-smtp-egress
+        - platform-allow-external-database-egress
+        - platform-allow-external-object-storage-egress
+      keycloak:
+        - platform-allow-external-web-egress
+        - platform-allow-external-smtp-egress
+        - platform-allow-external-database-egress
+      logging:
+        - platform-allow-external-web-egress
+        - platform-allow-external-object-storage-egress
+      monitoring:
+        - platform-allow-external-web-egress
+        - platform-allow-external-smtp-egress
+        - platform-allow-external-database-egress
+        - platform-allow-kubernetes-api-egress
+      object-storage:
+        - platform-allow-external-web-egress
+        - platform-allow-external-object-storage-egress
+      openbao:
+        - platform-allow-external-web-egress
+        - platform-allow-kubernetes-api-egress
+      platform-databases:
+        - platform-allow-external-web-egress
+        - platform-allow-external-object-storage-egress
+        - platform-allow-kubernetes-api-egress
+      step-ca:
+        - platform-allow-external-web-egress
+  tasks:
+    - name: Require every premium network isolation policy
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n {{ item.0 }} get networkpolicy {{ item.1 }}
+      loop: "{{ platform_network_isolated_namespaces | product(platform_network_required_policies) | list }}"
+      loop_control:
+        label: "{{ item.0 }}/{{ item.1 }}"
+      changed_when: false
+
+    - name: Require least-privilege data service policies
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n {{ item.namespace }} get networkpolicy {{ item.name }}
+      loop: "{{ platform_network_required_data_policies }}"
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.name }}"
+      changed_when: false
+
+    - name: Require application-role egress policies
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n {{ item.0.key }} get networkpolicy {{ item.1 }}
+      loop: >-
+        {{ platform_network_required_role_policies
+           | dict2items
+           | subelements('value') }}
+      loop_control:
+        label: "{{ item.0.key }}/{{ item.1 }}"
+      changed_when: false
+
+    - name: Prove allowed and denied PostgreSQL and Valkey service paths
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        IMAGE={{ platform_network_probe_image_effective | quote }}
+        POSTGRES_TARGET=platform-postgres-rw.platform-databases.svc.cluster.local
+        VALKEY_TARGET=platform-valkey-primary.platform-cache.svc.cluster.local
+        RUN_ID="$(date +%s)-$$"
+        PG_ALLOWED_POD="platform-net-pg-allow-${RUN_ID}"
+        PG_DENIED_POD="platform-net-pg-deny-${RUN_ID}"
+        VALKEY_ALLOWED_POD="platform-net-valkey-allow-${RUN_ID}"
+        VALKEY_FORGEJO_ALLOWED_POD="platform-net-valkey-forgejo-allow-${RUN_ID}"
+        VALKEY_DENIED_POD="platform-net-valkey-deny-${RUN_ID}"
+
+        cleanup() {
+          "$K" --kubeconfig "$C" -n woodpecker delete pod "$PG_ALLOWED_POD" \
+            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+          "$K" --kubeconfig "$C" -n argocd delete pod "$PG_DENIED_POD" \
+            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+          "$K" --kubeconfig "$C" -n harbor delete pod "$VALKEY_ALLOWED_POD" \
+            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+          "$K" --kubeconfig "$C" -n forgejo delete pod "$VALKEY_FORGEJO_ALLOWED_POD" \
+            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+          "$K" --kubeconfig "$C" -n argocd delete pod "$VALKEY_DENIED_POD" \
+            --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+        }
+        trap cleanup EXIT
+
+        require_ready_service() {
+          local namespace="$1"
+          local service="$2"
+          local ready_endpoints
+          ready_endpoints="$("$K" --kubeconfig "$C" -n "$namespace" get endpointslice \
+            -l "kubernetes.io/service-name=${service}" \
+            -o jsonpath='{range .items[*].endpoints[*]}{range .conditions.ready}{.}{end}{" "}{end}')"
+          if ! grep -qw true <<<"${ready_endpoints}"; then
+            echo "result=fail reason=${service}-has-no-ready-endpoint" >&2
+            exit 1
+          fi
+        }
+
+        create_probe() {
+          local namespace="$1"
+          local pod="$2"
+          local mode="$3"
+          local target="$4"
+          local port="$5"
+          cat <<EOF | "$K" --kubeconfig "$C" apply -f -
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: ${pod}
+          namespace: ${namespace}
+          labels:
+            app.kubernetes.io/name: platform-network-policy-probe
+            platform.gitops/probe-mode: ${mode}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: probe
+              image: ${IMAGE}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - /bin/bash
+                - -ec
+              args:
+                - |
+                  getent hosts ${target}
+                  if [ "${mode}" = "allow" ]; then
+                    timeout 10 bash -ec 'exec 3<>/dev/tcp/${target}/${port}'
+                    echo result=allowed
+                  elif timeout 8 bash -ec 'exec 3<>/dev/tcp/${target}/${port}'; then
+                    echo result=fail reason=unexpected-cross-namespace-access
+                    exit 42
+                  else
+                    echo result=denied
+                  fi
+        EOF
+        }
+
+        wait_probe() {
+          local namespace="$1"
+          local pod="$2"
+          local expected="$3"
+          local phase=""
+          for attempt in $(seq 1 60); do
+            phase="$("$K" --kubeconfig "$C" -n "$namespace" get pod "$pod" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "$phase" in
+              Succeeded)
+                "$K" --kubeconfig "$C" -n "$namespace" logs "$pod"
+                "$K" --kubeconfig "$C" -n "$namespace" logs "$pod" | grep -q "result=${expected}"
+                return 0
+                ;;
+              Failed)
+                "$K" --kubeconfig "$C" -n "$namespace" logs "$pod" >&2 || true
+                "$K" --kubeconfig "$C" -n "$namespace" describe pod "$pod" >&2 || true
+                return 1
+                ;;
+            esac
+            sleep 2
+          done
+          echo "result=fail reason=probe-timeout namespace=${namespace} pod=${pod} phase=${phase:-unknown}" >&2
+          "$K" --kubeconfig "$C" -n "$namespace" describe pod "$pod" >&2 || true
+          return 1
+        }
+
+        require_ready_service platform-databases platform-postgres-rw
+        require_ready_service platform-cache platform-valkey-primary
+
+        create_probe woodpecker "$PG_ALLOWED_POD" allow "$POSTGRES_TARGET" 5432
+        wait_probe woodpecker "$PG_ALLOWED_POD" allowed
+        create_probe argocd "$PG_DENIED_POD" deny "$POSTGRES_TARGET" 5432
+        wait_probe argocd "$PG_DENIED_POD" denied
+
+        create_probe harbor "$VALKEY_ALLOWED_POD" allow "$VALKEY_TARGET" 6379
+        wait_probe harbor "$VALKEY_ALLOWED_POD" allowed
+        create_probe forgejo "$VALKEY_FORGEJO_ALLOWED_POD" allow "$VALKEY_TARGET" 6379
+        wait_probe forgejo "$VALKEY_FORGEJO_ALLOWED_POD" allowed
+        create_probe argocd "$VALKEY_DENIED_POD" deny "$VALKEY_TARGET" 6379
+        wait_probe argocd "$VALKEY_DENIED_POD" denied
+
+        echo "platform_network_isolation=verified postgres_allowed=woodpecker postgres_denied=argocd valkey_allowed=harbor,forgejo valkey_denied=argocd"
+      args:
+        executable: /bin/bash
+      register: platform_network_isolation_probe
+      changed_when: false
+
+    - name: Print premium platform network isolation proof
+      ansible.builtin.debug:
+        var: platform_network_isolation_probe.stdout_lines

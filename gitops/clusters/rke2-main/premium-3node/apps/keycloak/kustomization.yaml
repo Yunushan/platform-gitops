@@ -1,6 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: keycloak
+components:
+  - ../../components/network-isolation
+  - ../../components/postgres-client
+  - ../../components/external-web-egress
+  - ../../components/external-smtp-egress
+  - ../../components/external-database-egress
 resources:
   - namespace.yaml
 helmCharts:

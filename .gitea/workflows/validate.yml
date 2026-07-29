@@ -30,6 +30,12 @@ jobs:
         run: python scripts/test_forge_migration.py
       - name: Test GitLab to Forgejo cutover orchestrator
         run: python scripts/test_forge_cutover.py
+      - name: Test GitLab/GitHub to Forgejo coexistence transition
+        run: python scripts/test_forge_transition.py
+      - name: Test forge plan fuzzing contract
+        run: python scripts/test_forge_fuzz_contract.py
+      - name: Test forge branch-coverage contract
+        run: python scripts/test_forge_coverage_contract.py
       - name: Test live forge migration acceptance contract
         run: python scripts/test_forge_migration_live.py
       - name: Test live forge migration acceptance workflow
@@ -40,16 +46,46 @@ jobs:
         run: python scripts/test_platform_secret_contract.py
       - name: Test policy examples
         run: python scripts/test_policy_examples.py
+      - name: Test admission-time image integrity
+        run: python scripts/test_image_integrity_contract.py
+      - name: Test premium pod security
+        run: python scripts/test_pod_security_contract.py
+      - name: Test premium network isolation
+        run: python scripts/test_network_policy_contract.py
+      - name: Test managed internal TLS
+        run: python scripts/test_internal_tls_contract.py
+      - name: Test production observability
+        run: python scripts/test_observability_contract.py
+      - name: Test runtime capacity gate
+        run: python scripts/test_capacity_runtime_contract.py
+      - name: Test rendered schema gate
+        run: python scripts/test_rendered_schema_contract.py
       - name: Test SOPS age policy
         run: python scripts/test_sops_age_policy.py
       - name: Test supply-chain helpers
         run: python scripts/test_supply_chain_helpers.py
+      - name: Test supply-chain evidence validator
+        run: python scripts/test_supply_chain_evidence.py
+      - name: Test exact runtime image inventory evidence
+        run: python scripts/test_image_inventory_evidence.py
+      - name: Test attested release workflow
+        run: python scripts/test_release_workflow.py
+      - name: Test signed GitHub release refs
+        run: python scripts/test_github_release_ref.py
+      - name: Test live GitHub governance verifier
+        run: python scripts/test_github_governance.py
+      - name: Test GitHub governance configurator
+        run: python scripts/test_github_governance_configuration.py
+      - name: Test dependency review workflow
+        run: python scripts/test_dependency_review_workflow.py
       - name: Test backup and restore runbook
         run: python scripts/test_backup_restore_runbook.py
       - name: Test data protection contract
         run: python scripts/test_data_protection_contract.py
       - name: Test production evidence validator
         run: python scripts/test_production_evidence.py
+      - name: Test production readiness score gate
+        run: python scripts/test_production_readiness_score.py
       - name: Test business continuity runbook
         run: python scripts/test_business_continuity.py
       - name: Test service catalog
@@ -119,6 +155,8 @@ jobs:
         run: python scripts/test_ansible_playbook_references.py
       - name: Test GitOps application contract
         run: python scripts/test_gitops_application_contract.py
+      - name: Test Argo CD project isolation
+        run: python scripts/test_argocd_project_isolation.py
       - name: Test Kustomization references
         run: python scripts/test_kustomization_references.py
       - name: Test GitOps Helm chart pinning

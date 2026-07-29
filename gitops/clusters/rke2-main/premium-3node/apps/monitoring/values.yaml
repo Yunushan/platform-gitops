@@ -35,7 +35,7 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
-          storageClassName: longhorn-standard
+          storageClassName: longhorn-standard-encrypted
           accessModes:
             - ReadWriteOnce
           resources:
@@ -48,6 +48,8 @@ alertmanager:
     enabled: true
     minAvailable: 2
   alertmanagerSpec:
+    useExistingSecret: true
+    configSecret: alertmanager-platform-config
     replicas: 3
     podAntiAffinity: hard
     podAntiAffinityTopologyKey: kubernetes.io/hostname
@@ -60,7 +62,7 @@ alertmanager:
     storage:
       volumeClaimTemplate:
         spec:
-          storageClassName: longhorn-standard
+          storageClassName: longhorn-standard-encrypted
           accessModes:
             - ReadWriteOnce
           resources:
@@ -86,6 +88,14 @@ grafana:
       secretKeyRef:
         name: grafana-database
         key: password
+    LOKI_GATEWAY_USERNAME:
+      secretKeyRef:
+        name: platform-loki-client
+        key: username
+    LOKI_GATEWAY_PASSWORD:
+      secretKeyRef:
+        name: platform-loki-client
+        key: password
   envFromSecret: platform-sso-grafana
   grafana.ini:
     database:
@@ -94,7 +104,8 @@ grafana:
       name: grafana
       user: grafana
       password: $__env{GF_DATABASE_PASSWORD}
-      ssl_mode: disable
+      ssl_mode: verify-full
+      ca_cert_path: /etc/ssl/platform-postgres/ca-certificates.crt
     server:
       root_url: https://grafana.<PLATFORM_DOMAIN>
     auth:
@@ -126,6 +137,25 @@ grafana:
       memory: 512Mi
   persistence:
     enabled: false
+  extraConfigmapMounts:
+    - name: platform-postgres-ca
+      mountPath: /etc/ssl/platform-postgres
+      configMap: platform-internal-roots
+      readOnly: true
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      access: proxy
+      url: http://loki-gateway.logging.svc.cluster.local
+      basicAuth: true
+      basicAuthUser: $__env{LOKI_GATEWAY_USERNAME}
+      editable: false
+      jsonData:
+        httpHeaderName1: X-Scope-OrgID
+      secureJsonData:
+        basicAuthPassword: $__env{LOKI_GATEWAY_PASSWORD}
+        httpHeaderValue1: platform
   ingress:
     enabled: true
     ingressClassName: traefik

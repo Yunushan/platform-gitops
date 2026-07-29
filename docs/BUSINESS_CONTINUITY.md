@@ -121,6 +121,8 @@ is approved.
 Run continuity exercises:
 
 - Quarterly for restore and minimum viable platform tabletop.
+- Quarterly for the approved Forgejo active-passive recovery drill, and after
+  changing its image, storage class, scheduling, service, or database path.
 - Before major RKE2, storage, database, ingress, registry, backup, or PKI
   upgrades.
 - After incidents, failed restore drills, failed alert routing tests, or

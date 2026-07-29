@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: compliant-secret
+  namespace: default
+  annotations:
+    platform.gitops/secret-source: external-secrets
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliant-workload
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: compliant-workload
+  template:
+    metadata:
+      labels:
+        app: compliant-workload
+    spec:
+      containers:
+        - name: app
+          image: registry.example.test/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: compliant-pod
+  namespace: default
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: registry.example.test/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      securityContext:
+        allowPrivilegeEscalation: false

@@ -35,17 +35,21 @@ EXPECTED_FILES = {
         "allowPrivilegeEscalation: false",
     },
     "kyverno/verify-signed-images.example.yaml": {
-        "apiVersion: kyverno.io/v1",
-        "kind: ClusterPolicy",
-        "verifyImages:",
-        "imageReferences:",
-        '"<REGISTRY>/<PROJECT>/*"',
-        "failureAction: Audit",
+        "apiVersion: policies.kyverno.io/v1",
+        "kind: ImageValidatingPolicy",
+        "matchImageReferences:",
+        "image.registry == '<REGISTRY>'",
+        "validationActions:",
+        "- Audit",
+        "failurePolicy: Fail",
         "mutateDigest: true",
+        "required: true",
         "verifyDigest: true",
         "attestors:",
-        "publicKeys: k8s://<NAMESPACE>/<COSIGN_PUBLIC_KEY_SECRET>",
+        "<COSIGN_PUBLIC_KEY>",
         "https://rekor.sigstore.dev",
+        "insecureIgnoreTlog: false",
+        "verifyImageSignatures(image, [attestors.approvedCosignKey])",
     },
     "network/default-deny.example.yaml": {
         "apiVersion: networking.k8s.io/v1",
@@ -92,6 +96,8 @@ def main() -> int:
             problems.append(f"{rel_path} must remain an opt-in .example.yaml file")
         if "validationFailureAction: Enforce" in text:
             problems.append(f"{rel_path} must not default Kyverno examples to Enforce")
+        if "validationActions:\n    - Deny" in text:
+            problems.append(f"{rel_path} must not default stable Kyverno examples to Deny")
         if "kind: Secret" in text and "validationFailureAction: Audit" not in text:
             problems.append(f"{rel_path} must keep Secret policy examples in Audit mode")
         for needle in required_text:

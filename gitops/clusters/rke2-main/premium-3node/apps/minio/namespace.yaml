@@ -4,4 +4,6 @@ metadata:
   name: object-storage
   labels:
     app.kubernetes.io/name: minio
-
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

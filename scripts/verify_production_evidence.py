@@ -13,19 +13,35 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from verify_image_inventory_evidence import (
+    EvidenceError as ImageInventoryEvidenceError,
+    validate_evidence as validate_image_inventory,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_GATES = (
+    "sourceProvenance",
     "repository",
+    "profile",
+    "renderedSchema",
+    "supplyChain",
+    "runtimeImageInventory",
     "rke2",
     "platformStatus",
     "tls",
     "policyReadiness",
+    "networkIsolation",
+    "internalTls",
+    "observability",
+    "capacity",
     "applicationHealth",
     "dataProtection",
 )
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
+REF_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$")
+REMOTE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class EvidenceError(ValueError):
@@ -54,12 +70,12 @@ def parse_timestamp(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def log_path(value: str, root: Path) -> Path:
+def retained_path(value: str, root: Path, label: str) -> Path:
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts:
-        raise EvidenceError("logPath must be a relative path below private/production-evidence")
+        raise EvidenceError(f"{label} must be a relative path below private/production-evidence")
     if relative.parts[:2] != ("private", "production-evidence"):
-        raise EvidenceError("logPath must be below private/production-evidence")
+        raise EvidenceError(f"{label} must be below private/production-evidence")
     return root / relative
 
 
@@ -82,8 +98,8 @@ def validate_evidence(
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise EvidenceError("production evidence must be a JSON object")
-    if document.get("schemaVersion") != 1:
-        raise EvidenceError("schemaVersion must be 1")
+    if document.get("schemaVersion") != 4:
+        raise EvidenceError("schemaVersion must be 4")
 
     release_id = nonempty(document, "releaseId")
     profile = nonempty(document, "profile")
@@ -101,6 +117,32 @@ def validate_evidence(
         raise EvidenceError("operator and approver must be different people")
     if nonempty(document, "result").lower() != "passed":
         raise EvidenceError("result must be passed")
+
+    source = document.get("source")
+    if not isinstance(source, dict):
+        raise EvidenceError("source must be an object")
+    branch = nonempty(source, "branch")
+    expected_ref = nonempty(source, "expectedRef")
+    remote = nonempty(source, "remote")
+    tree = nonempty(source, "tree").lower()
+    remote_url_sha256 = nonempty(source, "remoteUrlSha256").lower()
+    if source.get("clean") is not True:
+        raise EvidenceError("source.clean must be true")
+    if not REMOTE_RE.fullmatch(remote):
+        raise EvidenceError("source.remote is invalid")
+    if (
+        not REF_RE.fullmatch(expected_ref)
+        or ".." in expected_ref
+        or "//" in expected_ref
+        or expected_ref.endswith("/")
+    ):
+        raise EvidenceError("source.expectedRef is invalid")
+    if not expected_ref.startswith(f"{remote}/"):
+        raise EvidenceError("source.expectedRef must belong to source.remote")
+    if not COMMIT_RE.fullmatch(tree):
+        raise EvidenceError("source.tree must be a 40-character lowercase Git tree SHA")
+    if not SHA256_RE.fullmatch(remote_url_sha256):
+        raise EvidenceError("source.remoteUrlSha256 must be a lowercase SHA-256")
 
     completed_at = parse_timestamp(document.get("completedAt"))
     age = now.astimezone(timezone.utc) - completed_at
@@ -121,7 +163,7 @@ def validate_evidence(
         if str(gates.get(name, "")).strip().lower() != "passed":
             raise EvidenceError(f"gates.{name} must be passed")
 
-    path = log_path(nonempty(document, "logPath"), root)
+    path = retained_path(nonempty(document, "logPath"), root, "logPath")
     expected_hash = nonempty(document, "logSha256").lower()
     if not SHA256_RE.fullmatch(expected_hash):
         raise EvidenceError("logSha256 must be a 64-character lowercase SHA-256")
@@ -134,17 +176,53 @@ def validate_evidence(
         "== platform production evidence ==",
         "== platform-production-check ==",
         "platform-production-check",
+        "== rendered-live-image-reconciliation ==",
+        "Image inventory evidence accepted:",
+        f"source_branch={branch}",
+        f"source_expected_ref={expected_ref}",
+        f"source_tree={tree}",
     ):
         if marker not in text:
             raise EvidenceError(f"retained production log is missing marker: {marker}")
+
+    inventory_reference = document.get("imageInventory")
+    if not isinstance(inventory_reference, dict):
+        raise EvidenceError("imageInventory must be an object")
+    inventory_path_value = inventory_reference.get("path")
+    inventory_hash = str(inventory_reference.get("sha256", "")).lower()
+    if not isinstance(inventory_path_value, str) or not inventory_path_value.strip():
+        raise EvidenceError("imageInventory.path must be a non-empty string")
+    if not SHA256_RE.fullmatch(inventory_hash):
+        raise EvidenceError("imageInventory.sha256 must be a lowercase SHA-256")
+    inventory_path = retained_path(inventory_path_value.strip(), root, "imageInventory.path")
+    if not inventory_path.is_file():
+        raise EvidenceError(f"retained image inventory evidence is missing: {inventory_path}")
+    if sha256_file(inventory_path) != inventory_hash:
+        raise EvidenceError("retained image inventory hash does not match imageInventory.sha256")
+    try:
+        inventory_document = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory_summary = validate_image_inventory(
+            inventory_document,
+            now=now,
+            max_age_hours=max_age_days * 24,
+            expected_profile=profile,
+            expected_commit=commit,
+        )
+    except (OSError, json.JSONDecodeError, ImageInventoryEvidenceError) as exc:
+        raise EvidenceError(f"retained image inventory evidence is invalid: {exc}") from exc
 
     return {
         "release_id": release_id,
         "profile": profile,
         "commit": commit,
+        "branch": branch,
+        "expected_ref": expected_ref,
+        "tree": tree,
         "completed_at": completed_at,
         "age_days": age.total_seconds() / 86400,
         "log_path": path,
+        "image_inventory_path": inventory_path,
+        "image_inventory_images": inventory_summary["images"],
     }
 
 

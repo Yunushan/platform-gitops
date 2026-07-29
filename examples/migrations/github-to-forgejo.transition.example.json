@@ -1,0 +1,209 @@
+{
+  "version": 2,
+  "transition_version": 1,
+  "direction": "github-to-forgejo",
+  "repositories": [
+    {
+      "name": "platform-app",
+      "source": {
+        "url": "https://github.com/source-org/platform-app.git",
+        "api_url": "https://api.github.com",
+        "api_repository": "source-org/platform-app",
+        "token_env": "GITHUB_SOURCE_TOKEN"
+      },
+      "destination": {
+        "url": "https://forgejo.example.invalid/platform/platform-app.git",
+        "api_url": "https://forgejo.example.invalid/api/v1",
+        "api_repository": "platform/platform-app",
+        "token_env": "FORGEJO_DESTINATION_TOKEN",
+        "create": "required",
+        "private": true
+      },
+      "wiki": "auto",
+      "lfs": "auto",
+      "metadata": {
+        "labels": "required",
+        "milestones": "required",
+        "releases": "required",
+        "issues": "required",
+        "pull_requests": "skip",
+        "release_assets": "skip",
+        "packages": "skip",
+        "project_boards": "skip",
+        "users": "skip",
+        "teams": "skip",
+        "permissions": "skip",
+        "branch_protection": "skip",
+        "webhooks": "skip"
+      },
+      "cutover": {
+        "pipelines": {
+          "unmapped": "fail",
+          "source_globs": [
+            ".github/workflows/*.yml",
+            ".github/workflows/*.yaml"
+          ],
+          "destination_globs": [
+            ".woodpecker.yml",
+            ".woodpecker/*.yml"
+          ],
+          "config_file": ".woodpecker.yml",
+          "deployment_gate_marker": "FORGE_TRANSITION_DEPLOYMENT_ENABLED",
+          "mappings": [
+            {
+              "source": ".github/workflows/ci.yml",
+              "destinations": [
+                ".woodpecker.yml"
+              ],
+              "mode": "managed"
+            }
+          ],
+          "external_includes": []
+        },
+        "variables": {
+          "unmapped": "fail",
+          "organization_scope": {
+            "mode": "manual",
+            "accepted": true,
+            "reason": "Organization values are explicitly inventoried and supplied through the approved secret store."
+          },
+          "environment_scope": {
+            "mode": "managed"
+          },
+          "mappings": [
+            {
+              "source": "repository-secret:CONTAINER_REGISTRY_USER",
+              "target": "woodpecker_secret",
+              "target_name": "CONTAINER_REGISTRY_USER",
+              "value_env": "GITHUB_CONTAINER_REGISTRY_USER_VALUE",
+              "mode": "managed"
+            }
+          ]
+        },
+        "schedules": {
+          "unmapped": "fail",
+          "mappings": [
+            {
+              "source": ".github/workflows/nightly.yml:0 2 * * *",
+              "target_name": "nightly",
+              "schedule": "0 2 * * *",
+              "branch": "main",
+              "mode": "managed"
+            }
+          ]
+        },
+        "runner_tags": {
+          "unmapped": "fail",
+          "mappings": [
+            {
+              "source": "self-hosted",
+              "target_labels": {
+                "platform": "linux"
+              },
+              "mode": "mapped"
+            }
+          ]
+        },
+        "protections": {
+          "unmapped": "fail",
+          "mappings": [
+            {
+              "source": "main",
+              "target": "main",
+              "settings": {
+                "enable_push": false,
+                "required_approvals": 1
+              },
+              "mode": "managed"
+            }
+          ]
+        },
+        "integrations": {
+          "unmapped": "fail",
+          "mappings": []
+        }
+      },
+      "transition": {
+        "relay": {
+          "mode": "managed",
+          "driver": "external",
+          "sync_interval_seconds": 60,
+          "max_lag_seconds": 300,
+          "sync_timeout_seconds": 900
+        },
+        "source_ci": {
+          "mode": "managed",
+          "keep_repository_writable": true,
+          "cancel_active": false,
+          "shutdown_timeout_seconds": 600
+        },
+        "destination_access": {
+          "mode": "managed",
+          "mirror_actor": "forge-transition-bot",
+          "protection_pattern": "**",
+          "shadow_settings": {
+            "enable_push": true,
+            "enable_push_whitelist": true,
+            "push_whitelist_usernames": [
+              "forge-transition-bot"
+            ]
+          },
+          "final_settings": {
+            "enable_push": true,
+            "enable_push_whitelist": true,
+            "push_whitelist_usernames": [
+              "platform-maintainers"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "services": {
+    "woodpecker": {
+      "mode": "managed",
+      "api_url": "https://ci.example.invalid",
+      "token_env": "WOODPECKER_API_TOKEN",
+      "shadow_gate_secret": "FORGE_TRANSITION_DEPLOYMENT_ENABLED",
+      "require_approval": "pull_requests",
+      "canary_timeout_seconds": 900
+    },
+    "harbor": {
+      "mode": "managed",
+      "api_url": "https://registry.example.invalid",
+      "username_env": "HARBOR_USERNAME",
+      "password_env": "HARBOR_PASSWORD",
+      "registry_host": "registry.example.invalid",
+      "project": "platform",
+      "create_project": true,
+      "canary": {
+        "repository": "platform-app-transition-canary",
+        "reference": "shadow"
+      }
+    },
+    "argocd": {
+      "mode": "managed",
+      "api_url": "https://argocd.example.invalid",
+      "token_env": "ARGOCD_API_TOKEN",
+      "applications": [
+        {
+          "name": "platform-app",
+          "expected_repo_url": "https://forgejo.example.invalid/platform/platform-gitops.git"
+        }
+      ]
+    }
+  },
+  "transition_control": {
+    "prepare_confirmation_env": "FORGE_TRANSITION_PREPARE_CONFIRM",
+    "enter_confirmation_env": "FORGE_TRANSITION_ENTER_CONFIRM",
+    "finalize_confirmation_env": "FORGE_TRANSITION_FINALIZE_CONFIRM",
+    "fallback_confirmation_env": "FORGE_TRANSITION_FALLBACK_CONFIRM",
+    "rollback_confirmation_env": "FORGE_TRANSITION_ROLLBACK_CONFIRM",
+    "failback_confirmation_env": "FORGE_TRANSITION_FAILBACK_CONFIRM",
+    "live_env": "FORGE_TRANSITION_LIVE",
+    "change_ticket_env": "FORGE_TRANSITION_CHANGE_TICKET",
+    "max_proof_age_seconds": 3600,
+    "relay_failure_threshold": 3,
+    "auto_rollback": true
+  }
+}

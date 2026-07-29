@@ -4,10 +4,12 @@ This project treats migration as a proof-producing operation. A migration is not
 accepted because a push command succeeded; it is accepted only when the proof
 report shows the selected source and destination surfaces were verified.
 
-For the optional operational handover from GitLab CI to
-Forgejo/Woodpecker/Harbor/Argo CD, continue with the
-[GitLab to Forgejo Cutover Runbook](FORGE_CUTOVER.md). Repository migration and
-CI/CD authority cutover are separate commands by design.
+For a months-long GitLab or GitHub coexistence period in which source Git stays
+writable but only Forgejo/Woodpecker/Argo CD executes CI/CD, continue with the
+[Forge Coexistence Transition Runbook](FORGE_TRANSITION.md). For an immediate
+GitLab freeze and handover, use the
+[GitLab to Forgejo Cutover Runbook](FORGE_CUTOVER.md). Repository migration,
+coexistence transition, and final cutover are separate commands by design.
 
 ## Supported Directions
 
@@ -124,11 +126,23 @@ Validate the plan:
 python3 scripts/forge_migration.py validate-plan private/migrations/gitlab-to-forgejo.json
 ```
 
+Plan validation is fail closed for credentials. Literal `token`, `password`,
+`authorization`, `secret`, and related values are rejected at every nesting
+level, as are credentials embedded in HTTP(S) URLs. Plans may contain only
+environment-variable references such as `token_env`, `username_env`, and
+`password_env`. The same invariant is shared by migration, cutover, transition,
+rollback, and failback parsing.
+
 The equivalent Make target is:
 
 ```bash
 make forge-migration-validate PLAN=private/migrations/gitlab-to-forgejo.json
 ```
+
+Parser robustness is continuously checked by the bounded Atheris target in
+`.clusterfuzzlite/` and by the subprocess branch-coverage gate documented in
+`docs/SUPPLY_CHAIN.md`. These source gates complement, but do not replace, the
+live four-provider acceptance proof later in this runbook.
 
 Run the migration and write proof:
 

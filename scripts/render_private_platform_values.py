@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import os
 import re
@@ -71,6 +73,16 @@ def env_bool(name: str, default: bool = False) -> bool:
     if not value:
         return default
     return value not in {"0", "false", "no", "off"}
+
+
+def postgres_ssl_mode(name: str) -> str:
+    mode = os.environ.get(name, "verify-full").strip().lower() or "verify-full"
+    allowed = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
+    if mode not in allowed:
+        raise SystemExit(f"{name} must be one of: {', '.join(sorted(allowed))}")
+    if env_bool("PLATFORM_PRODUCTION_STRICT", True) and mode != "verify-full":
+        raise SystemExit(f"{name} must be verify-full when PLATFORM_PRODUCTION_STRICT=true")
+    return mode
 
 
 def is_cluster_local_endpoint(endpoint: str) -> bool:
@@ -185,6 +197,25 @@ def render_longhorn(
     return changed
 
 
+def render_longhorn_storageclasses(path: Path) -> bool:
+    encryption_secret_name = (
+        os.environ.get("LONGHORN_ENCRYPTION_SECRET_NAME", "longhorn-crypto").strip()
+        or "longhorn-crypto"
+    )
+    if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", encryption_secret_name):
+        raise SystemExit("LONGHORN_ENCRYPTION_SECRET_NAME must be a Kubernetes DNS label")
+    text = path.read_text(encoding="utf-8")
+    rendered = re.sub(
+        r"(?m)^(\s*csi[.]storage[.]k8s[.]io/(?:provisioner|node-publish|node-stage|node-expand)-secret-name:\s*).*$",
+        lambda match: f"{match.group(1)}{encryption_secret_name}",
+        text,
+    )
+    changed = rendered != text
+    if changed:
+        path.write_text(rendered, encoding="utf-8")
+    return changed
+
+
 def platform_valkey_values(
     auth_secret_name: str,
     auth_secret_key: str,
@@ -198,6 +229,22 @@ def platform_valkey_values(
     metrics_block = "  enabled: false\n"
     if metrics_enabled:
         metrics_block = """  enabled: true
+  exporter:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+    extraVolumeMounts:
+      - name: platform-internal-roots
+        mountPath: /trust
+        readOnly: true
+    extraEnvs:
+      REDIS_ADDR: rediss://localhost:6379
+      REDIS_USER: default
+      REDIS_EXPORTER_TLS_CA_CERT_FILE: /trust/ca-certificates.crt
+      REDIS_EXPORTER_SKIP_TLS_VERIFICATION: "false"
   serviceMonitor:
     enabled: true
     namespace: monitoring
@@ -206,9 +253,18 @@ def platform_valkey_values(
 """
 
     proxy_servers = "\n".join(
-        "          server valkey-{index} "
-        "platform-valkey-{index}.platform-valkey-headless.platform-cache.svc.cluster.local:6379 "
-        "check inter 1s fall 2 rise 1 resolvers kubernetes init-addr libc,none".format(index=index)
+        (
+            "          server valkey-{index} {host}:6379 "
+            "check check-ssl check-sni {host} verify required verifyhost {host} "
+            "ca-file /trust/ca-certificates.crt inter 1s fall 2 rise 1 "
+            "resolvers kubernetes init-addr libc,none"
+        ).format(
+            index=index,
+            host=(
+                f"platform-valkey-{index}.platform-valkey-headless."
+                "platform-cache.svc.cluster.local"
+            ),
+        )
         for index in range(int(replica_count) + 1)
     )
 
@@ -227,11 +283,20 @@ auth:
       passwordKey: {yaml_string(auth_secret_key)}
       permissions: "~* &* +@all"
 
+tls:
+  enabled: true
+  existingSecret: platform-valkey-tls
+  serverPublicKey: tls.crt
+  serverKey: tls.key
+  caPublicKey: ca.crt
+  requireClientCertificate: false
+
 valkeyConfig: |-
   appendonly yes
   appendfsync everysec
   aof-use-rdb-preamble yes
   save ""
+  tls-auto-reload-interval 300
 
 service:
   type: ClusterIP
@@ -267,23 +332,60 @@ extraInitContainers:
         sentinel_dir=/data/sentinel
         sentinel_config="$sentinel_dir/sentinel.conf"
         mkdir -p "$sentinel_dir" /ha
-        if [ ! -s "$sentinel_config" ]; then
-          cat >"$sentinel_config" <<EOF
-        port 26379
+
+        # Sentinel rewrites this persistent file after elections. Preserve its
+        # dynamic topology while replacing transport and credential settings.
+        sentinel_body="$(mktemp "$sentinel_dir/sentinel.conf.body.XXXXXX")"
+        if [ -s "$sentinel_config" ]; then
+          awk '
+            $1 == "port" || $1 == "tls-port" ||
+            $1 == "tls-cert-file" || $1 == "tls-key-file" ||
+            $1 == "tls-ca-cert-file" || $1 == "tls-auth-clients" ||
+            $1 == "tls-replication" || $1 == "tls-auto-reload-interval" ||
+            $1 == "bind" || $1 == "protected-mode" || $1 == "dir" ||
+            $1 == "requirepass" {{ next }}
+            $1 == "sentinel" &&
+              ($2 == "resolve-hostnames" || $2 == "announce-hostnames") {{ next }}
+            $1 == "sentinel" && $3 == "platform-valkey" &&
+              ($2 == "auth-user" || $2 == "auth-pass" ||
+               $2 == "down-after-milliseconds" || $2 == "failover-timeout" ||
+               $2 == "parallel-syncs") {{ next }}
+            {{ print }}
+          ' "$sentinel_config" >"$sentinel_body"
+        else
+          : >"$sentinel_body"
+        fi
+        if ! awk '$1 == "sentinel" && $2 == "monitor" && $3 == "platform-valkey" {{ found=1 }} END {{ exit !found }}' \\
+          "$sentinel_body"; then
+          echo "sentinel monitor platform-valkey platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local 6379 2" \\
+            >>"$sentinel_body"
+        fi
+
+        cat >"$sentinel_config" <<EOF
+        port 0
+        tls-port 26379
+        tls-cert-file /tls/tls.crt
+        tls-key-file /tls/tls.key
+        tls-ca-cert-file /tls/ca.crt
+        tls-auth-clients no
+        tls-replication yes
+        tls-auto-reload-interval 300
         bind 0.0.0.0
         protected-mode no
         dir $sentinel_dir
         requirepass "$password"
         sentinel resolve-hostnames yes
         sentinel announce-hostnames yes
-        sentinel monitor platform-valkey platform-valkey-0.platform-valkey-headless.platform-cache.svc.cluster.local 6379 2
+        EOF
+        cat "$sentinel_body" >>"$sentinel_config"
+        cat >>"$sentinel_config" <<EOF
         sentinel auth-user platform-valkey default
         sentinel auth-pass platform-valkey "$password"
         sentinel down-after-milliseconds platform-valkey 5000
         sentinel failover-timeout platform-valkey 60000
         sentinel parallel-syncs platform-valkey 1
         EOF
-        fi
+        rm -f "$sentinel_body"
         chmod 0600 "$sentinel_config"
 
         cat > /ha/haproxy.cfg <<EOF
@@ -353,7 +455,7 @@ extraContainers:
         command:
           - /bin/sh
           - -ec
-          - valkey-cli --no-auth-warning -a "$(cat /auth/{auth_secret_key})" -p 26379 ping | grep -qx PONG
+          - valkey-cli --tls --cacert /tls/ca.crt -h localhost --user default --no-auth-warning -a "$(cat /auth/{auth_secret_key})" -p 26379 ping | grep -qx PONG
       periodSeconds: 5
       timeoutSeconds: 3
     livenessProbe:
@@ -361,7 +463,7 @@ extraContainers:
         command:
           - /bin/sh
           - -ec
-          - valkey-cli --no-auth-warning -a "$(cat /auth/{auth_secret_key})" -p 26379 ping | grep -qx PONG
+          - valkey-cli --tls --cacert /tls/ca.crt -h localhost --user default --no-auth-warning -a "$(cat /auth/{auth_secret_key})" -p 26379 ping | grep -qx PONG
       initialDelaySeconds: 10
       periodSeconds: 10
       timeoutSeconds: 3
@@ -383,6 +485,9 @@ extraContainers:
         mountPath: /data
       - name: valkey-users-secret
         mountPath: /auth
+        readOnly: true
+      - name: platform-valkey-tls
+        mountPath: /tls
         readOnly: true
   - name: primary-proxy
     image: {yaml_string(haproxy_image)}
@@ -420,10 +525,16 @@ extraContainers:
       - name: platform-valkey-ha-config
         mountPath: /ha
         readOnly: true
+      - name: platform-internal-roots
+        mountPath: /trust
+        readOnly: true
 
 extraVolumes:
   - name: platform-valkey-ha-config
     emptyDir: {{}}
+  - name: platform-internal-roots
+    configMap:
+      name: platform-internal-roots
 
 podDisruptionBudget:
   enabled: true
@@ -458,8 +569,8 @@ def render_platform_valkey(path: Path) -> bool:
         or "platform-valkey-auth",
         auth_secret_key=os.environ.get("PLATFORM_VALKEY_PASSWORD_KEY", "valkey-password").strip()
         or "valkey-password",
-        storage_class=os.environ.get("PLATFORM_VALKEY_STORAGE_CLASS", "longhorn-critical").strip()
-        or "longhorn-critical",
+        storage_class=os.environ.get("PLATFORM_VALKEY_STORAGE_CLASS", "longhorn-critical-encrypted").strip()
+        or "longhorn-critical-encrypted",
         data_size=os.environ.get("PLATFORM_VALKEY_DATA_SIZE", "8Gi").strip() or "8Gi",
         replica_count=replica_count,
         metrics_enabled=env_bool("PLATFORM_VALKEY_METRICS", True),
@@ -575,7 +686,7 @@ def render_minio(path: Path) -> bool:
         root_user_secret_key=os.environ.get("MINIO_ROOT_USER_SECRET_KEY", "root-user").strip() or "root-user",
         root_password_secret_key=os.environ.get("MINIO_ROOT_PASSWORD_SECRET_KEY", "root-password").strip()
         or "root-password",
-        storage_class=os.environ.get("MINIO_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical",
+        storage_class=os.environ.get("MINIO_STORAGE_CLASS", "longhorn-critical-encrypted").strip() or "longhorn-critical-encrypted",
         data_size=os.environ.get("MINIO_DATA_SIZE", "50Gi").strip() or "50Gi",
         replica_count=replica_count,
         zones=zones,
@@ -772,8 +883,15 @@ def keycloak_values(
     database_name: str,
     database_user: str,
     database_secret_name: str,
+    database_ssl_mode: str,
     storage_class: str,
     replica_count: str,
+    image_registry: str,
+    image_repository: str,
+    image_tag: str,
+    config_cli_image_registry: str,
+    config_cli_image_repository: str,
+    config_cli_image_tag: str,
 ) -> str:
     if sso_enabled:
         realm_json = keycloak_realm_configuration(
@@ -787,6 +905,32 @@ def keycloak_values(
         sso_block = f"""
 keycloakConfigCli:
   enabled: true
+  image:
+    registry: {yaml_string(config_cli_image_registry)}
+    repository: {yaml_string(config_cli_image_repository)}
+    tag: {yaml_string(config_cli_image_tag)}
+  command:
+    - java
+  args:
+    - -jar
+    - /app/keycloak-config-cli.jar
+  podSecurityContext:
+    enabled: true
+    fsGroupChangePolicy: OnRootMismatch
+    fsGroup: 65534
+  containerSecurityContext:
+    enabled: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    privileged: false
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
   automountServiceAccountToken: false
   backoffLimit: 3
   cleanupAfterFinished:
@@ -813,12 +957,63 @@ keycloakConfigCli:
 # secret/{database_secret_name}. Keep credentials out of Git.
 global:
   defaultStorageClass: {yaml_string(storage_class)}
+  # This disables only the vendored chart's Bitnami repository-name allow-list.
+  # Runtime image admission and signatures remain platform policy concerns.
+  security:
+    allowInsecureImages: true
 
 image:
-  registry: docker.io
-  # Bitnami's historical community images now live in bitnamilegacy.
-  repository: {yaml_string(os.environ.get("KEYCLOAK_IMAGE_REPOSITORY", "bitnamilegacy/keycloak").strip() or "bitnamilegacy/keycloak")}
-  tag: 26.3.3-debian-12-r0
+  registry: {yaml_string(image_registry)}
+  repository: {yaml_string(image_repository)}
+  tag: {yaml_string(image_tag)}
+
+# The upstream image uses a different filesystem layout and UID than the
+# historical Bitnami image. A standard production start applies the PostgreSQL
+# build option at boot; use a pre-optimized private image before enabling a
+# read-only root filesystem.
+command:
+  - /opt/keycloak/bin/kc.sh
+args:
+  - start
+
+automountServiceAccountToken: false
+
+podSecurityContext:
+  enabled: true
+  fsGroupChangePolicy: OnRootMismatch
+  fsGroup: 0
+
+containerSecurityContext:
+  enabled: true
+  runAsUser: 1000
+  runAsGroup: 0
+  runAsNonRoot: true
+  privileged: false
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+defaultInitContainers:
+  prepareWriteDirs:
+    enabled: false
+
+extraEnvVars:
+  - name: KC_DB
+    value: postgres
+  - name: KC_HEALTH_ENABLED
+    value: "true"
+
+startupProbe:
+  enabled: true
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+  successThreshold: 1
 
 auth:
   adminUser: admin
@@ -854,7 +1049,17 @@ externalDatabase:
   existingSecret: {yaml_string(database_secret_name)}
   existingSecretUserKey: username
   existingSecretPasswordKey: password
-  extraParams: sslmode=disable
+  extraParams: sslmode={database_ssl_mode}&sslrootcert=/etc/ssl/platform-postgres/ca-certificates.crt
+
+extraVolumes:
+  - name: platform-postgres-ca
+    configMap:
+      name: platform-internal-roots
+
+extraVolumeMounts:
+  - name: platform-postgres-ca
+    mountPath: /etc/ssl/platform-postgres
+    readOnly: true
 
 ingress:
   enabled: true
@@ -899,6 +1104,25 @@ def render_keycloak(path: Path, inventory: dict[str, str]) -> bool:
     database_port = os.environ.get("KEYCLOAK_DATABASE_PORT", "5432").strip() or "5432"
     if not database_port.isdigit():
         raise SystemExit("KEYCLOAK_DATABASE_PORT must be numeric")
+    image_registry = os.environ.get("KEYCLOAK_IMAGE_REGISTRY", "quay.io").strip() or "quay.io"
+    image_repository = os.environ.get("KEYCLOAK_IMAGE_REPOSITORY", "keycloak/keycloak").strip() or "keycloak/keycloak"
+    image_tag = os.environ.get("KEYCLOAK_IMAGE_TAG", "26.7.0").strip() or "26.7.0"
+    config_cli_image_registry = (
+        os.environ.get("KEYCLOAK_CONFIG_CLI_IMAGE_REGISTRY", "quay.io").strip() or "quay.io"
+    )
+    config_cli_image_repository = (
+        os.environ.get("KEYCLOAK_CONFIG_CLI_IMAGE_REPOSITORY", "adorsys/keycloak-config-cli").strip()
+        or "adorsys/keycloak-config-cli"
+    )
+    config_cli_image_tag = (
+        os.environ.get("KEYCLOAK_CONFIG_CLI_IMAGE_TAG", "6.5.1").strip() or "6.5.1"
+    )
+    for name, value in (
+        ("KEYCLOAK_IMAGE_TAG", image_tag),
+        ("KEYCLOAK_CONFIG_CLI_IMAGE_TAG", config_cli_image_tag),
+    ):
+        if value.lower() in {"latest", "nightly", "dev", "main", "master"}:
+            raise SystemExit(f"{name} must be a stable release tag")
 
     argocd_host = require(
         "PLATFORM_ARGOCD_HOST or platform_argocd_host",
@@ -949,9 +1173,16 @@ def render_keycloak(path: Path, inventory: dict[str, str]) -> bool:
         database_user=os.environ.get("KEYCLOAK_DATABASE_USER", "keycloak").strip() or "keycloak",
         database_secret_name=os.environ.get("KEYCLOAK_DATABASE_SECRET_NAME", "keycloak-database").strip()
         or "keycloak-database",
-        storage_class=os.environ.get("KEYCLOAK_STORAGE_CLASS", "longhorn-critical").strip()
-        or "longhorn-critical",
+        database_ssl_mode=postgres_ssl_mode("KEYCLOAK_DATABASE_SSL_MODE"),
+        storage_class=os.environ.get("KEYCLOAK_STORAGE_CLASS", "longhorn-critical-encrypted").strip()
+        or "longhorn-critical-encrypted",
         replica_count=replica_count,
+        image_registry=image_registry,
+        image_repository=image_repository,
+        image_tag=image_tag,
+        config_cli_image_registry=config_cli_image_registry,
+        config_cli_image_repository=config_cli_image_repository,
+        config_cli_image_tag=config_cli_image_tag,
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -977,6 +1208,9 @@ replicaCount: 1
 
 strategy:
   type: Recreate
+
+podDisruptionBudget:
+  minAvailable: 1
 
 {forgejo_image_block(image_tag)}
 
@@ -1069,6 +1303,50 @@ def forgejo_external_values(
     queue:
       TYPE: redis"""
 
+    if database_type == "postgres":
+        database_trust = """extraVolumes:
+  - name: platform-postgres-ca
+    configMap:
+      name: platform-internal-roots
+      items:
+        - key: ca-certificates.crt
+          path: root.crt
+        - key: ca-certificates.crt
+          path: ca-certificates.crt
+
+extraContainerVolumeMounts:
+  - name: platform-postgres-ca
+    mountPath: /data/gitea/git/.postgresql
+    readOnly: true
+  - name: platform-postgres-ca
+    mountPath: /etc/ssl/platform
+    readOnly: true
+
+extraInitVolumeMounts:
+  - name: platform-postgres-ca
+    mountPath: /data/gitea/git/.postgresql
+    readOnly: true
+"""
+    else:
+        database_trust = """extraVolumes:
+  - name: platform-database-ca
+    configMap:
+      name: platform-internal-roots
+      items:
+        - key: ca-certificates.crt
+          path: ca-certificates.crt
+
+extraContainerVolumeMounts:
+  - name: platform-database-ca
+    mountPath: /etc/ssl/platform
+    readOnly: true
+
+extraInitVolumeMounts:
+  - name: platform-database-ca
+    mountPath: /etc/ssl/platform
+    readOnly: true
+"""
+
     return f"""# Forgejo external database profile rendered by scripts/render_private_platform_values.py.
 # Database type is {database_type}. The premium default uses shared platform
 # Valkey for cache/queue; set FORGEJO_REDIS_MODE=memory for dependency-light
@@ -1077,6 +1355,14 @@ replicaCount: 1
 
 strategy:
   type: Recreate
+
+podDisruptionBudget:
+  minAvailable: 1
+
+deployment:
+  env:
+    - name: SSL_CERT_FILE
+      value: /etc/ssl/platform/ca-certificates.crt
 
 {forgejo_image_block(image_tag)}
 
@@ -1103,6 +1389,8 @@ persistence:
   enabled: true
   size: {yaml_string(data_size)}
   storageClass: {yaml_string(storage_class)}
+
+{database_trust.rstrip()}
 
 gitea:
   additionalConfigFromEnvs:
@@ -1163,7 +1451,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
     host = require("PLATFORM_FORGEJO_HOST or platform_git_host", host)
 
     data_size = os.environ.get("FORGEJO_DATA_SIZE", "20Gi").strip() or "20Gi"
-    storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical").strip()
+    storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical-encrypted").strip()
     image_tag = os.environ.get("FORGEJO_IMAGE_TAG", "").strip()
     if image_tag and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$", image_tag):
         raise SystemExit("FORGEJO_IMAGE_TAG must be an immutable release tag such as 15.0.3-rootless")
@@ -1187,7 +1475,19 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
         database_user = os.environ.get("FORGEJO_DATABASE_USER", "forgejo").strip() or "forgejo"
         database_secret_name = os.environ.get("FORGEJO_DATABASE_SECRET_NAME", "forgejo-database").strip()
         database_secret_name = database_secret_name or "forgejo-database"
-        database_ssl_mode = os.environ.get("FORGEJO_DATABASE_SSL_MODE", "disable").strip() or "disable"
+        if database_type == "postgres":
+            database_ssl_mode = postgres_ssl_mode("FORGEJO_DATABASE_SSL_MODE")
+        else:
+            database_ssl_mode = os.environ.get("FORGEJO_DATABASE_SSL_MODE", "true").strip().lower() or "true"
+            mysql_ssl_modes = {"true", "false", "disable", "skip-verify", "prefer"}
+            if database_ssl_mode not in mysql_ssl_modes:
+                raise SystemExit(
+                    "FORGEJO_DATABASE_SSL_MODE must be true, false, disable, skip-verify, or prefer for MySQL/MariaDB"
+                )
+            if env_bool("PLATFORM_PRODUCTION_STRICT", True) and database_ssl_mode != "true":
+                raise SystemExit(
+                    "FORGEJO_DATABASE_SSL_MODE must be true for MySQL/MariaDB when PLATFORM_PRODUCTION_STRICT=true"
+                )
         redis_mode = os.environ.get("FORGEJO_REDIS_MODE", "redis").strip().lower() or "redis"
         if redis_mode not in {"memory", "local", "redis", "external", "valkey"}:
             raise SystemExit("FORGEJO_REDIS_MODE must be memory, local, redis, external, or valkey")
@@ -1316,6 +1616,7 @@ def woodpecker_bootstrap_values(
     agent_replicas: str,
     database_mode: str,
     database_secret_name: str,
+    log_level: str,
 ) -> str:
     postgres_mode = database_mode in {"postgres", "postgresql", "external"}
     replica_count = server_replicas if postgres_mode else "1"
@@ -1326,11 +1627,21 @@ def woodpecker_bootstrap_values(
     )
     database_env = ""
     database_secret = ""
+    database_trust = ""
     if postgres_mode:
         database_env = """
     WOODPECKER_DATABASE_DRIVER: "postgres"
 """
         database_secret = f"    - {yaml_string(database_secret_name)}\n"
+        database_trust = """  extraVolumes:
+    - name: platform-postgres-ca
+      configMap:
+        name: platform-internal-roots
+  extraVolumeMounts:
+    - name: platform-postgres-ca
+      mountPath: /etc/ssl/platform-postgres
+      readOnly: true
+"""
 
     return f"""# Woodpecker bootstrap profile rendered by scripts/render_private_platform_values.py.
 # {database_comment}
@@ -1365,7 +1676,7 @@ server:
 {database_env.rstrip()}
     WOODPECKER_SERVER_ADDR: ":8000"
     WOODPECKER_GRPC_ADDR: ":9000"
-    WOODPECKER_LOG_LEVEL: "debug"
+    WOODPECKER_LOG_LEVEL: {yaml_string(log_level)}
   probes:
     liveness:
       timeoutSeconds: 10
@@ -1381,6 +1692,7 @@ server:
     - {yaml_string(agent_secret_name)}
     - {yaml_string(oauth_secret_name)}
 {database_secret.rstrip()}
+{database_trust.rstrip()}
   createAgentSecret: false
   ingress:
     enabled: true
@@ -1478,11 +1790,12 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
         ),
     )
     data_size = os.environ.get("WOODPECKER_DATA_SIZE", "10Gi").strip() or "10Gi"
-    storage_class = os.environ.get("WOODPECKER_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
+    storage_class = os.environ.get("WOODPECKER_STORAGE_CLASS", "longhorn-standard-encrypted").strip() or "longhorn-standard-encrypted"
     admin_users = os.environ.get("WOODPECKER_ADMIN_USERS", "admin").strip() or "admin"
     oauth_secret_name = os.environ.get("WOODPECKER_FORGEJO_OAUTH_SECRET_NAME", "woodpecker-forgejo-oauth").strip()
     agent_secret_name = os.environ.get("WOODPECKER_AGENT_SECRET_NAME", "woodpecker-agent-secret").strip() or "woodpecker-agent-secret"
     image_tag = normalize_woodpecker_image_tag(os.environ.get("WOODPECKER_IMAGE_TAG", "v3.16.0").strip() or "v3.16.0")
+    log_level = os.environ.get("WOODPECKER_LOG_LEVEL", "info").strip().lower() or "info"
     database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "postgres").strip().lower() or "postgres"
     database_secret_name = os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip() or "woodpecker-database"
     default_server_replicas = "3" if database_mode in {"postgres", "postgresql", "external"} else "1"
@@ -1502,6 +1815,10 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
         raise SystemExit("WOODPECKER_SERVER_REPLICAS must be 1 when WOODPECKER_DATABASE_MODE=sqlite")
     if image_tag.lower() in {"latest", "next", "nightly", "dev"}:
         raise SystemExit("WOODPECKER_IMAGE_TAG must be a stable release tag, not latest/next/nightly/dev")
+    if log_level not in {"trace", "debug", "info", "warn", "error", "fatal", "panic", "disabled"}:
+        raise SystemExit(
+            "WOODPECKER_LOG_LEVEL must be trace, debug, info, warn, error, fatal, panic, or disabled"
+        )
 
     rendered = woodpecker_bootstrap_values(
         host,
@@ -1516,6 +1833,7 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
         agent_replicas,
         database_mode,
         database_secret_name,
+        log_level,
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -1590,6 +1908,10 @@ expose:
       core: {yaml_string(host)}
 
 externalURL: {yaml_string(f"https://{host}")}
+
+# Kustomize replaces this chart-generated Secret volume with the
+# trust-manager ConfigMap of the same name, avoiding broad Secret RBAC.
+caBundleSecretName: platform-internal-roots
 
 portal:
 {component_availability}
@@ -1870,7 +2192,7 @@ def harbor_database_settings() -> tuple[str, str, str]:
             username=os.environ.get("HARBOR_DATABASE_USER", "harbor").strip() or "harbor",
             secret_name=os.environ.get("HARBOR_DATABASE_SECRET_NAME", "harbor-database").strip()
             or "harbor-database",
-            sslmode=os.environ.get("HARBOR_DATABASE_SSLMODE", "disable").strip() or "disable",
+            sslmode=postgres_ssl_mode("HARBOR_DATABASE_SSLMODE"),
         ),
         "external PostgreSQL",
         "external",
@@ -1878,6 +2200,7 @@ def harbor_database_settings() -> tuple[str, str, str]:
 
 
 def harbor_redis_settings() -> tuple[str, str, str, str]:
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
     redis_mode = os.environ.get("HARBOR_REDIS_MODE", "external").strip().lower() or "external"
     if redis_mode in {"internal", "local"}:
         return (harbor_internal_redis_block(), "", "internal Redis", redis_mode)
@@ -1895,12 +2218,18 @@ def harbor_redis_settings() -> tuple[str, str, str, str]:
     username = os.environ.get("HARBOR_REDIS_USERNAME", "").strip()
     if not username and shared_valkey:
         username = "default"
+    tls_enabled = env_bool("HARBOR_REDIS_TLS", True)
+    if production_strict and not tls_enabled:
+        raise SystemExit(
+            "HARBOR_REDIS_TLS must be true for external Redis/Valkey when "
+            "PLATFORM_PRODUCTION_STRICT=true"
+        )
     return (
         harbor_external_redis_block(
             addr=addr,
             username=username,
             secret_name=os.environ.get("HARBOR_REDIS_SECRET_NAME", "harbor-redis").strip() or "harbor-redis",
-            tls_enabled=env_bool("HARBOR_REDIS_TLS", False),
+            tls_enabled=tls_enabled,
         ),
         harbor_core_redis_url_env_block(
             os.environ.get("HARBOR_REDIS_URL_SECRET_NAME", "harbor-redis-url").strip()
@@ -1925,7 +2254,7 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
     if tls_cert_source not in {"auto", "secret"}:
         raise SystemExit("HARBOR_TLS_CERT_SOURCE must be auto or secret")
     tls_secret_name = os.environ.get("HARBOR_TLS_SECRET_NAME", "harbor-tls").strip() or "harbor-tls"
-    storage_class = os.environ.get("HARBOR_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical"
+    storage_class = os.environ.get("HARBOR_STORAGE_CLASS", "longhorn-critical-encrypted").strip() or "longhorn-critical-encrypted"
     registry_storage_block, registry_note, registry_mode = harbor_registry_storage_settings()
     database_block, database_note, database_mode = harbor_database_settings()
     redis_block, core_redis_url_env_block, redis_note, redis_mode = harbor_redis_settings()
@@ -2165,6 +2494,11 @@ def monitoring_bootstrap_values(
       whenUnsatisfiable: DoNotSchedule"""
         grafana_persistence_block = """  persistence:
     enabled: false"""
+        grafana_tls_mount_block = """  extraConfigmapMounts:
+    - name: platform-postgres-ca
+      mountPath: /etc/ssl/platform-postgres
+      configMap: platform-internal-roots
+      readOnly: true"""
     else:
         grafana_availability_block = "  replicas: 1"
         grafana_persistence_block = f"""  persistence:
@@ -2174,6 +2508,7 @@ def monitoring_bootstrap_values(
     accessModes:
       - ReadWriteOnce
     size: {yaml_string(grafana_size)}"""
+        grafana_tls_mount_block = ""
     if sso_enabled:
         if "  grafana.ini:\n" in grafana_database_block:
             grafana_database_block = grafana_database_block.replace(
@@ -2229,6 +2564,25 @@ def monitoring_bootstrap_values(
           - {yaml_string(prometheus_host)}"""
         extra_manifests = ""
 
+    loki_env = """  envValueFrom:
+    LOKI_GATEWAY_USERNAME:
+      secretKeyRef:
+        name: platform-loki-client
+        key: username
+    LOKI_GATEWAY_PASSWORD:
+      secretKeyRef:
+        name: platform-loki-client
+        key: password
+"""
+    if "  envValueFrom:\n" in grafana_database_block:
+        grafana_database_block = grafana_database_block.replace(
+            "  envValueFrom:\n",
+            loki_env,
+            1,
+        )
+    else:
+        grafana_database_block = loki_env + grafana_database_block
+
     return f"""# Monitoring bootstrap profile rendered by scripts/render_private_platform_values.py.
 # {grafana_database_note}
 crds:
@@ -2269,6 +2623,8 @@ alertmanager:
     enabled: true
     minAvailable: 2
   alertmanagerSpec:
+    useExistingSecret: true
+    configSecret: alertmanager-platform-config
     replicas: 3
     podAntiAffinity: hard
     podAntiAffinityTopologyKey: kubernetes.io/hostname
@@ -2295,6 +2651,21 @@ grafana:
     userKey: admin-user
     passwordKey: admin-password
 {grafana_database_block}
+{grafana_tls_mount_block}
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      access: proxy
+      url: http://loki-gateway.logging.svc.cluster.local
+      basicAuth: true
+      basicAuthUser: {yaml_string("$__env{LOKI_GATEWAY_USERNAME}")}
+      editable: false
+      jsonData:
+        httpHeaderName1: X-Scope-OrgID
+      secureJsonData:
+        basicAuthPassword: {yaml_string("$__env{LOKI_GATEWAY_PASSWORD}")}
+        httpHeaderValue1: platform
   resources:
     requests:
       cpu: 100m
@@ -2356,7 +2727,7 @@ def grafana_database_settings() -> tuple[str, str, str]:
     database_name = os.environ.get("GRAFANA_DATABASE_NAME", "grafana").strip() or "grafana"
     database_user = os.environ.get("GRAFANA_DATABASE_USER", "grafana").strip() or "grafana"
     secret_name = os.environ.get("GRAFANA_DATABASE_SECRET_NAME", "grafana-database").strip() or "grafana-database"
-    ssl_mode = os.environ.get("GRAFANA_DATABASE_SSL_MODE", "disable").strip() or "disable"
+    ssl_mode = postgres_ssl_mode("GRAFANA_DATABASE_SSL_MODE")
     block = f"""  envValueFrom:
     GF_DATABASE_PASSWORD:
       secretKeyRef:
@@ -2370,6 +2741,7 @@ def grafana_database_settings() -> tuple[str, str, str]:
       user: {yaml_string(database_user)}
       password: {yaml_string("$__env{GF_DATABASE_PASSWORD}")}
       ssl_mode: {yaml_string(ssl_mode)}
+      ca_cert_path: /etc/ssl/platform-postgres/ca-certificates.crt
 """
     return (
         block,
@@ -2397,7 +2769,7 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
             "grafana",
         ),
     )
-    storage_class = os.environ.get("MONITORING_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
+    storage_class = os.environ.get("MONITORING_STORAGE_CLASS", "longhorn-standard-encrypted").strip() or "longhorn-standard-encrypted"
     grafana_database_block, grafana_database_note, grafana_database_mode = grafana_database_settings()
     production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
     sso_enabled = platform_sso_enabled()
@@ -2454,6 +2826,7 @@ def loki_bootstrap_values(
     object_secret_name: str,
     force_path_style: bool,
     insecure: bool,
+    retention_period: str,
 ) -> str:
     return f"""# Loki premium profile rendered by scripts/render_private_platform_values.py.
 # Uses object storage for chunks/rules/admin data. Store LOKI_S3_ACCESS_KEY_ID
@@ -2468,9 +2841,16 @@ global:
         name: {yaml_string(object_secret_name)}
 
 loki:
-  auth_enabled: false
+  auth_enabled: true
   commonConfig:
     replication_factor: 3
+  limits_config:
+    retention_period: {yaml_string(retention_period)}
+  compactor:
+    retention_enabled: true
+    delete_request_store: s3
+    delete_request_cancel_period: 24h
+    retention_delete_delay: 2h
   storage:
     type: s3
     bucketNames:
@@ -2531,6 +2911,12 @@ backend:
 
 gateway:
   enabled: true
+  replicas: 3
+  basicAuth:
+    enabled: true
+    existingSecret: loki-gateway-basic-auth
+  nginxConfig:
+    locationSnippet: "proxy_set_header X-Scope-OrgID platform;"
   resources:
     requests:
       cpu: 100m
@@ -2553,6 +2939,25 @@ gateway:
 monitoring:
   serviceMonitor:
     enabled: true
+
+lokiCanary:
+  enabled: true
+  push: true
+  extraArgs:
+    - -tenant-id=platform
+    - -user=$(LOKI_GATEWAY_USERNAME)
+    - -pass=$(LOKI_GATEWAY_PASSWORD)
+  extraEnv:
+    - name: LOKI_GATEWAY_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: loki-gateway-basic-auth
+          key: username
+    - name: LOKI_GATEWAY_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: loki-gateway-basic-auth
+          key: password
 """
 
 
@@ -2564,7 +2969,7 @@ def render_loki(path: Path, inventory: dict[str, str]) -> bool:
     endpoint = os.environ.get("OBJECT_STORAGE_ENDPOINT", INTERNAL_MINIO_ENDPOINT).strip()
     region = os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip() or "us-east-1"
     bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
-    storage_class = os.environ.get("LOKI_STORAGE_CLASS", "longhorn-standard").strip() or "longhorn-standard"
+    storage_class = os.environ.get("LOKI_STORAGE_CLASS", "longhorn-standard-encrypted").strip() or "longhorn-standard-encrypted"
     object_secret_name = os.environ.get("LOKI_OBJECT_STORAGE_SECRET_NAME", "loki-object-storage").strip()
     force_path_style = os.environ.get("OBJECT_STORAGE_FORCE_PATH_STYLE", "true").strip().lower() not in {
         "0",
@@ -2574,6 +2979,9 @@ def render_loki(path: Path, inventory: dict[str, str]) -> bool:
     insecure = os.environ.get(
         "OBJECT_STORAGE_INSECURE", str(endpoint.lower().startswith("http://"))
     ).strip().lower() in {"1", "true", "yes"}
+    retention_period = os.environ.get("LOKI_RETENTION_PERIOD", "720h").strip() or "720h"
+    if not re.fullmatch(r"[1-9][0-9]*(?:h|d|w)", retention_period):
+        raise SystemExit("LOKI_RETENTION_PERIOD must be a positive duration such as 720h or 30d")
 
     rendered = loki_bootstrap_values(
         host=host,
@@ -2588,6 +2996,7 @@ def render_loki(path: Path, inventory: dict[str, str]) -> bool:
         object_secret_name=object_secret_name,
         force_path_style=force_path_style,
         insecure=insecure,
+        retention_period=retention_period,
     )
     old = path.read_text(encoding="utf-8") if path.exists() else ""
     changed = rendered != old
@@ -2819,15 +3228,58 @@ spec:
         passwordSecret:
           name: {yaml_string(os.environ.get("GRAFANA_DATABASE_SECRET_NAME", "grafana-database").strip() or "grafana-database")}"""
 
-    return f"""apiVersion: postgresql.cnpg.io/v1
+    return f"""apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {yaml_string(name + "-server")}
+  namespace: {yaml_string(namespace)}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  secretName: {yaml_string(name + "-server-tls")}
+  secretTemplate:
+    labels:
+      cnpg.io/reload: ""
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  usages:
+    - server auth
+  dnsNames:
+    - {yaml_string(name + "-rw")}
+    - {yaml_string(name + "-rw." + namespace)}
+    - {yaml_string(name + "-rw." + namespace + ".svc")}
+    - {yaml_string(name + "-rw." + namespace + ".svc.cluster.local")}
+    - {yaml_string(name + "-r")}
+    - {yaml_string(name + "-r." + namespace)}
+    - {yaml_string(name + "-r." + namespace + ".svc")}
+    - {yaml_string(name + "-r." + namespace + ".svc.cluster.local")}
+    - {yaml_string(name + "-ro")}
+    - {yaml_string(name + "-ro." + namespace)}
+    - {yaml_string(name + "-ro." + namespace + ".svc")}
+    - {yaml_string(name + "-ro." + namespace + ".svc.cluster.local")}
+  issuerRef:
+    name: platform-internal-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: {yaml_string(name)}
   namespace: {yaml_string(namespace)}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   instances: {instances}
   imageName: {yaml_string(image_name)}
   primaryUpdateStrategy: unsupervised
+  certificates:
+    serverCASecret: {yaml_string(name + "-server-tls")}
+    serverTLSSecret: {yaml_string(name + "-server-tls")}
   managed:
     roles:
       - name: keycloak
@@ -2880,7 +3332,7 @@ def render_cnpg_postgres_cluster(path: Path) -> bool:
         name=name,
         instances=instances,
         data_size=os.environ.get("POSTGRES_DATA_SIZE", "50Gi").strip() or "50Gi",
-        storage_class=os.environ.get("CNPG_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical",
+        storage_class=os.environ.get("CNPG_STORAGE_CLASS", "longhorn-critical-encrypted").strip() or "longhorn-critical-encrypted",
         app_database=os.environ.get("FORGEJO_DATABASE_NAME", "forgejo").strip() or "forgejo",
         app_owner=os.environ.get("FORGEJO_DATABASE_USER", "forgejo").strip() or "forgejo",
         app_secret_name=os.environ.get("FORGEJO_DATABASE_SECRET_NAME", "forgejo-database").strip()
@@ -2998,7 +3450,7 @@ def render_step_ca(path: Path, inventory: dict[str, str]) -> bool:
         if default_dns not in dns_names:
             dns_names.append(default_dns)
     url = os.environ.get("STEP_CA_URL", "").strip() or "https://step-ca.step-ca.svc.cluster.local"
-    storage_class = os.environ.get("STEP_CA_STORAGE_CLASS", "longhorn-critical").strip() or "longhorn-critical"
+    storage_class = os.environ.get("STEP_CA_STORAGE_CLASS", "longhorn-critical-encrypted").strip() or "longhorn-critical-encrypted"
     db_size = os.environ.get("STEP_CA_DB_SIZE", "10Gi").strip() or "10Gi"
 
     rendered = step_ca_bootstrap_values(
@@ -3017,9 +3469,9 @@ def render_step_ca(path: Path, inventory: dict[str, str]) -> bool:
 
 
 def render_platform_policy_enforcement(paths: list[Path]) -> bool:
-    """Render a deliberate Kyverno policy mode into the private deployment."""
+    """Render the requested operator mode into stable Kyverno CEL actions."""
     configured = os.environ.get("PLATFORM_POLICY_ENFORCEMENT", "Audit").strip().lower()
-    modes = {"audit": "Audit", "enforce": "Enforce"}
+    modes = {"audit": "Audit", "enforce": "Deny"}
     if configured not in modes:
         raise SystemExit("PLATFORM_POLICY_ENFORCEMENT must be Audit or Enforce")
 
@@ -3027,17 +3479,186 @@ def render_platform_policy_enforcement(paths: list[Path]) -> bool:
     for path in paths:
         text = path.read_text(encoding="utf-8")
         rendered, replacements = re.subn(
-            r"(?m)^(\s*validationFailureAction:\s*)(Audit|Enforce)\s*$",
+            r"(?m)^([ \t]*validationActions:[ \t]*\r?\n[ \t]*-[ \t]*)(Audit|Deny)[ \t]*$",
             lambda match: f"{match.group(1)}{modes[configured]}",
             text,
         )
         if replacements != 1:
             raise SystemExit(
-                f"expected exactly one validationFailureAction in {path}; found {replacements}"
+                f"expected exactly one stable validationActions entry in {path}; found {replacements}"
             )
         if rendered != text:
             path.write_text(rendered, encoding="utf-8")
             changed = True
+    return changed
+
+
+def platform_image_integrity_policy(
+    registry: str,
+    public_key: str,
+    rekor_url: str,
+    validation_action: str,
+) -> str:
+    key_block = "\n".join(f"            {line}" for line in public_key.splitlines())
+    registry_expression = yaml_string(f"image.registry == '{registry}'")
+    return f"""apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-platform-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify platform image signatures
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.18.0
+spec:
+  evaluation:
+    admission:
+      enabled: true
+    background:
+      enabled: true
+  validationActions:
+    - {validation_action}
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 15
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  matchImageReferences:
+    - expression: {registry_expression}
+  attestors:
+    - name: platformCosign
+      cosign:
+        key:
+          data: |
+{key_block}
+        ctlog:
+          url: {yaml_string(rekor_url)}
+          insecureIgnoreTlog: false
+          insecureIgnoreSCT: false
+  validationConfigurations:
+    mutateDigest: true
+    required: true
+    verifyDigest: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.platformCosign])).all(result, result > 0)
+      message: Platform registry images must carry a valid Cosign signature from the approved release key.
+"""
+
+
+def validate_cosign_public_key(path: Path) -> str:
+    try:
+        raw = path.read_text(encoding="ascii")
+    except FileNotFoundError as exc:
+        raise SystemExit(f"PLATFORM_COSIGN_PUBLIC_KEY_FILE does not exist: {path}") from exc
+    except UnicodeDecodeError as exc:
+        raise SystemExit("PLATFORM_COSIGN_PUBLIC_KEY_FILE must be an ASCII PEM public key") from exc
+    if len(raw.encode("ascii")) > 65536:
+        raise SystemExit("PLATFORM_COSIGN_PUBLIC_KEY_FILE exceeds the 64 KiB safety limit")
+
+    normalized = raw.replace("\r\n", "\n").strip()
+    match = re.fullmatch(
+        r"-----BEGIN PUBLIC KEY-----\n([A-Za-z0-9+/=\n]+)\n-----END PUBLIC KEY-----",
+        normalized,
+    )
+    if not match or "PRIVATE KEY" in normalized:
+        raise SystemExit(
+            "PLATFORM_COSIGN_PUBLIC_KEY_FILE must contain exactly one PEM PUBLIC KEY block"
+        )
+    try:
+        der = base64.b64decode("".join(match.group(1).splitlines()), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise SystemExit("PLATFORM_COSIGN_PUBLIC_KEY_FILE contains invalid PEM base64") from exc
+    if not 32 <= len(der) <= 16384 or der[0] != 0x30:
+        raise SystemExit("PLATFORM_COSIGN_PUBLIC_KEY_FILE is not a plausible DER public key")
+    return normalized
+
+
+def render_platform_image_integrity(path: Path, inventory: dict[str, str]) -> bool:
+    mode = os.environ.get("PLATFORM_IMAGE_INTEGRITY_MODE", "disabled").strip().lower()
+    if mode not in {"disabled", "audit", "enforce"}:
+        raise SystemExit(
+            "PLATFORM_IMAGE_INTEGRITY_MODE must be disabled, Audit, or Enforce"
+        )
+
+    if mode == "disabled":
+        rendered = platform_image_integrity_policy(
+            "<PLATFORM_IMAGE_REGISTRY>",
+            "<PLATFORM_COSIGN_PUBLIC_KEY>",
+            "<PLATFORM_COSIGN_REKOR_URL>",
+            "Audit",
+        )
+    else:
+        registry = first_value(
+            env_or_inventory(
+                "PLATFORM_IMAGE_REGISTRY",
+                inventory,
+                "platform_image_registry",
+                "platform_registry_host",
+            ),
+            platform_host(
+                "PLATFORM_HARBOR_HOST",
+                inventory,
+                ("platform_harbor_host", "platform_registry_host"),
+                "harbor",
+            ),
+        ).lower()
+        require("PLATFORM_IMAGE_REGISTRY or platform_registry_host", registry)
+        if (
+            "://" in registry
+            or "/" in registry
+            or re.search(r"\s", registry)
+            or not re.fullmatch(r"(?:\[[0-9a-f:]+\]|[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?)(?::[0-9]{1,5})?", registry)
+        ):
+            raise SystemExit(
+                "PLATFORM_IMAGE_REGISTRY must be a registry host with optional port, without scheme or path"
+            )
+
+        public_key_file = Path(
+            require(
+                "PLATFORM_COSIGN_PUBLIC_KEY_FILE",
+                os.environ.get("PLATFORM_COSIGN_PUBLIC_KEY_FILE", "").strip(),
+            )
+        ).expanduser()
+        public_key = validate_cosign_public_key(public_key_file)
+        rekor_url = (
+            os.environ.get("PLATFORM_COSIGN_REKOR_URL", "https://rekor.sigstore.dev").strip()
+            or "https://rekor.sigstore.dev"
+        )
+        parsed_rekor = urlparse(rekor_url)
+        if (
+            parsed_rekor.scheme != "https"
+            or not parsed_rekor.hostname
+            or parsed_rekor.username
+            or parsed_rekor.password
+            or parsed_rekor.query
+            or parsed_rekor.fragment
+        ):
+            raise SystemExit(
+                "PLATFORM_COSIGN_REKOR_URL must be an HTTPS URL without credentials, query, or fragment"
+            )
+        rendered = platform_image_integrity_policy(
+            registry,
+            public_key,
+            rekor_url.rstrip("/"),
+            "Deny" if mode == "enforce" else "Audit",
+        )
+
+    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    changed = rendered != old
+    if changed:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
     return changed
 
 
@@ -3053,6 +3674,11 @@ def main() -> int:
         "--longhorn-values",
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/longhorn/values.yaml"),
+    )
+    parser.add_argument(
+        "--longhorn-storageclasses",
+        type=Path,
+        default=Path("gitops/clusters/rke2-main/premium-3node/apps/longhorn/storageclasses.yaml"),
     )
     parser.add_argument(
         "--argocd-values",
@@ -3119,6 +3745,20 @@ def main() -> int:
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-workload-baseline.yaml"),
     )
+    parser.add_argument(
+        "--platform-pod-security-policy",
+        type=Path,
+        default=Path(
+            "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-pod-security-baseline.yaml"
+        ),
+    )
+    parser.add_argument(
+        "--platform-image-integrity-policy",
+        type=Path,
+        default=Path(
+            "gitops/clusters/rke2-main/premium-3node/apps/platform-image-integrity/verify-platform-images.yaml"
+        ),
+    )
     parser.add_argument("--skip-longhorn", action="store_true")
     parser.add_argument("--skip-argocd", action="store_true")
     parser.add_argument("--skip-woodpecker", action="store_true")
@@ -3131,6 +3771,7 @@ def main() -> int:
     parser.add_argument("--skip-minio", action="store_true")
     parser.add_argument("--skip-keycloak", action="store_true")
     parser.add_argument("--skip-step-ca", action="store_true")
+    parser.add_argument("--skip-platform-image-integrity", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -3154,7 +3795,7 @@ def main() -> int:
             host = f"forgejo.{domain}" if domain else ""
         print(f"FORGEJO_HOST={host or '<missing>'}")
         print(f"FORGEJO_DATA_SIZE={os.environ.get('FORGEJO_DATA_SIZE', '20Gi')}")
-        print(f"FORGEJO_STORAGE_CLASS={os.environ.get('FORGEJO_STORAGE_CLASS', 'longhorn-critical')}")
+        print(f"FORGEJO_STORAGE_CLASS={os.environ.get('FORGEJO_STORAGE_CLASS', 'longhorn-critical-encrypted')}")
         print(f"FORGEJO_DATABASE_MODE={os.environ.get('FORGEJO_DATABASE_MODE', os.environ.get('PLATFORM_SQL_DATABASE_MODE', 'postgres'))}")
         print(
             "ARGOCD_HOST="
@@ -3262,9 +3903,12 @@ def main() -> int:
         print(f"PLATFORM_VALKEY_PRIMARY_HOST={os.environ.get('PLATFORM_VALKEY_PRIMARY_HOST', 'platform-valkey-primary.platform-cache.svc.cluster.local')}")
         print(f"PLATFORM_VALKEY_REPLICA_COUNT={os.environ.get('PLATFORM_VALKEY_REPLICA_COUNT', '3')}")
         print(f"PLATFORM_VALKEY_DATA_SIZE={os.environ.get('PLATFORM_VALKEY_DATA_SIZE', '8Gi')}")
+        print(f"LONGHORN_ENCRYPTION_SECRET_NAME={os.environ.get('LONGHORN_ENCRYPTION_SECRET_NAME', 'longhorn-crypto')}")
+        print(f"LONGHORN_ENCRYPTION_AUTO_GENERATE={os.environ.get('LONGHORN_ENCRYPTION_AUTO_GENERATE', 'true')}")
+        print(f"LONGHORN_ENCRYPTION_RECOVERY_FILE={os.environ.get('LONGHORN_ENCRYPTION_RECOVERY_FILE', 'private/longhorn-encryption.key')}")
         print(f"MINIO_ROOT_SECRET_NAME={os.environ.get('MINIO_ROOT_SECRET_NAME', 'minio-root')}")
         print(f"MINIO_DATA_SIZE={os.environ.get('MINIO_DATA_SIZE', '50Gi')}")
-        print(f"MINIO_STORAGE_CLASS={os.environ.get('MINIO_STORAGE_CLASS', 'longhorn-critical')}")
+        print(f"MINIO_STORAGE_CLASS={os.environ.get('MINIO_STORAGE_CLASS', 'longhorn-critical-encrypted')}")
         print(f"MINIO_REPLICA_COUNT={os.environ.get('MINIO_REPLICA_COUNT', '4')}")
         print(f"STEP_CA_MODE={os.environ.get('STEP_CA_MODE', 'disabled')}")
         print(
@@ -3274,9 +3918,10 @@ def main() -> int:
                 or "<not exposed>"
             )
         )
-        print(f"STEP_CA_STORAGE_CLASS={os.environ.get('STEP_CA_STORAGE_CLASS', 'longhorn-critical')}")
+        print(f"STEP_CA_STORAGE_CLASS={os.environ.get('STEP_CA_STORAGE_CLASS', 'longhorn-critical-encrypted')}")
         print(f"STEP_CA_DB_SIZE={os.environ.get('STEP_CA_DB_SIZE', '10Gi')}")
         print(f"PLATFORM_POLICY_ENFORCEMENT={os.environ.get('PLATFORM_POLICY_ENFORCEMENT', 'Audit')}")
+        print(f"PLATFORM_IMAGE_INTEGRITY_MODE={os.environ.get('PLATFORM_IMAGE_INTEGRITY_MODE', 'disabled')}")
         return 0 if host else 1
 
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
@@ -3289,6 +3934,10 @@ def main() -> int:
         backup_target = os.environ.get("LONGHORN_BACKUP_TARGET", "").strip()
         if render_longhorn(args.longhorn_values, backup_target):
             changed.append(str(args.longhorn_values))
+        if args.longhorn_storageclasses.exists() and render_longhorn_storageclasses(
+            args.longhorn_storageclasses
+        ):
+            changed.append(str(args.longhorn_storageclasses))
 
     if (
         not args.skip_woodpecker
@@ -3338,9 +3987,19 @@ def main() -> int:
     if not args.skip_step_ca and render_step_ca(args.step_ca_values, inventory):
         changed.append(str(args.step_ca_values))
 
-    policy_paths = [args.platform_secret_policy, args.platform_workload_policy]
+    policy_paths = [
+        args.platform_secret_policy,
+        args.platform_workload_policy,
+        args.platform_pod_security_policy,
+    ]
     if all(path.exists() for path in policy_paths) and render_platform_policy_enforcement(policy_paths):
         changed.extend(str(path) for path in policy_paths)
+
+    if (
+        not args.skip_platform_image_integrity
+        and render_platform_image_integrity(args.platform_image_integrity_policy, inventory)
+    ):
+        changed.append(str(args.platform_image_integrity_policy))
 
     if changed:
         print("Rendered private platform values:")

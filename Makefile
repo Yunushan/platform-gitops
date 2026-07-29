@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets security-scan supply-chain-posture forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-production-evidence platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture supply-chain-verify github-governance-plan github-governance-security-apply github-governance-apply github-governance-verify rendered-schema-verify policy-cel-verify forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify forge-transition-validate forge-transition-discover forge-transition-prepare forge-transition-verify-shadow forge-transition-enter forge-transition-status forge-transition-reconcile forge-transition-relay forge-transition-fallback forge-transition-finalize forge-transition-failback forge-transition-rollback forge-transition-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-network-isolation-verify platform-internal-tls-verify platform-observability-verify platform-capacity-verify platform-image-inventory-verify platform-production-evidence platform-production-score platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-forgejo-recovery-drill platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -12,6 +12,13 @@ help:
 	@echo "  no-secrets      Scan repository for obvious secrets/private data"
 	@echo "  security-scan   Run Trivy, Gitleaks, and Semgrep security scanners"
 	@echo "  supply-chain-posture  Generate SBOM and optional Scorecard/Cosign evidence"
+	@echo "  supply-chain-verify  Require scanners, SBOM, Scorecard threshold, and digest-bound Cosign proof"
+	@echo "  github-governance-plan  Plan GitHub security, immutable-tag, and release-approval controls"
+	@echo "  github-governance-security-apply  Enable GitHub scanner controls without changing release gates"
+	@echo "  github-governance-apply  Apply GitHub release controls with an independent reviewer"
+	@echo "  github-governance-verify  Verify live GitHub branch, tag, release, Actions, and security controls"
+	@echo "  rendered-schema-verify  Render selected GitOps applications and validate Kubernetes object schemas"
+	@echo "  policy-cel-verify  Compile and behavior-test active policies with the pinned Kyverno CLI"
 	@echo "  forge-migration-validate  Validate PLAN and its fail-closed migration surface policy"
 	@echo "  forge-migration-run  Migrate PLAN and write optional PROOF using optional WORK_DIR"
 	@echo "  forge-migration-verify  Re-read source/destination from PLAN and write optional PROOF"
@@ -25,6 +32,19 @@ help:
 	@echo "  forge-cutover-activate  Freeze GitLab and activate Woodpecker using approved VERIFICATION"
 	@echo "  forge-cutover-rollback  Restore GitLab and disable destination authority from EVIDENCE"
 	@echo "  forge-cutover-proof-verify  Verify stored cutover PROOF integrity and acceptance"
+	@echo "  forge-transition-validate  Validate an optional GitLab/GitHub coexistence PLAN"
+	@echo "  forge-transition-discover  Inventory every declared CI/CD surface into DISCOVERY proof"
+	@echo "  forge-transition-prepare  Build the approved shadow destination and durable STATE"
+	@echo "  forge-transition-verify-shadow  Reconcile and canary the shadow destination"
+	@echo "  forge-transition-enter  Disable source CI while keeping source Git writable"
+	@echo "  forge-transition-status  Prove relay lag, source authority, and destination health"
+	@echo "  forge-transition-reconcile  Run one provider-neutral relay reconciliation"
+	@echo "  forge-transition-relay  Run the supervised relay with automatic rollback"
+	@echo "  forge-transition-fallback  Restore source CI temporarily while keeping relay synchronization"
+	@echo "  forge-transition-finalize  Freeze source Git after a final zero-drift reconciliation"
+	@echo "  forge-transition-failback  Reverse-sync finalized Forgejo data and restore source authority"
+	@echo "  forge-transition-rollback  Stop transition and restore source CI from STATE"
+	@echo "  forge-transition-proof-verify  Verify stored transition PROOF integrity and acceptance"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env or inventory"
 	@echo "  platform-profile-check  Verify selected GitOps profile has no unresolved placeholders"
@@ -51,8 +71,14 @@ help:
 	@echo "  platform-tls  Validate and distribute a pre-issued wildcard TLS certificate without storing it in Git"
 	@echo "  platform-tls-verify  Verify TLS Secrets, hostname coverage, expiry, and the certificate served by the ingress VIP"
 	@echo "  platform-data-protection  Verify off-cluster backup freshness and approved restore-drill evidence"
-	@echo "  platform-policy-readiness  Report Kyverno baseline violations; block Enforce promotion while violations exist"
+	@echo "  platform-policy-readiness  Verify Kyverno CEL baselines and optional signed-image admission"
+	@echo "  platform-network-isolation-verify  Prove premium default-deny policies allow trusted and block untrusted service paths"
+	@echo "  platform-internal-tls-verify  Prove managed trust and verified OpenBao/PostgreSQL service TLS"
+	@echo "  platform-observability-verify  Prove authenticated Loki ingestion, retention, Alloy collection, and alert delivery"
+	@echo "  platform-capacity-verify  Fail when node, scheduler, or Longhorn headroom is below production thresholds"
+	@echo "  platform-image-inventory-verify  Reconcile exact rendered/live image digests with signatures and admission scope"
 	@echo "  platform-production-evidence  Run production gates and retain commit-bound, independently approved evidence"
+	@echo "  platform-production-score  Require live, governance, and signed-release evidence for exactly 100/100"
 	@echo "  platform-production-check  Run repo, RKE2, app, backup, and restore-evidence readiness gates"
 	@echo "  platform-longhorn-bootstrap  Load private settings, bootstrap Longhorn storage, and verify CSI/PVC readiness"
 	@echo "  platform-longhorn-runtime-repair  Repair Longhorn manager/CSI registration without blocking on storage capacity"
@@ -60,6 +86,7 @@ help:
 	@echo "  platform-forgejo-diagnose  Show Forgejo init, logs, PVC/PV, Longhorn volume, service, and ingress diagnostics"
 	@echo "  platform-forgejo-storage-repair  Repair first-deploy Forgejo PVC, Longhorn disk, and volume attach issues"
 	@echo "  platform-forgejo-ingress  Publish and verify Forgejo through Traefik on the app VIP"
+	@echo "  platform-forgejo-recovery-drill  Opt-in cross-node Forgejo failover drill with encrypted-storage proof"
 	@echo "  platform-dns-repair  Verify pod DNS and repair CoreDNS upstreams for external chart repositories"
 	@echo "  platform-service-path-consumers-repair  Refresh Woodpecker agents after ClusterIP service-path repair"
 	@echo "  platform-service-path-repair  Repair ClusterIP/DNS service paths and refresh Woodpecker consumers"
@@ -90,6 +117,18 @@ init-local:
 
 validate:
 	@$(PYTHON) scripts/run_validation.py
+
+github-governance-plan:
+	@$(PYTHON) scripts/configure_github_governance.py plan
+
+github-governance-security-apply:
+	@$(PYTHON) scripts/configure_github_governance.py apply-security
+
+github-governance-apply:
+	@$(PYTHON) scripts/configure_github_governance.py apply
+
+github-governance-verify:
+	@$(PYTHON) scripts/verify_github_governance.py
 
 forge-migration-validate:
 	@test -n "$(PLAN)" || (echo "PLAN=/path/to/migration-plan.json is required" >&2; exit 2)
@@ -153,6 +192,86 @@ forge-cutover-proof-verify:
 	@test -n "$(PROOF)" || (echo "PROOF=private/migrations/proof/cutover-proof.json is required" >&2; exit 2)
 	@$(PYTHON) scripts/forge_cutover.py verify-proof "$(PROOF)"
 
+forge-transition-validate:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py validate-plan "$(PLAN)" $(if $(PROOF),--proof "$(PROOF)",)
+
+forge-transition-discover:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(DISCOVERY)" || (echo "DISCOVERY=private/migrations/proof/discovery.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py discover "$(PLAN)" --proof "$(DISCOVERY)"
+
+forge-transition-prepare:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(DISCOVERY)" || (echo "DISCOVERY=private/migrations/proof/discovery.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(PREPARED)" || (echo "PREPARED=private/migrations/proof/prepared.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py prepare "$(PLAN)" --discovery "$(DISCOVERY)" --state "$(STATE)" --proof "$(PREPARED)"
+
+forge-transition-verify-shadow:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(PREPARED)" || (echo "PREPARED=private/migrations/proof/prepared.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(VERIFICATION)" || (echo "VERIFICATION=private/migrations/proof/shadow-verification.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py verify-shadow "$(PLAN)" --prepared "$(PREPARED)" --state "$(STATE)" --proof "$(VERIFICATION)" $(if $(WORK_DIR),--work-dir "$(WORK_DIR)",)
+
+forge-transition-enter:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(VERIFICATION)" || (echo "VERIFICATION=private/migrations/proof/shadow-verification.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(HANDOVER)" || (echo "HANDOVER=private/migrations/proof/handover.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py enter "$(PLAN)" --verification "$(VERIFICATION)" --state "$(STATE)" --proof "$(HANDOVER)" $(if $(WORK_DIR),--work-dir "$(WORK_DIR)",)
+
+forge-transition-status:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(PROOF)" || (echo "PROOF=private/migrations/proof/status.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py status "$(PLAN)" --state "$(STATE)" --proof "$(PROOF)"
+
+forge-transition-reconcile:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(PROOF)" || (echo "PROOF=private/migrations/proof/reconcile.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py reconcile "$(PLAN)" --state "$(STATE)" --proof "$(PROOF)" $(if $(WORK_DIR),--work-dir "$(WORK_DIR)",)
+
+forge-transition-relay:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(PROOF_DIR)" || (echo "PROOF_DIR=private/migrations/proof/relay is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py run-relay "$(PLAN)" --state "$(STATE)" --proof-dir "$(PROOF_DIR)" $(if $(INTERVAL),--interval "$(INTERVAL)",) $(if $(filter 1 true yes,$(ONCE)),--once,)
+
+forge-transition-fallback:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(EVIDENCE)" || (echo "EVIDENCE=private/migrations/proof/status-or-handover.json is required" >&2; exit 2)
+	@test -n "$(FALLBACK)" || (echo "FALLBACK=private/migrations/proof/fallback.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py fallback "$(PLAN)" --state "$(STATE)" --evidence "$(EVIDENCE)" --proof "$(FALLBACK)"
+
+forge-transition-finalize:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(EVIDENCE)" || (echo "EVIDENCE=private/migrations/proof/status.json is required" >&2; exit 2)
+	@test -n "$(FINALIZATION)" || (echo "FINALIZATION=private/migrations/proof/finalization.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py finalize "$(PLAN)" --state "$(STATE)" --evidence "$(EVIDENCE)" --proof "$(FINALIZATION)" $(if $(WORK_DIR),--work-dir "$(WORK_DIR)",)
+
+forge-transition-failback:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(EVIDENCE)" || (echo "EVIDENCE=private/migrations/proof/finalization-or-status.json is required" >&2; exit 2)
+	@test -n "$(FAILBACK)" || (echo "FAILBACK=private/migrations/proof/failback.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py failback "$(PLAN)" --state "$(STATE)" --evidence "$(EVIDENCE)" --proof "$(FAILBACK)" $(if $(WORK_DIR),--work-dir "$(WORK_DIR)",)
+
+forge-transition-rollback:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/transition.json is required" >&2; exit 2)
+	@test -n "$(STATE)" || (echo "STATE=private/migrations/state/transition.json is required" >&2; exit 2)
+	@test -n "$(EVIDENCE)" || (echo "EVIDENCE=private/migrations/proof/status-or-handover.json is required" >&2; exit 2)
+	@test -n "$(ROLLBACK)" || (echo "ROLLBACK=private/migrations/proof/rollback.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py rollback "$(PLAN)" --state "$(STATE)" --evidence "$(EVIDENCE)" --proof "$(ROLLBACK)"
+
+forge-transition-proof-verify:
+	@test -n "$(PROOF)" || (echo "PROOF=private/migrations/proof/transition-proof.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_transition.py verify-proof "$(PROOF)"
+
 no-secrets:
 	@$(PYTHON) scripts/validate_no_secrets.py
 
@@ -161,6 +280,15 @@ security-scan:
 
 supply-chain-posture:
 	@bash scripts/supply-chain-posture.sh
+
+supply-chain-verify: security-scan
+	@SUPPLY_CHAIN_STRICT=true bash scripts/supply-chain-posture.sh
+
+rendered-schema-verify:
+	@$(PYTHON) scripts/validate_rendered_manifests.py
+
+policy-cel-verify:
+	@$(PYTHON) scripts/verify_active_kyverno_policies.py
 
 bootstrap-plan:
 	@bash scripts/bootstrap-plan.sh
@@ -388,11 +516,35 @@ platform-data-protection:
 platform-policy-readiness:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-policy-readiness.yml
 
+platform-network-isolation-verify:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-network-isolation.yml
+
+platform-internal-tls-verify:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-internal-tls.yml
+
+platform-observability-verify:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-observability.yml
+
+platform-capacity-verify:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-capacity.yml
+
+platform-image-inventory-verify: rendered-schema-verify supply-chain-verify
+	@bash scripts/bootstrap/run-platform-image-inventory.sh
+
 platform-production-evidence:
 	@bash scripts/bootstrap/run-platform-production-evidence.sh
 
+platform-production-score:
+	@$(PYTHON) scripts/verify_production_readiness_score.py
+
 platform-production-check: validate platform-profile-check rke2-verify platform-status platform-tls-verify
-	@PLATFORM_POLICY_ENFORCEMENT=Enforce $(MAKE) platform-policy-readiness
+	@$(MAKE) platform-image-inventory-verify
+	@$(MAKE) policy-cel-verify
+	@PLATFORM_POLICY_ENFORCEMENT=Enforce PLATFORM_IMAGE_INTEGRITY_MODE=Enforce PLATFORM_IMAGE_INTEGRITY_REQUIRED=true $(MAKE) platform-policy-readiness
+	@$(MAKE) platform-network-isolation-verify
+	@$(MAKE) platform-internal-tls-verify
+	@PLATFORM_ALERT_DELIVERY_TEST=true $(MAKE) platform-observability-verify
+	@$(MAKE) platform-capacity-verify
 	@PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh
 	@bash scripts/bootstrap/run-platform-data-protection.sh
 
@@ -413,6 +565,9 @@ platform-forgejo-storage-repair:
 
 platform-forgejo-ingress:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/publish-forgejo-ingress.yml
+
+platform-forgejo-recovery-drill:
+	@bash scripts/bootstrap/run-forgejo-recovery-drill.sh
 
 platform-dns-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-cluster-dns.yml

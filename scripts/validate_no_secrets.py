@@ -17,7 +17,7 @@ exclude_dirs = {
 }
 secret_assignment = re.compile(r"""(?ix)
     \b(password|passwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|client[_-]?secret)\b
-    \s*[:=]\s*
+    [ \t]*[:=][ \t]*
     (?!<[^>]+>)(?!\$\{[^}]+\})(?![A-Za-z_][A-Za-z0-9_.]*\s*\()(?!changeme\b)(?!example\b)(?!dummy\b)(?!false\b)(?!true\b)(?!null\b)(?!from_secret\b)(?!"?<[^>]+>"?)
     ['"]?([A-Za-z0-9_./+=:@!#$%^&*~-]{8,})['"]?
 """)
@@ -40,6 +40,7 @@ allow_fragments = [
     '<GENERATE_WITH_PASSWORD_MANAGER>', '<NODE_1_IP>', '<NODE_2_IP>', '<NODE_3_IP>',
     '<VIP_ADDRESS>', '<PLATFORM_DOMAIN>', '<VIP_DNS_NAME>', 'example.com',
     'password: <', 'token: <', 'secret: <', 'api_key: <',
+    'repository-secret:', 'environment-secret:', 'organization-secret:',
     default_rke2_pod_cidr,
 ]
 
@@ -61,6 +62,11 @@ def should_scan(path: Path) -> bool:
     if '/crds/' in rel_posix and rel.suffix in {'.yaml', '.yml'}:
         return False
     if '/charts/' in rel_posix and rel.suffix in {'.yaml', '.yml', '.json', '.tpl'}:
+        return False
+    # Vendored upstream chart READMEs contain example credentials, private-key
+    # snippets, and RFC1918 addresses. Keep this exception name- and path-bound;
+    # first-party docs and every non-README vendor artifact remain scanned.
+    if '/charts/' in rel_posix and rel.name.lower() == 'readme.md':
         return False
     if rel.name.startswith('.env') and rel.name != '.env.example':
         return False

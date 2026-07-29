@@ -12,3 +12,21 @@ spec:
         labels:
           app.kubernetes.io/part-of: platform-pki
           platform.gitops/trust-bundle: public-roots
+---
+apiVersion: trust.cert-manager.io/v1alpha1
+kind: Bundle
+metadata:
+  name: platform-internal-roots
+spec:
+  sources:
+    - useDefaultCAs: true
+    - secret:
+        name: platform-internal-root-ca
+        key: tls.crt
+  target:
+    configMap:
+      key: ca-certificates.crt
+      metadata:
+        labels:
+          app.kubernetes.io/part-of: platform-pki
+          platform.gitops/trust-bundle: internal-roots

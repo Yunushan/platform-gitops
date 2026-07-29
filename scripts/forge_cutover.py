@@ -70,16 +70,6 @@ DEFAULT_DESTINATION_PIPELINE_GLOBS = (
     ".woodpecker/*.yml",
     ".woodpecker/*.yaml",
 )
-SENSITIVE_LITERAL_KEYS = {
-    "access_token",
-    "authorization",
-    "client_secret",
-    "password",
-    "private_token",
-    "secret",
-    "token",
-    "value",
-}
 SENSITIVE_PROOF_KEYS = {
     "access_token",
     "authorization",
@@ -188,23 +178,10 @@ def env_name(parent: dict[str, Any], key: str, label: str, required: bool = True
 
 
 def require_credential_free_plan(value: Any, path: str = "plan") -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            normalized = str(key).strip().lower()
-            if normalized in SENSITIVE_LITERAL_KEYS and child not in (None, "", False):
-                raise CutoverError(
-                    f"{path}.{key} must not contain credential or secret data; reference an *_env variable"
-                )
-            require_credential_free_plan(child, f"{path}.{key}")
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            require_credential_free_plan(child, f"{path}[{index}]")
-        return
-    if isinstance(value, str) and "://" in value:
-        parts = urlsplit(value)
-        if parts.password:
-            raise CutoverError(f"{path} must not embed credentials in a URL")
+    try:
+        migration.require_credential_free_plan(value, path)
+    except migration.MigrationError as exc:
+        raise CutoverError(str(exc)) from exc
 
 
 def validate_accounted_entry(entry: Any, label: str, managed_fields: Iterable[str] = ()) -> dict[str, Any]:

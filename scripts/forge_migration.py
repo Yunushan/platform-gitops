@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -60,6 +61,16 @@ UNSUPPORTED_METADATA_SURFACES = {
     "permissions",
     "branch_protection",
     "webhooks",
+}
+SENSITIVE_LITERAL_KEYS = {
+    "access_token",
+    "authorization",
+    "client_secret",
+    "password",
+    "private_token",
+    "secret",
+    "token",
+    "value",
 }
 
 
@@ -246,6 +257,27 @@ def load_plan(path: Path) -> dict[str, Any]:
     return loaded
 
 
+def require_credential_free_plan(value: Any, path: str = "plan") -> None:
+    """Reject literal credentials while allowing references to environment variables."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).strip().lower()
+            if normalized in SENSITIVE_LITERAL_KEYS and child not in (None, "", False):
+                raise MigrationError(
+                    f"{path}.{key} must not contain credential or secret data; reference an *_env variable"
+                )
+            require_credential_free_plan(child, f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            require_credential_free_plan(child, f"{path}[{index}]")
+        return
+    if isinstance(value, str) and "://" in value:
+        parts = urlsplit(value)
+        if parts.password or (parts.scheme in {"http", "https"} and parts.username):
+            raise MigrationError(f"{path} must not embed credentials in a URL")
+
+
 def get_url(raw: dict[str, Any], flat_key: str, nested_key: str) -> str:
     value = raw.get(flat_key)
     if value:
@@ -363,6 +395,7 @@ def parse_repo(raw: dict[str, Any], index: int, direction: str) -> RepoPlan:
 
 
 def parse_plan(data: dict[str, Any]) -> tuple[str, list[RepoPlan]]:
+    require_credential_free_plan(data)
     direction = str(data.get("direction") or "").strip().lower()
     allowed = SUPPORTED_DIRECTIONS | OPTIONAL_DIRECTIONS
     if direction not in allowed:
@@ -520,25 +553,31 @@ def api_request(
         url = f"{url}?{urlencode(query)}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = Request(url, data=data, headers=api_headers(target), method=method)
-    try:
-        with urlopen(request, timeout=30) as response:
-            status = response.status
-            payload = response.read().decode("utf-8")
-    except HTTPError as exc:
-        payload = exc.read().decode("utf-8", errors="replace")
-        if exc.code in expected:
-            try:
-                decoded = json.loads(payload) if payload else {}
-            except json.JSONDecodeError as decode_error:
-                raise MigrationError(
-                    f"{method} {redact_url(url)} returned invalid JSON: {decode_error}"
-                ) from decode_error
-            return (exc.code, decoded) if return_status else decoded
-        raise MigrationError(
-            f"{method} {redact_url(url)} failed with HTTP {exc.code}: {payload[:500]}"
-        ) from exc
-    except URLError as exc:
-        raise MigrationError(f"{method} {redact_url(url)} failed: {exc}") from exc
+    attempts = 3 if method.upper() == "GET" else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            with urlopen(request, timeout=30) as response:
+                status = response.status
+                payload = response.read().decode("utf-8")
+            break
+        except HTTPError as exc:
+            payload = exc.read().decode("utf-8", errors="replace")
+            if exc.code in expected:
+                try:
+                    decoded = json.loads(payload) if payload else {}
+                except json.JSONDecodeError as decode_error:
+                    raise MigrationError(
+                        f"{method} {redact_url(url)} returned invalid JSON: {decode_error}"
+                    ) from decode_error
+                return (exc.code, decoded) if return_status else decoded
+            raise MigrationError(
+                f"{method} {redact_url(url)} failed with HTTP {exc.code}: {payload[:500]}"
+            ) from exc
+        except (URLError, ConnectionError, TimeoutError) as exc:
+            if attempt < attempts:
+                time.sleep(0.1 * (2 ** (attempt - 1)))
+                continue
+            raise MigrationError(f"{method} {redact_url(url)} failed after {attempt} attempt(s): {exc}") from exc
     if status not in expected:
         raise MigrationError(f"{method} {redact_url(url)} returned HTTP {status}: {payload[:500]}")
     if not payload:

@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   accept:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: forge-migration-live-acceptance
     env:
       FORGE_MIGRATION_LIVE: '1'

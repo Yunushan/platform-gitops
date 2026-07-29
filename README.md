@@ -6,7 +6,7 @@
 
 <p align="center">
   <img alt="build" src="https://img.shields.io/badge/build-ready-brightgreen">
-  <img alt="release" src="https://img.shields.io/badge/release-v0.1.0-blue">
+  <img alt="release" src="https://img.shields.io/badge/release-attested%20tags-blue">
   <img alt="license" src="https://img.shields.io/badge/license-0BSD-blue">
   <img alt="default" src="https://img.shields.io/badge/default-RKE2%203%20server%20nodes-orange">
   <img alt="git" src="https://img.shields.io/badge/git-Forgejo-purple">
@@ -32,11 +32,14 @@
   <a href="docs/COMPLIANCE_AUDIT.md">Audit Evidence</a> •
   <a href="docs/RELEASE_PROMOTION.md">Promotion</a> •
   <a href="docs/ALERTING.md">Alerting</a> •
+  <a href="docs/SUPPLY_CHAIN.md">Supply Chain</a> •
+  <a href="docs/NETWORK_SECURITY.md">Network Security</a> •
   <a href="docs/INSTALLATION.md">Launch</a> •
   <a href="docs/PREMIUM_3NODE.md">Premium 3-Node</a> •
   <a href="docs/PRIVATE_DEPLOYMENT.md">Private Deployment</a> •
   <a href="docs/COMPONENT_SWITCHING.md">Change Components</a> •
   <a href="docs/FORGE_MIGRATION.md">Forge Migration</a> •
+  <a href="docs/FORGE_TRANSITION.md">Forge Transition</a> •
   <a href="docs/FORGE_CUTOVER.md">Forge Cutover</a> •
   <a href="docs/SECRETS_AND_PRIVACY.md">Secrets & Privacy</a> •
   <a href="SECURITY.md">Security</a> •
@@ -83,6 +86,11 @@ Bootstrap it with `PLATFORM_PROFILE=premium-3node PLATFORM_APPLY_GITOPS=true
 PLATFORM_REPO_URL=<PRIVATE_REPO_URL> make platform-argocd` after rendering or
 skipping incomplete private values as documented in `docs/PRIVATE_DEPLOYMENT.md`.
 
+The production profile requires maintained external S3-compatible object
+storage. The archived MinIO server is deliberately excluded. For isolated lab
+or migration testing only, select `premium-3node-lab`; it carries no production
+or disaster-recovery claim.
+
 ## Privacy and secret-safety promise
 
 This repository is designed to be pushed publicly or privately without leaking sensitive information.
@@ -121,6 +129,13 @@ the same validation suite with:
 python scripts/run_validation.py
 ```
 
+The GitHub gate also runs a subprocess-aware branch-coverage ratchet for the
+forge migration, cutover, and transition engines. A separate pinned
+ClusterFuzzLite workflow fuzzes their credential-free JSON plan parsers on
+relevant pull requests and in a weekly batch. See
+[`docs/SUPPLY_CHAIN.md`](docs/SUPPLY_CHAIN.md) for local reproduction and
+evidence paths.
+
 Run this before calling a deployed cluster production-ready:
 
 ```bash
@@ -128,12 +143,26 @@ PLATFORM_PROFILE=premium-3node make platform-profile-check
 make platform-production-check
 ```
 
+After retaining the private live acceptance record and the checksummed GitHub
+governance and signed-release records, run `make platform-production-score`.
+It is the fail-closed final decision: it verifies the keyless Sigstore checksum
+bundle, and only commit-matched evidence that earns exactly 100/100 exits
+successfully. See
+[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md#100-point-production-gate).
+
 The production gate is fail-closed: it requires external etcd, Velero,
 CloudNativePG, and Longhorn backups inside the configured RPO plus a recent,
-independently approved restore record referenced by
-`PLATFORM_RESTORE_EVIDENCE_FILE`. Start from
+independently approved schema-v2 restore record referenced by
+`PLATFORM_RESTORE_EVIDENCE_FILE`. The record must derive RPO/RTO from its
+timestamps, prove recovery in a separate failure domain, bind each component
+proof by SHA-256, and include successful failover and failback. It also
+requires commit-bound Forgejo singleton recovery evidence through
+`PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE`. Start from
 [`examples/restore-evidence.example.json`](examples/restore-evidence.example.json)
-and keep the completed record under ignored `private/` storage.
+and keep the completed record under ignored `private/` storage. It also
+reconciles the exact rendered image set with live Pod image IDs: unresolved
+digests, unsigned private-registry images, or external images without a
+current reviewed exception fail production evidence generation.
 
 Use [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) as the
 go/no-go checklist for live gates, evidence, exceptions, launch decision, and
@@ -164,6 +193,9 @@ Use [`docs/COMPLIANCE_AUDIT.md`](docs/COMPLIANCE_AUDIT.md) to map controls,
 evidence records, audit logging, exceptions, and private review cadence.
 Use [`docs/RELEASE_PROMOTION.md`](docs/RELEASE_PROMOTION.md) to define
 environment promotion gates, rollback, hotfix, freeze, and release evidence.
+Use [`docs/REPOSITORY_GOVERNANCE.md`](docs/REPOSITORY_GOVERNANCE.md) to plan,
+apply, and verify live GitHub branch protection, release-tag rules, independent
+environment approval, Actions permissions, and security settings.
 Use [`docs/ALERTING.md`](docs/ALERTING.md) to define severity, receivers,
 SLOs, routing tests, silences, and alert review evidence.
 Use [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) to review assets, trust
@@ -289,7 +321,7 @@ BSD and Solaris are supported as **operator/client workstations** for Git, SSH, 
 | Backups | Velero + DB backups + off-cluster target | External backup target profile |
 | Object storage | Optional in-cluster MinIO for controlled internal S3 use | External S3 for production DR |
 | API VIP | kube-vip | HAProxy + Keepalived |
-| Policy | Kyverno audit baseline and examples | Other admission controllers |
+| Policy | Kyverno stable CEL baseline plus optional-to-enforced image integrity | Other admission controllers |
 | Runtime security | Tetragon eBPF observability | Falco or external runtime/SIEM integrations |
 | Secrets | SOPS + age plus External Secrets Operator and OpenBao-ready backend | Sealed Secrets or external Vault-compatible/cloud secret manager |
 | Supply chain | Cosign + Renovate helpers | Extendable |
@@ -306,14 +338,23 @@ gitops/apps-prod             # production desired state
 apps/<service-name>          # each app source repository
 ```
 
-The supply-chain helper surface includes `renovate.json` for dependency
-dashboards, grouped Helm updates, and Docker digest pinning, plus
-`policies/kyverno/verify-signed-images.example.yaml` for an opt-in Cosign image
-signature verification policy after your CI signs and publishes images. Run
+The Cosign + Renovate supply-chain helpers include `renovate.json` for
+dependency dashboards, grouped Helm updates, and Docker digest pinning, plus
+`policies/kyverno/verify-signed-images.example.yaml` as a stable Kyverno 1.18
+image-signature policy example. The premium profile manages the same control
+through the separate `platform-image-integrity` Application: private rendering
+starts it in `Audit`, promotion changes it to `Deny`, and the production gate
+proves a signed image is admitted while an invalid digest is rejected. Run
 `make supply-chain-posture` when Syft is available to emit an SPDX SBOM under
 `rendered/supply-chain`; it also records OpenSSF Scorecard output when the
 `scorecard` binary is installed and verifies a signed image when
 `COSIGN_IMAGE`/`COSIGN_PUBLIC_KEY` are set.
+
+For production promotion, `make supply-chain-verify` requires the scanner
+suite, a non-empty SBOM, a thresholded Scorecard report, and Cosign proof for
+digest-pinned images. `make platform-image-inventory-verify` then binds those
+results to the exact rendered manifests and live Pod digests. See
+`docs/SUPPLY_CHAIN.md`.
 
 `make security-scan` runs Trivy, Gitleaks, and Semgrep. Semgrep defaults to the
 checked-in `.semgrep.yml` baseline so private deployments can run reproducible

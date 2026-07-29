@@ -91,6 +91,7 @@
       - nf_conntrack
     rke2_optional_kernel_modules:
       - iscsi_tcp
+      - dm_crypt
   handlers:
     - name: Reload firewalld
       ansible.builtin.command: firewall-cmd --reload
@@ -159,6 +160,16 @@
         for module in {{ rke2_core_kernel_modules | join(' ') }}; do
           lsmod | awk '{print $1}' | grep -Fx "${module}" >/dev/null
         done
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Verify encrypted Longhorn volume prerequisites
+      ansible.builtin.shell: |
+        set -eu
+        command -v cryptsetup >/dev/null
+        modprobe dm_crypt
+        test -d /sys/module/dm_crypt
       args:
         executable: /bin/bash
       changed_when: false

@@ -2,7 +2,7 @@
 # Initialization, unseal, auth methods, and policies remain an operational
 # ceremony and should be backed by an external KMS/HSM process before production.
 global:
-  tlsDisable: true
+  tlsDisable: false
 
 injector:
   enabled: true
@@ -38,6 +38,67 @@ server:
   enabled: true
   logLevel: info
   logFormat: standard
+  shareProcessNamespace: true
+  extraEnvironmentVars:
+    BAO_CACERT: /openbao/tls/ca.crt
+    BAO_TLSCERT: /openbao/tls/tls.crt
+    BAO_TLSKEY: /openbao/tls/tls.key
+  volumes:
+    - name: openbao-server-tls
+      secret:
+        secretName: openbao-server-tls
+        defaultMode: 0440
+  volumeMounts:
+    - name: openbao-server-tls
+      mountPath: /openbao/tls
+      readOnly: true
+  extraContainers:
+    - name: certificate-reloader
+      image: quay.io/openbao/openbao:2.5.4
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -ec
+      args:
+        - |
+          certificate=/openbao/tls/tls.crt
+          previous="$(cksum "${certificate}")"
+          while sleep 60; do
+            current="$(cksum "${certificate}")"
+            [ "${current}" = "${previous}" ] && continue
+            reloaded=false
+            for process in /proc/[0-9]*; do
+              [ -r "${process}/comm" ] || continue
+              if [ "$(cat "${process}/comm")" = "bao" ]; then
+                kill -HUP "${process#/proc/}"
+                reloaded=true
+              fi
+            done
+            if [ "${reloaded}" != "true" ]; then
+              echo "OpenBao process was not found for certificate reload" >&2
+              exit 1
+            fi
+            previous="${current}"
+          done
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+      volumeMounts:
+        - name: openbao-server-tls
+          mountPath: /openbao/tls
+          readOnly: true
   resources:
     requests:
       cpu: 250m
@@ -54,7 +115,7 @@ server:
   dataStorage:
     enabled: true
     size: 20Gi
-    storageClass: longhorn-critical
+    storageClass: longhorn-critical-encrypted
     accessMode: ReadWriteOnce
     persistentVolumeClaimRetentionPolicy:
       whenDeleted: Retain
@@ -62,13 +123,15 @@ server:
   auditStorage:
     enabled: true
     size: 10Gi
-    storageClass: longhorn-critical
+    storageClass: longhorn-critical-encrypted
     accessMode: ReadWriteOnce
   standalone:
     enabled: false
   ha:
     enabled: true
     replicas: 3
+    apiAddr: https://$(HOSTNAME).openbao-internal.openbao.svc.cluster.local:8200
+    clusterAddr: https://$(HOSTNAME).openbao-internal.openbao.svc.cluster.local:8201
     raft:
       enabled: true
       setNodeId: true
@@ -76,9 +139,13 @@ server:
         ui = true
 
         listener "tcp" {
-          tls_disable = 1
           address = "[::]:8200"
           cluster_address = "[::]:8201"
+          tls_cert_file = "/openbao/tls/tls.crt"
+          tls_key_file = "/openbao/tls/tls.key"
+          tls_client_ca_file = "/openbao/tls/ca.crt"
+          tls_min_version = "tls12"
+          tls_max_version = "tls13"
           telemetry {
             unauthenticated_metrics_access = "true"
           }
@@ -109,6 +176,12 @@ serverTelemetry:
     enabled: true
     selectors:
       release: monitoring
+    tlsConfig:
+      ca:
+        configMap:
+          name: platform-internal-roots
+          key: ca-certificates.crt
+      serverName: openbao.openbao.svc.cluster.local
   prometheusRules:
     enabled: false
   grafanaDashboard:

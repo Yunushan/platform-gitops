@@ -32,6 +32,7 @@ APP_SYNC_WAVES = {
     "step-ca": "2",
     "kyverno": "4",
     "platform-policies": "5",
+    "platform-image-integrity": "6",
     "tetragon": "4",
     "external-secrets": "4",
     "openbao": "5",
@@ -51,7 +52,18 @@ APP_SYNC_WAVES = {
     "loki": "4",
     "velero": "5",
 }
-SERVER_SIDE_APPLY_APPS = {"kyverno", "velero"}
+SERVER_SIDE_APPLY_APPS = {"kyverno", "platform-image-integrity", "velero"}
+NAMESPACE_ONLY_APPS = {
+    "forgejo",
+    "gitea",
+    "harbor",
+    "keycloak",
+    "minio",
+    "platform-postgres",
+    "platform-valkey",
+    "step-ca",
+    "woodpecker",
+}
 
 
 def unresolved_in_text(text: str) -> list[str]:
@@ -215,8 +227,14 @@ def kustomization_namespace(source_path: Path) -> str:
 def generated_application_doc(repo_url: str, source_path: str, source_dir: Path) -> str:
     name = source_dir.name
     namespace = kustomization_namespace(source_dir)
+    project = "platform-services" if name in NAMESPACE_ONLY_APPS else "platform"
     sync_wave = APP_SYNC_WAVES.get(name, "4")
-    sync_options = ["CreateNamespace=true"]
+    sync_options = [
+        "CreateNamespace=true",
+        "Prune=confirm",
+        "PruneLast=true",
+        "PrunePropagationPolicy=foreground",
+    ]
     if name in SERVER_SIDE_APPLY_APPS:
         sync_options.append("ServerSideApply=true")
     sync_options_yaml = "\n".join(f"      - {option}" for option in sync_options)
@@ -228,7 +246,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "{sync_wave}"
 spec:
-  project: platform
+  project: {project}
   source:
     repoURL: {repo_url}
     targetRevision: main
@@ -238,8 +256,9 @@ spec:
     namespace: {namespace}
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
 {sync_options_yaml}"""
 

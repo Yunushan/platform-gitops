@@ -1,7 +1,7 @@
 # In-cluster S3-compatible object storage for lab/staging and controlled internal
 # targets. Keep production disaster-recovery backups replicated off-cluster.
 global:
-  defaultStorageClass: longhorn-critical
+  defaultStorageClass: longhorn-critical-encrypted
 
 mode: distributed
 
@@ -39,7 +39,7 @@ statefulset:
 
 persistence:
   enabled: true
-  storageClass: longhorn-critical
+  storageClass: longhorn-critical-encrypted
   size: 50Gi
 
 networkPolicy:

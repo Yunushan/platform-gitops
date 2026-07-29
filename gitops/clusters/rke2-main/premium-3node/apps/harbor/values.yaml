@@ -12,6 +12,10 @@ expose:
 
 externalURL: https://harbor.<PLATFORM_DOMAIN>
 
+# Kustomize replaces this chart-generated Secret volume with the
+# trust-manager ConfigMap of the same name, avoiding broad Secret RBAC.
+caBundleSecretName: platform-internal-roots
+
 portal:
   replicas: 2
   podDisruptionBudget:
@@ -148,7 +152,7 @@ database:
     username: harbor
     coreDatabase: registry
     existingSecret: harbor-database
-    sslmode: disable
+    sslmode: verify-full
     maxIdleConns: 100
     maxOpenConns: 900
 
@@ -161,7 +165,7 @@ redis:
     addr: platform-valkey-primary.platform-cache.svc.cluster.local:6379
     sentinelMasterSet: ""
     tlsOptions:
-      enable: false
+      enable: true
     coreDatabaseIndex: "0"
     jobserviceDatabaseIndex: "1"
     registryDatabaseIndex: "2"
