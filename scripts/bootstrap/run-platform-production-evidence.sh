@@ -35,6 +35,7 @@ require_value() {
 require_value PLATFORM_RELEASE_ID
 require_value PLATFORM_EVIDENCE_OPERATOR
 require_value PLATFORM_EVIDENCE_APPROVER
+require_value PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE
 if [[ "${PLATFORM_EVIDENCE_OPERATOR,,}" == "${PLATFORM_EVIDENCE_APPROVER,,}" ]]; then
   printf '%s\n' 'PLATFORM_EVIDENCE_OPERATOR and PLATFORM_EVIDENCE_APPROVER must be different.' >&2
   exit 1
@@ -46,6 +47,22 @@ fi
 
 profile="${PLATFORM_PROFILE:-premium-3node}"
 commit="$(git rev-parse HEAD)"
+if [[ ! -f "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" ]]; then
+  printf 'OpenBao ceremony evidence file does not exist: %s\n' \
+    "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" >&2
+  exit 1
+fi
+openbao_configuration_sha256="$(
+  python3 scripts/verify_openbao_ceremony_evidence.py \
+    --print-configuration-sha256 \
+    --expected-profile "${profile}"
+)"
+PLATFORM_PROFILE="${profile}" \
+PLATFORM_OPENBAO_SOURCE_COMMIT="${commit}" \
+PLATFORM_OPENBAO_CONFIGURATION_SHA256="${openbao_configuration_sha256}" \
+python3 scripts/verify_openbao_ceremony_evidence.py \
+  "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}"
+
 branch="$(git symbolic-ref --quiet --short HEAD || true)"
 if [[ -z "${branch}" ]]; then
   printf '%s\n' \
@@ -117,6 +134,28 @@ if [[ "${gate_status}" -ne 0 ]]; then
   exit "${gate_status}"
 fi
 
+mapfile -t openbao_cluster_ids < <(
+  grep -Eo 'cluster_id_sha256=[a-f0-9]{64}' "${log_path}" |
+    cut -d= -f2 |
+    sort -u
+)
+if [[ "${#openbao_cluster_ids[@]}" -ne 1 ]]; then
+  printf '%s\n' \
+    'Production log must contain exactly one sanitized OpenBao cluster identity.' >&2
+  exit 1
+fi
+openbao_cluster_id_sha256="${openbao_cluster_ids[0]}"
+PLATFORM_PROFILE="${profile}" \
+PLATFORM_OPENBAO_SOURCE_COMMIT="${commit}" \
+PLATFORM_OPENBAO_CONFIGURATION_SHA256="${openbao_configuration_sha256}" \
+PLATFORM_OPENBAO_CLUSTER_ID_SHA256="${openbao_cluster_id_sha256}" \
+python3 scripts/verify_openbao_ceremony_evidence.py \
+  "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}"
+
+openbao_ceremony_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-openbao-ceremony.json"
+cp -- "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" "${openbao_ceremony_path}"
+openbao_ceremony_hash="$(sha256sum "${openbao_ceremony_path}" | awk '{print $1}')"
+
 image_inventory_source="${PLATFORM_IMAGE_INVENTORY_EVIDENCE_OUTPUT:-rendered/supply-chain/image-inventory-evidence.json}"
 if [[ ! -f "${image_inventory_source}" ]]; then
   printf 'Production gate did not retain required image inventory evidence: %s\n' \
@@ -133,6 +172,8 @@ PLATFORM_EVIDENCE_OUTPUT_PATH="${evidence_path}" \
 PLATFORM_EVIDENCE_LOG_SHA256="${log_hash}" \
 PLATFORM_EVIDENCE_IMAGE_INVENTORY_PATH="${image_inventory_path}" \
 PLATFORM_EVIDENCE_IMAGE_INVENTORY_SHA256="${image_inventory_hash}" \
+PLATFORM_EVIDENCE_OPENBAO_CEREMONY_PATH="${openbao_ceremony_path}" \
+PLATFORM_EVIDENCE_OPENBAO_CEREMONY_SHA256="${openbao_ceremony_hash}" \
 PLATFORM_EVIDENCE_COMPLETED_AT="${completed_at}" \
 PLATFORM_EVIDENCE_COMMIT="${commit}" \
 PLATFORM_EVIDENCE_PROFILE="${profile}" \
@@ -147,7 +188,7 @@ import os
 from pathlib import Path
 
 document = {
-    "schemaVersion": 5,
+    "schemaVersion": 6,
     "releaseId": os.environ["PLATFORM_RELEASE_ID"],
     "completedAt": os.environ["PLATFORM_EVIDENCE_COMPLETED_AT"],
     "operator": os.environ["PLATFORM_EVIDENCE_OPERATOR"],
@@ -160,6 +201,10 @@ document = {
     "imageInventory": {
         "path": os.environ["PLATFORM_EVIDENCE_IMAGE_INVENTORY_PATH"],
         "sha256": os.environ["PLATFORM_EVIDENCE_IMAGE_INVENTORY_SHA256"],
+    },
+    "openbaoCeremony": {
+        "path": os.environ["PLATFORM_EVIDENCE_OPENBAO_CEREMONY_PATH"],
+        "sha256": os.environ["PLATFORM_EVIDENCE_OPENBAO_CEREMONY_SHA256"],
     },
     "source": {
         "branch": os.environ["PLATFORM_EVIDENCE_SOURCE_BRANCH"],
@@ -183,6 +228,7 @@ document = {
         "networkIsolation": "passed",
         "internalTls": "passed",
         "openbaoReadiness": "passed",
+        "openbaoCeremony": "passed",
         "observability": "passed",
         "capacity": "passed",
         "applicationHealth": "passed",

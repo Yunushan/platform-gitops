@@ -17,6 +17,10 @@ from verify_image_inventory_evidence import (
     EvidenceError as ImageInventoryEvidenceError,
     validate_evidence as validate_image_inventory,
 )
+from verify_openbao_ceremony_evidence import (
+    EvidenceError as OpenBaoCeremonyEvidenceError,
+    validate_evidence as validate_openbao_ceremony,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +38,7 @@ REQUIRED_GATES = (
     "networkIsolation",
     "internalTls",
     "openbaoReadiness",
+    "openbaoCeremony",
     "observability",
     "capacity",
     "applicationHealth",
@@ -43,6 +48,7 @@ SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
 REF_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$")
 REMOTE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+OPENBAO_CLUSTER_ID_RE = re.compile(r"cluster_id_sha256=([a-f0-9]{64})")
 
 
 class EvidenceError(ValueError):
@@ -94,13 +100,14 @@ def validate_evidence(
     root: Path,
     now: datetime,
     max_age_days: int,
+    openbao_recovery_max_age_days: int = 180,
     expected_profile: str = "",
     expected_commit: str = "",
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise EvidenceError("production evidence must be a JSON object")
-    if document.get("schemaVersion") != 5:
-        raise EvidenceError("schemaVersion must be 5")
+    if document.get("schemaVersion") != 6:
+        raise EvidenceError("schemaVersion must be 6")
 
     release_id = nonempty(document, "releaseId")
     profile = nonempty(document, "profile")
@@ -185,6 +192,11 @@ def validate_evidence(
     ):
         if marker not in text:
             raise EvidenceError(f"retained production log is missing marker: {marker}")
+    openbao_cluster_ids = sorted(set(OPENBAO_CLUSTER_ID_RE.findall(text)))
+    if len(openbao_cluster_ids) != 1:
+        raise EvidenceError(
+            "retained production log must contain exactly one sanitized OpenBao cluster identity"
+        )
 
     inventory_reference = document.get("imageInventory")
     if not isinstance(inventory_reference, dict):
@@ -212,6 +224,36 @@ def validate_evidence(
     except (OSError, json.JSONDecodeError, ImageInventoryEvidenceError) as exc:
         raise EvidenceError(f"retained image inventory evidence is invalid: {exc}") from exc
 
+    ceremony_reference = document.get("openbaoCeremony")
+    if not isinstance(ceremony_reference, dict):
+        raise EvidenceError("openbaoCeremony must be an object")
+    ceremony_path_value = ceremony_reference.get("path")
+    ceremony_hash = str(ceremony_reference.get("sha256", "")).lower()
+    if not isinstance(ceremony_path_value, str) or not ceremony_path_value.strip():
+        raise EvidenceError("openbaoCeremony.path must be a non-empty string")
+    if not SHA256_RE.fullmatch(ceremony_hash):
+        raise EvidenceError("openbaoCeremony.sha256 must be a lowercase SHA-256")
+    ceremony_path = retained_path(
+        ceremony_path_value.strip(), root, "openbaoCeremony.path"
+    )
+    if not ceremony_path.is_file():
+        raise EvidenceError(f"retained OpenBao ceremony evidence is missing: {ceremony_path}")
+    if sha256_file(ceremony_path) != ceremony_hash:
+        raise EvidenceError("retained OpenBao ceremony hash does not match openbaoCeremony.sha256")
+    try:
+        ceremony_document = json.loads(ceremony_path.read_text(encoding="utf-8"))
+        ceremony_summary = validate_openbao_ceremony(
+            ceremony_document,
+            root=root,
+            now=now,
+            max_recovery_age_days=openbao_recovery_max_age_days,
+            expected_profile=profile,
+            expected_source_commit=commit,
+            expected_cluster_id_sha256=openbao_cluster_ids[0],
+        )
+    except (OSError, json.JSONDecodeError, OpenBaoCeremonyEvidenceError) as exc:
+        raise EvidenceError(f"retained OpenBao ceremony evidence is invalid: {exc}") from exc
+
     return {
         "release_id": release_id,
         "profile": profile,
@@ -224,6 +266,9 @@ def validate_evidence(
         "log_path": path,
         "image_inventory_path": inventory_path,
         "image_inventory_images": inventory_summary["images"],
+        "openbao_ceremony_path": ceremony_path,
+        "openbao_ceremony_id": ceremony_summary["ceremony_id"],
+        "openbao_seal_mode": ceremony_summary["seal_mode"],
     }
 
 
@@ -235,6 +280,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("PLATFORM_PRODUCTION_EVIDENCE_MAX_AGE_DAYS", "7")),
     )
+    parser.add_argument(
+        "--openbao-recovery-max-age-days",
+        type=int,
+        default=int(os.environ.get("PLATFORM_OPENBAO_RECOVERY_MAX_AGE_DAYS", "180")),
+    )
     parser.add_argument("--expected-profile", default=os.environ.get("PLATFORM_PROFILE", ""))
     parser.add_argument("--expected-commit", default=os.environ.get("PLATFORM_EXPECTED_COMMIT", ""))
     return parser.parse_args()
@@ -244,6 +294,9 @@ def main() -> int:
     args = parse_args()
     if args.max_age_days <= 0:
         print("--max-age-days must be greater than zero", file=sys.stderr)
+        return 2
+    if args.openbao_recovery_max_age_days <= 0:
+        print("--openbao-recovery-max-age-days must be greater than zero", file=sys.stderr)
         return 2
     if not args.evidence_file.is_file():
         print(f"Production evidence file does not exist: {args.evidence_file}", file=sys.stderr)
@@ -255,6 +308,7 @@ def main() -> int:
             root=ROOT,
             now=datetime.now(timezone.utc),
             max_age_days=args.max_age_days,
+            openbao_recovery_max_age_days=args.openbao_recovery_max_age_days,
             expected_profile=args.expected_profile,
             expected_commit=args.expected_commit,
         )

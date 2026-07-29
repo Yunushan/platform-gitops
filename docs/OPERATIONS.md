@@ -346,7 +346,7 @@ deployment reviews.
 Keep private evidence for:
 
 - Latest `make platform-production-check`.
-- Hash-bound rendered/live image inventory report retained by the schema-v5
+- Hash-bound rendered/live image inventory and OpenBao ceremony reports retained by the schema-v6
   production evidence packet.
 - Latest `make platform-app-health`.
 - Latest production readiness go/no-go record from `docs/PRODUCTION_READINESS.md`.

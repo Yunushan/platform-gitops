@@ -349,6 +349,9 @@ offline/HSM/KMS process, enable Kubernetes auth, create least-privilege
 policies, and migrate generated bootstrap secrets into ExternalSecret
 definitions. Keep OpenBao policies, tokens, unseal material, and backend
 credentials in the private deployment repository or a controlled secret system.
+Follow `docs/OPENBAO_CEREMONY.md`; production evidence rejects missing, stale,
+self-approved, plaintext, weak-quorum, configuration-mismatched, or
+cluster-mismatched ceremony records.
 
 Run deeper repository security checks with:
 

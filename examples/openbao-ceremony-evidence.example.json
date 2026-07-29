@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "ceremonyId": "CHG-OPENBAO-EXAMPLE",
+  "completedAt": "2026-01-01T10:00:00Z",
+  "recoveryTestedAt": "2026-01-02T10:00:00Z",
+  "operator": "operator@example.test",
+  "approver": "independent-approver@example.test",
+  "profile": "premium-3node",
+  "sourceCommit": "0123456789abcdef0123456789abcdef01234567",
+  "configurationSha256": "<OUTPUT_OF_PLATFORM_OPENBAO_CEREMONY_DIGEST>",
+  "result": "passed",
+  "cluster": {
+    "clusterIdSha256": "<SANITIZED_CLUSTER_ID_SHA256>"
+  },
+  "seal": {
+    "mode": "shamir-pgp",
+    "shares": 5,
+    "threshold": 3,
+    "distinctCustodians": 5,
+    "custodianKeyFingerprintSha256": [
+      "<CUSTODIAN_1_FINGERPRINT_SHA256>",
+      "<CUSTODIAN_2_FINGERPRINT_SHA256>",
+      "<CUSTODIAN_3_FINGERPRINT_SHA256>",
+      "<CUSTODIAN_4_FINGERPRINT_SHA256>",
+      "<CUSTODIAN_5_FINGERPRINT_SHA256>"
+    ],
+    "rootTokenRecipientFingerprintSha256": "<ROOT_RECIPIENT_FINGERPRINT_SHA256>",
+    "encryptedAtCreation": true,
+    "rootTokenEncryptedAtCreation": true,
+    "plaintextMaterialRetained": false,
+    "offlineEscrowCopies": 2
+  },
+  "controls": {
+    "initialRootTokenRevoked": true,
+    "leastPrivilegeAdminEstablished": true,
+    "kubernetesAuthConfigured": true,
+    "auditDeviceEnabled": true,
+    "restartRecoveryTested": true,
+    "quorumRecoveryTested": true
+  }
+}

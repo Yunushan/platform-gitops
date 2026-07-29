@@ -60,6 +60,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | East-west isolation verified | `make platform-network-isolation-verify`; all premium policies exist, the trusted database path works, and the untrusted path is denied |
 | Internal transport TLS verified | `make platform-internal-tls-verify`; managed trust is Ready, OpenBao/PostgreSQL/Valkey identities verify without insecure skips, Valkey clients use `rediss://`, and plaintext Valkey commands are rejected |
 | OpenBao HA readiness verified | `make platform-openbao-verify`; at least three current and Ready replicas are initialized, unsealed, HA-enabled, and report one shared non-empty cluster identity |
+| OpenBao custody and recovery accepted | `EVIDENCE=private/openbao-ceremony/<CEREMONY>.json make platform-openbao-ceremony-evidence-verify`; evidence binds the current OpenBao configuration and live cluster identity, independent 5-of-3-or-stronger custody, encrypted-at-creation recovery material, root-token revocation, audit/auth bootstrap, and a recovery test no older than 180 days |
 | Observability delivery verified | `make platform-observability-verify`; Loki rejects anonymous requests, Alloy logs are queryable, retention is active, and Alertmanager configuration is valid. The production gate also sends a synthetic alert and requires a successful delivery metric |
 | Supply-chain evidence verified | `COSIGN_IMAGES_FILE=<PRIVATE_INVENTORY> make supply-chain-verify`; scanners pass, the SPDX SBOM is non-empty, Scorecard meets threshold, and digest-bound Cosign verification succeeds |
 | Exact image inventory reconciled | `PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE=<PRIVATE_EXCEPTIONS> make platform-image-inventory-verify`; every rendered and live runtime image resolves to one digest, private images are signed and admission-enforced, and any upstream admission gap has current independent approval plus hash-bound vulnerability evidence |
@@ -126,21 +127,23 @@ make platform-forgejo-recovery-drill
 PLATFORM_PROFILE=<PROFILE> make platform-production-check
 ```
 
-After the production gate passes, retain a fresh private schema-v5 record that
+After the production gate passes, retain a fresh private schema-v6 record that
 binds every repository, profile, schema, supply-chain, cluster, security,
-OpenBao, observability, capacity, application, and data-protection gate to the
-exact Git revision and requires a distinct operator and approver. The generator
-rejects a dirty or detached checkout and requires `HEAD` to exactly match a
-fetched remote tracking ref; it stores the branch, Git tree, remote name, and a
-non-secret hash of the remote URL. It also copies the exact rendered/live image
-reconciliation into the private packet and binds that artifact by SHA-256.
-Earlier schema-v1/v2/v3/v4 records remain historical evidence but do not
-certify the current gate set:
+OpenBao readiness/custody, observability, capacity, application, and
+data-protection gate to the exact Git revision and requires a distinct operator
+and approver. The generator rejects a dirty or detached checkout and requires
+`HEAD` to exactly match a fetched remote tracking ref; it stores the branch,
+Git tree, remote name, and a non-secret hash of the remote URL. It also copies
+the exact rendered/live image reconciliation and independently approved
+OpenBao ceremony record into the private packet and binds both artifacts by
+SHA-256. Earlier schema-v1/v2/v3/v4/v5 records remain historical evidence but
+do not certify the current gate set:
 
 ```bash
 PLATFORM_RELEASE_ID=<APPROVED_CHANGE_ID> \
 PLATFORM_EVIDENCE_OPERATOR=<OPERATOR_ID> \
 PLATFORM_EVIDENCE_APPROVER=<INDEPENDENT_APPROVER_ID> \
+PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE=private/openbao-ceremony/<CEREMONY>.json \
 PLATFORM_PRODUCTION_EVIDENCE_EXPECTED_REF=seed/main \
 make platform-production-evidence
 ```
@@ -215,12 +218,12 @@ Use the table below as a private evidence prompt:
 | Prometheus, Grafana, and Loki | API readiness, alerting, dashboards, retention, and log ingestion are reviewed |
 | cert-manager and trust-manager | Certificates are Ready and Bundles are synced when required |
 | Kyverno admission | CEL baselines and image-signature policy are Ready in Deny mode; signed admission and invalid-signature rejection canaries pass |
+| step-ca | Health endpoint, CA storage, backup, and key ownership are reviewed when enabled |
 
 The production `premium-3node` profile requires a maintained external,
 off-cluster S3-compatible service. `premium-3node-lab` enables the archived
 MinIO server for non-production testing and cannot satisfy this production
 gate.
-| step-ca | Health endpoint, CA storage, backup, and key ownership are reviewed when enabled |
 
 ## Exceptions and Deferrals
 

@@ -152,6 +152,8 @@ jobs:
         run: python scripts/test_internal_tls_contract.py
       - name: Test OpenBao production readiness
         run: python scripts/test_openbao_readiness_contract.py
+      - name: Test OpenBao ceremony evidence
+        run: python scripts/test_openbao_ceremony_evidence.py
       - name: Test production observability
         run: python scripts/test_observability_contract.py
       - name: Test runtime capacity gate
