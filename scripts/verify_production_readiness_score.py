@@ -18,6 +18,7 @@ from typing import Any
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_bytes, read_bounded_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 import verify_production_evidence as production_evidence
 
@@ -99,7 +100,7 @@ class ReadinessError(ValueError):
 
 def load_document(path: Path, label: str) -> dict[str, Any]:
     try:
-        document = json.loads(read_bounded_text(path))
+        document = loads_strict_json(read_bounded_text(path))
     except FileNotFoundError as exc:
         raise ReadinessError(f"{label} does not exist: {path}") from exc
     except OSError as exc:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from bounded_file import read_bounded_bytes, read_bounded_text
+from strict_json import loads_strict_json
 from verify_image_inventory_evidence import (
     EvidenceError as ImageInventoryEvidenceError,
     validate_evidence as validate_image_inventory,
@@ -210,7 +211,7 @@ def validate_evidence(
     if sha256_file(inventory_path) != inventory_hash:
         raise EvidenceError("retained image inventory hash does not match imageInventory.sha256")
     try:
-        inventory_document = json.loads(read_bounded_text(inventory_path))
+        inventory_document = loads_strict_json(read_bounded_text(inventory_path))
         inventory_summary = validate_image_inventory(
             inventory_document,
             now=now,
@@ -238,7 +239,7 @@ def validate_evidence(
     if sha256_file(ceremony_path) != ceremony_hash:
         raise EvidenceError("retained OpenBao ceremony hash does not match openbaoCeremony.sha256")
     try:
-        ceremony_document = json.loads(read_bounded_text(ceremony_path))
+        ceremony_document = loads_strict_json(read_bounded_text(ceremony_path))
         ceremony_summary = validate_openbao_ceremony(
             ceremony_document,
             root=root,
@@ -299,7 +300,7 @@ def main() -> int:
         print(f"Production evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(read_bounded_text(args.evidence_file))
+        document = loads_strict_json(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             root=ROOT,

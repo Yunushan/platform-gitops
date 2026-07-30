@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from bounded_file import read_bounded_bytes, read_bounded_text
+from strict_json import loads_strict_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -293,7 +294,7 @@ def main() -> int:
         print(f"OpenBao ceremony evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(read_bounded_text(args.evidence_file))
+        document = loads_strict_json(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             root=ROOT,

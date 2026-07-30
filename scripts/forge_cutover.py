@@ -34,6 +34,7 @@ from urllib.request import Request, urlopen
 
 import forge_migration as migration
 from atomic_file import atomic_write_text
+from strict_json import loads_strict_json
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
@@ -589,7 +590,7 @@ def service_request(
             f"{method} {migration.redact_url(url)} returned HTTP {status}: {redact_text(payload[:500])}"
         )
     try:
-        decoded: Any = json.loads(payload) if payload else {}
+        decoded: Any = loads_strict_json(payload) if payload else {}
     except json.JSONDecodeError as exc:
         raise CutoverError(f"{method} {migration.redact_url(url)} returned invalid JSON") from exc
     return (status, decoded) if return_status else decoded

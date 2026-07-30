@@ -12,6 +12,7 @@ import sys
 from typing import Any
 
 from bounded_file import read_bounded_text
+from strict_json import loads_strict_json
 
 
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
@@ -19,7 +20,7 @@ DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 
 def load_json(path: Path, label: str) -> Any:
     try:
-        return json.loads(read_bounded_text(path))
+        return loads_strict_json(read_bounded_text(path))
     except FileNotFoundError as exc:
         raise ValueError(f"{label} does not exist: {path}") from exc
     except json.JSONDecodeError as exc:

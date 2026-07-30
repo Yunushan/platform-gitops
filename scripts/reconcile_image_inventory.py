@@ -18,6 +18,7 @@ from capture_live_image_inventory import repository_from_image
 from verify_image_inventory_evidence import validate_evidence
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_bytes, read_bounded_text
+from strict_json import loads_strict_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +33,7 @@ def sha256_file(path: Path) -> str:
 
 def load_json(path: Path, label: str) -> Any:
     try:
-        return json.loads(read_bounded_text(path, encoding="utf-8"))
+        return loads_strict_json(read_bounded_text(path, encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ValueError(f"{label} does not exist: {path}") from exc
     except json.JSONDecodeError as exc:
@@ -60,7 +61,7 @@ def manifest_documents(path: Path) -> Iterable[Any]:
     if not stripped:
         return []
     if stripped.startswith("{") or stripped.startswith("["):
-        loaded = json.loads(stripped)
+        loaded = loads_strict_json(stripped)
         return loaded if isinstance(loaded, list) else [loaded]
     try:
         import yaml  # type: ignore[import-untyped]

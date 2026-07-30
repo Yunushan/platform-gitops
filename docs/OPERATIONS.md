@@ -154,6 +154,12 @@ Only regular files are accepted. FIFOs, sockets, directories, and devices are
 rejected after a nonblocking descriptor open so they cannot stall an operator
 or CI process before the byte limit applies.
 
+First-party JSON is decoded through one strict parser after its transport or
+file bound is enforced. Duplicate object keys, `NaN`, positive or negative
+`Infinity`, and numeric literals that overflow to non-finite values are
+rejected. Do not normalize and retry an ambiguous document; correct the
+producer and regenerate the evidence, plan, inventory, or API response.
+
 Direct first-party HTTP clients use `PLATFORM_HTTP_TIMEOUT_SECONDS`, defaulting
 to `30` seconds with a hard maximum of `300` seconds. API response bodies are
 read only through the shared bounded reader. The default maximum is 16 MiB;

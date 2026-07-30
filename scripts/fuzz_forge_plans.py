@@ -10,6 +10,7 @@ from typing import Any
 import forge_cutover
 import forge_migration
 import forge_transition
+from strict_json import loads_strict_json
 
 
 MAX_INPUT_BYTES = 128 * 1024
@@ -34,7 +35,7 @@ def exercise_input(data: bytes) -> None:
         return
     try:
         decoded = data.decode("utf-8")
-        plan = json.loads(decoded)
+        plan = loads_strict_json(decoded)
     except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return
     if not isinstance(plan, dict) or not structure_is_bounded(plan):

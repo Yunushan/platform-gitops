@@ -15,6 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -78,7 +79,7 @@ class Kubectl:
 
     def json(self, *args: str) -> dict[str, Any]:
         try:
-            document = json.loads(self.run(*args, "-o", "json"))
+            document = loads_strict_json(self.run(*args, "-o", "json"))
         except json.JSONDecodeError as exc:
             raise DrillError(f"kubectl {' '.join(args)} returned invalid JSON") from exc
         if not isinstance(document, dict):

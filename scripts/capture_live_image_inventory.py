@@ -16,6 +16,7 @@ from typing import Any
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_bytes
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -170,7 +171,7 @@ def capture(document: Any, *, cluster_uid: str = "") -> dict[str, Any]:
 def read_pods(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     if args.pods_json:
         raw = read_bounded_bytes(args.pods_json)
-        return json.loads(raw), hashlib.sha256(raw).hexdigest()
+        return loads_strict_json(raw), hashlib.sha256(raw).hexdigest()
     command = [args.kubectl, "--kubeconfig", args.kubeconfig, "get", "pods", "-A", "-o", "json"]
     timeout = bounded_timeout_seconds(
         KUBECTL_TIMEOUT_SECONDS,
@@ -190,7 +191,7 @@ def read_pods(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         raise RuntimeError(f"kubectl Pod inventory output rejected: {exc}") from None
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode("utf-8", errors="replace").strip())
-    return json.loads(result.stdout), hashlib.sha256(result.stdout).hexdigest()
+    return loads_strict_json(result.stdout), hashlib.sha256(result.stdout).hexdigest()
 
 
 def cluster_uid(args: argparse.Namespace) -> str:

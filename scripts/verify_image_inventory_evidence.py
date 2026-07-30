@@ -13,6 +13,7 @@ import sys
 from typing import Any
 
 from bounded_file import read_bounded_text
+from strict_json import loads_strict_json
 
 
 DIGEST_IMAGE_RE = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
@@ -261,7 +262,7 @@ def main() -> int:
         print("--max-age-hours must be positive", file=sys.stderr)
         return 2
     try:
-        document = json.loads(read_bounded_text(args.evidence))
+        document = loads_strict_json(read_bounded_text(args.evidence))
         summary = validate_evidence(
             document,
             now=datetime.now(timezone.utc),

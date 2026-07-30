@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -334,7 +335,7 @@ class Kubectl:
         return result
 
     def get_json(self, *args: str) -> JsonObject:
-        return json.loads(self.run(*args, "-o", "json").stdout)
+        return loads_strict_json(self.run(*args, "-o", "json").stdout)
 
 
 def items(kube: Kubectl, *args: str) -> list[JsonObject]:

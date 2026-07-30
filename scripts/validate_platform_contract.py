@@ -81,6 +81,8 @@ bounded_subprocess_helper = root / "scripts/bounded_subprocess.py"
 bounded_subprocess_test = root / "scripts/test_subprocess_output_contract.py"
 bounded_file_helper = root / "scripts/bounded_file.py"
 bounded_file_test = root / "scripts/test_bounded_file_contract.py"
+strict_json_helper = root / "scripts/strict_json.py"
+strict_json_test = root / "scripts/test_strict_json_contract.py"
 http_transport_helper = root / "scripts/http_transport.py"
 http_transport_test = root / "scripts/test_http_transport_contract.py"
 image_inventory_capture = root / "scripts/capture_live_image_inventory.py"
@@ -2931,6 +2933,8 @@ def main() -> None:
         bounded_subprocess_test,
         bounded_file_helper,
         bounded_file_test,
+        strict_json_helper,
+        strict_json_test,
         http_transport_helper,
         http_transport_test,
         image_inventory_capture,
@@ -3202,6 +3206,39 @@ def main() -> None:
             bounded_file_test_text,
             needle,
             f"bounded file self-test must retain fail-closed coverage: {needle}",
+        )
+
+    strict_json_helper_text = read(strict_json_helper)
+    for needle in (
+        "class StrictJsonError(json.JSONDecodeError):",
+        "object_pairs_hook=_reject_duplicate_keys",
+        "parse_constant=_reject_non_standard_constant",
+        "parse_float=_finite_float",
+        "math.isfinite(parsed)",
+        "def loads_strict_json(",
+    ):
+        require_text(
+            strict_json_helper_text,
+            needle,
+            f"strict JSON helper must retain deterministic parsing: {needle}",
+        )
+
+    strict_json_test_text = read(strict_json_test)
+    for needle in (
+        "test_valid_documents",
+        "test_duplicate_keys_are_rejected",
+        "test_non_finite_numbers_are_rejected",
+        "test_standard_syntax_errors_are_preserved",
+        "test_direct_parser_detection",
+        "test_production_parsers_use_shared_policy",
+        "direct production JSON parsing remains",
+        'SCRIPTS.rglob("*.py")',
+        "strict_calls < 30",
+    ):
+        require_text(
+            strict_json_test_text,
+            needle,
+            f"strict JSON self-test must retain fail-closed coverage: {needle}",
         )
 
     http_transport_helper_text = read(http_transport_helper)
@@ -4713,6 +4750,7 @@ def main() -> None:
             "scripts/test_subprocess_timeout_contract.py",
             "scripts/test_subprocess_output_contract.py",
             "scripts/test_bounded_file_contract.py",
+            "scripts/test_strict_json_contract.py",
             "scripts/test_http_transport_contract.py",
             "scripts/test_validation_runner.py",
             "scripts/test_line_endings.py",
@@ -4805,6 +4843,7 @@ def main() -> None:
         "scripts/test_subprocess_timeout_contract.py",
         "scripts/test_subprocess_output_contract.py",
         "scripts/test_bounded_file_contract.py",
+        "scripts/test_strict_json_contract.py",
         "scripts/test_http_transport_contract.py",
         "scripts/test_ansible_shell_blocks.py",
         "scripts/test_ansible_curl_timeout_contract.py",

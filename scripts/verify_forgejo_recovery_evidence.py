@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from bounded_file import read_bounded_text
+from strict_json import loads_strict_json
 
 
 COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
@@ -281,7 +282,7 @@ def main() -> int:
         print(f"Forgejo recovery evidence does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(read_bounded_text(args.evidence_file))
+        document = loads_strict_json(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             now=datetime.now(timezone.utc),

@@ -27,6 +27,7 @@ from http_transport import (
     read_bounded_response,
     require_bounded_text,
 )
+from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -377,7 +378,7 @@ def gh_api_get(path: str, token: str, *, not_found: Any) -> Any:
     except HttpTransportPolicyError as exc:
         raise ReleaseApprovalError(f"gh api response rejected for {path}: {exc}") from exc
     try:
-        return json.loads(result.stdout)
+        return loads_strict_json(result.stdout)
     except json.JSONDecodeError as exc:
         raise ReleaseApprovalError(f"gh api returned invalid JSON: {path}") from exc
 
@@ -401,7 +402,7 @@ def api_get(
     try:
         timeout = http_timeout_seconds()
         with urlopen(request, timeout=timeout) as response:
-            return json.loads(read_bounded_response(response))
+            return loads_strict_json(read_bounded_response(response))
     except HTTPError as exc:
         if exc.code == 404 and not_found is not NO_NOT_FOUND_DEFAULT:
             return not_found

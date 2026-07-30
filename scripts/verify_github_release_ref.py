@@ -22,6 +22,7 @@ from http_transport import (
     http_timeout_seconds,
     read_bounded_response,
 )
+from strict_json import loads_strict_json
 
 
 SEMVER_TAG_RE = re.compile(r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
@@ -158,7 +159,7 @@ def api_get(api_url: str, path: str, token: str) -> dict[str, Any]:
     try:
         timeout = http_timeout_seconds()
         with urlopen(request, timeout=timeout) as response:
-            payload = json.loads(read_bounded_response(response))
+            payload = loads_strict_json(read_bounded_response(response))
     except HTTPError as exc:
         raise ReleaseRefError(f"GitHub API request failed with HTTP {exc.code}: {path}") from exc
     except URLError as exc:

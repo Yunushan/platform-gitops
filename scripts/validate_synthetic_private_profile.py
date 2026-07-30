@@ -13,6 +13,7 @@ import tempfile
 
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
+from strict_json import loads_strict_json
 from synthetic_private_profile import prepare_synthetic_private_profile
 from validate_rendered_manifests import ROOT, application_sources, validate
 
@@ -97,7 +98,7 @@ def main() -> int:
         schema_output = repo_root / "rendered/schema-validation"
         summary_path = schema_output / "summary.json"
         summary = (
-            json.loads(read_bounded_text(summary_path))
+            loads_strict_json(read_bounded_text(summary_path))
             if summary_path.is_file()
             else {}
         )

@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from bounded_file import read_bounded_text
+from strict_json import loads_strict_json
 
 
 REQUIRED_CHECKS = (
@@ -269,7 +270,7 @@ def main() -> int:
         print(f"Restore evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(read_bounded_text(args.evidence_file))
+        document = loads_strict_json(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             now=datetime.now(timezone.utc),

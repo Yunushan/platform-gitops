@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -263,12 +264,12 @@ class Kubectl:
         return result.stdout
 
     def get(self, *args: str) -> JsonObject:
-        return json.loads(self.run(*args, "-o", "json"))
+        return loads_strict_json(self.run(*args, "-o", "json"))
 
     def get_optional(self, *args: str) -> JsonObject | None:
         result = self.execute(*args, "-o", "json")
         if result.returncode == 0:
-            return json.loads(result.stdout)
+            return loads_strict_json(result.stdout)
         if "NotFound" in (result.stderr or ""):
             return None
         sys.stderr.write((result.stderr or "") + (result.stdout or ""))

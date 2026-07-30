@@ -38,6 +38,7 @@ from http_transport import (
     http_timeout_seconds,
     read_bounded_response,
 )
+from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -277,7 +278,7 @@ def normalize_bool(value: Any, default: bool) -> bool:
 
 def load_plan(path: Path) -> dict[str, Any]:
     try:
-        loaded = json.loads(read_bounded_text(path, encoding="utf-8"))
+        loaded = loads_strict_json(read_bounded_text(path, encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise MigrationError(f"{path}: invalid JSON: {exc}") from exc
     if not isinstance(loaded, dict):
@@ -609,7 +610,7 @@ def api_request(
                 ) from policy_error
             if exc.code in expected:
                 try:
-                    decoded = json.loads(payload) if payload else {}
+                    decoded = loads_strict_json(payload) if payload else {}
                 except json.JSONDecodeError as decode_error:
                     raise MigrationError(
                         f"{method} {redact_url(url)} returned invalid JSON: {decode_error}"
@@ -637,7 +638,7 @@ def api_request(
         decoded = {}
         return (status, decoded) if return_status else decoded
     try:
-        decoded = json.loads(payload)
+        decoded = loads_strict_json(payload)
     except json.JSONDecodeError as exc:
         raise MigrationError(f"{method} {redact_url(url)} returned invalid JSON: {exc}") from exc
     return (status, decoded) if return_status else decoded

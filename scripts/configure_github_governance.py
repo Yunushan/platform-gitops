@@ -26,6 +26,7 @@ from http_transport import (
     read_bounded_response,
     require_bounded_text,
 )
+from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -124,7 +125,7 @@ class GitHubApi:
         if not result.stdout.strip():
             return {}
         try:
-            return json.loads(result.stdout)
+            return loads_strict_json(result.stdout)
         except json.JSONDecodeError as exc:
             raise ConfigurationError(f"gh api returned invalid JSON: {path}") from exc
 
@@ -153,7 +154,7 @@ class GitHubApi:
             timeout = http_timeout_seconds()
             with urlopen(request, timeout=timeout) as response:
                 body = read_bounded_response(response)
-                return json.loads(body) if body else {}
+                return loads_strict_json(body) if body else {}
         except HTTPError as exc:
             if exc.code == 404 and not_found is not NOT_FOUND:
                 return not_found

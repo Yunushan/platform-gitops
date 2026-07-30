@@ -270,6 +270,11 @@ They default to 64 MiB and may be raised with
 oversized file fails before JSON parsing; verify its producer instead of
 disabling the control.
 
+Migration plans, API responses, and proof documents use the shared strict JSON
+decoder. Duplicate object keys, `NaN`, `Infinity`, and numbers that overflow
+the runtime's finite range are rejected instead of being silently normalized.
+Regenerate an ambiguous source document before migration or cutover.
+
 ## Live Four-Direction Acceptance
 
 The normal self-test uses local Git repositories and provider-shaped API

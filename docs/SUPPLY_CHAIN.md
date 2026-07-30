@@ -307,6 +307,11 @@ bound before JSON parsing or hashing. The default is 64 MiB; any measured
 override through `PLATFORM_FILE_INPUT_MAX_BYTES` must remain within the 512 MiB
 hard ceiling.
 
+Those JSON documents also use the shared strict decoder. Duplicate object keys,
+non-standard `NaN`/`Infinity` constants, and numeric overflow are rejected so
+the producer, verifier, and retained evidence cannot assign different meanings
+to the same bytes.
+
 The schema-v6 production evidence generator copies the exact image inventory
 report into its private packet and binds it by SHA-256. Retain that packet. Do not
 commit private registry inventories, internal identities, credentials, or
