@@ -150,6 +150,9 @@ the hard maximum is 512 MiB (`536870912` bytes). Values must be whole, positive
 byte counts within that ceiling. An oversized evidence file, migration plan,
 inventory, configuration file, or rendered manifest fails the operation. Do
 not bypass the bound; confirm the expected producer and payload size first.
+Only regular files are accepted. FIFOs, sockets, directories, and devices are
+rejected after a nonblocking descriptor open so they cannot stall an operator
+or CI process before the byte limit applies.
 
 Direct first-party HTTP clients use `PLATFORM_HTTP_TIMEOUT_SECONDS`, defaulting
 to `30` seconds with a hard maximum of `300` seconds. API response bodies are

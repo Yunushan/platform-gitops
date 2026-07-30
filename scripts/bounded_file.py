@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import stat
 
 
 FILE_INPUT_LIMIT_ENV = "PLATFORM_FILE_INPUT_MAX_BYTES"
@@ -19,6 +20,14 @@ class FileInputTooLarge(ValueError):
         super().__init__(f"file input exceeds the {limit}-byte limit: {path}")
         self.path = path
         self.limit = limit
+
+
+class FileInputNotRegular(ValueError):
+    """Raised when an input is not a regular file."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"file input is not a regular file: {path}")
+        self.path = path
 
 
 def bounded_file_input_max_bytes(default: int = DEFAULT_FILE_INPUT_MAX_BYTES) -> int:
@@ -64,11 +73,26 @@ def read_bounded_bytes(
         if max_bytes is None
         else _explicit_limit(max_bytes)
     )
-    with target.open("rb") as handle:
-        size = os.fstat(handle.fileno()).st_size
-        if size > limit:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    descriptor: int | None = os.open(target, flags)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise FileInputNotRegular(target)
+        if metadata.st_size > limit:
             raise FileInputTooLarge(target, limit)
-        data = handle.read(limit + 1)
+        handle = os.fdopen(descriptor, "rb")
+        descriptor = None
+        with handle:
+            data = handle.read(limit + 1)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     if len(data) > limit:
         raise FileInputTooLarge(target, limit)
     return data

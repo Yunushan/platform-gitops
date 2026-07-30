@@ -6,8 +6,10 @@ from __future__ import annotations
 import ast
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -137,6 +139,32 @@ def test_explicit_limit_ignores_environment_override() -> None:
                 raise AssertionError("explicit local input limit did not override the environment")
 
 
+def test_non_regular_inputs_are_rejected() -> None:
+    with tempfile.TemporaryDirectory(prefix="bounded-file-regular-") as temporary:
+        root = Path(temporary)
+        path = root / "input.bin"
+        path.write_bytes(b"content")
+        metadata = SimpleNamespace(st_mode=stat.S_IFIFO, st_size=0)
+        with mock.patch.object(bounded_file.os, "fstat", return_value=metadata):
+            try:
+                bounded_file.read_bounded_bytes(path)
+            except bounded_file.FileInputNotRegular as exc:
+                if exc.path != path:
+                    raise AssertionError("non-regular input error lost its path")
+            else:
+                raise AssertionError("a non-regular local input was accepted")
+
+        if hasattr(os, "mkfifo"):
+            fifo = root / "input.fifo"
+            os.mkfifo(fifo)
+            try:
+                bounded_file.read_bounded_bytes(fifo)
+            except bounded_file.FileInputNotRegular:
+                pass
+            else:
+                raise AssertionError("a FIFO local input was accepted")
+
+
 def test_production_reads_use_shared_policy() -> None:
     direct_reads: list[str] = []
     bounded_reads = 0
@@ -182,6 +210,7 @@ def main() -> int:
     test_limit_validation()
     test_binary_and_text_boundaries()
     test_explicit_limit_ignores_environment_override()
+    test_non_regular_inputs_are_rejected()
     test_direct_read_detection()
     test_production_reads_use_shared_policy()
     print("First-party bounded file input contract passed.")
