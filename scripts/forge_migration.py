@@ -25,7 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -37,6 +37,8 @@ SUPPORTED_DIRECTIONS = {
     "forgejo-to-github",
     "forgejo-to-gitlab",
 }
+METADATA_VERIFICATION_ATTEMPTS = 6
+METADATA_VERIFICATION_INITIAL_DELAY_SECONDS = 0.25
 OPTIONAL_DIRECTIONS = {
     "forgejo-to-forgejo",
     "github-to-gitlab",
@@ -944,6 +946,26 @@ def compare_label_sets(source_labels: list[dict[str, str]], destination_labels: 
     }
 
 
+def poll_verified_comparison(
+    loader: Callable[[], dict[str, Any]],
+    *,
+    attempts: int = METADATA_VERIFICATION_ATTEMPTS,
+    initial_delay_seconds: float = METADATA_VERIFICATION_INITIAL_DELAY_SECONDS,
+) -> dict[str, Any]:
+    """Retry a post-write comparison while forge APIs converge."""
+
+    if attempts <= 0:
+        raise ValueError("comparison attempts must be greater than zero")
+    comparison: dict[str, Any] = {}
+    for attempt in range(attempts):
+        comparison = loader()
+        if comparison.get("verified") is True:
+            return comparison
+        if attempt + 1 < attempts:
+            time.sleep(initial_delay_seconds * (2**attempt))
+    return comparison
+
+
 def migrate_labels(repo: RepoPlan) -> dict[str, Any]:
     mode = metadata_mode(repo, "labels")
     if mode == "skip":
@@ -965,8 +987,9 @@ def migrate_labels(repo: RepoPlan) -> dict[str, Any]:
         elif existing != label:
             update_label(destination, raw_by_name[label["name"]], label)
             updated += 1
-    destination_after = normalized_labels(list_labels(destination))
-    comparison = compare_label_sets(source_labels, destination_after)
+    comparison = poll_verified_comparison(
+        lambda: compare_label_sets(source_labels, normalized_labels(list_labels(destination)))
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -1196,8 +1219,11 @@ def migrate_milestones(repo: RepoPlan) -> dict[str, Any]:
         elif existing != milestone:
             update_milestone(destination, raw_by_title[milestone["title"]], milestone)
             updated += 1
-    destination_after = normalized_milestones(list_milestones(destination))
-    comparison = compare_milestone_sets(source_milestones, destination_after)
+    comparison = poll_verified_comparison(
+        lambda: compare_milestone_sets(
+            source_milestones, normalized_milestones(list_milestones(destination))
+        )
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -1381,8 +1407,11 @@ def migrate_releases(repo: RepoPlan) -> dict[str, Any]:
         elif existing != release:
             update_release(destination, raw_by_tag[release["tag_name"]], release)
             updated += 1
-    destination_after = normalized_releases(list_releases(destination))
-    comparison = compare_release_sets(source_releases, destination_after)
+    comparison = poll_verified_comparison(
+        lambda: compare_release_sets(
+            source_releases, normalized_releases(list_releases(destination))
+        )
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -1819,8 +1848,9 @@ def migrate_issues(repo: RepoPlan) -> dict[str, Any]:
             create_issue_comment(destination, existing_raw, comment_body)
             comments_created += 1
 
-    destination_after = normalized_issues(destination)
-    comparison = compare_issue_sets(source_issues, destination_after)
+    comparison = poll_verified_comparison(
+        lambda: compare_issue_sets(source_issues, normalized_issues(destination))
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -2227,7 +2257,11 @@ def migrate_change_requests(repo: RepoPlan) -> dict[str, Any]:
         for comment_body in missing_comment_bodies(request["comments"], destination_comments):
             create_change_request_comment(destination, existing_raw, comment_body)
             comments_created += 1
-    comparison = compare_change_request_sets(source_requests, normalized_change_requests(destination))
+    comparison = poll_verified_comparison(
+        lambda: compare_change_request_sets(
+            source_requests, normalized_change_requests(destination)
+        )
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -2670,6 +2704,39 @@ def write_proof(path: Path | None, proof: dict[str, Any]) -> None:
         print(text, end="")
 
 
+def report_unverified_proof(proof: dict[str, Any]) -> None:
+    """Emit a compact, credential-safe reason for a rejected proof."""
+
+    print("forge migration verification failed:", file=sys.stderr)
+    repositories = proof.get("repositories")
+    if not isinstance(repositories, list):
+        print(" - proof contains no repository results", file=sys.stderr)
+        return
+    for repository in repositories:
+        if not isinstance(repository, dict) or repository.get("verified") is True:
+            continue
+        name = str(repository.get("name") or "unnamed")
+        reasons: list[str] = []
+        error = str(repository.get("error") or "").strip()
+        if error:
+            reasons.append(error)
+        for surface in ("destination_repository", "git", "wiki", "lfs"):
+            result = repository.get(surface)
+            if isinstance(result, dict) and result.get("verified") is False:
+                reasons.append(surface)
+        metadata = repository.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("verified") is False:
+            failed_metadata = sorted(
+                key
+                for key, value in metadata.items()
+                if isinstance(value, dict) and value.get("verified") is False
+            )
+            reasons.extend(f"metadata.{surface}" for surface in failed_metadata)
+        if not reasons:
+            reasons.append("unverified result")
+        print(f" - {name}: {', '.join(reasons)}", file=sys.stderr)
+
+
 def command_validate_plan(args: argparse.Namespace) -> int:
     direction, repos = parse_plan(load_plan(args.plan))
     for repo in repos:
@@ -2706,7 +2773,10 @@ def command_verify(args: argparse.Namespace) -> int:
             results.append(failed_repository_result(repo, exc))
     proof = build_proof(direction, "verify", results)
     write_proof(args.proof, proof)
-    return 0 if proof["verified"] else 1
+    if not proof["verified"]:
+        report_unverified_proof(proof)
+        return 1
+    return 0
 
 
 def command_migrate(args: argparse.Namespace) -> int:
@@ -2729,7 +2799,10 @@ def command_migrate(args: argparse.Namespace) -> int:
             temporary.cleanup()
     proof = build_proof(direction, "migrate", results)
     write_proof(args.proof, proof)
-    return 0 if proof["verified"] else 1
+    if not proof["verified"]:
+        report_unverified_proof(proof)
+        return 1
+    return 0
 
 
 def command_verify_proof(args: argparse.Namespace) -> int:

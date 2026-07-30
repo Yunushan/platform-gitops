@@ -49,6 +49,33 @@ def write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def test_eventually_consistent_metadata_comparison() -> None:
+    observations = 0
+
+    def comparison() -> dict[str, object]:
+        nonlocal observations
+        observations += 1
+        return {"verified": observations >= 3, "observation": observations}
+
+    result = migration.poll_verified_comparison(
+        comparison,
+        attempts=4,
+        initial_delay_seconds=0,
+    )
+    if result.get("verified") is not True or observations != 3:
+        raise AssertionError(
+            "metadata comparison did not tolerate bounded eventual consistency"
+        )
+
+    failed = migration.poll_verified_comparison(
+        lambda: {"verified": False},
+        attempts=2,
+        initial_delay_seconds=0,
+    )
+    if failed.get("verified") is not False:
+        raise AssertionError("metadata comparison accepted a persistent mismatch")
+
+
 def normalize_fake_color(value: object) -> str:
     color = str(value or "").strip().lstrip("#").lower()
     if len(color) != 6:
@@ -1329,6 +1356,10 @@ def test_batch_failure_writes_proof_and_continues() -> None:
         )
         if result.returncode == 0:
             raise AssertionError("partially failed batch unexpectedly returned success")
+        if "forge migration verification failed:" not in result.stderr or "bad:" not in result.stderr:
+            raise AssertionError(
+                "partially failed batch did not emit compact failure diagnostics"
+            )
         proof = json.loads(proof_path.read_text(encoding="utf-8"))
         if proof["verified"]:
             raise AssertionError("partially failed batch proof unexpectedly verified")
@@ -1578,6 +1609,7 @@ def main() -> int:
         print("git is required for forge migration tests", file=sys.stderr)
         return 1
     test_mirror_migration()
+    test_eventually_consistent_metadata_comparison()
     test_metadata_migration_for_supported_directions()
     test_destination_repository_creation_for_supported_directions()
     test_batch_failure_writes_proof_and_continues()
