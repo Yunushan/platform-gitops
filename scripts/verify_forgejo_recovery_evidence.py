@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from bounded_file import read_bounded_text
+
 
 COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
 LONGHORN_DRIVER = "driver.longhorn.io"
@@ -279,7 +281,7 @@ def main() -> int:
         print(f"Forgejo recovery evidence does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(args.evidence_file.read_text(encoding="utf-8"))
+        document = json.loads(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             now=datetime.now(timezone.utc),

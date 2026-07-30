@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 from cleanup_firewalld_cni_interfaces import cleanup_zone_file
+from bounded_file import read_bounded_text
 
 root = Path(__file__).resolve().parents[1]
 SOURCE_PATH_RE = re.compile(
@@ -77,6 +78,8 @@ subprocess_timeout_helper = root / "scripts/subprocess_timeout.py"
 subprocess_timeout_test = root / "scripts/test_subprocess_timeout_contract.py"
 bounded_subprocess_helper = root / "scripts/bounded_subprocess.py"
 bounded_subprocess_test = root / "scripts/test_subprocess_output_contract.py"
+bounded_file_helper = root / "scripts/bounded_file.py"
+bounded_file_test = root / "scripts/test_bounded_file_contract.py"
 http_transport_helper = root / "scripts/http_transport.py"
 http_transport_test = root / "scripts/test_http_transport_contract.py"
 image_inventory_capture = root / "scripts/capture_live_image_inventory.py"
@@ -317,7 +320,7 @@ def yaml_integer_scalar(text: str, key: str, label: str) -> int:
 
 def read(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        return read_bounded_text(path)
     except FileNotFoundError:
         fail(f"missing required file {path.relative_to(root)}")
 
@@ -343,7 +346,7 @@ def assert_firewalld_cleanup_behavior() -> None:
         result = cleanup_zone_file(zone_path)
         if not result.changed or result.removed != 4:
             fail("firewalld CNI cleanup must remove every transient interface binding")
-        cleaned = zone_path.read_text(encoding="utf-8")
+        cleaned = read_bounded_text(zone_path)
         for stable in ("cilium_host", "cilium_geneve", "cilium_wg0", "cni0"):
             if f'name="{stable}"' not in cleaned:
                 fail(f"firewalld CNI cleanup removed stable interface {stable}")
@@ -2925,6 +2928,8 @@ def main() -> None:
         subprocess_timeout_test,
         bounded_subprocess_helper,
         bounded_subprocess_test,
+        bounded_file_helper,
+        bounded_file_test,
         http_transport_helper,
         http_transport_test,
         image_inventory_capture,
@@ -3151,6 +3156,43 @@ def main() -> None:
             bounded_subprocess_test_text,
             needle,
             f"bounded subprocess self-test must retain fail-closed coverage: {needle}",
+        )
+
+    bounded_file_helper_text = read(bounded_file_helper)
+    for needle in (
+        'FILE_INPUT_LIMIT_ENV = "PLATFORM_FILE_INPUT_MAX_BYTES"',
+        "DEFAULT_FILE_INPUT_MAX_BYTES = 64 * 1024 * 1024",
+        "MAX_FILE_INPUT_BYTES = 512 * 1024 * 1024",
+        "class FileInputTooLarge(ValueError):",
+        "os.fstat(handle.fileno()).st_size",
+        "handle.read(limit + 1)",
+        'decoded.replace("\\r\\n", "\\n").replace("\\r", "\\n")',
+        "def read_bounded_bytes(",
+        "def read_bounded_text(",
+    ):
+        require_text(
+            bounded_file_helper_text,
+            needle,
+            f"bounded file helper must retain input limits: {needle}",
+        )
+
+    bounded_file_test_text = read(bounded_file_test)
+    for needle in (
+        "test_limit_validation",
+        "test_binary_and_text_boundaries",
+        "test_explicit_limit_ignores_environment_override",
+        "test_direct_read_detection",
+        "test_production_reads_use_shared_policy",
+        "direct production file reads remain",
+        'SCRIPTS.rglob("*.py")',
+        "512 * 1024 * 1024 + 1",
+        "read_bounded_text",
+        "read_bounded_bytes",
+    ):
+        require_text(
+            bounded_file_test_text,
+            needle,
+            f"bounded file self-test must retain fail-closed coverage: {needle}",
         )
 
     http_transport_helper_text = read(http_transport_helper)
@@ -4661,6 +4703,7 @@ def main() -> None:
             "scripts/test_python_syntax.py",
             "scripts/test_subprocess_timeout_contract.py",
             "scripts/test_subprocess_output_contract.py",
+            "scripts/test_bounded_file_contract.py",
             "scripts/test_http_transport_contract.py",
             "scripts/test_validation_runner.py",
             "scripts/test_line_endings.py",
@@ -4752,6 +4795,7 @@ def main() -> None:
         "scripts/test_validation_runner.py",
         "scripts/test_subprocess_timeout_contract.py",
         "scripts/test_subprocess_output_contract.py",
+        "scripts/test_bounded_file_contract.py",
         "scripts/test_http_transport_contract.py",
         "scripts/test_ansible_shell_blocks.py",
         "scripts/test_ansible_curl_timeout_contract.py",

@@ -264,6 +264,12 @@ or evidence store:
 Do not commit proof files from real private repositories to this public
 template repository.
 
+Migration plans and proof files are read through the shared local-input bound.
+They default to 64 MiB and may be raised with
+`PLATFORM_FILE_INPUT_MAX_BYTES` only up to the 512 MiB hard ceiling. An
+oversized file fails before JSON parsing; verify its producer instead of
+disabling the control.
+
 ## Live Four-Direction Acceptance
 
 The normal self-test uses local Git repositories and provider-shaped API

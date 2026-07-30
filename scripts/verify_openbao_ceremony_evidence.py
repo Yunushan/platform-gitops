@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from bounded_file import read_bounded_bytes, read_bounded_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -91,7 +93,7 @@ def configuration_sha256(root: Path, profile: str) -> str:
         relative = path.relative_to(root).as_posix().encode("utf-8")
         digest.update(relative)
         digest.update(b"\0")
-        digest.update(hashlib.sha256(path.read_bytes()).digest())
+        digest.update(hashlib.sha256(read_bounded_bytes(path)).digest())
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -291,7 +293,7 @@ def main() -> int:
         print(f"OpenBao ceremony evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(args.evidence_file.read_text(encoding="utf-8"))
+        document = json.loads(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             root=ROOT,

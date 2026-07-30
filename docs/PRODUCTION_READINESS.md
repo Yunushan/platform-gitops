@@ -61,6 +61,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 |---|---|
 | Repository validation passed | `python scripts/run_validation.py` or `make validate` |
 | Subprocess execution is bounded | `python scripts/test_subprocess_timeout_contract.py` and `python scripts/test_subprocess_output_contract.py`; every production child declares a finite timeout, captured stdout/stderr pass through the shared 32 MiB combined limiter, and unsafe timeout or output-limit overrides fail closed |
+| Local file input is bounded | `python scripts/test_bounded_file_contract.py`; production evidence, plans, inventories, configurations, rendered manifests, and binary hash inputs pass through the shared 64 MiB reader, and invalid or over-512 MiB overrides fail closed before parsing |
 | API transport is bounded | `python scripts/test_http_transport_contract.py`; direct HTTP calls declare finite timeouts, response and error bodies use the shared bounded reader, CLI fallback payloads are size-checked, and unsafe timeout or byte-limit overrides fail closed |
 | Migration parser robustness passed | The pinned ClusterFuzzLite workflow has no unresolved crashes, and `bash scripts/forge-coverage.sh` passes the 81.0% subprocess branch-coverage ratchet with retained JSON/XML evidence |
 | Rendered Kubernetes schemas passed | `make rendered-schema-verify` and `make rendered-private-schema-verify`; the synthetic complete premium profile and exact private profile render without skipped applications, and built-in objects pass strict Kubeconform validation |

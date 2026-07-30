@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from bounded_file import read_bounded_text
 from subprocess_timeout import bounded_timeout_seconds, timeout_stream_text
 
 
@@ -89,7 +90,7 @@ def combined_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def render_image_policy(destination: Path) -> Path:
-    rendered = IMAGE_POLICY.read_text(encoding="utf-8")
+    rendered = read_bounded_text(IMAGE_POLICY)
     rendered = rendered.replace("<PLATFORM_IMAGE_REGISTRY>", "signature.invalid")
     rendered = rendered.replace(
         "<PLATFORM_COSIGN_PUBLIC_KEY>",

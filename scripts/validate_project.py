@@ -3,6 +3,8 @@ from pathlib import Path
 import re
 import sys
 
+from bounded_file import read_bounded_text
+
 root = Path(__file__).resolve().parents[1]
 conflict_marker_re = re.compile(r'^(<<<<<<< .+|=======|>>>>>>> .+)$', re.MULTILINE)
 exclude_dirs = {
@@ -158,7 +160,7 @@ if missing:
 
 gitattributes_lines = {
     line.strip()
-    for line in (root / '.gitattributes').read_text(encoding='utf-8').splitlines()
+    for line in read_bounded_text(root / '.gitattributes').splitlines()
     if line.strip() and not line.lstrip().startswith('#')
 }
 for required_attr in (
@@ -205,7 +207,7 @@ for path in root.rglob('*'):
     if should_skip(path):
         continue
     try:
-        text = path.read_text(encoding='utf-8')
+        text = read_bounded_text(path)
     except UnicodeDecodeError:
         continue
     except OSError:

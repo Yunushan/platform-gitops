@@ -17,6 +17,7 @@ from typing import Any, Iterable
 from capture_live_image_inventory import repository_from_image
 from verify_image_inventory_evidence import validate_evidence
 from atomic_file import atomic_write_text
+from bounded_file import read_bounded_bytes, read_bounded_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,16 +27,12 @@ IMAGE_KEYS = {"image", "imagename", "defaultimage", "sidecarimage"}
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return hashlib.sha256(read_bounded_bytes(path)).hexdigest()
 
 
 def load_json(path: Path, label: str) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_bounded_text(path, encoding="utf-8"))
     except FileNotFoundError as exc:
         raise ValueError(f"{label} does not exist: {path}") from exc
     except json.JSONDecodeError as exc:
@@ -58,7 +55,7 @@ def registry_of(image: str) -> str:
 
 
 def manifest_documents(path: Path) -> Iterable[Any]:
-    text = path.read_text(encoding="utf-8")
+    text = read_bounded_text(path, encoding="utf-8")
     stripped = text.strip()
     if not stripped:
         return []

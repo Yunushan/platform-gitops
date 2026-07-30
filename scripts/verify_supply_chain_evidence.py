@@ -11,13 +11,15 @@ import re
 import sys
 from typing import Any
 
+from bounded_file import read_bounded_text
+
 
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 
 
 def load_json(path: Path, label: str) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(read_bounded_text(path))
     except FileNotFoundError as exc:
         raise ValueError(f"{label} does not exist: {path}") from exc
     except json.JSONDecodeError as exc:

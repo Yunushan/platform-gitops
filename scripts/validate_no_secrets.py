@@ -9,6 +9,8 @@ import os
 import re
 import sys
 
+from bounded_file import read_bounded_text
+
 root = Path(__file__).resolve().parents[1]
 exclude_dirs = {
     '.git', '.cache', '.pytest_cache', '.terraform', '.venv',
@@ -114,7 +116,7 @@ def scan_repo(include_internal_markers: bool = True) -> list[tuple[Path, str]]:
             continue
         rel = path.relative_to(root)
         try:
-            data = path.read_text(encoding='utf-8')
+            data = read_bounded_text(path)
         except UnicodeDecodeError:
             continue
         problems.extend(scan_text(rel, data, include_internal_markers=include_internal_markers))

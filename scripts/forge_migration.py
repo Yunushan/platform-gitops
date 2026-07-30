@@ -31,6 +31,7 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from bounded_file import read_bounded_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from http_transport import (
     HttpTransportPolicyError,
@@ -276,7 +277,7 @@ def normalize_bool(value: Any, default: bool) -> bool:
 
 def load_plan(path: Path) -> dict[str, Any]:
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(read_bounded_text(path, encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise MigrationError(f"{path}: invalid JSON: {exc}") from exc
     if not isinstance(loaded, dict):

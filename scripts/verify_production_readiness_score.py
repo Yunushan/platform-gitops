@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from atomic_file import atomic_write_text
+from bounded_file import read_bounded_bytes, read_bounded_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 import verify_production_evidence as production_evidence
@@ -98,7 +99,7 @@ class ReadinessError(ValueError):
 
 def load_document(path: Path, label: str) -> dict[str, Any]:
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(read_bounded_text(path))
     except FileNotFoundError as exc:
         raise ReadinessError(f"{label} does not exist: {path}") from exc
     except OSError as exc:
@@ -291,16 +292,12 @@ def validate_release_evidence(
 
 
 def artifact_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return hashlib.sha256(read_bounded_bytes(path)).hexdigest()
 
 
 def parse_checksum_manifest(path: Path) -> dict[str, str]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = read_bounded_text(path).splitlines()
     except OSError as exc:
         raise ReadinessError(f"release checksum manifest cannot be read: {path}: {exc}") from exc
     entries: dict[str, str] = {}

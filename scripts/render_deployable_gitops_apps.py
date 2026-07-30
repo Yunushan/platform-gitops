@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from bounded_file import read_bounded_text
+
 
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
 APPLICATION_NAME_RE = re.compile(
@@ -82,7 +84,7 @@ def parse_simple_profile(path: Path) -> tuple[dict[str, str], dict[str, list[str
     lists: dict[str, list[str]] = {}
     current_list = ""
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in read_bounded_text(path, encoding="utf-8").splitlines():
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -174,12 +176,12 @@ def is_application_source(path: Path) -> bool:
     kustomization = path / "kustomization.yaml"
     if not kustomization.exists():
         return False
-    text = kustomization.read_text(encoding="utf-8")
+    text = read_bounded_text(kustomization, encoding="utf-8")
     return "helmCharts:" in text
 
 
 def application_source_paths(applications_file: Path, repo_root: Path) -> list[Path]:
-    text = applications_file.read_text(encoding="utf-8")
+    text = read_bounded_text(applications_file, encoding="utf-8")
     paths: list[Path] = []
     for match in APPLICATION_PATH_RE.finditer(text):
         paths.append(repo_root / match.group("path"))
@@ -191,7 +193,7 @@ def source_path_string(path: Path, repo_root: Path) -> str:
 
 
 def application_documents_from_file(applications_file: Path) -> list[str]:
-    raw = applications_file.read_text(encoding="utf-8")
+    raw = read_bounded_text(applications_file, encoding="utf-8")
     return [doc.strip() for doc in re.split(r"(?m)^---\s*$", raw) if doc.strip()]
 
 
@@ -214,7 +216,7 @@ def known_application_docs(repo_root: Path) -> dict[str, str]:
 
 
 def kustomization_namespace(source_path: Path) -> str:
-    text = (source_path / "kustomization.yaml").read_text(encoding="utf-8")
+    text = read_bounded_text(source_path / "kustomization.yaml", encoding="utf-8")
     namespace_match = re.search(r"(?m)^namespace:\s*([A-Za-z0-9_.-]+)\s*$", text)
     if namespace_match:
         return namespace_match.group(1)
@@ -299,7 +301,7 @@ def scan_path(path: Path, repo_root: Path) -> list[str]:
             continue
 
         try:
-            lines = file_path.read_text(encoding="utf-8").splitlines()
+            lines = read_bounded_text(file_path, encoding="utf-8").splitlines()
         except UnicodeDecodeError:
             continue
 

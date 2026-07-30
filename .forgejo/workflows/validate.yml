@@ -23,6 +23,8 @@ jobs:
         run: python scripts/test_subprocess_timeout_contract.py
       - name: Test subprocess output contract
         run: python scripts/test_subprocess_output_contract.py
+      - name: Test bounded file input contract
+        run: python scripts/test_bounded_file_contract.py
       - name: Test HTTP transport contract
         run: python scripts/test_http_transport_contract.py
       - name: Test validation runner

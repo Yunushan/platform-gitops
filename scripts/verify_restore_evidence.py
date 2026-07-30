@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from bounded_file import read_bounded_text
+
 
 REQUIRED_CHECKS = (
     "etcd",
@@ -267,7 +269,7 @@ def main() -> int:
         print(f"Restore evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(args.evidence_file.read_text(encoding="utf-8"))
+        document = json.loads(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             now=datetime.now(timezone.utc),

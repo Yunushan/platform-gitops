@@ -135,6 +135,14 @@ Values must be whole, positive byte counts within that ceiling. Exceeding the
 limit fails the operation while preserving only bounded output; it must not be
 worked around by disabling capture controls.
 
+First-party local file inputs are bounded before decoding, JSON/YAML parsing,
+or hashing. The default maximum is 64 MiB. Set
+`PLATFORM_FILE_INPUT_MAX_BYTES` only for a measured input that must be larger;
+the hard maximum is 512 MiB (`536870912` bytes). Values must be whole, positive
+byte counts within that ceiling. An oversized evidence file, migration plan,
+inventory, configuration file, or rendered manifest fails the operation. Do
+not bypass the bound; confirm the expected producer and payload size first.
+
 Direct first-party HTTP clients use `PLATFORM_HTTP_TIMEOUT_SECONDS`, defaulting
 to `30` seconds with a hard maximum of `300` seconds. API response bodies are
 read only through the shared bounded reader. The default maximum is 16 MiB;

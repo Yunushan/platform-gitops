@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from bounded_file import read_bounded_text
+
 
 INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"
 
@@ -22,7 +24,7 @@ def read_inventory_vars(path: Path) -> dict[str, str]:
     if not path.exists():
         return values
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in read_bounded_text(path, encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or line.startswith("["):
             continue
@@ -170,7 +172,7 @@ def render_longhorn(
             "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE "
             "must be an integer from 100 through 1000"
         )
-    text = path.read_text(encoding="utf-8")
+    text = read_bounded_text(path, encoding="utf-8")
     rendered = re.sub(
         r"^(\s*backupTarget:\s*).*$",
         lambda match: f'{match.group(1)}"{backup_target}"',
@@ -204,7 +206,7 @@ def render_longhorn_storageclasses(path: Path) -> bool:
     )
     if not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", encryption_secret_name):
         raise SystemExit("LONGHORN_ENCRYPTION_SECRET_NAME must be a Kubernetes DNS label")
-    text = path.read_text(encoding="utf-8")
+    text = read_bounded_text(path, encoding="utf-8")
     rendered = re.sub(
         r"(?m)^(\s*csi[.]storage[.]k8s[.]io/(?:provisioner|node-publish|node-stage|node-expand)-secret-name:\s*).*$",
         lambda match: f"{match.group(1)}{encryption_secret_name}",
@@ -578,7 +580,7 @@ def render_platform_valkey(path: Path) -> bool:
         haproxy_image=os.environ.get("PLATFORM_VALKEY_HAPROXY_IMAGE", "haproxy:3.4.2-alpine").strip()
         or "haproxy:3.4.2-alpine",
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -702,7 +704,7 @@ def render_minio(path: Path) -> bool:
             os.environ.get("HARBOR_S3_BUCKET", f"{bucket_prefix}-harbor-registry").strip(),
         ],
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -1184,7 +1186,7 @@ def render_keycloak(path: Path, inventory: dict[str, str]) -> bool:
         config_cli_image_repository=config_cli_image_repository,
         config_cli_image_tag=config_cli_image_tag,
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -1511,7 +1513,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
     else:
         raise SystemExit("FORGEJO_DATABASE_MODE must be sqlite, postgres, postgresql, external, mysql, or mariadb")
 
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -1529,7 +1531,7 @@ def render_argocd(path: Path, inventory: dict[str, str]) -> bool:
         ),
     )
 
-    text = path.read_text(encoding="utf-8")
+    text = read_bounded_text(path, encoding="utf-8")
     sso_enabled = platform_sso_enabled()
     admin_enabled = env_bool("PLATFORM_ARGOCD_ADMIN_ENABLED", default=not sso_enabled)
     if not admin_enabled and not sso_enabled:
@@ -1835,7 +1837,7 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
         database_secret_name,
         log_level,
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -2292,7 +2294,7 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
         f"Uses {database_note}, {redis_note}, and {registry_note}.",
         replicas,
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -2806,7 +2808,7 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
         os.environ.get("PLATFORM_SSO_PROMETHEUS_SECRET_NAME", "platform-sso-prometheus").strip()
         or "platform-sso-prometheus",
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -2998,7 +3000,7 @@ def render_loki(path: Path, inventory: dict[str, str]) -> bool:
         insecure=insecure,
         retention_period=retention_period,
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -3125,7 +3127,7 @@ def render_velero(path: Path) -> bool:
         force_path_style=force_path_style,
         plugin_image=os.environ.get("VELERO_AWS_PLUGIN_IMAGE", "velero/velero-plugin-for-aws:v1.13.1").strip(),
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -3350,7 +3352,7 @@ def render_cnpg_postgres_cluster(path: Path) -> bool:
         ).strip()
         or "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie",
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -3461,7 +3463,7 @@ def render_step_ca(path: Path, inventory: dict[str, str]) -> bool:
         db_size=db_size,
         ingress_host=host,
     )
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.write_text(rendered, encoding="utf-8")
@@ -3477,7 +3479,7 @@ def render_platform_policy_enforcement(paths: list[Path]) -> bool:
 
     changed = False
     for path in paths:
-        text = path.read_text(encoding="utf-8")
+        text = read_bounded_text(path, encoding="utf-8")
         rendered, replacements = re.subn(
             r"(?m)^([ \t]*validationActions:[ \t]*\r?\n[ \t]*-[ \t]*)(Audit|Deny)[ \t]*$",
             lambda match: f"{match.group(1)}{modes[configured]}",
@@ -3558,7 +3560,7 @@ spec:
 
 def validate_cosign_public_key(path: Path) -> str:
     try:
-        raw = path.read_text(encoding="ascii")
+        raw = read_bounded_text(path, encoding="ascii")
     except FileNotFoundError as exc:
         raise SystemExit(f"PLATFORM_COSIGN_PUBLIC_KEY_FILE does not exist: {path}") from exc
     except UnicodeDecodeError as exc:
@@ -3654,7 +3656,7 @@ def render_platform_image_integrity(path: Path, inventory: dict[str, str]) -> bo
             "Deny" if mode == "enforce" else "Audit",
         )
 
-    old = path.read_text(encoding="utf-8") if path.exists() else ""
+    old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
         path.parent.mkdir(parents=True, exist_ok=True)

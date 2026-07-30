@@ -13,6 +13,7 @@ import tempfile
 
 from synthetic_private_profile import prepare_synthetic_private_profile
 from validate_rendered_manifests import ROOT, application_sources, validate
+from bounded_file import read_bounded_text
 
 
 OUTPUT_ROOT = ROOT / "rendered/synthetic-private-schema"
@@ -95,7 +96,7 @@ def main() -> int:
         schema_output = repo_root / "rendered/schema-validation"
         summary_path = schema_output / "summary.json"
         summary = (
-            json.loads(summary_path.read_text(encoding="utf-8"))
+            json.loads(read_bounded_text(summary_path))
             if summary_path.is_file()
             else {}
         )

@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 from atomic_file import atomic_write_text
+from bounded_file import read_bounded_bytes
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 
@@ -168,7 +169,7 @@ def capture(document: Any, *, cluster_uid: str = "") -> dict[str, Any]:
 
 def read_pods(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     if args.pods_json:
-        raw = args.pods_json.read_bytes()
+        raw = read_bounded_bytes(args.pods_json)
         return json.loads(raw), hashlib.sha256(raw).hexdigest()
     command = [args.kubectl, "--kubeconfig", args.kubeconfig, "get", "pods", "-A", "-o", "json"]
     timeout = bounded_timeout_seconds(

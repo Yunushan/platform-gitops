@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from bounded_file import read_bounded_bytes, read_bounded_text
 from verify_image_inventory_evidence import (
     EvidenceError as ImageInventoryEvidenceError,
     validate_evidence as validate_image_inventory,
@@ -87,11 +88,7 @@ def retained_path(value: str, root: Path, label: str) -> Path:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return hashlib.sha256(read_bounded_bytes(path)).hexdigest()
 
 
 def validate_evidence(
@@ -179,7 +176,7 @@ def validate_evidence(
         raise EvidenceError(f"retained production log is missing: {path}")
     if sha256_file(path) != expected_hash:
         raise EvidenceError("retained production log hash does not match logSha256")
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read_bounded_text(path, errors="replace")
     for marker in (
         "== platform production evidence ==",
         "== platform-production-check ==",
@@ -213,7 +210,7 @@ def validate_evidence(
     if sha256_file(inventory_path) != inventory_hash:
         raise EvidenceError("retained image inventory hash does not match imageInventory.sha256")
     try:
-        inventory_document = json.loads(inventory_path.read_text(encoding="utf-8"))
+        inventory_document = json.loads(read_bounded_text(inventory_path))
         inventory_summary = validate_image_inventory(
             inventory_document,
             now=now,
@@ -241,7 +238,7 @@ def validate_evidence(
     if sha256_file(ceremony_path) != ceremony_hash:
         raise EvidenceError("retained OpenBao ceremony hash does not match openbaoCeremony.sha256")
     try:
-        ceremony_document = json.loads(ceremony_path.read_text(encoding="utf-8"))
+        ceremony_document = json.loads(read_bounded_text(ceremony_path))
         ceremony_summary = validate_openbao_ceremony(
             ceremony_document,
             root=root,
@@ -302,7 +299,7 @@ def main() -> int:
         print(f"Production evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(args.evidence_file.read_text(encoding="utf-8"))
+        document = json.loads(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             root=ROOT,

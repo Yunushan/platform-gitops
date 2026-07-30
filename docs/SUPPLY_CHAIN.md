@@ -302,6 +302,11 @@ python scripts/verify_supply_chain_evidence.py \
   --strict
 ```
 
+Supply-chain reports and evidence are read through the shared local-input
+bound before JSON parsing or hashing. The default is 64 MiB; any measured
+override through `PLATFORM_FILE_INPUT_MAX_BYTES` must remain within the 512 MiB
+hard ceiling.
+
 The schema-v6 production evidence generator copies the exact image inventory
 report into its private packet and binds it by SHA-256. Retain that packet. Do not
 commit private registry inventories, internal identities, credentials, or

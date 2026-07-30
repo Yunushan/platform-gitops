@@ -13,6 +13,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+from bounded_file import read_bounded_bytes
+
 
 DEFAULT_ZONE_PATH = Path("/etc/firewalld/zones/trusted.xml")
 STABLE_INTERFACES = {
@@ -76,7 +78,7 @@ def cleanup_zone_file(path: Path) -> CleanupResult:
     if not path.exists():
         return CleanupResult(False, 0, 0, 0)
 
-    raw = path.read_bytes()
+    raw = read_bounded_bytes(path)
     parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
     root = ET.fromstring(raw, parser=parser)
     tree = ET.ElementTree(root)

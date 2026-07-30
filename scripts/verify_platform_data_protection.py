@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+from bounded_file import read_bounded_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 
@@ -157,7 +158,7 @@ class Kubectl:
 
 def top_level_config(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in read_bounded_text(path).splitlines():
         if not raw_line or raw_line[0].isspace() or raw_line.lstrip().startswith("#"):
             continue
         key, separator, value = raw_line.partition(":")

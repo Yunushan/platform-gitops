@@ -20,6 +20,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_atomic_file.py",
     "scripts/test_subprocess_timeout_contract.py",
     "scripts/test_subprocess_output_contract.py",
+    "scripts/test_bounded_file_contract.py",
     "scripts/test_http_transport_contract.py",
     "scripts/test_validation_runner.py",
     "scripts/test_line_endings.py",
