@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -29,6 +30,68 @@ class GovernanceError(ValueError):
     """Raised when live GitHub controls do not meet the release contract."""
 
 
+def codeowner_principals(document: Any, repository_owner: str) -> set[str]:
+    codeowners = require_object(document, "active CODEOWNERS")
+    if codeowners.get("type") != "file" or codeowners.get("path") != ".github/CODEOWNERS":
+        raise GovernanceError("active .github/CODEOWNERS file is missing")
+    if codeowners.get("encoding") != "base64" or not isinstance(codeowners.get("content"), str):
+        raise GovernanceError("active CODEOWNERS content is not base64 encoded")
+    try:
+        encoded_content = "".join(codeowners["content"].split())
+        content = base64.b64decode(encoded_content, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise GovernanceError("active CODEOWNERS content is invalid") from exc
+
+    principals: set[str] = set()
+    has_catch_all = False
+    for line_number, raw_line in enumerate(content.splitlines(), start=1):
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        fields = line.split()
+        if len(fields) < 2:
+            raise GovernanceError(f"CODEOWNERS line {line_number} has no owner")
+        if fields[0] == "*":
+            has_catch_all = True
+        owners = [field for field in fields[1:] if field.startswith("@")]
+        if not owners:
+            raise GovernanceError(f"CODEOWNERS line {line_number} has no GitHub principal")
+        for owner in owners:
+            normalized = owner.lower()
+            if "<" in owner or ">" in owner or "your_org" in normalized or "your-org" in normalized:
+                raise GovernanceError("active CODEOWNERS still contains a placeholder owner")
+            if "/" in owner and not normalized.startswith(f"@{repository_owner.lower()}/"):
+                raise GovernanceError(
+                    f"CODEOWNERS team principal is outside repository owner: {owner}"
+                )
+            principals.add(normalized)
+    if not has_catch_all:
+        raise GovernanceError("active CODEOWNERS has no catch-all ownership rule")
+    if len(principals) < 2:
+        raise GovernanceError("active CODEOWNERS must name at least two distinct owners")
+    return principals
+
+
+def eligible_collaborators(document: Any) -> dict[int, str]:
+    if not isinstance(document, list):
+        raise GovernanceError("repository collaborators must be a JSON array")
+    eligible: dict[int, str] = {}
+    for collaborator in document:
+        if not isinstance(collaborator, dict):
+            continue
+        identifier = collaborator.get("id")
+        login = str(collaborator.get("login") or "").strip()
+        permissions = collaborator.get("permissions")
+        role = str(collaborator.get("role_name") or "").lower()
+        can_review = role in {"write", "maintain", "admin"} or (
+            isinstance(permissions, dict)
+            and any(permissions.get(name) is True for name in ("push", "maintain", "admin"))
+        )
+        if isinstance(identifier, int) and login and can_review:
+            eligible[identifier] = login
+    return eligible
+
+
 def require_object(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise GovernanceError(f"{label} must be a JSON object")
@@ -49,6 +112,9 @@ def validate_governance(
     environment_tag_pattern: str,
     required_checks: tuple[str, ...],
     repository_document: Any,
+    codeowners_document: Any,
+    collaborators_document: Any,
+    reviewer_members_document: Any,
     private_vulnerability_reporting_document: Any,
     codeql_default_setup_document: Any,
     commit_document: Any,
@@ -79,6 +145,13 @@ def validate_governance(
     repo = require_object(repository_document, "repository")
     require(repo.get("full_name") == repository, "repository identity does not match")
     require(repo.get("default_branch") == default_branch, "repository default branch does not match")
+    repository_owner = require_object(repo.get("owner"), "repository.owner")
+    repository_owner_id = repository_owner.get("id")
+    require(isinstance(repository_owner_id, int), "repository owner ID is invalid")
+    codeowner_principals(codeowners_document, repository.split("/", 1)[0])
+    collaborators = eligible_collaborators(collaborators_document)
+    require(len(collaborators) >= 2, "repository has fewer than two review-capable collaborators")
+    reviewer_members = require_object(reviewer_members_document, "release reviewer members")
     security = require_object(repo.get("security_and_analysis"), "repository.security_and_analysis")
     for control in (
         "dependabot_security_updates",
@@ -200,6 +273,42 @@ def validate_governance(
         reviewer_rule = reviewer_rules[0]
         require(bool(reviewer_rule.get("reviewers")), "release environment reviewer list is empty")
         require(reviewer_rule.get("prevent_self_review") is True, "release environment permits self-review")
+        bypass_identities = {
+            (str(actor.get("actor_type")), actor.get("actor_id"))
+            for ruleset in matching_rulesets
+            for actor in ruleset.get("bypass_actors", [])
+            if isinstance(actor, dict) and isinstance(actor.get("actor_id"), int)
+        }
+        independent_reviewer = False
+        for item in reviewer_rule.get("reviewers", []):
+            if not isinstance(item, dict):
+                continue
+            reviewer_type = str(item.get("type") or "")
+            reviewer = item.get("reviewer")
+            reviewer_id = reviewer.get("id") if isinstance(reviewer, dict) else None
+            if reviewer_type not in {"User", "Team"} or not isinstance(reviewer_id, int):
+                continue
+            if (reviewer_type, reviewer_id) in bypass_identities:
+                continue
+            if reviewer_type == "User":
+                if reviewer_id in collaborators and reviewer_id != repository_owner_id:
+                    independent_reviewer = True
+            else:
+                members = reviewer_members.get(f"Team:{reviewer_id}")
+                member_ids = {
+                    member.get("id")
+                    for member in members
+                    if isinstance(member, dict) and isinstance(member.get("id"), int)
+                } if isinstance(members, list) else set()
+                eligible_members = member_ids & set(collaborators)
+                if len(eligible_members) >= 2 and any(
+                    member_id != repository_owner_id for member_id in eligible_members
+                ):
+                    independent_reviewer = True
+        require(
+            independent_reviewer,
+            "release environment has no independently review-capable user or team",
+        )
     branch_policy = require_object(environment.get("deployment_branch_policy"), "deployment branch policy")
     require(branch_policy.get("protected_branches") is False, "release environment is not using tag allowlists")
     require(branch_policy.get("custom_branch_policies") is True, "custom release ref policies are disabled")
@@ -236,6 +345,9 @@ def validate_governance(
 
     inputs = {
         "repository": repository_document,
+        "codeowners": codeowners_document,
+        "collaborators": collaborators_document,
+        "reviewerMembers": reviewer_members_document,
         "privateVulnerabilityReporting": private_vulnerability_reporting_document,
         "codeqlDefaultSetup": codeql_default_setup_document,
         "commit": commit_document,
@@ -247,7 +359,7 @@ def validate_governance(
         "actionsPermissions": actions_permissions_document,
     }
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "repository": repository,
         "defaultBranch": default_branch,
@@ -258,6 +370,8 @@ def validate_governance(
         "inputSha256": {name: canonical_sha256(value) for name, value in inputs.items()},
         "controls": {
             "branchProtection": "passed",
+            "activeCodeowners": "passed",
+            "independentCollaborators": "passed",
             "signedDefaultBranchTip": "passed",
             "releaseTagRuleset": "passed",
             "independentReleaseApproval": "passed",
@@ -365,6 +479,17 @@ def main() -> int:
     environment_path = quote(args.environment, safe="")
     try:
         repository_document = api_get(args.api_url, f"repos/{repository_path}", token)
+        codeowners_document = api_get(
+            args.api_url,
+            f"repos/{repository_path}/contents/{quote('.github/CODEOWNERS', safe='/')}?ref={branch_path}",
+            token,
+            not_found={},
+        )
+        collaborators_document = api_get(
+            args.api_url,
+            f"repos/{repository_path}/collaborators?affiliation=all&per_page=100",
+            token,
+        )
         private_vulnerability_reporting_document = api_get(
             args.api_url,
             f"repos/{repository_path}/private-vulnerability-reporting",
@@ -414,6 +539,23 @@ def main() -> int:
                 "deployment_branch_policy": {},
             },
         )
+        reviewer_members_document: dict[str, Any] = {}
+        organization = quote(args.repository.split("/", 1)[0], safe="")
+        for rule in environment_document.get("protection_rules", []):
+            if not isinstance(rule, dict) or rule.get("type") != "required_reviewers":
+                continue
+            for item in rule.get("reviewers", []):
+                if not isinstance(item, dict) or item.get("type") != "Team":
+                    continue
+                reviewer = item.get("reviewer")
+                reviewer_id = reviewer.get("id") if isinstance(reviewer, dict) else None
+                slug = str(reviewer.get("slug") or "") if isinstance(reviewer, dict) else ""
+                if isinstance(reviewer_id, int) and slug:
+                    reviewer_members_document[f"Team:{reviewer_id}"] = api_get(
+                        args.api_url,
+                        f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all&per_page=100",
+                        token,
+                    )
         environment_policies_document = api_get(
             args.api_url,
             f"repos/{repository_path}/environments/{environment_path}/deployment-branch-policies?per_page=100",
@@ -438,6 +580,9 @@ def main() -> int:
             environment_tag_pattern=args.environment_tag_pattern,
             required_checks=tuple(args.required_checks or DEFAULT_REQUIRED_CHECKS),
             repository_document=repository_document,
+            codeowners_document=codeowners_document,
+            collaborators_document=collaborators_document,
+            reviewer_members_document=reviewer_members_document,
             private_vulnerability_reporting_document=private_vulnerability_reporting_document,
             codeql_default_setup_document=codeql_default_setup_document,
             commit_document=commit_document,

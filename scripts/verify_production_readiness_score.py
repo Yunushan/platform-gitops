@@ -33,6 +33,9 @@ MAXIMUM_SCORE = PRODUCTION_WEIGHT + GOVERNANCE_WEIGHT + RELEASE_WEIGHT
 
 GOVERNANCE_INPUTS = {
     "repository",
+    "codeowners",
+    "collaborators",
+    "reviewerMembers",
     "privateVulnerabilityReporting",
     "codeqlDefaultSetup",
     "commit",
@@ -45,6 +48,8 @@ GOVERNANCE_INPUTS = {
 }
 GOVERNANCE_CONTROLS = {
     "branchProtection",
+    "activeCodeowners",
+    "independentCollaborators",
     "signedDefaultBranchTip",
     "releaseTagRuleset",
     "independentReleaseApproval",
@@ -165,8 +170,8 @@ def validate_governance_evidence(
     now: datetime,
     max_age_hours: int,
 ) -> None:
-    if document.get("schemaVersion") != 1:
-        raise ReadinessError("GitHub governance evidence schemaVersion must be 1")
+    if document.get("schemaVersion") != 2:
+        raise ReadinessError("GitHub governance evidence schemaVersion must be 2")
     if document.get("result") != "passed":
         raise ReadinessError("GitHub governance evidence result must be passed")
     require_fresh(

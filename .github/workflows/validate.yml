@@ -89,11 +89,15 @@ jobs:
           PLATFORM_RENDERED_SCHEMA_PROFILES: base,premium-3node
           PLATFORM_RENDERED_SCHEMA_ALLOW_INCOMPLETE: "true"
         run: make rendered-schema-verify
+      - name: Validate complete synthetic premium schemas
+        run: make rendered-private-schema-verify
       - name: Upload rendered schema reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rendered-schema-${{ github.sha }}
-          path: rendered/schema-validation
+          path: |
+            rendered/schema-validation
+            rendered/synthetic-private-schema/repo/rendered/schema-validation
           if-no-files-found: error
           retention-days: 30
       - name: Validate project

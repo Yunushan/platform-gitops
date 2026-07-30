@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import base64
 from copy import deepcopy
 
 from verify_github_governance import GovernanceError, validate_governance
 
 
 REPOSITORY = "example/platform-gitops"
+CODEOWNERS = """* @example/platform-maintainers @example/platform-security
+/.github/ @example/platform-security
+"""
 
 
 def fixtures() -> dict[str, object]:
@@ -16,6 +20,7 @@ def fixtures() -> dict[str, object]:
         "repository_document": {
             "full_name": REPOSITORY,
             "default_branch": "main",
+            "owner": {"id": 100, "login": "example"},
             "security_and_analysis": {
                 name: {"status": "enabled"}
                 for name in (
@@ -26,6 +31,23 @@ def fixtures() -> dict[str, object]:
                     "secret_scanning_validity_checks",
                 )
             },
+        },
+        "codeowners_document": {
+            "type": "file",
+            "path": ".github/CODEOWNERS",
+            "encoding": "base64",
+            "content": base64.b64encode(CODEOWNERS.encode("utf-8")).decode("ascii"),
+        },
+        "collaborators_document": [
+            {"id": 100, "login": "release-owner", "role_name": "admin"},
+            {"id": 200, "login": "security-one", "role_name": "maintain"},
+            {"id": 201, "login": "security-two", "role_name": "write"},
+        ],
+        "reviewer_members_document": {
+            "Team:7": [
+                {"id": 200, "login": "security-one"},
+                {"id": 201, "login": "security-two"},
+            ]
         },
         "private_vulnerability_reporting_document": {"enabled": True},
         "codeql_default_setup_document": {
@@ -69,7 +91,7 @@ def fixtures() -> dict[str, object]:
                 "enforcement": "active",
                 "conditions": {"ref_name": {"include": ["refs/tags/v*.*.*"], "exclude": []}},
                 "rules": [{"type": name} for name in sorted(("creation", "update", "deletion", "non_fast_forward"))],
-                "bypass_actors": [{"actor_type": "Team", "actor_id": 7, "bypass_mode": "always"}],
+                "bypass_actors": [{"actor_type": "Team", "actor_id": 8, "bypass_mode": "always"}],
             }
         ],
         "environment_document": {
@@ -130,7 +152,33 @@ def main() -> int:
     evidence = validate(fixtures())
     if evidence["result"] != "passed" or evidence["controls"]["releaseTagRuleset"] != "passed":
         raise AssertionError("valid GitHub governance evidence was not accepted")
+    if evidence["schemaVersion"] != 2 or evidence["controls"]["activeCodeowners"] != "passed":
+        raise AssertionError("valid governance evidence omitted ownership controls")
 
+    reject(
+        lambda values: values.update(codeowners_document={}),
+        "active .github/CODEOWNERS file is missing",
+    )
+    reject(
+        lambda values: values["codeowners_document"].update(content="not-base64!!!"),
+        "active CODEOWNERS content is invalid",
+    )
+    reject(
+        lambda values: values.update(collaborators_document=values["collaborators_document"][:1]),
+        "fewer than two review-capable collaborators",
+    )
+    reject(
+        lambda values: values["rulesets_document"][0].update(
+            bypass_actors=[{"actor_type": "Team", "actor_id": 7, "bypass_mode": "always"}]
+        ),
+        "no independently review-capable user or team",
+    )
+    reject(
+        lambda values: values["reviewer_members_document"].update(
+            {"Team:7": [{"id": 200, "login": "security-one"}]}
+        ),
+        "no independently review-capable user or team",
+    )
     reject(
         lambda values: values["commit_document"]["commit"]["verification"].update(verified=False),
         "default branch tip is not GitHub-verified",

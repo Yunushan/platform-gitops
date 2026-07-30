@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,9 +23,9 @@ from render_deployable_gitops_apps import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE_APPLICATIONS = {
-    "base": ROOT / "gitops/clusters/rke2-main/platform-apps.yaml",
-    "premium-3node": ROOT / "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml",
+PROFILE_APPLICATION_FILES = {
+    "base": Path("gitops/clusters/rke2-main/platform-apps.yaml"),
+    "premium-3node": Path("gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"),
 }
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -46,12 +47,12 @@ def profile_names(cli_profiles: list[str] | None) -> list[str]:
     return [os.environ.get("PLATFORM_PROFILE", "premium-3node").strip() or "premium-3node"]
 
 
-def output_path(value: str) -> Path:
+def output_path(value: str, root: Path) -> Path:
     path = Path(value)
     if not path.is_absolute():
-        path = ROOT / path
+        path = root / path
     path = path.resolve()
-    rendered_root = (ROOT / "rendered").resolve()
+    rendered_root = (root / "rendered").resolve()
     if path != rendered_root and rendered_root not in path.parents:
         raise ValueError("rendered schema output must remain under rendered/")
     return path
@@ -65,13 +66,16 @@ def required_tool(env_name: str, default: str) -> str:
     return resolved
 
 
-def application_sources(profile: str) -> list[tuple[str, Path]]:
-    applications_file = PROFILE_APPLICATIONS.get(profile)
-    if applications_file is None:
-        supported = ", ".join(sorted(PROFILE_APPLICATIONS))
+def application_sources(profile: str, root: Path) -> list[tuple[str, Path]]:
+    applications_relative = PROFILE_APPLICATION_FILES.get(profile)
+    if applications_relative is None:
+        supported = ", ".join(sorted(PROFILE_APPLICATION_FILES))
         raise ValueError(f"unsupported rendered schema profile {profile!r}; choose {supported}")
+    applications_file = root / applications_relative
     if not applications_file.is_file():
-        raise ValueError(f"profile applications file is missing: {applications_file.relative_to(ROOT)}")
+        raise ValueError(
+            f"profile applications file is missing: {applications_file.relative_to(root)}"
+        )
 
     sources: list[tuple[str, Path]] = []
     for document in application_documents_from_file(applications_file):
@@ -79,16 +83,18 @@ def application_sources(profile: str) -> list[tuple[str, Path]]:
         path_match = APPLICATION_PATH_RE.search(document)
         if not name_match or not path_match:
             raise ValueError(
-                f"{applications_file.relative_to(ROOT)} contains an Application without name/path"
+                f"{applications_file.relative_to(root)} contains an Application without name/path"
             )
-        sources.append((name_match.group("name"), ROOT / path_match.group("path")))
+        sources.append((name_match.group("name"), root / path_match.group("path")))
     return sources
 
 
-def run(command: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run(
+    command: list[str], *, env: dict[str, str], root: Path
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
-        cwd=ROOT,
+        cwd=root,
         env=env,
         text=True,
         encoding="utf-8",
@@ -99,17 +105,27 @@ def run(command: list[str], *, env: dict[str, str]) -> subprocess.CompletedProce
 
 
 def write_log(path: Path, result: subprocess.CompletedProcess[str]) -> None:
+    stdout_bytes = result.stdout.encode("utf-8")
     path.write_text(
-        f"command_rc={result.returncode}\n\nstdout:\n{result.stdout}\n\nstderr:\n{result.stderr}\n",
+        f"command_rc={result.returncode}\n"
+        f"stdout_bytes={len(stdout_bytes)}\n"
+        f"stdout_sha256={hashlib.sha256(stdout_bytes).hexdigest()}\n\n"
+        f"stderr:\n{result.stderr}\n",
         encoding="utf-8",
     )
 
 
-def validate(args: argparse.Namespace) -> int:
+def validate(args: argparse.Namespace, *, root: Path = ROOT) -> int:
+    root = root.resolve()
+    if not (root / "gitops").is_dir():
+        print(f"rendered schema repository root has no gitops directory: {root}", file=sys.stderr)
+        return 2
     profiles = profile_names(args.profile)
-    allow_incomplete = args.allow_incomplete or env_flag(
-        "PLATFORM_RENDERED_SCHEMA_ALLOW_INCOMPLETE"
-    )
+    allow_incomplete = False
+    if not getattr(args, "require_complete", False):
+        allow_incomplete = args.allow_incomplete or env_flag(
+            "PLATFORM_RENDERED_SCHEMA_ALLOW_INCOMPLETE"
+        )
     kubernetes_version = (
         args.kubernetes_version
         or os.environ.get("PLATFORM_RENDERED_SCHEMA_KUBERNETES_VERSION", "1.35.0")
@@ -118,7 +134,8 @@ def validate(args: argparse.Namespace) -> int:
         args.output_dir
         or os.environ.get(
             "PLATFORM_RENDERED_SCHEMA_OUTPUT_DIR", "rendered/schema-validation"
-        )
+        ),
+        root,
     )
 
     try:
@@ -131,9 +148,7 @@ def validate(args: argparse.Namespace) -> int:
 
     if output_dir.exists():
         shutil.rmtree(output_dir)
-    manifests_dir = output_dir / "manifests"
     reports_dir = output_dir / "reports"
-    manifests_dir.mkdir(parents=True)
     reports_dir.mkdir(parents=True)
 
     summary: dict[str, object] = {
@@ -154,7 +169,9 @@ def validate(args: argparse.Namespace) -> int:
     with tempfile.TemporaryDirectory(prefix="platform-rendered-schema-") as temporary:
         temporary_root = Path(temporary)
         work_root = temporary_root / "repo"
-        shutil.copytree(ROOT / "gitops", work_root / "gitops")
+        shutil.copytree(root / "gitops", work_root / "gitops")
+        manifests_dir = temporary_root / "manifests"
+        manifests_dir.mkdir()
         tool_home = temporary_root / "tools"
         tool_home.mkdir()
         command_env = os.environ.copy()
@@ -168,13 +185,13 @@ def validate(args: argparse.Namespace) -> int:
 
         for profile in profiles:
             try:
-                sources = application_sources(profile)
+                sources = application_sources(profile, root)
             except ValueError as exc:
                 failures.append({"profile": profile, "error": str(exc)})
                 continue
 
             for app_name, source in sources:
-                findings = scan_path(source, ROOT)
+                findings = scan_path(source, root)
                 if findings:
                     record = {
                         "profile": profile,
@@ -193,7 +210,7 @@ def validate(args: argparse.Namespace) -> int:
                     continue
 
                 try:
-                    relative_source = source.resolve().relative_to(ROOT)
+                    relative_source = source.resolve().relative_to(root)
                 except ValueError:
                     failures.append(
                         {
@@ -223,6 +240,7 @@ def validate(args: argparse.Namespace) -> int:
                         str(copied_source),
                     ],
                     env=command_env,
+                    root=root,
                 )
                 write_log(render_log, render_result)
                 if render_result.returncode != 0:
@@ -231,7 +249,7 @@ def validate(args: argparse.Namespace) -> int:
                             "profile": profile,
                             "application": app_name,
                             "error": "kustomize build failed",
-                            "log": str(render_log.relative_to(ROOT)),
+                            "log": str(render_log.relative_to(root)),
                         }
                     )
                     continue
@@ -245,6 +263,8 @@ def validate(args: argparse.Namespace) -> int:
                     )
                     continue
                 manifest.write_text(render_result.stdout, encoding="utf-8")
+                manifest_bytes = render_result.stdout.encode("utf-8")
+                manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
 
                 schema_result = run(
                     [
@@ -259,6 +279,7 @@ def validate(args: argparse.Namespace) -> int:
                         str(manifest),
                     ],
                     env=command_env,
+                    root=root,
                 )
                 schema_report.write_text(schema_result.stdout, encoding="utf-8")
                 (reports_dir / f"{safe_name}.kubeconform.stderr.log").write_text(
@@ -270,7 +291,7 @@ def validate(args: argparse.Namespace) -> int:
                             "profile": profile,
                             "application": app_name,
                             "error": "kubeconform schema validation failed",
-                            "report": str(schema_report.relative_to(ROOT)),
+                            "report": str(schema_report.relative_to(root)),
                         }
                     )
                     continue
@@ -279,8 +300,9 @@ def validate(args: argparse.Namespace) -> int:
                     {
                         "profile": profile,
                         "application": app_name,
-                        "manifest": str(manifest.relative_to(ROOT)),
-                        "report": str(schema_report.relative_to(ROOT)),
+                        "manifestBytes": len(manifest_bytes),
+                        "manifestSha256": manifest_sha256,
+                        "report": str(schema_report.relative_to(root)),
                     }
                 )
                 print(f"schema_validation=passed profile={profile} app={app_name}")
@@ -305,10 +327,22 @@ def validate(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", action="append", help="base or premium-3node; repeatable")
-    parser.add_argument("--allow-incomplete", action="store_true")
+    completeness = parser.add_mutually_exclusive_group()
+    completeness.add_argument("--allow-incomplete", action="store_true")
+    completeness.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="reject every unresolved application even when the environment allows skips",
+    )
     parser.add_argument("--kubernetes-version")
     parser.add_argument("--output-dir")
-    return validate(parser.parse_args())
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        help="repository root containing gitops/; defaults to this checkout",
+    )
+    args = parser.parse_args()
+    return validate(args, root=args.repo_root or ROOT)
 
 
 if __name__ == "__main__":

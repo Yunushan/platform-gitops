@@ -84,6 +84,7 @@ Install Kustomize `v5.8.1`, Helm `v3.21.0`, and Kubeconform `v0.7.0`, then run:
 
 ```bash
 make rendered-schema-verify
+make rendered-private-schema-verify
 ```
 
 The default production run is strict: unresolved values, an empty render,
@@ -91,7 +92,13 @@ Helm or Kustomize failure, and Kubernetes schema failures all block promotion.
 The public pull-request workflow checks both `base` and `premium-3node`; it may
 skip only applications that still contain documented public-template
 placeholders and retains the exact skip list plus rendered reports for 30
-days. A private production profile must render without that allowance.
+days. A second CI gate renders every premium application through the real
+private-values renderer using non-secret `.example.test` fixtures, rejects all
+skips, and schema-validates the resulting complete profile. A private production
+profile must still render without that allowance against its exact release commit.
+Successful raw manifests and render stdout are temporary because charts can
+generate ephemeral Secret material. Retained artifacts contain manifest hashes,
+sanitized render metadata, Kubeconform reports, and the aggregate summary only.
 
 Kubeconform validates built-in Kubernetes resources strictly and reports but
 does not fail on missing third-party CRD schemas. The live server-side checks

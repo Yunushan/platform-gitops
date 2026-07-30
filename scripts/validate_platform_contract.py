@@ -128,6 +128,7 @@ deployable_renderer_test = root / "scripts/test_deployable_renderer.py"
 gitops_selection_helper_test = root / "scripts/test_gitops_selection_helper.py"
 private_values_renderer = root / "scripts/render_private_platform_values.py"
 private_values_renderer_test = root / "scripts/test_private_values_renderer.py"
+synthetic_private_profile_helper = root / "scripts/synthetic_private_profile.py"
 platform_secret_contract_test = root / "scripts/test_platform_secret_contract.py"
 policy_examples_test = root / "scripts/test_policy_examples.py"
 sops_age_policy_test = root / "scripts/test_sops_age_policy.py"
@@ -3099,7 +3100,9 @@ def main() -> None:
     deployable_renderer_test_text = read(deployable_renderer_test)
     gitops_selection_helper_test_text = read(gitops_selection_helper_test)
     renderer_text = read(private_values_renderer)
-    renderer_test_text = read(private_values_renderer_test)
+    renderer_test_text = read(private_values_renderer_test) + read(
+        synthetic_private_profile_helper
+    )
     platform_secret_contract_test_text = read(platform_secret_contract_test)
     app_secrets_text = read(app_secrets_playbook)
     bootstrap_argocd_text = read(root / "ansible/playbooks/bootstrap-argocd.yml")
@@ -6812,7 +6815,7 @@ def main() -> None:
     )
     require_text(
         makefile_text,
-        "platform-image-inventory-verify: rendered-schema-verify supply-chain-verify",
+        "platform-image-inventory-verify: rendered-schema-verify rendered-private-schema-verify supply-chain-verify",
         "image inventory gate must depend on exact rendering and signature evidence",
     )
     require_text(

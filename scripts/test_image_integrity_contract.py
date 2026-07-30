@@ -16,6 +16,7 @@ PLATFORM_APPS = PREMIUM / "platform-apps.yaml"
 PROFILE = ROOT / "profiles/premium-3node.yaml"
 RENDERER = ROOT / "scripts/render_private_platform_values.py"
 RENDERER_TEST = ROOT / "scripts/test_private_values_renderer.py"
+SYNTHETIC_FIXTURE = ROOT / "scripts/synthetic_private_profile.py"
 READINESS = ROOT / "ansible/playbooks/verify-platform-policy-readiness.yml"
 MAKEFILE = ROOT / "Makefile"
 ENV_EXAMPLE = ROOT / "config/seed-git.env.example"
@@ -126,14 +127,19 @@ def main() -> int:
     renderer_test = read(RENDERER_TEST)
     for needle in (
         "TEST_COSIGN_PUBLIC_KEY",
-        "PLATFORM_IMAGE_INTEGRITY_MODE",
-        "PLATFORM_COSIGN_PUBLIC_KEY_FILE",
-        "PLATFORM_COSIGN_REKOR_URL",
         '"validationActions:\\n    - Deny"',
         "<PLATFORM_COSIGN_PUBLIC_KEY>",
         "image-integrity renderer accepted an unsupported mode",
     ):
         require(renderer_test, needle, "private renderer self-test")
+    synthetic_fixture = read(SYNTHETIC_FIXTURE)
+    for needle in (
+        "TEST_COSIGN_PUBLIC_KEY",
+        '"PLATFORM_IMAGE_INTEGRITY_MODE": "Audit"',
+        '"PLATFORM_COSIGN_PUBLIC_KEY_FILE"',
+        '"PLATFORM_COSIGN_REKOR_URL": "https://rekor.example.test"',
+    ):
+        require(synthetic_fixture, needle, "synthetic private profile fixture")
 
     readiness = read(READINESS)
     for needle in (

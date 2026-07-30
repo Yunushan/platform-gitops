@@ -12,7 +12,10 @@ The default branch must enforce:
 
 - Strict required checks for repository validation and CodeQL.
 - At least one approving review.
-- CODEOWNER review, stale-review dismissal, and approval after the last push.
+- An active `.github/CODEOWNERS` file with a catch-all rule and at least two
+  distinct owners, plus required CODEOWNER review.
+- At least two review-capable collaborators, stale-review dismissal, and
+  approval after the last push.
 - GitHub-verified commits.
 - Administrator enforcement, linear history, and resolved conversations.
 - No force pushes or branch deletion.
@@ -23,7 +26,9 @@ The repository must also have:
 - Creation, update, deletion, and non-fast-forward restrictions on those tags.
 - A named release-authority bypass actor rather than an unrestricted bypass.
 - A `production-release` environment with required reviewers and
-  `prevent_self_review` enabled.
+  `prevent_self_review` enabled. At least one reviewer must be a review-capable
+  non-owner user, or a two-member-or-larger review-capable team, and must not be
+  the release-tag bypass actor.
 - A custom environment deployment policy allowing only `v*.*.*` tags.
 - Read-only default workflow token permissions and no Actions PR approval.
 - Required full-SHA pinning for Actions.
@@ -46,8 +51,9 @@ eligible organization before claiming the strict GitHub governance score.
 Create a repository secret named `GOVERNANCE_AUDIT_TOKEN`. Prefer a GitHub App
 installation token or a fine-grained token with read-only access to repository
 metadata, administration settings, Actions permissions, rulesets, branch
-protection, and environments. It must not have content, release, workflow, or
-administration write permission.
+protection, environments, active CODEOWNERS content, collaborators, and reviewer
+team membership. It must not have content, release, workflow, or administration
+write permission.
 
 Do not store the token in Git, an environment example, workflow output, or a
 production evidence file.
@@ -130,16 +136,18 @@ rewrite commits, or weaken existing branch protection.
 
 In GitHub repository settings:
 
-1. Apply the default-branch protection controls listed above.
-2. Create an active tag ruleset for `refs/tags/v*.*.*` with the four mutation
+1. Commit an active `.github/CODEOWNERS` file with independent ownership and
+   add at least two review-capable collaborators.
+2. Apply the default-branch protection controls listed above.
+3. Create an active tag ruleset for `refs/tags/v*.*.*` with the four mutation
    restrictions and an explicit release-authority bypass actor.
-3. Create the `production-release` environment.
-4. Add an independent reviewer and enable prevention of self-review.
-5. Restrict environment deployments to tags matching `v*.*.*`.
-6. Enable every required security-analysis control and private vulnerability
+4. Create the `production-release` environment.
+5. Add an independent reviewer and enable prevention of self-review.
+6. Restrict environment deployments to tags matching `v*.*.*`.
+7. Enable every required security-analysis control and private vulnerability
    reporting.
-7. Configure CodeQL default setup for Actions and Python with weekly analysis.
-8. Add `GOVERNANCE_AUDIT_TOKEN` and rerun the verifier.
+8. Configure CodeQL default setup for Actions and Python with weekly analysis.
+9. Add `GOVERNANCE_AUDIT_TOKEN` and rerun the verifier.
 
 Keep reviewer identities, team IDs, token ownership, and internal approval
 records outside this public repository.

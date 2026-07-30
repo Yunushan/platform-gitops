@@ -295,7 +295,7 @@ def main() -> int:
             (
                 "supply-chain-verify: security-scan",
                 "SUPPLY_CHAIN_STRICT=true bash scripts/supply-chain-posture.sh",
-                "platform-image-inventory-verify: rendered-schema-verify supply-chain-verify",
+                "platform-image-inventory-verify: rendered-schema-verify rendered-private-schema-verify supply-chain-verify",
                 "@$(MAKE) platform-image-inventory-verify",
             ),
         ),

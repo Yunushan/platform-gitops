@@ -32,7 +32,7 @@ PROFILE = "premium-3node"
 
 def governance_evidence(now: datetime) -> dict[str, object]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedAt": (now - timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
         "repository": REPOSITORY,
         "defaultBranch": "main",

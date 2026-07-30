@@ -52,7 +52,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 |---|---|
 | Repository validation passed | `python scripts/run_validation.py` or `make validate` |
 | Migration parser robustness passed | The pinned ClusterFuzzLite workflow has no unresolved crashes, and `bash scripts/forge-coverage.sh` passes the 81.0% subprocess branch-coverage ratchet with retained JSON/XML evidence |
-| Rendered Kubernetes schemas passed | `make rendered-schema-verify`; the exact private profile renders without skipped applications and built-in objects pass strict Kubeconform validation |
+| Rendered Kubernetes schemas passed | `make rendered-schema-verify` and `make rendered-private-schema-verify`; the synthetic complete premium profile and exact private profile render without skipped applications, and built-in objects pass strict Kubeconform validation |
 | Active admission policies compiled | `KYVERNO_BIN=<KYVERNO_1_18_1_BINARY> make policy-cel-verify`; compliant, violating, second-rule, and privileged-namespace fixtures produce the expected decisions, and the stable image policy compiles without registry access |
 | Secret scan passed | `make no-secrets` or `python scripts/validate_no_secrets.py` |
 | Policy enforcement accepted | `PLATFORM_POLICY_ENFORCEMENT=Enforce make platform-policy-readiness`; all three managed ValidatingPolicies must be Ready with `Deny`, both legacy ClusterPolicies must be absent, and managed violations must be zero |
@@ -116,6 +116,7 @@ make platform-openbao-verify
 make platform-observability-verify
 make platform-capacity-verify
 make rendered-schema-verify
+make rendered-private-schema-verify
 KYVERNO_BIN=<KYVERNO_1_18_1_BINARY> make policy-cel-verify
 COSIGN_IMAGES_FILE=<PRIVATE_INVENTORY> make supply-chain-verify
 PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE=<PRIVATE_EXCEPTIONS> \
