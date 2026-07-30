@@ -29,6 +29,8 @@ The repository must also have:
   `prevent_self_review` enabled. At least one reviewer must be a review-capable
   non-owner user, or a two-member-or-larger review-capable team, and must not be
   the release-tag bypass actor.
+- Administrators disallowed from bypassing the `production-release`
+  environment protection rules.
 - A custom environment deployment policy allowing only `v*.*.*` tags.
 - Read-only default workflow token permissions and no Actions PR approval.
 - Required full-SHA pinning for Actions.
@@ -72,7 +74,10 @@ unset GITHUB_TOKEN
 ```
 
 The command fails closed when an API endpoint is inaccessible or any required
-control has drifted. A successful run writes a sanitized report to:
+machine-readable control has drifted. GitHub's documented environment REST API
+does not expose the administrator-bypass toggle, so an operator must also
+confirm that setting in the repository UI and retain the approval record
+outside Git. A successful run writes a sanitized report to:
 
 ```text
 rendered/governance/github-governance-evidence.json
@@ -98,16 +103,37 @@ Start with a non-mutating plan:
 ```bash
 export GITHUB_REPOSITORY=<OWNER>/<REPOSITORY>
 export GITHUB_GOVERNANCE_REVIEWER=<INDEPENDENT_COLLABORATOR_LOGIN>
+export GITHUB_RELEASE_AUTHORITY=<RELEASE_AUTHORITY_LOGIN>
 read -rsp "Temporary GitHub administration token: " GITHUB_TOKEN
 echo
 export GITHUB_TOKEN
 make github-governance-plan
 ```
 
+For an organization-owned repository, teams are preferred. Use team slugs
+instead of the two user variables:
+
+```bash
+export GITHUB_GOVERNANCE_REVIEWER_TEAM=<REVIEWER_TEAM_SLUG>
+export GITHUB_RELEASE_AUTHORITY_TEAM=<RELEASE_AUTHORITY_TEAM_SLUG>
+make github-governance-plan
+```
+
+The reviewer team must have `write`, `maintain`, or `admin` access and contain
+at least two members. Reviewer and release-authority principals must be
+different and their team memberships must not overlap. The release authority
+must also have push-capable repository access. User and team forms are mutually
+exclusive for each role.
+
 The planner preserves unrelated ruleset rules and existing environment
-reviewers. It refuses a full apply when the reviewer is the release authority
-or is not a repository collaborator. To enable only the scanner controls, with
-no tag or environment change:
+reviewers. It refuses a full apply when the reviewer is the release authority,
+is not review-capable, or is an undersized team.
+
+The managed tag ruleset keeps only explicit always-on user or team bypass
+actors. Broad organization-admin, repository-role, integration, or deploy-key
+bypasses are removed from that ruleset during a reviewed full apply.
+
+To enable only the scanner controls, with no tag or environment change:
 
 ```bash
 make github-governance-security-apply
@@ -124,7 +150,8 @@ read -rsp "Read-only GitHub governance token: " GITHUB_TOKEN
 echo
 export GITHUB_TOKEN
 make github-governance-verify
-unset GITHUB_TOKEN GITHUB_GOVERNANCE_REVIEWER
+unset GITHUB_TOKEN GITHUB_GOVERNANCE_REVIEWER GITHUB_RELEASE_AUTHORITY
+unset GITHUB_GOVERNANCE_REVIEWER_TEAM GITHUB_RELEASE_AUTHORITY_TEAM
 ```
 
 The configurator manages only scanner settings, the semantic-release tag
@@ -142,7 +169,8 @@ In GitHub repository settings:
 3. Create an active tag ruleset for `refs/tags/v*.*.*` with the four mutation
    restrictions and an explicit release-authority bypass actor.
 4. Create the `production-release` environment.
-5. Add an independent reviewer and enable prevention of self-review.
+5. Add an independent reviewer, enable prevention of self-review, and deselect
+   **Allow administrators to bypass configured protection rules**.
 6. Restrict environment deployments to tags matching `v*.*.*`.
 7. Enable every required security-analysis control and private vulnerability
    reporting.

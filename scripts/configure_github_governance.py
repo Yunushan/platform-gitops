@@ -29,6 +29,7 @@ REQUIRED_SECURITY_CONTROLS = (
     "secret_scanning_validity_checks",
 )
 REQUIRED_TAG_RULES = ("creation", "update", "deletion", "non_fast_forward")
+REVIEW_CAPABLE_PERMISSIONS = {"write", "maintain", "admin"}
 PREMIUM_SECRET_CONTROLS = (
     "secret_scanning_non_provider_patterns",
     "secret_scanning_validity_checks",
@@ -153,6 +154,149 @@ class GitHubApi:
         return self.request("PUT", path, payload=payload)
 
 
+def resolve_principal(
+    api: GitHubApi,
+    *,
+    owner: dict[str, Any],
+    user: str,
+    team: str,
+    label: str,
+    default_user: str = "",
+) -> dict[str, Any]:
+    user = user.strip()
+    team = team.strip()
+    if user and team:
+        raise ConfigurationError(f"{label} must use either a user or a team, not both")
+    if team:
+        if owner.get("type") != "Organization":
+            raise ConfigurationError(f"{label} teams require an organization-owned repository")
+        organization = str(owner.get("login") or "").strip()
+        if not organization:
+            raise ConfigurationError("repository organization login is missing")
+        document = require_object(
+            api.get(
+                f"orgs/{quote(organization, safe='')}/teams/{quote(team, safe='')}"
+            ),
+            label,
+        )
+        identifier = document.get("id")
+        slug = str(document.get("slug") or team).strip()
+        if not isinstance(identifier, int) or not slug:
+            raise ConfigurationError(f"{label} team has no numeric ID or slug")
+        return {
+            "type": "Team",
+            "id": identifier,
+            "slug": slug,
+            "organization": organization,
+        }
+
+    login = user or default_user.strip()
+    if not login:
+        raise ConfigurationError(f"{label} user or team is required")
+    document = require_object(
+        api.get(f"users/{quote(login, safe='')}"),
+        label,
+    )
+    identifier = document.get("id")
+    resolved_login = str(document.get("login") or login).strip()
+    if document.get("type") not in (None, "User"):
+        raise ConfigurationError(f"{label} is not a GitHub user")
+    if not isinstance(identifier, int) or not resolved_login:
+        raise ConfigurationError(f"{label} user has no numeric ID or login")
+    return {"type": "User", "id": identifier, "login": resolved_login}
+
+
+def principal_repository_permission(
+    api: GitHubApi,
+    *,
+    repository_path: str,
+    principal: dict[str, Any],
+) -> Any:
+    if principal.get("type") == "Team":
+        return api.get(
+            "orgs/"
+            f"{quote(str(principal.get('organization') or ''), safe='')}/teams/"
+            f"{quote(str(principal.get('slug') or ''), safe='')}/repos/{repository_path}",
+            not_found={},
+        )
+    return api.get(
+        f"repos/{repository_path}/collaborators/"
+        f"{quote(str(principal.get('login') or ''), safe='')}/permission",
+        not_found={},
+    )
+
+
+def principal_team_members(api: GitHubApi, principal: dict[str, Any]) -> Any:
+    if principal.get("type") != "Team":
+        return None
+    return api.get(
+        "orgs/"
+        f"{quote(str(principal.get('organization') or ''), safe='')}/teams/"
+        f"{quote(str(principal.get('slug') or ''), safe='')}/members?role=all&per_page=100",
+    )
+
+
+def repository_permission(document: Any) -> str:
+    if not isinstance(document, dict):
+        return ""
+    direct = str(document.get("permission") or document.get("role_name") or "").lower()
+    normalized = {
+        "pull": "read",
+        "read": "read",
+        "triage": "triage",
+        "push": "write",
+        "write": "write",
+        "maintain": "maintain",
+        "admin": "admin",
+    }.get(direct)
+    if normalized:
+        return normalized
+    permissions = document.get("permissions")
+    if not isinstance(permissions, dict):
+        return ""
+    for flag, level in (
+        ("admin", "admin"),
+        ("maintain", "maintain"),
+        ("push", "write"),
+        ("triage", "triage"),
+        ("pull", "read"),
+    ):
+        if permissions.get(flag) is True:
+            return level
+    return ""
+
+
+def public_principal(principal: dict[str, Any]) -> dict[str, Any]:
+    fields = ("type", "id", "login") if principal.get("type") == "User" else (
+        "type",
+        "id",
+        "organization",
+        "slug",
+    )
+    return {field: principal[field] for field in fields if field in principal}
+
+
+def principal_member_ids(
+    principal: dict[str, Any],
+    team_members_document: Any = None,
+) -> set[int]:
+    principal_type = str(principal.get("type") or "User")
+    identifier = principal.get("id")
+    if principal_type == "User":
+        if not isinstance(identifier, int):
+            raise ConfigurationError("GitHub user principal has no numeric ID")
+        return {identifier}
+    if principal_type != "Team":
+        raise ConfigurationError("GitHub principal must be a user or team")
+    if not isinstance(team_members_document, list):
+        raise ConfigurationError("GitHub team membership could not be verified")
+    return {
+        member.get("id")
+        for member in team_members_document
+        if isinstance(member, dict) and isinstance(member.get("id"), int)
+    }
+
+
 def security_patch(repository_document: Any) -> dict[str, Any]:
     repository = require_object(repository_document, "repository")
     security = require_object(repository.get("security_and_analysis"), "security_and_analysis")
@@ -189,6 +333,7 @@ def merge_tag_ruleset(
     name: str,
     tag_ref_pattern: str,
     release_authority_id: int,
+    release_authority_type: str = "User",
 ) -> dict[str, Any]:
     current = deepcopy(existing) if isinstance(existing, dict) else {}
     if current and current.get("target") not in (None, "tag"):
@@ -212,15 +357,20 @@ def merge_tag_ruleset(
         deepcopy(actor)
         for actor in current.get("bypass_actors", [])
         if isinstance(actor, dict)
+        and actor.get("actor_type") in {"User", "Team"}
+        and isinstance(actor.get("actor_id"), int)
+        and actor.get("bypass_mode") == "always"
     ]
+    if release_authority_type not in {"User", "Team"}:
+        raise ConfigurationError("release authority must be a GitHub user or team")
     authority = {
         "actor_id": release_authority_id,
-        "actor_type": "User",
+        "actor_type": release_authority_type,
         "bypass_mode": "always",
     }
     if not any(
         actor.get("actor_id") == release_authority_id
-        and actor.get("actor_type") == "User"
+        and actor.get("actor_type") == release_authority_type
         and actor.get("bypass_mode") == "always"
         for actor in bypass
     ):
@@ -260,7 +410,13 @@ def extract_environment_reviewers(environment: Any) -> list[dict[str, Any]]:
             reviewer_id = reviewer.get("id") if isinstance(reviewer, dict) else item.get("id")
             reviewer_type = item.get("type")
             if reviewer_type in ("User", "Team") and isinstance(reviewer_id, int):
-                reviewers.append({"type": reviewer_type, "id": reviewer_id})
+                record = {"type": reviewer_type, "id": reviewer_id}
+                if isinstance(reviewer, dict):
+                    identity_field = "login" if reviewer_type == "User" else "slug"
+                    identity = str(reviewer.get(identity_field) or "").strip()
+                    if identity:
+                        record[identity_field] = identity
+                reviewers.append(record)
     return reviewers
 
 
@@ -270,10 +426,15 @@ def environment_payload(
     reviewer: dict[str, Any],
 ) -> dict[str, Any]:
     current = existing if isinstance(existing, dict) else {}
-    reviewers = extract_environment_reviewers(current)
+    reviewers = [
+        {"type": item["type"], "id": item["id"]}
+        for item in extract_environment_reviewers(current)
+    ]
     compact_reviewer = {"type": reviewer["type"], "id": reviewer["id"]}
     if compact_reviewer not in reviewers:
         reviewers.append(compact_reviewer)
+    if len(reviewers) > 6:
+        raise ConfigurationError("release environment cannot contain more than six reviewers")
     return {
         "wait_timer": int(current.get("wait_timer") or 0),
         "prevent_self_review": True,
@@ -285,20 +446,53 @@ def environment_payload(
     }
 
 
+def validate_release_authority(
+    *,
+    release_authority: dict[str, Any],
+    permission_document: Any,
+    team_members_document: Any = None,
+) -> None:
+    permission = repository_permission(permission_document)
+    if permission not in REVIEW_CAPABLE_PERMISSIONS:
+        raise ConfigurationError(
+            "release authority must have write, maintain, or admin repository access"
+        )
+    if release_authority.get("type") == "Team" and not principal_member_ids(
+        release_authority,
+        team_members_document,
+    ):
+        raise ConfigurationError("release authority team must contain at least one member")
+
+
 def validate_independent_reviewer(
     *,
     reviewer: dict[str, Any],
     release_authority: dict[str, Any],
     permission_document: Any,
+    team_members_document: Any = None,
+    release_authority_members_document: Any = None,
 ) -> None:
     reviewer_id = reviewer.get("id")
     if not isinstance(reviewer_id, int):
         raise ConfigurationError("reviewer identity has no numeric GitHub ID")
-    if reviewer_id == release_authority.get("id"):
+    reviewer_type = str(reviewer.get("type") or "User")
+    authority_type = str(release_authority.get("type") or "User")
+    if reviewer_type == authority_type and reviewer_id == release_authority.get("id"):
         raise ConfigurationError("release reviewer must differ from the release authority")
-    permission = require_object(permission_document, "reviewer repository permission").get("permission")
-    if permission not in {"read", "triage", "write", "maintain", "admin"}:
-        raise ConfigurationError("release reviewer must be a repository collaborator")
+    permission = repository_permission(permission_document)
+    if permission not in REVIEW_CAPABLE_PERMISSIONS:
+        raise ConfigurationError(
+            "release reviewer must have write, maintain, or admin repository access"
+        )
+    reviewer_member_ids = principal_member_ids(reviewer, team_members_document)
+    authority_member_ids = principal_member_ids(
+        release_authority,
+        release_authority_members_document,
+    )
+    if reviewer_member_ids & authority_member_ids:
+        raise ConfigurationError("release reviewer and release authority must not share members")
+    if reviewer_type == "Team" and len(reviewer_member_ids) < 2:
+        raise ConfigurationError("release reviewer team must contain at least two members")
 
 
 def find_managed_ruleset(rulesets: Any, name: str) -> dict[str, Any] | None:
@@ -327,10 +521,25 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("plan", "apply-security", "apply"))
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
-    parser.add_argument("--reviewer-user", default=os.environ.get("GITHUB_GOVERNANCE_REVIEWER", ""))
-    parser.add_argument(
+    reviewer = parser.add_mutually_exclusive_group()
+    reviewer.add_argument(
+        "--reviewer-user",
+        default=os.environ.get("GITHUB_GOVERNANCE_REVIEWER", ""),
+    )
+    reviewer.add_argument(
+        "--reviewer-team",
+        default=os.environ.get("GITHUB_GOVERNANCE_REVIEWER_TEAM", ""),
+        help="organization team slug for the production environment reviewer",
+    )
+    authority = parser.add_mutually_exclusive_group()
+    authority.add_argument(
         "--release-authority-user",
         default=os.environ.get("GITHUB_RELEASE_AUTHORITY", ""),
+    )
+    authority.add_argument(
+        "--release-authority-team",
+        default=os.environ.get("GITHUB_RELEASE_AUTHORITY_TEAM", ""),
+        help="organization team slug allowed to create or update semantic release tags",
     )
     parser.add_argument("--ruleset-name", default="platform semantic release tags")
     parser.add_argument("--tag-ref-pattern", default="refs/tags/v*.*.*")
@@ -354,6 +563,12 @@ def main() -> int:
     if not REPOSITORY_RE.fullmatch(args.repository):
         print("GitHub governance configuration requires GITHUB_REPOSITORY=OWNER/REPOSITORY", file=sys.stderr)
         return 2
+    if args.reviewer_user.strip() and args.reviewer_team.strip():
+        print("configure either GITHUB_GOVERNANCE_REVIEWER or GITHUB_GOVERNANCE_REVIEWER_TEAM", file=sys.stderr)
+        return 2
+    if args.release_authority_user.strip() and args.release_authority_team.strip():
+        print("configure either GITHUB_RELEASE_AUTHORITY or GITHUB_RELEASE_AUTHORITY_TEAM", file=sys.stderr)
+        return 2
 
     api = GitHubApi(api_url=args.api_url, token=token)
     repository_path = quote(args.repository, safe="/")
@@ -364,12 +579,26 @@ def main() -> int:
     try:
         repository = require_object(api.get(f"repos/{repository_path}"), "repository")
         owner = require_object(repository.get("owner"), "repository owner")
-        authority_login = args.release_authority_user.strip() or str(owner.get("login") or "")
-        if not authority_login:
-            raise ConfigurationError("release authority user could not be determined")
-        authority = require_object(
-            api.get(f"users/{quote(authority_login, safe='')}"),
-            "release authority",
+        default_authority = (
+            str(owner.get("login") or "") if owner.get("type") == "User" else ""
+        )
+        authority = resolve_principal(
+            api,
+            owner=owner,
+            user=args.release_authority_user,
+            team=args.release_authority_team,
+            label="release authority",
+            default_user=default_authority,
+        )
+        authority_members = principal_team_members(api, authority)
+        validate_release_authority(
+            release_authority=authority,
+            permission_document=principal_repository_permission(
+                api,
+                repository_path=repository_path,
+                principal=authority,
+            ),
+            team_members_document=authority_members,
         )
 
         patch = security_patch(repository)
@@ -415,6 +644,7 @@ def main() -> int:
             name=args.ruleset_name,
             tag_ref_pattern=args.tag_ref_pattern,
             release_authority_id=int(authority["id"]),
+            release_authority_type=str(authority["type"]),
         )
         if ruleset_is_current(managed, desired_ruleset):
             actions.append("release tag ruleset already current")
@@ -426,37 +656,53 @@ def main() -> int:
             not_found={},
         )
         reviewer: dict[str, Any] | None = None
-        permission: Any = None
-        if args.reviewer_user.strip():
-            reviewer_login = args.reviewer_user.strip()
-            reviewer = require_object(
-                api.get(f"users/{quote(reviewer_login, safe='')}"),
-                "release reviewer",
-            )
-            reviewer = {"type": "User", "id": reviewer.get("id"), "login": reviewer.get("login")}
-            permission = api.get(
-                f"repos/{repository_path}/collaborators/{quote(reviewer_login, safe='')}/permission",
-                not_found={},
+        if args.reviewer_user.strip() or args.reviewer_team.strip():
+            reviewer = resolve_principal(
+                api,
+                owner=owner,
+                user=args.reviewer_user,
+                team=args.reviewer_team,
+                label="release reviewer",
             )
             validate_independent_reviewer(
                 reviewer=reviewer,
                 release_authority=authority,
-                permission_document=permission,
+                permission_document=principal_repository_permission(
+                    api,
+                    repository_path=repository_path,
+                    principal=reviewer,
+                ),
+                team_members_document=principal_team_members(api, reviewer),
+                release_authority_members_document=authority_members,
             )
         else:
             existing_reviewers = extract_environment_reviewers(environment)
-            reviewer = next(
-                (
-                    item
-                    for item in existing_reviewers
-                    if item.get("type") == "User" and item.get("id") != authority.get("id")
-                ),
-                None,
-            )
+            for candidate in existing_reviewers:
+                if candidate.get("type") == "Team":
+                    candidate["organization"] = str(owner.get("login") or "")
+                identity_field = "login" if candidate.get("type") == "User" else "slug"
+                if not candidate.get(identity_field):
+                    continue
+                try:
+                    validate_independent_reviewer(
+                        reviewer=candidate,
+                        release_authority=authority,
+                        permission_document=principal_repository_permission(
+                            api,
+                            repository_path=repository_path,
+                            principal=candidate,
+                        ),
+                        team_members_document=principal_team_members(api, candidate),
+                        release_authority_members_document=authority_members,
+                    )
+                except ConfigurationError:
+                    continue
+                reviewer = candidate
+                break
             if reviewer is None:
                 blockers.append(
-                    "add a repository collaborator and pass --reviewer-user LOGIN; "
-                    "the reviewer must differ from the release authority"
+                    "add a review-capable collaborator or team and pass --reviewer-user LOGIN "
+                    "or --reviewer-team SLUG; the reviewer must differ from the release authority"
                 )
 
         desired_environment = environment_payload(environment, reviewer=reviewer) if reviewer else None
@@ -502,12 +748,12 @@ def main() -> int:
                 applied.append("release environment tag policy")
 
         plan = {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "mode": args.mode,
             "repository": args.repository,
-            "releaseAuthority": authority.get("login"),
-            "reviewer": reviewer.get("login") if reviewer else None,
+            "releaseAuthority": public_principal(authority),
+            "reviewer": public_principal(reviewer) if reviewer else None,
             "actions": actions,
             "blockers": blockers,
             "applied": applied,

@@ -255,11 +255,45 @@ def validate_governance(
         missing_rules = sorted(REQUIRED_TAG_RULES - rule_types)
         require(not missing_rules, "tag ruleset is missing rules: " + ", ".join(missing_rules))
         bypass = matching_rulesets[0].get("bypass_actors", [])
+        explicit_bypass = [
+            actor
+            for actor in bypass
+            if isinstance(actor, dict)
+            and actor.get("actor_type") in {"User", "Team"}
+            and isinstance(actor.get("actor_id"), int)
+            and actor.get("bypass_mode") == "always"
+        ] if isinstance(bypass, list) else []
         require(
-            isinstance(bypass, list)
-            and any(isinstance(actor, dict) and actor.get("bypass_mode") == "always" for actor in bypass),
+            bool(explicit_bypass),
             "tag ruleset has no explicit release-authority bypass actor",
         )
+        require(
+            isinstance(bypass, list) and len(explicit_bypass) == len(bypass),
+            "tag ruleset contains an unscoped release bypass actor",
+        )
+        release_authority_member_ids: set[int] = set()
+        for actor in explicit_bypass:
+            actor_id = actor["actor_id"]
+            if actor.get("actor_type") == "User":
+                release_authority_member_ids.add(actor_id)
+                continue
+            members = reviewer_members.get(f"Team:{actor_id}")
+            require(
+                isinstance(members, list),
+                f"release authority Team:{actor_id} membership could not be verified",
+            )
+            team_member_ids = {
+                member.get("id")
+                for member in members
+                if isinstance(member, dict) and isinstance(member.get("id"), int)
+            } if isinstance(members, list) else set()
+            require(
+                bool(team_member_ids),
+                f"release authority Team:{actor_id} has no verified members",
+            )
+            release_authority_member_ids.update(team_member_ids)
+    else:
+        release_authority_member_ids = set()
 
     environment = require_object(environment_document, "release environment")
     require(environment.get("name") == environment_name, "release environment identity does not match")
@@ -291,7 +325,11 @@ def validate_governance(
             if (reviewer_type, reviewer_id) in bypass_identities:
                 continue
             if reviewer_type == "User":
-                if reviewer_id in collaborators and reviewer_id != repository_owner_id:
+                if (
+                    reviewer_id in collaborators
+                    and reviewer_id != repository_owner_id
+                    and reviewer_id not in release_authority_member_ids
+                ):
                     independent_reviewer = True
             else:
                 members = reviewer_members.get(f"Team:{reviewer_id}")
@@ -301,6 +339,8 @@ def validate_governance(
                     if isinstance(member, dict) and isinstance(member.get("id"), int)
                 } if isinstance(members, list) else set()
                 eligible_members = member_ids & set(collaborators)
+                if member_ids & release_authority_member_ids:
+                    continue
                 if len(eligible_members) >= 2 and any(
                     member_id != repository_owner_id for member_id in eligible_members
                 ):
@@ -540,7 +580,41 @@ def main() -> int:
             },
         )
         reviewer_members_document: dict[str, Any] = {}
-        organization = quote(args.repository.split("/", 1)[0], safe="")
+        owner_document = require_object(repository_document.get("owner"), "repository owner")
+        organization_id = owner_document.get("id")
+        organization = quote(str(owner_document.get("login") or ""), safe="")
+        for ruleset in rulesets_document:
+            for actor in ruleset.get("bypass_actors", []):
+                if (
+                    not isinstance(actor, dict)
+                    or actor.get("actor_type") != "Team"
+                    or not isinstance(actor.get("actor_id"), int)
+                ):
+                    continue
+                if not isinstance(organization_id, int) or not organization:
+                    raise GovernanceError("repository organization identity is missing")
+                reviewer_id = actor["actor_id"]
+                key = f"Team:{reviewer_id}"
+                if key in reviewer_members_document:
+                    continue
+                team = require_object(
+                    api_get(
+                        args.api_url,
+                        f"organizations/{organization_id}/team/{reviewer_id}",
+                        token,
+                    ),
+                    f"release authority Team:{reviewer_id}",
+                )
+                slug = str(team.get("slug") or "")
+                if not slug:
+                    raise GovernanceError(
+                        f"release authority Team:{reviewer_id} slug is missing"
+                    )
+                reviewer_members_document[key] = api_get(
+                    args.api_url,
+                    f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all&per_page=100",
+                    token,
+                )
         for rule in environment_document.get("protection_rules", []):
             if not isinstance(rule, dict) or rule.get("type") != "required_reviewers":
                 continue
@@ -551,11 +625,13 @@ def main() -> int:
                 reviewer_id = reviewer.get("id") if isinstance(reviewer, dict) else None
                 slug = str(reviewer.get("slug") or "") if isinstance(reviewer, dict) else ""
                 if isinstance(reviewer_id, int) and slug:
-                    reviewer_members_document[f"Team:{reviewer_id}"] = api_get(
-                        args.api_url,
-                        f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all&per_page=100",
-                        token,
-                    )
+                    key = f"Team:{reviewer_id}"
+                    if key not in reviewer_members_document:
+                        reviewer_members_document[key] = api_get(
+                            args.api_url,
+                            f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all&per_page=100",
+                            token,
+                        )
         environment_policies_document = api_get(
             args.api_url,
             f"repos/{repository_path}/environments/{environment_path}/deployment-branch-policies?per_page=100",

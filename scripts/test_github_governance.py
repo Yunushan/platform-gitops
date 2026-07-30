@@ -47,7 +47,11 @@ def fixtures() -> dict[str, object]:
             "Team:7": [
                 {"id": 200, "login": "security-one"},
                 {"id": 201, "login": "security-two"},
-            ]
+            ],
+            "Team:8": [
+                {"id": 300, "login": "release-one"},
+                {"id": 301, "login": "release-two"},
+            ],
         },
         "private_vulnerability_reporting_document": {"enabled": True},
         "codeql_default_setup_document": {
@@ -180,12 +184,52 @@ def main() -> int:
         "no independently review-capable user or team",
     )
     reject(
+        lambda values: values["reviewer_members_document"].update(
+            {
+                "Team:7": [
+                    {"id": 200, "login": "security-one"},
+                    {"id": 300, "login": "release-one"},
+                ]
+            }
+        ),
+        "no independently review-capable user or team",
+    )
+    reject(
+        lambda values: values["reviewer_members_document"].pop("Team:8"),
+        "release authority Team:8 membership could not be verified",
+    )
+    reject(
         lambda values: values["commit_document"]["commit"]["verification"].update(verified=False),
         "default branch tip is not GitHub-verified",
     )
     reject(
         lambda values: values.update(rulesets_document=[]),
         "no active tag ruleset",
+    )
+    reject(
+        lambda values: values["rulesets_document"][0].update(
+            bypass_actors=[
+                {
+                    "actor_type": "OrganizationAdmin",
+                    "actor_id": None,
+                    "bypass_mode": "always",
+                }
+            ]
+        ),
+        "no explicit release-authority bypass actor",
+    )
+    reject(
+        lambda values: values["rulesets_document"][0].update(
+            bypass_actors=[
+                {"actor_type": "Team", "actor_id": 8, "bypass_mode": "always"},
+                {
+                    "actor_type": "OrganizationAdmin",
+                    "actor_id": None,
+                    "bypass_mode": "always",
+                },
+            ]
+        ),
+        "contains an unscoped release bypass actor",
     )
     reject(
         lambda values: values["environment_document"]["protection_rules"][0].update(

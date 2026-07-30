@@ -84,9 +84,11 @@ For releases from GitHub, use `docs/REPOSITORY_GOVERNANCE.md` and require
 job.
 
 Run `make github-governance-plan` before changing live settings. A full
-`make github-governance-apply` requires an independent collaborator through
-`GITHUB_GOVERNANCE_REVIEWER`; the scanner-only apply target cannot alter tag or
-environment gates.
+`make github-governance-apply` requires an independent review-capable user or
+team through `GITHUB_GOVERNANCE_REVIEWER` or
+`GITHUB_GOVERNANCE_REVIEWER_TEAM`. Set the release authority with
+`GITHUB_RELEASE_AUTHORITY` or `GITHUB_RELEASE_AUTHORITY_TEAM`; the scanner-only
+apply target cannot alter tag or environment gates.
 
 Actions-style CI entries must remain pinned to full commit SHAs rather than
 moving tags such as `v4` or `v5`. Keep the upstream version tag as a YAML
@@ -106,7 +108,7 @@ comment for readability, but release evidence should show the immutable SHA.
 - [ ] The release commit and annotated semantic-version tag both show GitHub's Verified status.
 - [ ] The checksummed release bundle retains `*.github-release.json` with the verified tag object, release commit, and input hashes.
 - [ ] The read-only dependency review check rejects newly introduced high or critical vulnerabilities.
-- [ ] The `production-release` environment requires an independent reviewer, prevents self-review, and restricts deployment refs.
+- [ ] The `production-release` environment requires an independent reviewer, prevents self-review, disallows administrator bypass, and restricts deployment refs.
 - [ ] `GOVERNANCE_AUDIT_TOKEN` is read-only and `make github-governance-verify` proves the live branch, tag, environment, Actions, and security settings.
 - [ ] The release verification job passes Gitleaks, Semgrep, Trivy, rendered Kubernetes schemas, and Kyverno CEL behavior tests with read-only permissions.
 - [ ] The `v*.*.*` tag ruleset blocks unauthorized creation, update, and deletion.
