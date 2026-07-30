@@ -19,6 +19,12 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from http_transport import (
+    HttpTransportPolicyError,
+    http_timeout_seconds,
+    read_bounded_response,
+    require_bounded_text,
+)
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -109,6 +115,10 @@ class GitHubApi:
                 return not_found
             detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"
             raise ConfigurationError(f"gh api request failed for {path}: {detail}")
+        try:
+            require_bounded_text(result.stdout)
+        except HttpTransportPolicyError as exc:
+            raise ConfigurationError(f"gh api response rejected for {path}: {exc}") from exc
         if not result.stdout.strip():
             return {}
         try:
@@ -138,8 +148,9 @@ class GitHubApi:
             },
         )
         try:
-            with urlopen(request, timeout=30) as response:
-                body = response.read()
+            timeout = http_timeout_seconds()
+            with urlopen(request, timeout=timeout) as response:
+                body = read_bounded_response(response)
                 return json.loads(body) if body else {}
         except HTTPError as exc:
             if exc.code == 404 and not_found is not NOT_FOUND:
@@ -153,6 +164,8 @@ class GitHubApi:
             raise ConfigurationError(f"GitHub API request failed: {exc.reason}") from exc
         except json.JSONDecodeError as exc:
             raise ConfigurationError(f"GitHub API returned invalid JSON: {path}") from exc
+        except HttpTransportPolicyError as exc:
+            raise ConfigurationError(f"GitHub API response rejected for {path}: {exc}") from exc
 
     def get(self, path: str, *, not_found: Any = NOT_FOUND) -> Any:
         return self.request("GET", path, not_found=not_found)

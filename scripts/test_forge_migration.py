@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import os
 from pathlib import Path
 import shutil
@@ -1534,14 +1535,23 @@ def test_api_read_retry_is_bounded_and_write_safe() -> None:
     class Response:
         status = 200
 
+        def __init__(self) -> None:
+            self.offset = 0
+
         def __enter__(self):
             return self
 
         def __exit__(self, *_exc: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return b'{"result":"ok"}'
+        def read(self, size: int = -1) -> bytes:
+            payload = b'{"result":"ok"}'
+            if self.offset >= len(payload):
+                return b""
+            end = len(payload) if size < 0 else self.offset + size
+            chunk = payload[self.offset:end]
+            self.offset += len(chunk)
+            return chunk
 
     calls = 0
 
@@ -1578,6 +1588,77 @@ def test_api_read_retry_is_bounded_and_write_safe() -> None:
             raise AssertionError(f"non-idempotent write was retried: calls={calls}")
     finally:
         migration.urlopen = original_urlopen
+
+
+def test_api_response_size_and_secret_redaction() -> None:
+    target = migration.ApiTarget(
+        provider="forgejo",
+        api_url="https://forgejo.example.test/api/v1",
+        repository="owner/repository",
+        token_env="FORGEJO_TEST_TOKEN",
+    )
+
+    class Response:
+        status = 200
+
+        def __init__(self) -> None:
+            self.offset = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            payload = b'{"result":"too-large"}'
+            if self.offset >= len(payload):
+                return b""
+            end = len(payload) if size < 0 else self.offset + size
+            chunk = payload[self.offset:end]
+            self.offset += len(chunk)
+            return chunk
+
+    with (
+        mock.patch.dict(
+            os.environ,
+            {"FORGEJO_TEST_TOKEN": "do-not-leak", "PLATFORM_HTTP_RESPONSE_MAX_BYTES": "4"},
+        ),
+        mock.patch("forge_migration.urlopen", return_value=Response()),
+    ):
+        try:
+            migration.api_request(target, "GET", "repos/owner/repository")
+        except migration.MigrationError as exc:
+            if "4 bytes" not in str(exc):
+                raise AssertionError(f"oversized response diagnostic is incomplete: {exc}") from exc
+        else:
+            raise AssertionError("oversized migration API response was accepted")
+
+    error = migration.HTTPError(
+        "https://forgejo.example.test/api/v1/fail",
+        500,
+        "failed",
+        {},
+        io.BytesIO(b'{"message":"do-not-leak"}'),
+    )
+    with (
+        mock.patch.dict(
+            os.environ,
+            {
+                "FORGEJO_TEST_TOKEN": "do-not-leak",
+                "PLATFORM_HTTP_RESPONSE_MAX_BYTES": "1024",
+            },
+        ),
+        mock.patch("forge_migration.urlopen", side_effect=error),
+    ):
+        try:
+            migration.api_request(target, "GET", "fail")
+        except migration.MigrationError as exc:
+            message = str(exc)
+            if "do-not-leak" in message or "<redacted>" not in message:
+                raise AssertionError(f"migration API error leaked its credential: {message}") from exc
+        else:
+            raise AssertionError("failed migration API response unexpectedly succeeded")
 
 
 def test_plan_rejects_literal_credentials() -> None:
@@ -1651,6 +1732,7 @@ def main() -> int:
     test_nonportable_change_requests_fail_closed()
     test_change_request_plan_contract()
     test_api_read_retry_is_bounded_and_write_safe()
+    test_api_response_size_and_secret_redaction()
     test_plan_rejects_literal_credentials()
     print("Forge migration helper self-test passed.")
     return 0

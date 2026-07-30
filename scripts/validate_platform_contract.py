@@ -75,6 +75,8 @@ atomic_file_writer = root / "scripts/atomic_file.py"
 atomic_file_test = root / "scripts/test_atomic_file.py"
 subprocess_timeout_helper = root / "scripts/subprocess_timeout.py"
 subprocess_timeout_test = root / "scripts/test_subprocess_timeout_contract.py"
+http_transport_helper = root / "scripts/http_transport.py"
+http_transport_test = root / "scripts/test_http_transport_contract.py"
 image_inventory_capture = root / "scripts/capture_live_image_inventory.py"
 image_inventory_reconciler = root / "scripts/reconcile_image_inventory.py"
 image_inventory_validator = root / "scripts/verify_image_inventory_evidence.py"
@@ -2919,6 +2921,8 @@ def main() -> None:
         atomic_file_test,
         subprocess_timeout_helper,
         subprocess_timeout_test,
+        http_transport_helper,
+        http_transport_test,
         image_inventory_capture,
         image_inventory_reconciler,
         image_inventory_validator,
@@ -3103,6 +3107,45 @@ def main() -> None:
             subprocess_timeout_test_text,
             needle,
             f"subprocess timeout self-test must retain fail-closed coverage: {needle}",
+        )
+
+    http_transport_helper_text = read(http_transport_helper)
+    for needle in (
+        'HTTP_TIMEOUT_ENV = "PLATFORM_HTTP_TIMEOUT_SECONDS"',
+        'HTTP_RESPONSE_LIMIT_ENV = "PLATFORM_HTTP_RESPONSE_MAX_BYTES"',
+        "MAX_HTTP_TIMEOUT_SECONDS = 300.0",
+        "MAX_HTTP_RESPONSE_BYTES = 64 * 1024 * 1024",
+        "math.isfinite(timeout)",
+        "remaining = limit + 1",
+        "chunk = response.read(remaining)",
+        "def require_bounded_text(",
+        "class HttpResponseTooLarge(",
+    ):
+        require_text(
+            http_transport_helper_text,
+            needle,
+            f"HTTP transport helper must remain finite and bounded: {needle}",
+        )
+
+    http_transport_test_text = read(http_transport_test)
+    for needle in (
+        "production_python_files",
+        "direct_response_reads",
+        "json_load_response_calls",
+        "urlopen_calls_without_timeout",
+        "opener_calls_without_timeout",
+        "ast.parse",
+        "test_shared_policy_adoption",
+        "unsafe HTTP timeout was accepted",
+        "unsafe HTTP response limit was accepted",
+        "oversized HTTP response was accepted",
+        "UTF-8 response bytes were not counted",
+        "67108865",
+    ):
+        require_text(
+            http_transport_test_text,
+            needle,
+            f"HTTP transport self-test must retain fail-closed coverage: {needle}",
         )
 
     image_inventory_capture_text = read(image_inventory_capture)
@@ -4573,6 +4616,7 @@ def main() -> None:
             "scripts/validate_project.py",
             "scripts/test_python_syntax.py",
             "scripts/test_subprocess_timeout_contract.py",
+            "scripts/test_http_transport_contract.py",
             "scripts/test_validation_runner.py",
             "scripts/test_line_endings.py",
             "scripts/test_profile_checker.py",
@@ -4662,6 +4706,7 @@ def main() -> None:
         "first failing validation script exit code",
         "scripts/test_validation_runner.py",
         "scripts/test_subprocess_timeout_contract.py",
+        "scripts/test_http_transport_contract.py",
         "scripts/test_ansible_shell_blocks.py",
         "scripts/test_ansible_curl_timeout_contract.py",
         "scripts/test_ansible_until_contract.py",

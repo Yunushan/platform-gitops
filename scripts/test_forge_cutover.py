@@ -255,6 +255,7 @@ def test_service_http_and_content_helpers() -> None:
         def __init__(self, status: int, payload: bytes) -> None:
             self.status = status
             self.payload = payload
+            self.offset = 0
 
         def __enter__(self) -> "Response":
             return self
@@ -262,8 +263,13 @@ def test_service_http_and_content_helpers() -> None:
         def __exit__(self, *_args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return self.payload
+        def read(self, size: int = -1) -> bytes:
+            if self.offset >= len(self.payload):
+                return b""
+            end = len(self.payload) if size < 0 else self.offset + size
+            chunk = self.payload[self.offset:end]
+            self.offset += len(chunk)
+            return chunk
 
     try:
         bearer = cutover.service_target(

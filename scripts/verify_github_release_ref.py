@@ -17,6 +17,11 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from http_transport import (
+    HttpTransportPolicyError,
+    http_timeout_seconds,
+    read_bounded_response,
+)
 
 
 SEMVER_TAG_RE = re.compile(r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
@@ -151,14 +156,17 @@ def api_get(api_url: str, path: str, token: str) -> dict[str, Any]:
         },
     )
     try:
-        with urlopen(request, timeout=30) as response:
-            payload = json.load(response)
+        timeout = http_timeout_seconds()
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(read_bounded_response(response))
     except HTTPError as exc:
         raise ReleaseRefError(f"GitHub API request failed with HTTP {exc.code}: {path}") from exc
     except URLError as exc:
         raise ReleaseRefError(f"GitHub API request failed: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
         raise ReleaseRefError(f"GitHub API returned invalid JSON: {path}") from exc
+    except HttpTransportPolicyError as exc:
+        raise ReleaseRefError(f"GitHub API response rejected for {path}: {exc}") from exc
     return require_object(payload, f"GitHub API response for {path}")
 
 

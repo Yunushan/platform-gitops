@@ -126,6 +126,16 @@ override is set. Every value must be finite, positive, and no greater than
 child process; increasing a bound is not proof that the underlying operation
 is healthy.
 
+Direct first-party HTTP clients use `PLATFORM_HTTP_TIMEOUT_SECONDS`, defaulting
+to `30` seconds with a hard maximum of `300` seconds. API response bodies are
+read only through the shared bounded reader. The default maximum is 16 MiB;
+`PLATFORM_HTTP_RESPONSE_MAX_BYTES` may raise it to at most 64 MiB for a measured
+large response. Non-numeric, non-positive, non-finite, fractional byte, or
+over-ceiling values fail closed. GitHub CLI fallback output is checked against
+the same byte limit before JSON parsing. An oversized response is an operation
+failure, not a reason to disable the bound; confirm pagination and expected API
+payload size before changing it.
+
 ## Controlled Pruning
 
 Argo CD automatically reconciles creates and updates, but every Application

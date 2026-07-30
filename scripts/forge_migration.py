@@ -31,6 +31,11 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from http_transport import (
+    HttpTransportPolicyError,
+    http_timeout_seconds,
+    read_bounded_response,
+)
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -559,6 +564,14 @@ def api_headers(target: ApiTarget) -> dict[str, str]:
     return headers
 
 
+def redact_api_text(target: ApiTarget, value: str) -> str:
+    """Remove the configured API credential from remote diagnostics."""
+    credential_value = os.environ.get(target.token_env, "") if target.token_env else ""
+    if credential_value:
+        value = value.replace(credential_value, "<redacted>")
+    return value
+
+
 def api_request(
     target: ApiTarget,
     method: str,
@@ -574,14 +587,23 @@ def api_request(
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = Request(url, data=data, headers=api_headers(target), method=method)
     attempts = 3 if method.upper() == "GET" else 1
+    try:
+        timeout = http_timeout_seconds()
+    except HttpTransportPolicyError as exc:
+        raise MigrationError(str(exc)) from None
     for attempt in range(1, attempts + 1):
         try:
-            with urlopen(request, timeout=30) as response:
+            with urlopen(request, timeout=timeout) as response:
                 status = response.status
-                payload = response.read().decode("utf-8")
+                payload = read_bounded_response(response).decode("utf-8")
             break
         except HTTPError as exc:
-            payload = exc.read().decode("utf-8", errors="replace")
+            try:
+                payload = read_bounded_response(exc).decode("utf-8", errors="replace")
+            except HttpTransportPolicyError as policy_error:
+                raise MigrationError(
+                    f"{method} {redact_url(url)} response rejected: {policy_error}"
+                ) from policy_error
             if exc.code in expected:
                 try:
                     decoded = json.loads(payload) if payload else {}
@@ -591,7 +613,12 @@ def api_request(
                     ) from decode_error
                 return (exc.code, decoded) if return_status else decoded
             raise MigrationError(
-                f"{method} {redact_url(url)} failed with HTTP {exc.code}: {payload[:500]}"
+                f"{method} {redact_url(url)} failed with HTTP {exc.code}: "
+                f"{redact_api_text(target, payload[:500])}"
+            ) from exc
+        except (HttpTransportPolicyError, UnicodeDecodeError) as exc:
+            raise MigrationError(
+                f"{method} {redact_url(url)} response rejected: {exc}"
             ) from exc
         except (URLError, ConnectionError, TimeoutError) as exc:
             if attempt < attempts:
@@ -599,7 +626,10 @@ def api_request(
                 continue
             raise MigrationError(f"{method} {redact_url(url)} failed after {attempt} attempt(s): {exc}") from exc
     if status not in expected:
-        raise MigrationError(f"{method} {redact_url(url)} returned HTTP {status}: {payload[:500]}")
+        raise MigrationError(
+            f"{method} {redact_url(url)} returned HTTP {status}: "
+            f"{redact_api_text(target, payload[:500])}"
+        )
     if not payload:
         decoded = {}
         return (status, decoded) if return_status else decoded

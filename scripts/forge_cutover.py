@@ -34,6 +34,11 @@ from urllib.request import Request, urlopen
 
 import forge_migration as migration
 from atomic_file import atomic_write_text
+from http_transport import (
+    HttpTransportPolicyError,
+    http_timeout_seconds,
+    read_bounded_response,
+)
 
 
 TOOL = "scripts/forge_cutover.py"
@@ -553,17 +558,30 @@ def service_request(
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = Request(url, data=data, headers=service_headers(target), method=method)
     try:
-        with urlopen(request, timeout=30) as response:
+        timeout = http_timeout_seconds()
+    except HttpTransportPolicyError as exc:
+        raise CutoverError(str(exc)) from None
+    try:
+        with urlopen(request, timeout=timeout) as response:
             status = response.status
-            payload = response.read().decode("utf-8")
+            payload = read_bounded_response(response).decode("utf-8")
     except HTTPError as exc:
-        payload = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = read_bounded_response(exc).decode("utf-8", errors="replace")
+        except HttpTransportPolicyError as policy_error:
+            raise CutoverError(
+                f"{method} {migration.redact_url(url)} response rejected: {policy_error}"
+            ) from policy_error
         if exc.code not in expected:
             raise CutoverError(
                 f"{method} {migration.redact_url(url)} failed with HTTP {exc.code}: "
                 f"{redact_text(payload[:500])}"
             ) from exc
         status = exc.code
+    except (HttpTransportPolicyError, UnicodeDecodeError) as exc:
+        raise CutoverError(
+            f"{method} {migration.redact_url(url)} response rejected: {exc}"
+        ) from exc
     except URLError as exc:
         raise CutoverError(f"{method} {migration.redact_url(url)} failed: {exc}") from exc
     if status not in expected:

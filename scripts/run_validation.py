@@ -19,6 +19,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_python_syntax.py",
     "scripts/test_atomic_file.py",
     "scripts/test_subprocess_timeout_contract.py",
+    "scripts/test_http_transport_contract.py",
     "scripts/test_validation_runner.py",
     "scripts/test_line_endings.py",
     "scripts/test_profile_checker.py",

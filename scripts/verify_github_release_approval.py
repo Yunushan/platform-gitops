@@ -20,6 +20,12 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from http_transport import (
+    HttpTransportPolicyError,
+    http_timeout_seconds,
+    read_bounded_response,
+    require_bounded_text,
+)
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -365,6 +371,10 @@ def gh_api_get(path: str, token: str, *, not_found: Any) -> Any:
         detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "unknown error"
         raise ReleaseApprovalError(f"gh api request failed for {path}: {detail}")
     try:
+        require_bounded_text(result.stdout)
+    except HttpTransportPolicyError as exc:
+        raise ReleaseApprovalError(f"gh api response rejected for {path}: {exc}") from exc
+    try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise ReleaseApprovalError(f"gh api returned invalid JSON: {path}") from exc
@@ -387,8 +397,9 @@ def api_get(
         },
     )
     try:
-        with urlopen(request, timeout=30) as response:
-            return json.load(response)
+        timeout = http_timeout_seconds()
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(read_bounded_response(response))
     except HTTPError as exc:
         if exc.code == 404 and not_found is not NO_NOT_FOUND_DEFAULT:
             return not_found
@@ -399,6 +410,8 @@ def api_get(
         raise ReleaseApprovalError(f"GitHub API request failed: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
         raise ReleaseApprovalError(f"GitHub API returned invalid JSON: {path}") from exc
+    except HttpTransportPolicyError as exc:
+        raise ReleaseApprovalError(f"GitHub API response rejected for {path}: {exc}") from exc
 
 
 def api_get_all_pages(api_url: str, path: str, token: str) -> list[Any]:
