@@ -38,6 +38,7 @@ validate:
     - python scripts/test_image_inventory_evidence.py
     - python scripts/test_release_workflow.py
     - python scripts/test_github_release_ref.py
+    - python scripts/test_github_release_approval.py
     - python scripts/test_github_governance.py
     - python scripts/test_github_governance_configuration.py
     - python scripts/test_dependency_review_workflow.py

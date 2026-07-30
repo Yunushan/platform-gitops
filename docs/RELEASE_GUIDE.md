@@ -109,6 +109,8 @@ comment for readability, but release evidence should show the immutable SHA.
 - [ ] The checksummed release bundle retains `*.github-release.json` with the verified tag object, release commit, and input hashes.
 - [ ] The read-only dependency review check rejects newly introduced high or critical vulnerabilities.
 - [ ] The `production-release` environment requires an independent reviewer, prevents self-review, disallows administrator bypass, and restricts deployment refs.
+- [ ] The published `*.github-release-approval.json` proves the release run was approved by a configured reviewer who is neither the repository owner nor release authority.
+- [ ] Release publication is the first workflow-run attempt; reruns are rejected because GitHub approval history is not attempt-scoped. Use a new reviewed patch release after a failed publication attempt.
 - [ ] `GOVERNANCE_AUDIT_TOKEN` is read-only and `make github-governance-verify` proves the live branch, tag, environment, Actions, and security settings.
 - [ ] The release verification job passes Gitleaks, Semgrep, Trivy, rendered Kubernetes schemas, and Kyverno CEL behavior tests with read-only permissions.
 - [ ] The `v*.*.*` tag ruleset blocks unauthorized creation, update, and deletion.
@@ -119,7 +121,7 @@ comment for readability, but release evidence should show the immutable SHA.
 - [ ] `make platform-image-inventory-verify` proves that every rendered image is observed by digest and is signed or covered by a current reviewed exception.
 - [ ] `make platform-app-health` passes on the target cluster.
 - [ ] `make platform-production-check` passes on the target cluster.
-- [ ] `make platform-production-score` verifies the keyless checksum bundle, accepts commit-matched live, governance, and signed-release records, and reports exactly 100/100.
+- [ ] `make platform-production-score` verifies the keyless checksum bundle, accepts commit-matched live, governance, independent-approval, and signed-release records, and reports exactly 100/100.
 - [ ] Release archive checksum, Sigstore bundle, provenance, and SBOM attestation verify successfully.
 - [ ] Production readiness go/no-go record captured using `docs/PRODUCTION_READINESS.md`.
 - [ ] Business continuity and disaster recovery evidence captured using `docs/BUSINESS_CONTINUITY.md`.

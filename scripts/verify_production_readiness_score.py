@@ -52,7 +52,7 @@ GOVERNANCE_CONTROLS = {
     "independentCollaborators",
     "signedDefaultBranchTip",
     "releaseTagRuleset",
-    "independentReleaseApproval",
+    "independentReleaseReviewConfigured",
     "releaseTagEnvironmentPolicy",
     "readOnlyWorkflowToken",
     "actionShaPinning",
@@ -67,6 +67,24 @@ RELEASE_CONTROLS = {
     "tagCommitBinding",
     "signedTag",
     "signedCommit",
+}
+RELEASE_APPROVAL_INPUTS = {
+    "repository",
+    "workflowRun",
+    "environment",
+    "reviewHistory",
+    "collaborators",
+    "rulesets",
+    "teamMembers",
+}
+RELEASE_APPROVAL_CONTROLS = {
+    "workflowRunBinding",
+    "firstAttemptOnly",
+    "requiredReviewerProtection",
+    "recordedEnvironmentApproval",
+    "authorizedReviewer",
+    "independentReviewer",
+    "releaseAuthoritySeparation",
 }
 
 
@@ -170,8 +188,8 @@ def validate_governance_evidence(
     now: datetime,
     max_age_hours: int,
 ) -> None:
-    if document.get("schemaVersion") != 2:
-        raise ReadinessError("GitHub governance evidence schemaVersion must be 2")
+    if document.get("schemaVersion") != 3:
+        raise ReadinessError("GitHub governance evidence schemaVersion must be 3")
     if document.get("result") != "passed":
         raise ReadinessError("GitHub governance evidence result must be passed")
     require_fresh(
@@ -192,6 +210,49 @@ def validate_governance_evidence(
         raise ReadinessError("GitHub governance tag pattern does not match")
     require_hash_map(document.get("inputSha256"), GOVERNANCE_INPUTS, "GitHub governance inputSha256")
     require_passed_map(document.get("controls"), GOVERNANCE_CONTROLS, "GitHub governance controls")
+
+
+def validate_release_approval_evidence(
+    document: dict[str, Any],
+    *,
+    expected_repository: str,
+    expected_commit: str,
+    expected_environment: str,
+    now: datetime,
+    max_age_hours: int,
+) -> None:
+    if document.get("schemaVersion") != 1:
+        raise ReadinessError("GitHub release approval evidence schemaVersion must be 1")
+    if document.get("result") != "passed":
+        raise ReadinessError("GitHub release approval evidence result must be passed")
+    require_fresh(
+        document.get("generatedAt"),
+        label="GitHub release approval generatedAt",
+        now=now,
+        max_age_hours=max_age_hours,
+    )
+    if document.get("repository") != expected_repository:
+        raise ReadinessError("GitHub release approval repository does not match")
+    if str(document.get("commit", "")).lower() != expected_commit:
+        raise ReadinessError("GitHub release approval commit does not match the production commit")
+    if document.get("releaseEnvironment") != expected_environment:
+        raise ReadinessError("GitHub release approval environment does not match")
+    if not isinstance(document.get("runId"), int) or document["runId"] <= 0:
+        raise ReadinessError("GitHub release approval runId is invalid")
+    if not isinstance(document.get("runAttempt"), int) or document["runAttempt"] <= 0:
+        raise ReadinessError("GitHub release approval runAttempt is invalid")
+    if not SHA256_RE.fullmatch(str(document.get("approvalBindingSha256", ""))):
+        raise ReadinessError("GitHub release approval binding SHA-256 is invalid")
+    require_hash_map(
+        document.get("inputSha256"),
+        RELEASE_APPROVAL_INPUTS,
+        "GitHub release approval inputSha256",
+    )
+    require_passed_map(
+        document.get("controls"),
+        RELEASE_APPROVAL_CONTROLS,
+        "GitHub release approval controls",
+    )
 
 
 def validate_release_evidence(
@@ -260,6 +321,7 @@ def verify_release_bundle(
     bundle_path: Path,
     governance_path: Path,
     release_path: Path,
+    release_approval_path: Path,
     repository: str,
     tag: str,
     cosign_bin: str,
@@ -275,6 +337,7 @@ def verify_release_bundle(
         f"{artifact}.cyclonedx.json",
         f"{artifact}.github-governance.json",
         f"{artifact}.github-release.json",
+        f"{artifact}.github-release-approval.json",
     }
     missing = sorted(required_names - set(entries))
     if missing:
@@ -284,6 +347,7 @@ def verify_release_bundle(
     expected_hashes = {
         f"{artifact}.github-governance.json": artifact_sha256(governance_path),
         f"{artifact}.github-release.json": artifact_sha256(release_path),
+        f"{artifact}.github-release-approval.json": artifact_sha256(release_approval_path),
     }
     mismatched = sorted(name for name, digest in expected_hashes.items() if entries[name] != digest)
     if mismatched:
@@ -331,6 +395,7 @@ def evaluate_readiness(
     production_document: dict[str, Any] | None,
     governance_document: dict[str, Any] | None,
     release_document: dict[str, Any] | None,
+    release_approval_document: dict[str, Any] | None,
     root: Path,
     now: datetime,
     expected_profile: str,
@@ -387,8 +452,11 @@ def evaluate_readiness(
         else:
             categories[1].update(earned=GOVERNANCE_WEIGHT, result="passed")
 
-    if release_document is None:
-        diagnostics.append("signed release evidence is missing or unreadable")
+    if release_document is None or release_approval_document is None:
+        if release_document is None:
+            diagnostics.append("signed release evidence is missing or unreadable")
+        if release_approval_document is None:
+            diagnostics.append("independent release approval evidence is missing or unreadable")
     else:
         try:
             validate_release_evidence(
@@ -399,8 +467,16 @@ def evaluate_readiness(
                 now=now,
                 max_age_hours=max_release_age_hours,
             )
+            validate_release_approval_evidence(
+                release_approval_document,
+                expected_repository=expected_repository,
+                expected_commit=expected_commit,
+                expected_environment=expected_environment,
+                now=now,
+                max_age_hours=max_release_age_hours,
+            )
         except ReadinessError as exc:
-            diagnostics.append(f"signed release evidence failed: {exc}")
+            diagnostics.append(f"signed release and approval evidence failed: {exc}")
         else:
             categories[2].update(earned=RELEASE_WEIGHT, result="passed")
 
@@ -438,6 +514,11 @@ def parser() -> argparse.ArgumentParser:
         "--release-evidence",
         type=Path,
         default=os.environ.get("GITHUB_RELEASE_EVIDENCE_FILE") or None,
+    )
+    result.add_argument(
+        "--release-approval-evidence",
+        type=Path,
+        default=os.environ.get("GITHUB_RELEASE_APPROVAL_EVIDENCE_FILE") or None,
     )
     result.add_argument(
         "--release-checksums",
@@ -483,6 +564,10 @@ def main() -> int:
         argument_problems.append("--governance-evidence or GITHUB_GOVERNANCE_EVIDENCE_FILE is required")
     if not args.release_evidence:
         argument_problems.append("--release-evidence or GITHUB_RELEASE_EVIDENCE_FILE is required")
+    if not args.release_approval_evidence:
+        argument_problems.append(
+            "--release-approval-evidence or GITHUB_RELEASE_APPROVAL_EVIDENCE_FILE is required"
+        )
     if not args.release_checksums:
         argument_problems.append("--release-checksums or GITHUB_RELEASE_CHECKSUMS_FILE is required")
     if not args.release_checksum_bundle:
@@ -518,6 +603,11 @@ def main() -> int:
         ("production", args.production_evidence, "production evidence"),
         ("governance", args.governance_evidence, "GitHub governance evidence"),
         ("release", args.release_evidence, "GitHub release evidence"),
+        (
+            "releaseApproval",
+            args.release_approval_evidence,
+            "GitHub release approval evidence",
+        ),
     ):
         try:
             documents[name] = load_document(path, label)
@@ -526,13 +616,18 @@ def main() -> int:
             documents[name] = None
             load_problems.append(str(exc))
 
-    if documents.get("governance") is not None and documents.get("release") is not None:
+    if (
+        documents.get("governance") is not None
+        and documents.get("release") is not None
+        and documents.get("releaseApproval") is not None
+    ):
         try:
             release_bundle_hashes = verify_release_bundle(
                 checksums_path=args.release_checksums,
                 bundle_path=args.release_checksum_bundle,
                 governance_path=args.governance_evidence,
                 release_path=args.release_evidence,
+                release_approval_path=args.release_approval_evidence,
                 repository=args.repository,
                 tag=args.tag,
                 cosign_bin=os.environ.get("COSIGN_BIN", "cosign"),
@@ -540,6 +635,7 @@ def main() -> int:
         except (ReadinessError, OSError) as exc:
             documents["governance"] = None
             documents["release"] = None
+            documents["releaseApproval"] = None
             load_problems.append(f"signed release bundle failed: {exc}")
         else:
             evidence_hashes.update(release_bundle_hashes)
@@ -548,6 +644,7 @@ def main() -> int:
         production_document=documents["production"],
         governance_document=documents["governance"],
         release_document=documents["release"],
+        release_approval_document=documents["releaseApproval"],
         root=ROOT,
         now=datetime.now(timezone.utc),
         expected_profile=args.profile.strip(),

@@ -144,10 +144,10 @@ make platform-production-check
 ```
 
 After retaining the private live acceptance record and the checksummed GitHub
-governance and signed-release records, run `make platform-production-score`.
-It is the fail-closed final decision: it verifies the keyless Sigstore checksum
-bundle, and only commit-matched evidence that earns exactly 100/100 exits
-successfully. See
+governance, independent release-approval, and signed-release records, run
+`make platform-production-score`. It is the fail-closed final decision: it
+verifies the keyless Sigstore checksum bundle, and only commit-matched evidence
+that earns exactly 100/100 exits successfully. See
 [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md#100-point-production-gate).
 
 The production gate is fail-closed: it requires external etcd, Velero,

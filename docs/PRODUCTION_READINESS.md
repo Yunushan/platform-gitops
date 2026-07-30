@@ -70,7 +70,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | Wildcard TLS deployed | `PLATFORM_WILDCARD_TLS_CERT_FILE=<CERT> PLATFORM_WILDCARD_TLS_KEY_FILE=<KEY> make platform-tls` |
 | TLS boundary verified | `make platform-tls-verify` |
 | Commit-bound acceptance retained | `PLATFORM_RELEASE_ID=<ID> PLATFORM_EVIDENCE_OPERATOR=<OPERATOR> PLATFORM_EVIDENCE_APPROVER=<APPROVER> make platform-production-evidence` |
-| Final production score passed | `make platform-production-score` verifies the signed checksum bundle and commit-matched live, governance, and release evidence, reports exactly 100/100, and exits zero |
+| Final production score passed | `make platform-production-score` verifies the signed checksum bundle and commit-matched live, governance, independent-approval, and release evidence, reports exactly 100/100, and exits zero |
 | App health gate passed | `make platform-app-health` |
 | Forgejo singleton recovery proven | Live Forgejo uses `Recreate` and a `minAvailable: 1` PodDisruptionBudget, and `make platform-forgejo-recovery-drill` produced current, independently approved, commit-bound cross-node evidence inside the accepted RTO without changing service, image, encrypted PVC/PV, or CSI key identity and with the source node restored schedulable |
 | RKE2 verification passed | `make rke2-verify` or production gate output |
@@ -157,19 +157,21 @@ upstream is used automatically.
 
 ## 100-Point Production Gate
 
-Repository checks, live cluster acceptance, GitHub governance, and signed
-release provenance are separate trust boundaries. A production score of
-100/100 requires all three retained evidence records to identify the same
-40-character commit. Partial evidence reports its earned score but exits
-non-zero; it must not be used as launch approval.
+Repository checks, live cluster acceptance, GitHub governance, independently
+approved release execution, and signed release provenance are separate trust
+boundaries. A production score of 100/100 requires all four retained evidence
+records to identify the same 40-character commit. Partial evidence reports its
+earned score but exits non-zero; it must not be used as launch approval.
 
-Download the checksummed `*.github-governance.json` and
-`*.github-release.json` files from the immutable GitHub release, then run:
+Download the checksummed `*.github-governance.json`,
+`*.github-release-approval.json`, and `*.github-release.json` files from the
+immutable GitHub release, then run:
 
 ```bash
 PLATFORM_PRODUCTION_EVIDENCE_FILE=private/production-evidence/<RELEASE>.json \
 GITHUB_GOVERNANCE_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-governance.json \
 GITHUB_RELEASE_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-release.json \
+GITHUB_RELEASE_APPROVAL_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-release-approval.json \
 GITHUB_RELEASE_CHECKSUMS_FILE=private/release-evidence/SHA256SUMS \
 GITHUB_RELEASE_CHECKSUM_BUNDLE_FILE=private/release-evidence/SHA256SUMS.sigstore.json \
 GITHUB_REPOSITORY=<OWNER>/<REPOSITORY> \
@@ -183,10 +185,11 @@ make platform-production-score
 The gate first uses Cosign to verify the keyless `SHA256SUMS` signature against
 the exact release workflow identity and GitHub Actions OIDC issuer. It then
 assigns 80 points to fresh, independently approved live platform acceptance,
-10 points to fresh GitHub governance, and 10 points to a verified annotated
-semantic-version tag plus signed release commit. It validates the underlying
-evidence schemas and SHA-256 bindings rather than trusting a manually entered
-score. Only exactly 100/100 exits successfully.
+10 points to fresh GitHub governance, and 10 points to an independently approved
+workflow run plus a verified annotated semantic-version tag and signed release
+commit. It validates the underlying evidence schemas and SHA-256 bindings
+rather than trusting a manually entered score. Only exactly 100/100 exits
+successfully.
 
 When proving the exact private GitOps source, run the production gate with the
 same repository URL used to register Argo CD Applications:

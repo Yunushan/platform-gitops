@@ -45,6 +45,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_image_inventory_evidence.py",
     "scripts/test_release_workflow.py",
     "scripts/test_github_release_ref.py",
+    "scripts/test_github_release_approval.py",
     "scripts/test_github_governance.py",
     "scripts/test_github_governance_configuration.py",
     "scripts/test_dependency_review_workflow.py",

@@ -83,7 +83,7 @@ help:
 	@echo "  platform-capacity-verify  Fail when node, scheduler, or Longhorn headroom is below production thresholds"
 	@echo "  platform-image-inventory-verify  Reconcile exact rendered/live image digests with signatures and admission scope"
 	@echo "  platform-production-evidence  Run production gates and retain commit-bound, independently approved evidence"
-	@echo "  platform-production-score  Require live, governance, and signed-release evidence for exactly 100/100"
+	@echo "  platform-production-score  Require live, governance, approval, and signed-release evidence for exactly 100/100"
 	@echo "  platform-production-check  Run repo, RKE2, app, backup, and restore-evidence readiness gates"
 	@echo "  platform-longhorn-bootstrap  Load private settings, bootstrap Longhorn storage, and verify CSI/PVC readiness"
 	@echo "  platform-longhorn-runtime-repair  Repair Longhorn manager/CSI registration without blocking on storage capacity"

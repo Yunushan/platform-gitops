@@ -399,7 +399,7 @@ def validate_governance(
         "actionsPermissions": actions_permissions_document,
     }
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "repository": repository,
         "defaultBranch": default_branch,
@@ -414,7 +414,7 @@ def validate_governance(
             "independentCollaborators": "passed",
             "signedDefaultBranchTip": "passed",
             "releaseTagRuleset": "passed",
-            "independentReleaseApproval": "passed",
+            "independentReleaseReviewConfigured": "passed",
             "releaseTagEnvironmentPolicy": "passed",
             "readOnlyWorkflowToken": "passed",
             "actionShaPinning": "passed",

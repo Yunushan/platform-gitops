@@ -32,6 +32,7 @@ def main() -> int:
         "  release:",
         "needs: verify",
         "environment: production-release",
+        "actions: read",
         "contents: read",
         "attestations: write",
         "contents: write",
@@ -52,6 +53,8 @@ def main() -> int:
         "python scripts/verify_github_release_ref.py",
         "rendered/governance/github-release-evidence.json",
         ".github-release.json",
+        "python scripts/verify_github_release_approval.py",
+        ".github-release-approval.json",
         "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
         "python scripts/verify_github_governance.py",
         "GITHUB_TOKEN: ${{ secrets.GOVERNANCE_AUDIT_TOKEN }}",
@@ -67,6 +70,7 @@ def main() -> int:
         "actions/upload-artifact@",
         "actions/download-artifact@",
         "sha256sum -c SHA256SUMS",
+        "Bind release approval to checksum manifest",
         "actions/attest-build-provenance@",
         "actions/attest-sbom@",
         "cosign sign-blob --yes",
@@ -115,6 +119,7 @@ def main() -> int:
         "annotated and GitHub-verified",
         "signed commit",
         "*.github-release.json",
+        "*.github-release-approval.json",
     ):
         require(guide, needle, "release guide")
 

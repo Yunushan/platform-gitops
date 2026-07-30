@@ -32,7 +32,7 @@ PROFILE = "premium-3node"
 
 def governance_evidence(now: datetime) -> dict[str, object]:
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "generatedAt": (now - timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
         "repository": REPOSITORY,
         "defaultBranch": "main",
@@ -42,6 +42,22 @@ def governance_evidence(now: datetime) -> dict[str, object]:
         "result": "passed",
         "inputSha256": {name: "1" * 64 for name in readiness.GOVERNANCE_INPUTS},
         "controls": {name: "passed" for name in readiness.GOVERNANCE_CONTROLS},
+    }
+
+
+def release_approval_evidence(now: datetime) -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "generatedAt": (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
+        "repository": REPOSITORY,
+        "runId": 1234,
+        "runAttempt": 1,
+        "commit": COMMIT,
+        "releaseEnvironment": "production-release",
+        "result": "passed",
+        "approvalBindingSha256": "2" * 64,
+        "inputSha256": {name: "3" * 64 for name in readiness.RELEASE_APPROVAL_INPUTS},
+        "controls": {name: "passed" for name in readiness.RELEASE_APPROVAL_CONTROLS},
     }
 
 
@@ -70,6 +86,7 @@ def evaluate(
     production: dict[str, object] | None,
     governance: dict[str, object] | None,
     release: dict[str, object] | None,
+    release_approval: dict[str, object] | None,
     *,
     root: Path,
     now: datetime,
@@ -78,6 +95,7 @@ def evaluate(
         production_document=production,
         governance_document=governance,
         release_document=release,
+        release_approval_document=release_approval,
         root=root,
         now=now,
         expected_profile=PROFILE,
@@ -94,8 +112,16 @@ def main() -> int:
         production = production_fixture.fixture(root, now)
         governance = governance_evidence(now)
         release = release_evidence(now)
+        release_approval = release_approval_evidence(now)
 
-        report, diagnostics = evaluate(production, governance, release, root=root, now=now)
+        report, diagnostics = evaluate(
+            production,
+            governance,
+            release,
+            release_approval,
+            root=root,
+            now=now,
+        )
         if report["score"] != 100 or report["result"] != "passed" or diagnostics:
             raise AssertionError(f"valid evidence did not earn 100/100: {report} {diagnostics}")
         if sum(category["weight"] for category in report["categories"]) != 100:
@@ -107,6 +133,7 @@ def main() -> int:
             production,
             failed_governance,
             release,
+            release_approval,
             root=root,
             now=now,
         )
@@ -117,30 +144,46 @@ def main() -> int:
 
         wrong_release = deepcopy(release)
         wrong_release["commit"] = "b" * 40
-        report, _ = evaluate(production, governance, wrong_release, root=root, now=now)
+        report, _ = evaluate(
+            production, governance, wrong_release, release_approval, root=root, now=now
+        )
         if report["score"] != 90 or report["result"] != "failed":
             raise AssertionError("a release for another commit was accepted")
 
         stale_governance = deepcopy(governance)
         stale_governance["generatedAt"] = (now - timedelta(hours=25)).isoformat()
-        report, _ = evaluate(production, stale_governance, release, root=root, now=now)
+        report, _ = evaluate(
+            production, stale_governance, release, release_approval, root=root, now=now
+        )
         if report["score"] != 90:
             raise AssertionError("stale governance evidence retained governance points")
 
         incomplete_release = deepcopy(release)
         del incomplete_release["inputSha256"]["annotatedTag"]
-        report, _ = evaluate(production, governance, incomplete_release, root=root, now=now)
+        report, _ = evaluate(
+            production, governance, incomplete_release, release_approval, root=root, now=now
+        )
         if report["score"] != 90:
             raise AssertionError("release evidence with missing input provenance was accepted")
 
         stale_production = deepcopy(production)
         stale_production["completedAt"] = (now - timedelta(days=8)).isoformat()
-        report, _ = evaluate(stale_production, governance, release, root=root, now=now)
+        report, _ = evaluate(
+            stale_production, governance, release, release_approval, root=root, now=now
+        )
         if report["score"] != 20:
             raise AssertionError("stale live acceptance evidence retained platform points")
 
-        report, diagnostics = evaluate(None, None, None, root=root, now=now)
-        if report["score"] != 0 or len(diagnostics) != 3:
+        wrong_approval = deepcopy(release_approval)
+        wrong_approval["commit"] = "b" * 40
+        report, _ = evaluate(
+            production, governance, release, wrong_approval, root=root, now=now
+        )
+        if report["score"] != 90 or report["result"] != "failed":
+            raise AssertionError("a release approval for another commit was accepted")
+
+        report, diagnostics = evaluate(None, None, None, None, root=root, now=now)
+        if report["score"] != 0 or len(diagnostics) != 4:
             raise AssertionError("missing evidence did not fail every readiness category")
 
         evidence_path = root / "release.json"
@@ -151,19 +194,23 @@ def main() -> int:
         production_path = root / "production.json"
         governance_path = root / "governance.json"
         release_path = root / "release.json"
+        release_approval_path = root / "release-approval.json"
         checksums_path = root / "SHA256SUMS"
         bundle_path = root / "SHA256SUMS.sigstore.json"
         score_path = root / "score.json"
         production_path.write_text(json.dumps(production) + "\n", encoding="utf-8")
         governance_path.write_text(json.dumps(governance) + "\n", encoding="utf-8")
         release_path.write_text(json.dumps(release) + "\n", encoding="utf-8")
+        release_approval_path.write_text(json.dumps(release_approval) + "\n", encoding="utf-8")
         artifact = f"platform-gitops-{TAG}"
         checksums_path.write_text(
             f"{'2' * 64}  {artifact}.tar.gz\n"
             f"{'3' * 64}  {artifact}.spdx.json\n"
             f"{'4' * 64}  {artifact}.cyclonedx.json\n"
             f"{readiness.artifact_sha256(governance_path)}  {artifact}.github-governance.json\n"
-            f"{readiness.artifact_sha256(release_path)}  {artifact}.github-release.json\n",
+            f"{readiness.artifact_sha256(release_path)}  {artifact}.github-release.json\n"
+            f"{readiness.artifact_sha256(release_approval_path)}  "
+            f"{artifact}.github-release-approval.json\n",
             encoding="utf-8",
         )
         bundle_path.write_text("{}\n", encoding="utf-8")
@@ -178,6 +225,7 @@ def main() -> int:
             bundle_path=bundle_path,
             governance_path=governance_path,
             release_path=release_path,
+            release_approval_path=release_approval_path,
             repository=REPOSITORY,
             tag=TAG,
             cosign_bin=sys.executable,
@@ -205,6 +253,7 @@ def main() -> int:
                 bundle_path=bundle_path,
                 governance_path=governance_path,
                 release_path=release_path,
+                release_approval_path=release_approval_path,
                 repository=REPOSITORY,
                 tag=TAG,
                 cosign_bin=sys.executable,
@@ -225,6 +274,7 @@ def main() -> int:
                 bundle_path=bundle_path,
                 governance_path=governance_path,
                 release_path=release_path,
+                release_approval_path=release_approval_path,
                 repository=REPOSITORY,
                 tag=TAG,
                 cosign_bin=sys.executable,
@@ -246,6 +296,8 @@ def main() -> int:
             str(governance_path),
             "--release-evidence",
             str(release_path),
+            "--release-approval-evidence",
+            str(release_approval_path),
             "--release-checksums",
             str(checksums_path),
             "--release-checksum-bundle",
@@ -275,6 +327,7 @@ def main() -> int:
             "production",
             "governance",
             "release",
+            "releaseApproval",
             "checksums",
             "sigstoreBundle",
         }:

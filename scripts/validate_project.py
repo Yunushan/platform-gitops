@@ -95,6 +95,8 @@ required = [
     'scripts/test_image_inventory_evidence.py',
     'scripts/verify_github_release_ref.py',
     'scripts/test_github_release_ref.py',
+    'scripts/verify_github_release_approval.py',
+    'scripts/test_github_release_approval.py',
     'scripts/verify_github_governance.py',
     'scripts/test_github_governance.py',
     'scripts/configure_github_governance.py',

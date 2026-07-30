@@ -176,6 +176,8 @@ jobs:
         run: python scripts/test_release_workflow.py
       - name: Test signed GitHub release refs
         run: python scripts/test_github_release_ref.py
+      - name: Test independent GitHub release approval
+        run: python scripts/test_github_release_approval.py
       - name: Test live GitHub governance verifier
         run: python scripts/test_github_governance.py
       - name: Test GitHub governance configurator

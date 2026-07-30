@@ -52,10 +52,10 @@ eligible organization before claiming the strict GitHub governance score.
 
 Create a repository secret named `GOVERNANCE_AUDIT_TOKEN`. Prefer a GitHub App
 installation token or a fine-grained token with read-only access to repository
-metadata, administration settings, Actions permissions, rulesets, branch
-protection, environments, active CODEOWNERS content, collaborators, and reviewer
-team membership. It must not have content, release, workflow, or administration
-write permission.
+metadata, administration settings, Actions permissions and workflow-run review
+history, rulesets, branch protection, environments, active CODEOWNERS content,
+collaborators, and reviewer team membership. It must not have content, release,
+workflow, or administration write permission.
 
 Do not store the token in Git, an environment example, workflow output, or a
 production evidence file.
@@ -76,20 +76,25 @@ unset GITHUB_TOKEN
 The command fails closed when an API endpoint is inaccessible or any required
 machine-readable control has drifted. GitHub's documented environment REST API
 does not expose the administrator-bypass toggle, so an operator must also
-confirm that setting in the repository UI and retain the approval record
-outside Git. A successful run writes a sanitized report to:
+confirm that setting in the repository UI. The tagged release workflow does not
+trust that manual observation as release proof: after the environment gate
+opens, it reads the workflow-run approval history and rejects an approval by the
+repository owner, release authority, or anyone outside the configured reviewer
+boundary. A successful static-governance run writes a sanitized report to:
 
 ```text
 rendered/governance/github-governance-evidence.json
 ```
 
 The tagged release workflow runs the same verifier before receiving write or
-OIDC permissions. It includes the sanitized report in `SHA256SUMS`; the release
-job verifies those checksums, signs them with keyless Cosign, and publishes the
-report with the release bundle. The workflow also retains
-`*.github-release.json`, which binds the GitHub-verified annotated tag and
-signed release commit by SHA-256. `make platform-production-score` requires
-both reports to match the private live production evidence commit.
+OIDC permissions. It includes the sanitized report in `SHA256SUMS`; the
+environment-gated release job then emits
+`*.github-release-approval.json`, appends its digest, verifies the complete
+manifest, signs it with keyless Cosign, and publishes all reports with the
+release bundle. The workflow also retains `*.github-release.json`, which binds
+the GitHub-verified annotated tag and signed release commit by SHA-256. `make
+platform-production-score` requires all three public reports to match the
+private live production evidence commit.
 
 ## Plan and Configure the Release Boundary
 
@@ -178,4 +183,11 @@ In GitHub repository settings:
 9. Add `GOVERNANCE_AUDIT_TOKEN` and rerun the verifier.
 
 Keep reviewer identities, team IDs, token ownership, and internal approval
-records outside this public repository.
+records outside this public repository. The release artifact exposes only
+SHA-256 bindings and pass/fail controls; it does not publish the approver login
+or numeric GitHub identity.
+
+GitHub's review-history response is bound to a workflow run but does not expose
+the run attempt that received approval. The verifier therefore accepts only
+attempt 1. Do not rerun a failed publication job under the same tag; correct the
+cause and issue a new reviewed patch release.
