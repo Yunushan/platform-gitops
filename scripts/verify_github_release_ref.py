@@ -14,12 +14,13 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from atomic_file import atomic_write_text
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
+    open_http_request,
     read_bounded_response,
 )
 from strict_json import loads_strict_json
@@ -158,7 +159,7 @@ def api_get(api_url: str, path: str, token: str) -> dict[str, Any]:
     )
     try:
         timeout = http_timeout_seconds()
-        with urlopen(request, timeout=timeout) as response:
+        with open_http_request(request, timeout=timeout) as response:
             payload = loads_strict_json(read_bounded_response(response))
     except HTTPError as exc:
         raise ReleaseRefError(f"GitHub API request failed with HTTP {exc.code}: {path}") from exc

@@ -1530,7 +1530,7 @@ def test_api_read_retry_is_bounded_and_write_safe() -> None:
         repository="owner/repository",
         token_env=None,
     )
-    original_urlopen = migration.urlopen
+    original_open_http_request = migration.open_http_request
 
     class Response:
         status = 200
@@ -1565,7 +1565,7 @@ def test_api_read_retry_is_bounded_and_write_safe() -> None:
         return Response()
 
     try:
-        migration.urlopen = flaky_read
+        migration.open_http_request = flaky_read
         payload = migration.api_request(target, "GET", "repos/owner/repository")
         if payload != {"result": "ok"} or calls != 3:
             raise AssertionError(f"GET retry did not recover exactly once bounded: calls={calls}")
@@ -1577,7 +1577,7 @@ def test_api_read_retry_is_bounded_and_write_safe() -> None:
             calls += 1
             raise ConnectionResetError("ambiguous write reset")
 
-        migration.urlopen = failed_write
+        migration.open_http_request = failed_write
         try:
             migration.api_request(target, "POST", "repos/owner/repository/issues", body={"title": "x"})
         except migration.MigrationError:
@@ -1587,7 +1587,7 @@ def test_api_read_retry_is_bounded_and_write_safe() -> None:
         if calls != 1:
             raise AssertionError(f"non-idempotent write was retried: calls={calls}")
     finally:
-        migration.urlopen = original_urlopen
+        migration.open_http_request = original_open_http_request
 
 
 def test_api_response_size_and_secret_redaction() -> None:
@@ -1624,7 +1624,7 @@ def test_api_response_size_and_secret_redaction() -> None:
             os.environ,
             {"FORGEJO_TEST_TOKEN": "do-not-leak", "PLATFORM_HTTP_RESPONSE_MAX_BYTES": "4"},
         ),
-        mock.patch("forge_migration.urlopen", return_value=Response()),
+        mock.patch("forge_migration.open_http_request", return_value=Response()),
     ):
         try:
             migration.api_request(target, "GET", "repos/owner/repository")
@@ -1649,7 +1649,7 @@ def test_api_response_size_and_secret_redaction() -> None:
                 "PLATFORM_HTTP_RESPONSE_MAX_BYTES": "1024",
             },
         ),
-        mock.patch("forge_migration.urlopen", side_effect=error),
+        mock.patch("forge_migration.open_http_request", side_effect=error),
     ):
         try:
             migration.api_request(target, "GET", "fail")

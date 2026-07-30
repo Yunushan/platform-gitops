@@ -30,7 +30,7 @@ import time
 from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import forge_migration as migration
 from atomic_file import atomic_write_text
@@ -38,6 +38,7 @@ from strict_json import loads_strict_json
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
+    open_http_request,
     read_bounded_response,
 )
 
@@ -563,7 +564,7 @@ def service_request(
     except HttpTransportPolicyError as exc:
         raise CutoverError(str(exc)) from None
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with open_http_request(request, timeout=timeout) as response:
             status = response.status
             payload = read_bounded_response(response).decode("utf-8")
     except HTTPError as exc:

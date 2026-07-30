@@ -12,9 +12,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import Request
 
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from http_transport import open_http_request
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
@@ -188,7 +189,11 @@ def http_health_code(host: str, port: int, timeout: int) -> int:
         headers={"User-Agent": "platform-forgejo-recovery-drill/1"},
     )
     try:
-        with build_opener(ProxyHandler({})).open(request, timeout=timeout) as response:
+        with open_http_request(
+            request,
+            timeout=timeout,
+            use_environment_proxy=False,
+        ) as response:
             return int(response.status)
     except HTTPError as exc:
         return int(exc.code)

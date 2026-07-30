@@ -171,7 +171,11 @@ large response. Non-numeric, non-positive, non-finite, fractional byte, or
 over-ceiling values fail closed. GitHub CLI fallback output is checked against
 the same byte limit before JSON parsing. An oversized response is an operation
 failure, not a reason to disable the bound; confirm pagination and expected API
-payload size before changing it.
+payload size before changing it. Direct API clients also reject every HTTP 3xx
+response before issuing a second request, so authorization and private-token
+headers cannot be forwarded to a redirected origin. Configure the canonical
+API endpoint instead of relying on redirects; there is no redirect-policy
+override.
 
 ## Controlled Pruning
 

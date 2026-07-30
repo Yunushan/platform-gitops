@@ -5,7 +5,15 @@ from __future__ import annotations
 
 import math
 import os
-from typing import BinaryIO
+from typing import Any, BinaryIO
+from urllib.error import HTTPError
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import (
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 
 HTTP_TIMEOUT_ENV = "PLATFORM_HTTP_TIMEOUT_SECONDS"
@@ -24,14 +32,54 @@ class HttpResponseTooLarge(HttpTransportPolicyError):
     """Raised when an HTTP response exceeds the configured byte limit."""
 
 
-def http_timeout_seconds(default: float = DEFAULT_HTTP_TIMEOUT_SECONDS) -> float:
-    """Return a finite positive HTTP timeout with a five-minute hard ceiling."""
-    raw_value = os.environ.get(HTTP_TIMEOUT_ENV, "").strip() or str(default)
+class HttpRedirectRejected(HTTPError):
+    """Raised before following an HTTP redirect to another request target."""
+
+
+class RejectRedirectHandler(HTTPRedirectHandler):
+    """Fail closed instead of forwarding request headers through redirects."""
+
+    def redirect_request(
+        self,
+        request: Request,
+        response: BinaryIO,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        del new_url
+        raise HttpRedirectRejected(
+            _request_origin(request.full_url),
+            code,
+            "HTTP redirect rejected by transport policy",
+            headers,
+            response,
+        )
+
+
+def _request_origin(url: str) -> str:
+    """Return an origin-only URL so transport errors cannot expose query data."""
+    parts = urlsplit(url)
+    hostname = parts.hostname or "invalid"
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    authority = f"{hostname}:{port}" if port is not None else hostname
+    return urlunsplit((parts.scheme or "https", authority, "/", "", ""))
+
+
+def _validated_timeout(raw_value: object, label: str) -> float:
+    if isinstance(raw_value, bool):
+        raise HttpTransportPolicyError(f"{label} must be a number of seconds")
     try:
         timeout = float(raw_value)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise HttpTransportPolicyError(
-            f"{HTTP_TIMEOUT_ENV} must be a number of seconds"
+            f"{label} must be a number of seconds"
         ) from exc
     if (
         not math.isfinite(timeout)
@@ -39,10 +87,38 @@ def http_timeout_seconds(default: float = DEFAULT_HTTP_TIMEOUT_SECONDS) -> float
         or timeout > MAX_HTTP_TIMEOUT_SECONDS
     ):
         raise HttpTransportPolicyError(
-            f"{HTTP_TIMEOUT_ENV} must be greater than zero and no more than "
+            f"{label} must be greater than zero and no more than "
             f"{int(MAX_HTTP_TIMEOUT_SECONDS)} seconds"
         )
     return timeout
+
+
+def http_timeout_seconds(default: float = DEFAULT_HTTP_TIMEOUT_SECONDS) -> float:
+    """Return a finite positive HTTP timeout with a five-minute hard ceiling."""
+    raw_value = os.environ.get(HTTP_TIMEOUT_ENV, "").strip() or str(default)
+    return _validated_timeout(raw_value, HTTP_TIMEOUT_ENV)
+
+
+def open_http_request(
+    request: Request,
+    *,
+    timeout: float | None = None,
+    use_environment_proxy: bool = True,
+) -> Any:
+    """Open one bounded request while rejecting every redirect response."""
+    selected_timeout = (
+        http_timeout_seconds()
+        if timeout is None
+        else _validated_timeout(timeout, "explicit HTTP timeout")
+    )
+    if not isinstance(use_environment_proxy, bool):
+        raise HttpTransportPolicyError(
+            "use_environment_proxy must be a boolean"
+        )
+    handlers: tuple[Any, ...] = (RejectRedirectHandler(),)
+    if not use_environment_proxy:
+        handlers = (ProxyHandler({}), *handlers)
+    return build_opener(*handlers).open(request, timeout=selected_timeout)
 
 
 def http_response_limit_bytes(

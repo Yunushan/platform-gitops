@@ -17,13 +17,14 @@ import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from atomic_file import atomic_write_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
+    open_http_request,
     read_bounded_response,
     require_bounded_text,
 )
@@ -499,7 +500,7 @@ def api_get(
     )
     try:
         timeout = http_timeout_seconds()
-        with urlopen(request, timeout=timeout) as response:
+        with open_http_request(request, timeout=timeout) as response:
             return loads_strict_json(read_bounded_response(response))
     except HTTPError as exc:
         if exc.code == 404 and not_found is not NO_NOT_FOUND_DEFAULT:

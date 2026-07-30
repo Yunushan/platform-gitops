@@ -7,16 +7,21 @@ import ast
 import os
 from pathlib import Path
 from unittest import mock
+from urllib.request import ProxyHandler, Request
 
+import http_transport
 from http_transport import (
     DEFAULT_HTTP_RESPONSE_MAX_BYTES,
     DEFAULT_HTTP_TIMEOUT_SECONDS,
     HTTP_RESPONSE_LIMIT_ENV,
     HTTP_TIMEOUT_ENV,
+    HttpRedirectRejected,
     HttpResponseTooLarge,
     HttpTransportPolicyError,
+    RejectRedirectHandler,
     http_response_limit_bytes,
     http_timeout_seconds,
+    open_http_request,
     read_bounded_response,
     require_bounded_text,
 )
@@ -38,6 +43,16 @@ BOUNDED_CLI_RESPONSE_CLIENTS = (
     "verify_github_governance.py",
     "verify_github_release_approval.py",
 )
+REDIRECT_SAFE_CLIENTS = (
+    *BOUNDED_RESPONSE_CLIENTS,
+    "run_forgejo_recovery_drill.py",
+)
+FORBIDDEN_URLLIB_TRANSPORT_NAMES = {
+    "HTTPRedirectHandler",
+    "ProxyHandler",
+    "build_opener",
+    "urlopen",
+}
 
 
 class FakeResponse:
@@ -45,6 +60,7 @@ class FakeResponse:
         self.payload = payload
         self.offset = 0
         self.requests: list[int] = []
+        self.closed = False
 
     def read(self, size: int = -1) -> bytes:
         self.requests.append(size)
@@ -54,6 +70,9 @@ class FakeResponse:
         chunk = self.payload[self.offset:end]
         self.offset += len(chunk)
         return chunk
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class ChunkedResponse(FakeResponse):
@@ -101,31 +120,36 @@ def json_load_response_calls(tree: ast.AST) -> list[int]:
     return lines
 
 
-def urlopen_calls_without_timeout(tree: ast.AST) -> list[int]:
+def forbidden_transport_imports(tree: ast.AST) -> list[int]:
     lines: list[int] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not is_name(node.func, "urlopen"):
-            continue
-        timeout = next((item.value for item in node.keywords if item.arg == "timeout"), None)
-        if timeout is None or (isinstance(timeout, ast.Constant) and timeout.value is None):
+        if isinstance(node, ast.ImportFrom) and node.module == "urllib.request":
+            if any(
+                alias.name in FORBIDDEN_URLLIB_TRANSPORT_NAMES
+                for alias in node.names
+            ):
+                lines.append(node.lineno)
+        elif isinstance(node, ast.Import) and any(
+            alias.name == "urllib.request" for alias in node.names
+        ):
             lines.append(node.lineno)
     return lines
 
 
-def opener_calls_without_timeout(tree: ast.AST) -> list[int]:
+def forbidden_transport_calls(tree: ast.AST) -> list[int]:
     lines: list[int] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        if not isinstance(node, ast.Call):
             continue
-        owner = node.func.value
-        if not (
-            node.func.attr == "open"
-            and isinstance(owner, ast.Call)
-            and is_name(owner.func, "build_opener")
-        ):
-            continue
-        timeout = next((item.value for item in node.keywords if item.arg == "timeout"), None)
-        if timeout is None or (isinstance(timeout, ast.Constant) and timeout.value is None):
+        if isinstance(node.func, ast.Name) and node.func.id in {
+            "build_opener",
+            "urlopen",
+        }:
+            lines.append(node.lineno)
+        elif isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "build_opener",
+            "urlopen",
+        }:
             lines.append(node.lineno)
     return lines
 
@@ -138,12 +162,38 @@ def test_static_http_contract() -> None:
             failures.append(f"{path.relative_to(ROOT)}:{line}: direct HTTP response read")
         for line in json_load_response_calls(tree):
             failures.append(f"{path.relative_to(ROOT)}:{line}: unbounded json.load(response)")
-        for line in urlopen_calls_without_timeout(tree):
-            failures.append(f"{path.relative_to(ROOT)}:{line}: urlopen lacks timeout")
-        for line in opener_calls_without_timeout(tree):
-            failures.append(f"{path.relative_to(ROOT)}:{line}: opener.open lacks timeout")
+        for line in forbidden_transport_imports(tree):
+            failures.append(
+                f"{path.relative_to(ROOT)}:{line}: direct urllib transport import"
+            )
+        for line in forbidden_transport_calls(tree):
+            failures.append(
+                f"{path.relative_to(ROOT)}:{line}: direct urllib transport call"
+            )
     if failures:
         raise AssertionError("\n".join(failures))
+
+
+def test_direct_transport_detection() -> None:
+    import_cases = (
+        "from urllib.request import urlopen as open_url\n",
+        "from urllib.request import build_opener as make_opener\n",
+        "import urllib.request as request_api\n",
+    )
+    for source in import_cases:
+        tree = ast.parse(source)
+        if not forbidden_transport_imports(tree):
+            raise AssertionError(f"direct urllib transport import was missed: {source!r}")
+
+    call_cases = (
+        "urlopen(request, timeout=10)\n",
+        "urllib.request.urlopen(request, timeout=10)\n",
+        "build_opener().open(request, timeout=10)\n",
+    )
+    for source in call_cases:
+        tree = ast.parse(source)
+        if not forbidden_transport_calls(tree):
+            raise AssertionError(f"direct urllib transport call was missed: {source!r}")
 
 
 def test_shared_policy_adoption() -> None:
@@ -155,6 +205,10 @@ def test_shared_policy_adoption() -> None:
         text = (SCRIPTS / name).read_text(encoding="utf-8")
         if "require_bounded_text(result.stdout)" not in text:
             raise AssertionError(f"{name} does not size-check GitHub CLI responses")
+    for name in REDIRECT_SAFE_CLIENTS:
+        text = (SCRIPTS / name).read_text(encoding="utf-8")
+        if "open_http_request" not in text:
+            raise AssertionError(f"{name} bypasses the shared redirect policy")
 
 
 def test_timeout_policy() -> None:
@@ -217,13 +271,91 @@ def test_bounded_text_uses_encoded_bytes() -> None:
         raise AssertionError("UTF-8 response bytes were not counted")
 
 
+def test_redirect_policy_rejects_before_forwarding() -> None:
+    request = Request(
+        "https://user:password@api.example.test/private?access_token=secret",
+        headers={"Authorization": "Bearer secret"},
+    )
+    handler = RejectRedirectHandler()
+    for code in (301, 302, 303, 307, 308):
+        response = FakeResponse(b"redirect body")
+        try:
+            handler.redirect_request(
+                request,
+                response,
+                code,
+                "redirect",
+                {"Location": "https://attacker.example.test/capture"},
+                "https://attacker.example.test/capture",
+            )
+        except HttpRedirectRejected as exc:
+            assert exc.code == code
+            assert exc.url == "https://api.example.test/"
+            assert exc.fp is response
+            assert "secret" not in str(exc)
+            assert "password" not in str(exc)
+            assert "attacker" not in str(exc)
+        else:
+            raise AssertionError(f"HTTP {code} redirect was followed")
+
+
+def test_shared_opener_policy() -> None:
+    request = Request("https://api.example.test/resource")
+    opener = mock.Mock()
+    opener.open.return_value = object()
+    with mock.patch.object(http_transport, "build_opener", return_value=opener) as build:
+        result = open_http_request(request, timeout=12.5)
+    assert result is opener.open.return_value
+    opener.open.assert_called_once_with(request, timeout=12.5)
+    assert any(
+        isinstance(handler, RejectRedirectHandler)
+        for handler in build.call_args.args
+    )
+
+    direct_opener = mock.Mock()
+    direct_opener.open.return_value = object()
+    with mock.patch.object(
+        http_transport,
+        "build_opener",
+        return_value=direct_opener,
+    ) as direct_build:
+        open_http_request(
+            request,
+            timeout=10,
+            use_environment_proxy=False,
+        )
+    assert any(isinstance(handler, ProxyHandler) for handler in direct_build.call_args.args)
+    assert any(
+        isinstance(handler, RejectRedirectHandler)
+        for handler in direct_build.call_args.args
+    )
+
+    for timeout in (True, 0, -1, float("nan"), float("inf"), 301):
+        try:
+            open_http_request(request, timeout=timeout)
+        except HttpTransportPolicyError:
+            pass
+        else:
+            raise AssertionError(f"unsafe explicit HTTP timeout was accepted: {timeout}")
+
+    try:
+        open_http_request(request, timeout=10, use_environment_proxy="false")  # type: ignore[arg-type]
+    except HttpTransportPolicyError:
+        pass
+    else:
+        raise AssertionError("non-boolean proxy policy was accepted")
+
+
 def main() -> int:
     test_static_http_contract()
+    test_direct_transport_detection()
     test_shared_policy_adoption()
     test_timeout_policy()
     test_response_limit_policy()
     test_bounded_response_reader()
     test_bounded_text_uses_encoded_bytes()
+    test_redirect_policy_rejects_before_forwarding()
+    test_shared_opener_policy()
     print("HTTP transport contract self-test passed.")
     return 0
 

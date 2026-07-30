@@ -28,7 +28,7 @@ import time
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
@@ -36,6 +36,7 @@ from bounded_subprocess import BoundedSubprocessError, run_bounded
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
+    open_http_request,
     read_bounded_response,
 )
 from strict_json import loads_strict_json
@@ -597,7 +598,7 @@ def api_request(
         raise MigrationError(str(exc)) from None
     for attempt in range(1, attempts + 1):
         try:
-            with urlopen(request, timeout=timeout) as response:
+            with open_http_request(request, timeout=timeout) as response:
                 status = response.status
                 payload = read_bounded_response(response).decode("utf-8")
             break

@@ -303,7 +303,7 @@ def test_service_http_and_content_helpers() -> None:
         )
 
         with mock.patch(
-            "forge_cutover.urlopen",
+            "forge_cutover.open_http_request",
             return_value=Response(201, b'{"created": true}'),
         ) as open_mock:
             status, payload = cutover.service_request(
@@ -328,7 +328,7 @@ def test_service_http_and_content_helpers() -> None:
             {},
             io.BytesIO(b'{"message":"missing"}'),
         )
-        with mock.patch("forge_cutover.urlopen", side_effect=expected_error):
+        with mock.patch("forge_cutover.open_http_request", side_effect=expected_error):
             status, payload = cutover.service_request(
                 bearer,
                 "GET",
@@ -346,17 +346,23 @@ def test_service_http_and_content_helpers() -> None:
             {},
             io.BytesIO(b'{"message":"failed"}'),
         )
-        with mock.patch("forge_cutover.urlopen", side_effect=server_error):
+        with mock.patch("forge_cutover.open_http_request", side_effect=server_error):
             expect_action_error(
                 lambda: cutover.service_request(bearer, "GET", "fail"),
                 "HTTP 500",
             )
-        with mock.patch("forge_cutover.urlopen", side_effect=cutover.URLError("offline")):
+        with mock.patch(
+            "forge_cutover.open_http_request",
+            side_effect=cutover.URLError("offline"),
+        ):
             expect_action_error(
                 lambda: cutover.service_request(bearer, "GET", "offline"),
                 "offline",
             )
-        with mock.patch("forge_cutover.urlopen", return_value=Response(200, b"not-json")):
+        with mock.patch(
+            "forge_cutover.open_http_request",
+            return_value=Response(200, b"not-json"),
+        ):
             expect_action_error(
                 lambda: cutover.service_request(bearer, "GET", "invalid-json"),
                 "invalid JSON",

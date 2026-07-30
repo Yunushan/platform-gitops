@@ -205,7 +205,11 @@ out after 30 seconds by default and reject response or error bodies larger than
 16 MiB before JSON parsing. `PLATFORM_HTTP_TIMEOUT_SECONDS` may be set to at
 most `300`; `PLATFORM_HTTP_RESPONSE_MAX_BYTES` may be set to at most `67108864`
 for a measured API payload. Oversized responses fail the affected operation,
-and remote error diagnostics continue to redact configured credentials.
+and remote error diagnostics continue to redact configured credentials. Every
+3xx response is rejected before another request is sent, including same-origin
+redirects. Source and destination API URLs must therefore be canonical; this
+prevents GitLab, GitHub, Forgejo, or Gitea credentials from being copied to a
+redirect target.
 
 The proof is successful only when all selected repositories report
 `"verified": true`, every branch/tag/note ref matches between source and

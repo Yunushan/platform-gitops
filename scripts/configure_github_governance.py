@@ -16,13 +16,14 @@ import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from atomic_file import atomic_write_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
+    open_http_request,
     read_bounded_response,
     require_bounded_text,
 )
@@ -152,7 +153,7 @@ class GitHubApi:
         )
         try:
             timeout = http_timeout_seconds()
-            with urlopen(request, timeout=timeout) as response:
+            with open_http_request(request, timeout=timeout) as response:
                 body = read_bounded_response(response)
                 return loads_strict_json(body) if body else {}
         except HTTPError as exc:
