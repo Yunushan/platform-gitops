@@ -9,8 +9,11 @@ import shutil
 import subprocess
 import sys
 
+from subprocess_timeout import bounded_timeout_seconds
+
 
 ROOT = Path(__file__).resolve().parents[1]
+RENDER_TIMEOUT_SECONDS = 600
 RENDERER_ENV_PREFIXES = (
     "PLATFORM_",
     "RKE2_",
@@ -184,16 +187,29 @@ def prepare_synthetic_private_profile(
     if environment_overrides:
         values.update(environment_overrides)
     values["PLATFORM_COSIGN_PUBLIC_KEY_FILE"] = str(public_key)
-    result = subprocess.run(
-        [sys.executable, str(source_root / "scripts/render_private_platform_values.py")],
-        cwd=destination,
-        env=sanitized_environment(values),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
+    try:
+        timeout = bounded_timeout_seconds(
+            RENDER_TIMEOUT_SECONDS,
+            "PLATFORM_RENDER_COMMAND_TIMEOUT_SECONDS",
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from None
+    try:
+        result = subprocess.run(
+            [sys.executable, str(source_root / "scripts/render_private_platform_values.py")],
+            cwd=destination,
+            env=sanitized_environment(values),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"synthetic premium profile rendering timed out after {timeout:g} seconds"
+        ) from None
     if result.returncode != 0:
         raise RuntimeError(
             "synthetic premium profile rendering failed\n"

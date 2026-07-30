@@ -19,6 +19,7 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from subprocess_timeout import bounded_timeout_seconds
 
 
 API_VERSION = "2026-03-10"
@@ -37,6 +38,7 @@ PREMIUM_SECRET_CONTROLS = (
     "secret_scanning_validity_checks",
 )
 NOT_FOUND = object()
+GH_COMMAND_TIMEOUT_SECONDS = 30
 
 
 class ConfigurationError(ValueError):
@@ -84,15 +86,24 @@ class GitHubApi:
         if payload is not None:
             command.extend(["--input", "-"])
             request_input = json.dumps(payload)
-        result = subprocess.run(
-            command,
-            input=request_input,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=30,
-            env=environment,
+        timeout = bounded_timeout_seconds(
+            GH_COMMAND_TIMEOUT_SECONDS,
+            "GITHUB_API_COMMAND_TIMEOUT_SECONDS",
         )
+        try:
+            result = subprocess.run(
+                command,
+                input=request_input,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=timeout,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired:
+            raise ConfigurationError(
+                f"gh api request timed out after {timeout:g} seconds for {path}"
+            ) from None
         if result.returncode != 0:
             if "HTTP 404" in result.stderr and not_found is not NOT_FOUND:
                 return not_found

@@ -10,8 +10,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from subprocess_timeout import bounded_timeout_seconds, timeout_stream_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
+KYVERNO_TIMEOUT_SECONDS = 120
 POLICY_ROOT = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies"
 IMAGE_POLICY = (
     ROOT
@@ -49,7 +52,28 @@ def apply(kyverno: Path, fixture: str, policies: tuple[Path, ...] = POLICIES) ->
         "--detailed-results",
         "--remove-color",
     ]
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+    try:
+        timeout = bounded_timeout_seconds(
+            KYVERNO_TIMEOUT_SECONDS,
+            "PLATFORM_KYVERNO_COMMAND_TIMEOUT_SECONDS",
+        )
+    except ValueError as exc:
+        return subprocess.CompletedProcess(command, 2, "", str(exc))
+    try:
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = timeout_stream_text(exc.stdout)
+        stderr = timeout_stream_text(exc.stderr)
+        detail = f"Kyverno CLI timed out after {timeout:g} seconds"
+        stderr = f"{stderr.rstrip()}\n{detail}" if stderr else detail
+        return subprocess.CompletedProcess(command, 124, stdout, stderr)
 
 
 def combined_output(result: subprocess.CompletedProcess[str]) -> str:

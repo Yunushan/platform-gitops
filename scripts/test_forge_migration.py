@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+from unittest import mock
 from urllib.parse import unquote, urlsplit
 
 
@@ -74,6 +76,37 @@ def test_eventually_consistent_metadata_comparison() -> None:
     )
     if failed.get("verified") is not False:
         raise AssertionError("metadata comparison accepted a persistent mismatch")
+
+
+def test_command_timeout_redacts_credentials() -> None:
+    credential = "do-not-leak"
+    command = [
+        "git",
+        "clone",
+        f"https://operator:{credential}@git.example.test/team/repository.git",
+    ]
+    with (
+        mock.patch.object(
+            migration.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(command, 7),
+        ),
+        mock.patch.dict(
+            os.environ,
+            {"FORGE_MIGRATION_COMMAND_TIMEOUT_SECONDS": "7"},
+            clear=False,
+        ),
+    ):
+        try:
+            migration.run_command(command)
+        except migration.MigrationError as exc:
+            message = str(exc)
+        else:
+            raise AssertionError("timed-out migration command unexpectedly succeeded")
+    if credential in message:
+        raise AssertionError("migration timeout diagnostic exposed URL credentials")
+    if "<redacted>" not in message or "timed out after 7 seconds" not in message:
+        raise AssertionError(f"migration timeout diagnostic was incomplete: {message}")
 
 
 def normalize_fake_color(value: object) -> str:
@@ -1610,6 +1643,7 @@ def main() -> int:
         return 1
     test_mirror_migration()
     test_eventually_consistent_metadata_comparison()
+    test_command_timeout_redacts_credentials()
     test_metadata_migration_for_supported_directions()
     test_destination_repository_creation_for_supported_directions()
     test_batch_failure_writes_proof_and_continues()

@@ -12,8 +12,11 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from subprocess_timeout import bounded_timeout_seconds
+
 
 JsonObject = dict[str, Any]
+KUBECTL_TIMEOUT_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -229,12 +232,29 @@ class Kubectl:
     def __init__(self, binary: str, kubeconfig: str) -> None:
         self.command = [binary, "--kubeconfig", kubeconfig]
 
+    def execute(self, *args: str) -> subprocess.CompletedProcess[str]:
+        try:
+            timeout = bounded_timeout_seconds(
+                KUBECTL_TIMEOUT_SECONDS,
+                "PLATFORM_KUBECTL_COMMAND_TIMEOUT_SECONDS",
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from None
+        try:
+            return subprocess.run(
+                self.command + list(args),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"kubectl timed out after {timeout:g} seconds: {' '.join(args)}"
+            ) from None
+
     def run(self, *args: str, check: bool = True) -> str:
-        result = subprocess.run(
-            self.command + list(args),
-            text=True,
-            capture_output=True,
-        )
+        result = self.execute(*args)
         if check and result.returncode != 0:
             sys.stderr.write((result.stderr or "") + (result.stdout or ""))
             raise RuntimeError(f"kubectl failed with rc={result.returncode}: {' '.join(args)}")
@@ -244,11 +264,7 @@ class Kubectl:
         return json.loads(self.run(*args, "-o", "json"))
 
     def get_optional(self, *args: str) -> JsonObject | None:
-        result = subprocess.run(
-            self.command + list(args) + ["-o", "json"],
-            text=True,
-            capture_output=True,
-        )
+        result = self.execute(*args, "-o", "json")
         if result.returncode == 0:
             return json.loads(result.stdout)
         if "NotFound" in (result.stderr or ""):

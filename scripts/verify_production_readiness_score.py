@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from atomic_file import atomic_write_text
+from subprocess_timeout import bounded_timeout_seconds
 import verify_production_evidence as production_evidence
 
 
@@ -26,6 +27,7 @@ REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 SEMVER_TAG_RE = re.compile(r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 CHECKSUM_RE = re.compile(r"^(?P<sha256>[0-9a-f]{64})\s+\*?(?P<name>\S.+|\S)$")
 GITHUB_ACTIONS_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+COSIGN_TIMEOUT_SECONDS = 60
 
 PRODUCTION_WEIGHT = 80
 GOVERNANCE_WEIGHT = 10
@@ -364,6 +366,10 @@ def verify_release_bundle(
         )
     identity = f"https://github.com/{repository}/.github/workflows/release.yml@refs/tags/{tag}"
     try:
+        timeout = bounded_timeout_seconds(
+            COSIGN_TIMEOUT_SECONDS,
+            "PLATFORM_COSIGN_COMMAND_TIMEOUT_SECONDS",
+        )
         result = runner(
             [
                 str(executable),
@@ -378,10 +384,16 @@ def verify_release_bundle(
             ],
             text=True,
             capture_output=True,
-            timeout=60,
+            timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except ValueError as exc:
+        raise ReadinessError(str(exc)) from None
+    except subprocess.TimeoutExpired:
+        raise ReadinessError(
+            f"Cosign release checksum verification timed out after {timeout:g} seconds"
+        ) from None
+    except OSError as exc:
         raise ReadinessError(f"Cosign release checksum verification could not run: {exc}") from exc
     if result.returncode != 0:
         raise ReadinessError("Cosign rejected the release checksum Sigstore bundle")

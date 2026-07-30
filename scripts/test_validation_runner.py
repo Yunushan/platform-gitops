@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from contextlib import redirect_stdout
 from io import StringIO
@@ -34,6 +35,7 @@ def test_validation_script_list() -> None:
         "scripts/validate_project.py",
         "scripts/test_python_syntax.py",
         "scripts/test_atomic_file.py",
+        "scripts/test_subprocess_timeout_contract.py",
         "scripts/test_validation_runner.py",
         "scripts/test_line_endings.py",
         "scripts/test_ci_reference_pinning.py",
@@ -151,6 +153,25 @@ def test_run_script_environment() -> None:
         fail("run_script must run from the repository root")
     if kwargs.get("env", {}).get("PYTHONDONTWRITEBYTECODE") != "1":
         fail("run_script must suppress Python bytecode generation")
+    timeout = kwargs.get("timeout")
+    if not isinstance(timeout, (int, float)) or timeout <= 0:
+        fail("run_script must apply a positive subprocess timeout")
+
+
+def test_run_script_timeout() -> None:
+    with (
+        mock.patch(
+            "run_validation.subprocess.run",
+            side_effect=subprocess.TimeoutExpired([sys.executable], 1),
+        ),
+        redirect_stdout(StringIO()),
+        mock.patch("sys.stderr", new_callable=StringIO) as stderr,
+    ):
+        result = run_validation.run_script("scripts/validate_project.py")
+    if result != 124:
+        fail("run_script must return 124 when a validation child process times out")
+    if "timed out" not in stderr.getvalue() or "validate_project.py" not in stderr.getvalue():
+        fail("run_script timeout diagnostics must identify the expired validation script")
 
 
 def test_main_list_mode() -> None:
@@ -190,6 +211,7 @@ def main() -> int:
     test_no_secrets_selection()
     test_env_flag()
     test_run_script_environment()
+    test_run_script_timeout()
     test_main_list_mode()
     test_main_stops_on_first_failure()
     print("Validation runner self-test passed.")

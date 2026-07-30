@@ -21,6 +21,9 @@ proof, restore proof, access proof, private evidence, and accepted exceptions.
 - Local proof, state, inventory, governance, and score artifacts are written
   through an atomic same-directory replacement with owner-only file mode;
   interrupted writes must not replace the last complete record.
+- First-party Python child processes have finite deadlines. A stalled Git,
+  `kubectl`, renderer, policy CLI, or verification binary must fail with a
+  bounded diagnostic instead of holding an operator or CI job indefinitely.
 - The final decision should be reproducible from commands, pull requests,
   health gates, restore drills, and private review records.
 
@@ -54,6 +57,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | Check | Required evidence |
 |---|---|
 | Repository validation passed | `python scripts/run_validation.py` or `make validate` |
+| Subprocess execution is bounded | `python scripts/test_subprocess_timeout_contract.py`; every production `subprocess.run` call declares a finite timeout and the shared policy rejects non-positive, non-finite, or greater-than-one-day overrides |
 | Migration parser robustness passed | The pinned ClusterFuzzLite workflow has no unresolved crashes, and `bash scripts/forge-coverage.sh` passes the 81.0% subprocess branch-coverage ratchet with retained JSON/XML evidence |
 | Rendered Kubernetes schemas passed | `make rendered-schema-verify` and `make rendered-private-schema-verify`; the synthetic complete premium profile and exact private profile render without skipped applications, and built-in objects pass strict Kubeconform validation |
 | Active admission policies compiled | `KYVERNO_BIN=<KYVERNO_1_18_1_BINARY> make policy-cel-verify`; compliant, violating, second-rule, and privileged-namespace fixtures produce the expected decisions, and the stable image policy compiles without registry access |

@@ -101,6 +101,31 @@ Use `make platform-app-health` for broad platform changes and
 Use `docs/RELEASE_PROMOTION.md` for dev, staging, production promotion gates,
 rollback or roll-forward planning, hotfixes, freezes, and release evidence.
 
+## Operator Command Bounds
+
+First-party Python tools bound every child process. The defaults are sized for
+their workload: short `kubectl`, GitHub CLI, Kyverno, and Cosign calls receive
+short deadlines, render and validation children receive longer deadlines, and
+Git/LFS migration receives two hours. Expiration fails the command and names
+the stalled operation; Forge migration diagnostics redact credential-bearing
+URLs.
+
+Use a specific override only for a measured slow operation:
+
+- `PLATFORM_KUBECTL_COMMAND_TIMEOUT_SECONDS`
+- `FORGE_MIGRATION_COMMAND_TIMEOUT_SECONDS`
+- `PLATFORM_VALIDATION_SCRIPT_TIMEOUT_SECONDS`
+- `PLATFORM_RENDER_COMMAND_TIMEOUT_SECONDS`
+- `PLATFORM_KYVERNO_COMMAND_TIMEOUT_SECONDS`
+- `GITHUB_API_COMMAND_TIMEOUT_SECONDS`
+- `PLATFORM_COSIGN_COMMAND_TIMEOUT_SECONDS`
+
+`PLATFORM_SUBPROCESS_TIMEOUT_SECONDS` is the global fallback when no specific
+override is set. Every value must be finite, positive, and no greater than
+`86400` seconds. Treat a timeout as a failed operation and investigate the
+child process; increasing a bound is not proof that the underlying operation
+is healthy.
+
 ## Controlled Pruning
 
 Argo CD automatically reconciles creates and updates, but every Application

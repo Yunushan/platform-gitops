@@ -73,6 +73,8 @@ production_evidence_runner = root / "scripts/bootstrap/run-platform-production-e
 production_evidence_test = root / "scripts/test_production_evidence.py"
 atomic_file_writer = root / "scripts/atomic_file.py"
 atomic_file_test = root / "scripts/test_atomic_file.py"
+subprocess_timeout_helper = root / "scripts/subprocess_timeout.py"
+subprocess_timeout_test = root / "scripts/test_subprocess_timeout_contract.py"
 image_inventory_capture = root / "scripts/capture_live_image_inventory.py"
 image_inventory_reconciler = root / "scripts/reconcile_image_inventory.py"
 image_inventory_validator = root / "scripts/verify_image_inventory_evidence.py"
@@ -2915,6 +2917,8 @@ def main() -> None:
         production_evidence_test,
         atomic_file_writer,
         atomic_file_test,
+        subprocess_timeout_helper,
+        subprocess_timeout_test,
         image_inventory_capture,
         image_inventory_reconciler,
         image_inventory_validator,
@@ -3066,6 +3070,39 @@ def main() -> None:
             atomic_file_test_text,
             needle,
             f"private artifact writer self-test must retain failure coverage: {needle}",
+        )
+
+    subprocess_timeout_helper_text = read(subprocess_timeout_helper)
+    for needle in (
+        'GLOBAL_TIMEOUT_ENV = "PLATFORM_SUBPROCESS_TIMEOUT_SECONDS"',
+        "MAX_TIMEOUT_SECONDS = 86_400.0",
+        "math.isfinite(timeout)",
+        "timeout <= 0",
+        "timeout > MAX_TIMEOUT_SECONDS",
+        "def timeout_stream_text(",
+    ):
+        require_text(
+            subprocess_timeout_helper_text,
+            needle,
+            f"subprocess timeout helper must remain finite and bounded: {needle}",
+        )
+
+    subprocess_timeout_test_text = read(subprocess_timeout_test)
+    for needle in (
+        "production_python_files",
+        "subprocess_run_calls",
+        "ast.parse",
+        'node.func.value.id == "subprocess"',
+        "subprocess.run lacks timeout",
+        "test_injected_subprocess_runner_is_bounded",
+        "injected production-readiness subprocess runner lacks timeout",
+        "test_timeout_precedence_and_validation",
+        "86401",
+    ):
+        require_text(
+            subprocess_timeout_test_text,
+            needle,
+            f"subprocess timeout self-test must retain fail-closed coverage: {needle}",
         )
 
     image_inventory_capture_text = read(image_inventory_capture)
@@ -4535,6 +4572,7 @@ def main() -> None:
         for script_name in (
             "scripts/validate_project.py",
             "scripts/test_python_syntax.py",
+            "scripts/test_subprocess_timeout_contract.py",
             "scripts/test_validation_runner.py",
             "scripts/test_line_endings.py",
             "scripts/test_profile_checker.py",
@@ -4623,6 +4661,7 @@ def main() -> None:
         "--list mode must not execute validation scripts",
         "first failing validation script exit code",
         "scripts/test_validation_runner.py",
+        "scripts/test_subprocess_timeout_contract.py",
         "scripts/test_ansible_shell_blocks.py",
         "scripts/test_ansible_curl_timeout_contract.py",
         "scripts/test_ansible_until_contract.py",

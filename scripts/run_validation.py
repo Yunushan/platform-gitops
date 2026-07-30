@@ -9,12 +9,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from subprocess_timeout import bounded_timeout_seconds
+
 
 ROOT = Path(__file__).resolve().parents[1]
+VALIDATION_SCRIPT_TIMEOUT_SECONDS = 900
 VALIDATION_SCRIPTS = (
     "scripts/validate_project.py",
     "scripts/test_python_syntax.py",
     "scripts/test_atomic_file.py",
+    "scripts/test_subprocess_timeout_contract.py",
     "scripts/test_validation_runner.py",
     "scripts/test_line_endings.py",
     "scripts/test_profile_checker.py",
@@ -117,7 +121,27 @@ def run_script(script: str) -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     print(f"== {script} ==", flush=True)
-    return subprocess.run([sys.executable, str(ROOT / script)], cwd=ROOT, env=env).returncode
+    try:
+        timeout = bounded_timeout_seconds(
+            VALIDATION_SCRIPT_TIMEOUT_SECONDS,
+            "PLATFORM_VALIDATION_SCRIPT_TIMEOUT_SECONDS",
+        )
+    except ValueError as exc:
+        print(f"Validation subprocess timeout configuration failed: {exc}", file=sys.stderr)
+        return 2
+    try:
+        return subprocess.run(
+            [sys.executable, str(ROOT / script)],
+            cwd=ROOT,
+            env=env,
+            timeout=timeout,
+        ).returncode
+    except subprocess.TimeoutExpired:
+        print(
+            f"Validation script timed out after {timeout:g} seconds: {script}",
+            file=sys.stderr,
+        )
+        return 124
 
 
 def parse_args() -> argparse.Namespace:

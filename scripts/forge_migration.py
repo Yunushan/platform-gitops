@@ -31,6 +31,7 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from subprocess_timeout import bounded_timeout_seconds
 
 
 SUPPORTED_DIRECTIONS = {
@@ -76,6 +77,7 @@ SENSITIVE_LITERAL_KEYS = {
     "token",
     "value",
 }
+MIGRATION_COMMAND_TIMEOUT_SECONDS = 7_200
 
 
 class MigrationError(RuntimeError):
@@ -115,14 +117,28 @@ class ApiTarget:
 
 
 def run_command(args: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        args,
-        cwd=str(cwd) if cwd else None,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        timeout = bounded_timeout_seconds(
+            MIGRATION_COMMAND_TIMEOUT_SECONDS,
+            "FORGE_MIGRATION_COMMAND_TIMEOUT_SECONDS",
+        )
+    except ValueError as exc:
+        raise MigrationError(str(exc)) from None
+    try:
+        result = subprocess.run(
+            args,
+            cwd=str(cwd) if cwd else None,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        command = " ".join(redact_url(arg) for arg in args)
+        raise MigrationError(
+            f"command timed out after {timeout:g} seconds: {command}"
+        ) from None
     if check and result.returncode != 0:
         command = " ".join(redact_url(arg) for arg in args)
         stdout = result.stdout

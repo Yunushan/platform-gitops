@@ -108,6 +108,8 @@ jobs:
         run: python scripts/test_python_syntax.py
       - name: Test private atomic artifacts
         run: python scripts/test_atomic_file.py
+      - name: Test subprocess timeout contract
+        run: python scripts/test_subprocess_timeout_contract.py
       - name: Test validation runner
         run: python scripts/test_validation_runner.py
       - name: Test line endings

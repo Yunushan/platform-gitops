@@ -20,6 +20,7 @@ from render_deployable_gitops_apps import (
     application_documents_from_file,
     scan_path,
 )
+from subprocess_timeout import bounded_timeout_seconds, timeout_stream_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,7 @@ PROFILE_APPLICATION_FILES = {
 }
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 TRUE_VALUES = {"1", "true", "yes", "on"}
+RENDER_TIMEOUT_SECONDS = 900
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -92,16 +94,31 @@ def application_sources(profile: str, root: Path) -> list[tuple[str, Path]]:
 def run(
     command: list[str], *, env: dict[str, str], root: Path
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        cwd=root,
-        env=env,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
+    try:
+        timeout = bounded_timeout_seconds(
+            RENDER_TIMEOUT_SECONDS,
+            "PLATFORM_RENDER_COMMAND_TIMEOUT_SECONDS",
+        )
+    except ValueError as exc:
+        return subprocess.CompletedProcess(command, 2, "", str(exc))
+    try:
+        return subprocess.run(
+            command,
+            cwd=root,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = timeout_stream_text(exc.stdout)
+        stderr = timeout_stream_text(exc.stderr)
+        detail = f"command timed out after {timeout:g} seconds"
+        stderr = f"{stderr.rstrip()}\n{detail}" if stderr else detail
+        return subprocess.CompletedProcess(command, 124, stdout, stderr)
 
 
 def write_log(path: Path, result: subprocess.CompletedProcess[str]) -> None:

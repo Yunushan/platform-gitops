@@ -20,12 +20,14 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from subprocess_timeout import bounded_timeout_seconds
 
 
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 API_VERSION = "2026-03-10"
 REQUIRED_TAG_RULES = {"creation", "update", "deletion", "non_fast_forward"}
+GH_COMMAND_TIMEOUT_SECONDS = 30
 
 
 class ReleaseApprovalError(ValueError):
@@ -337,14 +339,26 @@ def gh_api_get(path: str, token: str, *, not_found: Any) -> Any:
         raise ReleaseApprovalError("GitHub API TLS transport failed and gh is not installed")
     environment = os.environ.copy()
     environment["GH_TOKEN"] = token
-    result = subprocess.run(
-        ["gh", "api", "--method", "GET", path],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=30,
-        env=environment,
-    )
+    try:
+        timeout = bounded_timeout_seconds(
+            GH_COMMAND_TIMEOUT_SECONDS,
+            "GITHUB_API_COMMAND_TIMEOUT_SECONDS",
+        )
+    except ValueError as exc:
+        raise ReleaseApprovalError(str(exc)) from None
+    try:
+        result = subprocess.run(
+            ["gh", "api", "--method", "GET", path],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired:
+        raise ReleaseApprovalError(
+            f"gh api request timed out after {timeout:g} seconds for {path}"
+        ) from None
     if result.returncode != 0:
         if "HTTP 404" in result.stderr and not_found is not NO_NOT_FOUND_DEFAULT:
             return not_found

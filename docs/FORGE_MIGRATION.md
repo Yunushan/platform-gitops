@@ -186,6 +186,13 @@ acceptance proof files use a unique same-directory temporary file, durable
 flush, atomic replacement, and owner-only mode `0600`, so an interrupted write
 does not replace the previous complete proof.
 
+Git and Git LFS child processes are bounded to two hours by default. Set
+`FORGE_MIGRATION_COMMAND_TIMEOUT_SECONDS` for a measured large-repository
+transfer, or `PLATFORM_SUBPROCESS_TIMEOUT_SECONDS` as the shared fallback.
+Overrides must remain finite, positive, and at most `86400` seconds. A timeout
+fails the affected repository proof, redacts credentials embedded in command
+URLs, and leaves later repositories eligible for their normal batch result.
+
 The proof is successful only when all selected repositories report
 `"verified": true`, every branch/tag/note ref matches between source and
 destination, and the default branch matches. When repository creation is managed, proof also records whether
