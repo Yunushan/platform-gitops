@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
 
 
@@ -195,7 +196,7 @@ def render_longhorn(
     )
     changed = rendered != text
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -214,7 +215,7 @@ def render_longhorn_storageclasses(path: Path) -> bool:
     )
     changed = rendered != text
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -583,7 +584,7 @@ def render_platform_valkey(path: Path) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -707,7 +708,7 @@ def render_minio(path: Path) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -1189,7 +1190,7 @@ def render_keycloak(path: Path, inventory: dict[str, str]) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -1516,7 +1517,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -1601,7 +1602,7 @@ def render_argocd(path: Path, inventory: dict[str, str]) -> bool:
 
     changed = rendered != text
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -1840,7 +1841,7 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -2297,7 +2298,7 @@ def render_harbor(path: Path, inventory: dict[str, str]) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -2811,7 +2812,7 @@ def render_monitoring(path: Path, inventory: dict[str, str]) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -3003,7 +3004,7 @@ def render_loki(path: Path, inventory: dict[str, str]) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -3130,7 +3131,7 @@ def render_velero(path: Path) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -3355,7 +3356,7 @@ def render_cnpg_postgres_cluster(path: Path) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -3466,7 +3467,7 @@ def render_step_ca(path: Path, inventory: dict[str, str]) -> bool:
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 
@@ -3490,7 +3491,7 @@ def render_platform_policy_enforcement(paths: list[Path]) -> bool:
                 f"expected exactly one stable validationActions entry in {path}; found {replacements}"
             )
         if rendered != text:
-            path.write_text(rendered, encoding="utf-8")
+            atomic_write_text(path, rendered)
             changed = True
     return changed
 
@@ -3660,7 +3661,7 @@ def render_platform_image_integrity(path: Path, inventory: dict[str, str]) -> bo
     changed = rendered != old
     if changed:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_text(path, rendered)
     return changed
 
 

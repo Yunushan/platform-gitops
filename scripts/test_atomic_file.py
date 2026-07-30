@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
 import stat
@@ -21,6 +22,13 @@ ATOMIC_ARTIFACT_PRODUCERS = (
     "scripts/forge_migration_live.py",
     "scripts/forge_transition.py",
     "scripts/reconcile_image_inventory.py",
+    "scripts/render_deployable_gitops_apps.py",
+    "scripts/render_private_platform_values.py",
+    "scripts/synthetic_private_profile.py",
+    "scripts/validate_platform_contract.py",
+    "scripts/validate_rendered_manifests.py",
+    "scripts/validate_synthetic_private_profile.py",
+    "scripts/verify_active_kyverno_policies.py",
     "scripts/verify_github_governance.py",
     "scripts/verify_github_release_approval.py",
     "scripts/verify_github_release_ref.py",
@@ -34,7 +42,91 @@ def assert_no_temporary_files(directory: Path, destination: Path) -> None:
         raise AssertionError(f"atomic writer left temporary files behind: {leftovers}")
 
 
+def production_python_files() -> list[Path]:
+    scripts = ROOT / "scripts"
+    return sorted(
+        path
+        for path in scripts.rglob("*.py")
+        if not path.name.startswith("test_")
+    )
+
+
+def direct_file_write(node: ast.Call) -> bool:
+    if isinstance(node.func, ast.Attribute) and node.func.attr in {
+        "write_text",
+        "write_bytes",
+    }:
+        return True
+
+    mode_index: int
+    if isinstance(node.func, ast.Name) and node.func.id == "open":
+        mode_index = 1
+    elif isinstance(node.func, ast.Attribute) and node.func.attr == "open":
+        if isinstance(node.func.value, ast.Name) and node.func.value.id == "os":
+            return False
+        if isinstance(node.func.value, ast.Call) and not (
+            isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "Path"
+        ):
+            return False
+        mode_index = 0
+    else:
+        return False
+
+    mode_node: ast.expr | None = None
+    if len(node.args) > mode_index:
+        mode_node = node.args[mode_index]
+    for keyword in node.keywords:
+        if keyword.arg == "mode":
+            mode_node = keyword.value
+            break
+    if mode_node is None:
+        return False
+    if not isinstance(mode_node, ast.Constant) or not isinstance(mode_node.value, str):
+        return True
+    return any(flag in mode_node.value for flag in "wax+")
+
+
+def assert_direct_write_detection() -> None:
+    for source in (
+        'Path("output").write_text("value")',
+        'open("output", "wb")',
+        'path.open("a")',
+        'Path("output").open(mode="r+")',
+    ):
+        document = ast.parse(source)
+        calls = [node for node in ast.walk(document) if isinstance(node, ast.Call)]
+        if not any(direct_file_write(node) for node in calls):
+            raise AssertionError(f"direct local write escaped static detection: {source}")
+
+    document = ast.parse('open("input", "rb")')
+    call = next(node for node in ast.walk(document) if isinstance(node, ast.Call))
+    if direct_file_write(call):
+        raise AssertionError("read-only file input was classified as a local output")
+
+
+def assert_production_writes_use_shared_policy() -> None:
+    direct_writes: list[str] = []
+    atomic_writes = 0
+    for path in production_python_files():
+        document = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(document):
+            if not isinstance(node, ast.Call):
+                continue
+            if direct_file_write(node):
+                direct_writes.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+            if isinstance(node.func, ast.Name) and node.func.id == "atomic_write_text":
+                atomic_writes += 1
+
+    if direct_writes:
+        raise AssertionError("direct production file writes remain:\n" + "\n".join(direct_writes))
+    if atomic_writes < 30:
+        raise AssertionError(f"atomic file scan covered too few calls: {atomic_writes}")
+
+
 def main() -> int:
+    assert_direct_write_detection()
+    assert_production_writes_use_shared_policy()
     with tempfile.TemporaryDirectory(prefix="platform-atomic-file-") as temporary_name:
         root = Path(temporary_name)
         destination = root / "nested" / "evidence.json"

@@ -12,8 +12,9 @@ import re
 import sys
 import tempfile
 
-from cleanup_firewalld_cni_interfaces import cleanup_zone_file
+from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
+from cleanup_firewalld_cni_interfaces import cleanup_zone_file
 
 root = Path(__file__).resolve().parents[1]
 SOURCE_PATH_RE = re.compile(
@@ -342,7 +343,7 @@ def assert_firewalld_cleanup_behavior() -> None:
 """
     with tempfile.TemporaryDirectory(prefix="platform-firewalld-cleanup-") as temporary_dir:
         zone_path = Path(temporary_dir) / "trusted.xml"
-        zone_path.write_text(zone_xml, encoding="utf-8")
+        atomic_write_text(zone_path, zone_xml)
         result = cleanup_zone_file(zone_path)
         if not result.changed or result.removed != 4:
             fail("firewalld CNI cleanup must remove every transient interface binding")
@@ -3075,6 +3076,10 @@ def main() -> None:
     atomic_file_test_text = read(atomic_file_test)
     for needle in (
         "ATOMIC_ARTIFACT_PRODUCERS",
+        "assert_direct_write_detection",
+        "assert_production_writes_use_shared_policy",
+        "direct production file writes remain",
+        'scripts.rglob("*.py")',
         "simulated replace failure",
         "failed atomic write damaged the prior artifact",
         "production evidence runner is missing private atomic output control",

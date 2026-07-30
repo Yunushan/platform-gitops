@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 
+from atomic_file import atomic_write_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 
@@ -179,10 +180,10 @@ def prepare_synthetic_private_profile(
 
     inventory = destination / "inventory/hosts.local.ini"
     inventory.parent.mkdir(parents=True)
-    inventory.write_text(TEST_INVENTORY, encoding="utf-8")
+    atomic_write_text(inventory, TEST_INVENTORY)
     public_key = destination / "private/cosign.pub"
     public_key.parent.mkdir(parents=True)
-    public_key.write_text(TEST_COSIGN_PUBLIC_KEY, encoding="utf-8")
+    atomic_write_text(public_key, TEST_COSIGN_PUBLIC_KEY)
 
     values = synthetic_environment(public_key)
     if environment_overrides:

@@ -18,9 +18,10 @@ proof, restore proof, access proof, private evidence, and accepted exceptions.
 - Expired exceptions block launch.
 - Private deployment records hold real evidence; this template defines the
   evidence model.
-- Local proof, state, inventory, governance, and score artifacts are written
-  through an atomic same-directory replacement with owner-only file mode;
-  interrupted writes must not replace the last complete record.
+- Local proof, state, inventory, governance, score, rendered-manifest, and
+  private-value artifacts are written through an atomic same-directory
+  replacement with owner-only file mode; interrupted writes must not replace
+  the last complete record.
 - First-party Python child processes have finite deadlines. A stalled Git,
   `kubectl`, renderer, policy CLI, or verification binary must fail with a
   bounded diagnostic instead of holding an operator or CI job indefinitely.
@@ -60,6 +61,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | Check | Required evidence |
 |---|---|
 | Repository validation passed | `python scripts/run_validation.py` or `make validate` |
+| Local text output is atomic | `python scripts/test_atomic_file.py`; production values, manifests, reports, fixtures, and evidence use durable same-directory replacement with mode `0600`, and the static contract rejects direct write-mode file APIs |
 | Subprocess execution is bounded | `python scripts/test_subprocess_timeout_contract.py` and `python scripts/test_subprocess_output_contract.py`; every production child declares a finite timeout, captured stdout/stderr pass through the shared 32 MiB combined limiter, and unsafe timeout or output-limit overrides fail closed |
 | Local file input is bounded | `python scripts/test_bounded_file_contract.py`; production evidence, plans, inventories, configurations, rendered manifests, and binary hash inputs pass through the shared 64 MiB reader, and invalid or over-512 MiB overrides fail closed before parsing |
 | API transport is bounded | `python scripts/test_http_transport_contract.py`; direct HTTP calls declare finite timeouts, response and error bodies use the shared bounded reader, CLI fallback payloads are size-checked, and unsafe timeout or byte-limit overrides fail closed |

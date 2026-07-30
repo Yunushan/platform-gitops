@@ -103,6 +103,14 @@ rollback or roll-forward planning, hotfixes, freezes, and release evidence.
 
 ## Operator Command Bounds
 
+First-party Python text outputs use a same-directory temporary file, durable
+flush, atomic replacement, and owner-only mode `0600`. This includes private
+deployment values, rendered manifests, validation reports, migration fixtures,
+and retained evidence. A failed or interrupted write leaves the prior complete
+file in place. The firewalld XML updater preserves its source metadata through
+its own atomic replacement, and the forge transition lock remains an exclusive
+create/delete primitive.
+
 First-party Python tools bound every child process. The defaults are sized for
 their workload: short `kubectl`, GitHub CLI, Kyverno, and Cosign calls receive
 short deadlines, render and validation children receive longer deadlines, and

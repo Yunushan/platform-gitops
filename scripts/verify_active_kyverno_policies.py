@@ -10,8 +10,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from bounded_subprocess import BoundedSubprocessError, run_bounded
+from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds, timeout_stream_text
 
 
@@ -100,7 +101,7 @@ def render_image_policy(destination: Path) -> Path:
         "<PLATFORM_COSIGN_REKOR_URL>",
         "https://rekor.sigstore.dev",
     )
-    destination.write_text(rendered, encoding="utf-8", newline="\n")
+    atomic_write_text(destination, rendered)
     return destination
 
 

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 
+from atomic_file import atomic_write_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from render_deployable_gitops_apps import (
     APPLICATION_NAME_RE,
@@ -131,12 +132,12 @@ def run(
 
 def write_log(path: Path, result: subprocess.CompletedProcess[str]) -> None:
     stdout_bytes = result.stdout.encode("utf-8")
-    path.write_text(
+    atomic_write_text(
+        path,
         f"command_rc={result.returncode}\n"
         f"stdout_bytes={len(stdout_bytes)}\n"
         f"stdout_sha256={hashlib.sha256(stdout_bytes).hexdigest()}\n\n"
         f"stderr:\n{result.stderr}\n",
-        encoding="utf-8",
     )
 
 
@@ -287,7 +288,7 @@ def validate(args: argparse.Namespace, *, root: Path = ROOT) -> int:
                         }
                     )
                     continue
-                manifest.write_text(render_result.stdout, encoding="utf-8")
+                atomic_write_text(manifest, render_result.stdout)
                 manifest_bytes = render_result.stdout.encode("utf-8")
                 manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
 
@@ -306,9 +307,10 @@ def validate(args: argparse.Namespace, *, root: Path = ROOT) -> int:
                     env=command_env,
                     root=root,
                 )
-                schema_report.write_text(schema_result.stdout, encoding="utf-8")
-                (reports_dir / f"{safe_name}.kubeconform.stderr.log").write_text(
-                    schema_result.stderr, encoding="utf-8"
+                atomic_write_text(schema_report, schema_result.stdout)
+                atomic_write_text(
+                    reports_dir / f"{safe_name}.kubeconform.stderr.log",
+                    schema_result.stderr,
                 )
                 if schema_result.returncode != 0:
                     failures.append(
@@ -332,8 +334,9 @@ def validate(args: argparse.Namespace, *, root: Path = ROOT) -> int:
                 )
                 print(f"schema_validation=passed profile={profile} app={app_name}")
 
-    (output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    atomic_write_text(
+        output_dir / "summary.json",
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
     )
     print(
         f"rendered_schema_profiles={len(profiles)} rendered_apps={len(rendered)} "

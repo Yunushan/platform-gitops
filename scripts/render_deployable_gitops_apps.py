@@ -8,6 +8,7 @@ import re
 import sys
 from pathlib import Path
 
+from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
 
 
@@ -390,7 +391,7 @@ def render(args: argparse.Namespace) -> int:
                 print(f"  {finding}", file=sys.stderr)
         return 2
 
-    args.output.write_text("---\n" + "\n---\n".join(kept) + "\n", encoding="utf-8")
+    atomic_write_text(args.output, "---\n" + "\n---\n".join(kept) + "\n")
 
     print("Deployable GitOps applications:")
     for doc in kept:

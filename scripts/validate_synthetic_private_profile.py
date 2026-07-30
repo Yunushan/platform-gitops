@@ -11,9 +11,10 @@ import shutil
 import sys
 import tempfile
 
+from atomic_file import atomic_write_text
+from bounded_file import read_bounded_text
 from synthetic_private_profile import prepare_synthetic_private_profile
 from validate_rendered_manifests import ROOT, application_sources, validate
-from bounded_file import read_bounded_text
 
 
 OUTPUT_ROOT = ROOT / "rendered/synthetic-private-schema"
@@ -61,9 +62,9 @@ def retain_sanitized_artifacts(
             if len(relative.parts) != 1 or not report.name.endswith(REPORT_SUFFIXES):
                 raise RuntimeError(f"unexpected rendered-schema report artifact: {relative}")
             shutil.copy2(report, reports_destination / report.name)
-    (output_root / "schema-validation/summary.json").write_text(
+    atomic_write_text(
+        output_root / "schema-validation/summary.json",
         json.dumps(retained_summary(summary), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
 
 
