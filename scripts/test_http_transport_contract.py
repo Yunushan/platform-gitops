@@ -11,14 +11,18 @@ from urllib.request import ProxyHandler, Request
 
 import http_transport
 from http_transport import (
+    DEFAULT_HTTP_REQUEST_MAX_BYTES,
     DEFAULT_HTTP_RESPONSE_MAX_BYTES,
     DEFAULT_HTTP_TIMEOUT_SECONDS,
+    HTTP_REQUEST_LIMIT_ENV,
     HTTP_RESPONSE_LIMIT_ENV,
     HTTP_TIMEOUT_ENV,
     HttpRedirectRejected,
+    HttpRequestTooLarge,
     HttpResponseTooLarge,
     HttpTransportPolicyError,
     RejectRedirectHandler,
+    http_request_limit_bytes,
     http_response_limit_bytes,
     http_timeout_seconds,
     open_http_request,
@@ -241,6 +245,21 @@ def test_response_limit_policy() -> None:
                 raise AssertionError(f"unsafe HTTP response limit was accepted: {value}")
 
 
+def test_request_limit_policy() -> None:
+    with mock.patch.dict(os.environ, {}, clear=True):
+        assert http_request_limit_bytes() == DEFAULT_HTTP_REQUEST_MAX_BYTES
+    with mock.patch.dict(os.environ, {HTTP_REQUEST_LIMIT_ENV: "1024"}, clear=True):
+        assert http_request_limit_bytes() == 1024
+    for value in ("0", "-1", "1.5", "67108865", "not-an-integer"):
+        with mock.patch.dict(os.environ, {HTTP_REQUEST_LIMIT_ENV: value}, clear=True):
+            try:
+                http_request_limit_bytes()
+            except HttpTransportPolicyError:
+                pass
+            else:
+                raise AssertionError(f"unsafe HTTP request limit was accepted: {value}")
+
+
 def test_bounded_response_reader() -> None:
     with mock.patch.dict(os.environ, {HTTP_RESPONSE_LIMIT_ENV: "1024"}, clear=True):
         exact = FakeResponse(b"abcd")
@@ -346,16 +365,98 @@ def test_shared_opener_policy() -> None:
         raise AssertionError("non-boolean proxy policy was accepted")
 
 
+def test_request_safety_policy() -> None:
+    def expect_rejected(request: Request, message: str) -> None:
+        with mock.patch.object(http_transport, "build_opener") as build:
+            try:
+                open_http_request(request, timeout=10)
+            except HttpTransportPolicyError as exc:
+                assert message in str(exc)
+                assert "do-not-leak" not in str(exc)
+            else:
+                raise AssertionError(f"unsafe HTTP request was accepted: {request.full_url}")
+        build.assert_not_called()
+
+    for header in ("Authorization", "Cookie", "PRIVATE-TOKEN", "X-API-Key"):
+        expect_rejected(
+            Request(
+                "http://api.example.test/resource",
+                headers={header: "do-not-leak"},
+            ),
+            "require HTTPS",
+        )
+
+    expect_rejected(
+        Request("https://user:do-not-leak@api.example.test/resource"),
+        "must not embed credentials",
+    )
+    alternate_credential_key = "refresh" + "-" + "token"
+    for url in (
+        "https://api.example.test/resource?access%5Ftoken=do-not-leak",
+        f"https://api.example.test/resource?page=1;{alternate_credential_key}=do-not-leak",
+    ):
+        expect_rejected(Request(url), "must not carry credentials")
+    expect_rejected(
+        Request("ftp://api.example.test/resource"),
+        "absolute http or https",
+    )
+    expect_rejected(
+        Request("https://api.example.test/?" + "&".join(f"p{i}=x" for i in range(257))),
+        "exceeds 256 fields",
+    )
+    expect_rejected(
+        Request("https://api.example.test/" + ("x" * (16 * 1024))),
+        "URL exceeds",
+    )
+    expect_rejected(
+        Request("https://api.example.test/", headers={"X-Large": "x" * (64 * 1024)}),
+        "headers exceed",
+    )
+
+    with mock.patch.dict(
+        os.environ,
+        {HTTP_REQUEST_LIMIT_ENV: "4"},
+        clear=True,
+    ):
+        expect_rejected(
+            Request("https://api.example.test/", data=b"12345"),
+            "body exceeds",
+        )
+
+    opener = mock.Mock()
+    opener.open.return_value = object()
+    with (
+        mock.patch.dict(os.environ, {}, clear=True),
+        mock.patch.object(http_transport, "build_opener", return_value=opener),
+    ):
+        open_http_request(
+            Request("http://api.example.test/healthz?page=1"),
+            timeout=10,
+            use_environment_proxy=False,
+        )
+        open_http_request(
+            Request(
+                "https://api.example.test/resource?page=1",
+                data=b"{}",
+                headers={"Authorization": "Bearer do-not-leak"},
+            ),
+            timeout=10,
+        )
+    assert opener.open.call_count == 2
+
+
 def main() -> int:
     test_static_http_contract()
     test_direct_transport_detection()
     test_shared_policy_adoption()
     test_timeout_policy()
+    test_request_limit_policy()
     test_response_limit_policy()
     test_bounded_response_reader()
     test_bounded_text_uses_encoded_bytes()
     test_redirect_policy_rejects_before_forwarding()
     test_shared_opener_policy()
+    test_request_safety_policy()
     print("HTTP transport contract self-test passed.")
     return 0
 

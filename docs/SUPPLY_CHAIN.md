@@ -83,8 +83,9 @@ read-only jobs. Only the final downstream job receives write and OIDC
 permissions, and it publishes a checksummed approved artifact without checking
 out or executing repository source. Verification commands are documented in
 `docs/RELEASE_GUIDE.md`. GitHub governance and release-evidence API clients
-reject every redirect before a follow-up request can carry their bearer token;
-workflow API endpoints must be canonical.
+require HTTPS and reject URL credentials or every redirect before a follow-up
+request can carry their bearer token; workflow API endpoints must be canonical
+TLS endpoints.
 
 GitLab, Forgejo/Gitea Actions, and Woodpecker continue to run the portable
 source-contract suite. Install Trivy, Gitleaks, Semgrep, Syft, Scorecard, and

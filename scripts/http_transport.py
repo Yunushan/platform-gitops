@@ -7,7 +7,7 @@ import math
 import os
 from typing import Any, BinaryIO
 from urllib.error import HTTPError
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 from urllib.request import (
     HTTPRedirectHandler,
     ProxyHandler,
@@ -17,11 +17,52 @@ from urllib.request import (
 
 
 HTTP_TIMEOUT_ENV = "PLATFORM_HTTP_TIMEOUT_SECONDS"
+HTTP_REQUEST_LIMIT_ENV = "PLATFORM_HTTP_REQUEST_MAX_BYTES"
 HTTP_RESPONSE_LIMIT_ENV = "PLATFORM_HTTP_RESPONSE_MAX_BYTES"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 MAX_HTTP_TIMEOUT_SECONDS = 300.0
+DEFAULT_HTTP_REQUEST_MAX_BYTES = 16 * 1024 * 1024
+MAX_HTTP_REQUEST_BYTES = 64 * 1024 * 1024
 DEFAULT_HTTP_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 MAX_HTTP_RESPONSE_BYTES = 64 * 1024 * 1024
+MAX_HTTP_URL_BYTES = 16 * 1024
+MAX_HTTP_QUERY_FIELDS = 256
+MAX_HTTP_HEADER_COUNT = 128
+MAX_HTTP_HEADER_BYTES = 64 * 1024
+SENSITIVE_HTTP_HEADERS = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "deploy-token",
+        "job-token",
+        "private-token",
+        "proxy-authorization",
+        "x-access-token",
+        "x-api-key",
+        "x-auth-token",
+        "x-forgejo-otp",
+        "x-gitea-otp",
+        "x-gitlab-token",
+    }
+)
+SENSITIVE_QUERY_FIELDS = frozenset(
+    {
+        "access_token",
+        "api_key",
+        "apikey",
+        "auth",
+        "authorization",
+        "client_secret",
+        "deploy_token",
+        "job_token",
+        "oauth_token",
+        "password",
+        "private_token",
+        "refresh_token",
+        "secret",
+        "token",
+    }
+)
 
 
 class HttpTransportPolicyError(ValueError):
@@ -30,6 +71,10 @@ class HttpTransportPolicyError(ValueError):
 
 class HttpResponseTooLarge(HttpTransportPolicyError):
     """Raised when an HTTP response exceeds the configured byte limit."""
+
+
+class HttpRequestTooLarge(HttpTransportPolicyError):
+    """Raised when an HTTP request exceeds a configured transport bound."""
 
 
 class HttpRedirectRejected(HTTPError):
@@ -115,10 +160,115 @@ def open_http_request(
         raise HttpTransportPolicyError(
             "use_environment_proxy must be a boolean"
         )
+    validate_http_request(request)
     handlers: tuple[Any, ...] = (RejectRedirectHandler(),)
     if not use_environment_proxy:
         handlers = (ProxyHandler({}), *handlers)
     return build_opener(*handlers).open(request, timeout=selected_timeout)
+
+
+def http_request_limit_bytes(
+    default: int = DEFAULT_HTTP_REQUEST_MAX_BYTES,
+) -> int:
+    """Return a positive request-body limit with a 64 MiB hard ceiling."""
+    configured = os.environ.get(HTTP_REQUEST_LIMIT_ENV, "").strip()
+    raw_value = configured or str(default)
+    label = HTTP_REQUEST_LIMIT_ENV if configured else "default HTTP request limit"
+    return _validated_request_limit(raw_value, label)
+
+
+def _validated_request_limit(raw_value: str, label: str) -> int:
+    try:
+        limit = int(raw_value, 10)
+    except ValueError as exc:
+        raise HttpTransportPolicyError(
+            f"{label} must be an integer number of bytes"
+        ) from exc
+    if limit <= 0 or limit > MAX_HTTP_REQUEST_BYTES:
+        raise HttpTransportPolicyError(
+            f"{label} must be greater than zero and no more than "
+            f"{MAX_HTTP_REQUEST_BYTES} bytes"
+        )
+    return limit
+
+
+def validate_http_request(request: Request) -> None:
+    """Reject unsafe targets, credentials, metadata, or oversized bodies."""
+    url = request.full_url
+    if len(url.encode("utf-8")) > MAX_HTTP_URL_BYTES:
+        raise HttpRequestTooLarge(
+            f"HTTP request URL exceeds the {MAX_HTTP_URL_BYTES}-byte limit"
+        )
+    try:
+        parts = urlsplit(url)
+        has_userinfo = parts.username is not None or parts.password is not None
+    except ValueError as exc:
+        raise HttpTransportPolicyError("HTTP request URL is invalid") from exc
+    scheme = parts.scheme.lower()
+    if scheme not in {"http", "https"} or not parts.hostname:
+        raise HttpTransportPolicyError(
+            "HTTP request URL must use an absolute http or https target"
+        )
+    if has_userinfo:
+        raise HttpTransportPolicyError(
+            "HTTP request URL must not embed credentials"
+        )
+    try:
+        query_fields = parse_qsl(
+            parts.query.replace(";", "&"),
+            keep_blank_values=True,
+            max_num_fields=MAX_HTTP_QUERY_FIELDS,
+        )
+    except ValueError as exc:
+        raise HttpTransportPolicyError(
+            f"HTTP request query exceeds {MAX_HTTP_QUERY_FIELDS} fields"
+        ) from exc
+    if any(
+        name.strip().lower().replace("-", "_") in SENSITIVE_QUERY_FIELDS
+        for name, _ in query_fields
+    ):
+        raise HttpTransportPolicyError(
+            "HTTP request URL must not carry credentials in query parameters"
+        )
+
+    header_items = request.header_items()
+    if len(header_items) > MAX_HTTP_HEADER_COUNT:
+        raise HttpRequestTooLarge(
+            f"HTTP request exceeds the {MAX_HTTP_HEADER_COUNT}-header limit"
+        )
+    header_bytes = sum(
+        len(str(name).encode("utf-8"))
+        + len(str(value).encode("utf-8"))
+        + 4
+        for name, value in header_items
+    )
+    if header_bytes > MAX_HTTP_HEADER_BYTES:
+        raise HttpRequestTooLarge(
+            f"HTTP request headers exceed the {MAX_HTTP_HEADER_BYTES}-byte limit"
+        )
+    credential_headers = {
+        name.lower()
+        for name, _ in header_items
+        if name.lower() in SENSITIVE_HTTP_HEADERS
+    }
+    if scheme != "https" and credential_headers:
+        raise HttpTransportPolicyError(
+            "credential-bearing HTTP requests require HTTPS"
+        )
+
+    body = request.data
+    if body is None:
+        return
+    if not isinstance(body, (bytes, bytearray, memoryview)):
+        raise HttpTransportPolicyError(
+            "HTTP request body must be an in-memory byte sequence"
+        )
+    limit = http_request_limit_bytes()
+    body_size = body.nbytes if isinstance(body, memoryview) else len(body)
+    if body_size > limit:
+        raise HttpRequestTooLarge(
+            f"HTTP request body exceeds the configured limit of {limit} bytes"
+        )
 
 
 def http_response_limit_bytes(

@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 from bounded_subprocess import BoundedSubprocessError, run_bounded
-from http_transport import open_http_request
+from http_transport import HttpTransportPolicyError, open_http_request
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
@@ -197,7 +197,7 @@ def http_health_code(host: str, port: int, timeout: int) -> int:
             return int(response.status)
     except HTTPError as exc:
         return int(exc.code)
-    except (OSError, URLError) as exc:
+    except (HttpTransportPolicyError, OSError, URLError) as exc:
         raise DrillError(f"Forgejo health endpoint is unreachable: {exc}") from exc
 
 

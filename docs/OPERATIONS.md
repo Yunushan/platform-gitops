@@ -164,18 +164,24 @@ document; correct the producer and regenerate the evidence, plan, inventory,
 or API response.
 
 Direct first-party HTTP clients use `PLATFORM_HTTP_TIMEOUT_SECONDS`, defaulting
-to `30` seconds with a hard maximum of `300` seconds. API response bodies are
-read only through the shared bounded reader. The default maximum is 16 MiB;
-`PLATFORM_HTTP_RESPONSE_MAX_BYTES` may raise it to at most 64 MiB for a measured
-large response. Non-numeric, non-positive, non-finite, fractional byte, or
-over-ceiling values fail closed. GitHub CLI fallback output is checked against
-the same byte limit before JSON parsing. An oversized response is an operation
-failure, not a reason to disable the bound; confirm pagination and expected API
-payload size before changing it. Direct API clients also reject every HTTP 3xx
-response before issuing a second request, so authorization and private-token
-headers cannot be forwarded to a redirected origin. Configure the canonical
-API endpoint instead of relying on redirects; there is no redirect-policy
-override.
+to `30` seconds with a hard maximum of `300` seconds. API request and response
+bodies default to 16 MiB; `PLATFORM_HTTP_REQUEST_MAX_BYTES` and
+`PLATFORM_HTTP_RESPONSE_MAX_BYTES` may independently raise a measured payload
+to at most 64 MiB. URLs are limited to 16 KiB, queries to 256 fields, and
+request headers to 128 fields and 64 KiB. Non-numeric, non-positive,
+non-finite, fractional byte, or over-ceiling values fail closed. GitHub CLI
+fallback output is checked against the response byte limit before JSON parsing.
+An oversized request or response is an operation failure, not a reason to
+disable the bound; confirm pagination and expected API payload size before
+changing it.
+
+Request URLs cannot contain userinfo or credential-shaped query parameters.
+Authorization, cookie, private-token, and API-key headers require HTTPS. The
+unauthenticated direct Forgejo cluster health probe may continue to use HTTP.
+Direct API clients also reject every HTTP 3xx response before issuing a second
+request, so credentials cannot be forwarded to a redirected origin. Configure
+canonical TLS API endpoints instead of relying on redirects; there is no
+redirect-policy override.
 
 ## Controlled Pruning
 
