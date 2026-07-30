@@ -7043,17 +7043,25 @@ def main() -> None:
         )
     ci_reference_pinning_test_text = read(ci_reference_pinning_test)
     for needle in (
-        "Validate CI actions and container images avoid floating refs",
+        "Validate CI references, credentials, runners, and execution bounds",
         "CI_FILES",
+        "ACTIONS_WORKFLOW_FILES",
+        "GITLAB_CI_FILES",
         "DOCKERFILES",
         "MUTABLE_REFS",
         "ACTION_SHA_RE",
+        "MAX_JOB_TIMEOUT_MINUTES",
         "action reference must include @ref",
         "action reference uses floating ref",
         "action reference must pin a full commit SHA",
         "container image must pin a tag or sha256 digest",
         "container image uses floating tag",
-        "CI reference pinning validation passed",
+        "checkout must set persist-credentials: false",
+        "uses moving runner label",
+        "GitLab job",
+        "WOODPECKER_DEFAULT_PIPELINE_TIMEOUT",
+        "WOODPECKER_MAX_PIPELINE_TIMEOUT",
+        "CI execution and reference validation passed",
     ):
         require_text(
             ci_reference_pinning_test_text,

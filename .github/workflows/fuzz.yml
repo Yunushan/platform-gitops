@@ -24,6 +24,7 @@ jobs:
   fuzz:
     name: Fuzz forge plan parsers
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Build address-sanitized fuzzers
         id: build
@@ -47,6 +48,7 @@ jobs:
     if: github.event_name != 'pull_request'
     needs: fuzz
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Build address-sanitized fuzzers
         id: build

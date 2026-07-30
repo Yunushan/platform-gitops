@@ -66,6 +66,14 @@ The gate writes `rendered/coverage/forge-coverage.json` and
 repository default requires an explicit reviewed source change. GitHub retains
 the coverage directory as a workflow artifact for 30 days.
 
+Every shipped GitHub, Forgejo, and Gitea Actions job declares a bounded timeout,
+and each explicit checkout disables persisted credentials. GitHub-hosted jobs
+also pin an operating-system runner instead of following a moving `*-latest`
+label. GitLab validation jobs carry equivalent limits. The premium Woodpecker
+server enforces a 60-minute default and a 120-minute maximum for repository
+pipelines. Live forge migration acceptance is single-flight and never cancels
+an in-progress evidence run.
+
 Stable semantic-version tags run the attested release workflow. It validates
 the tagged commit, creates a reproducible source archive, emits SPDX and
 CycloneDX SBOMs, signs their checksum set through keyless Cosign, attaches

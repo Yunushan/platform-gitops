@@ -15,6 +15,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -149,6 +150,7 @@ jobs:
   approval:
     needs: verify
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     environment: production-release
     permissions:
       actions: read
@@ -192,6 +194,7 @@ jobs:
   release:
     needs: approval
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       actions: read
       attestations: write

@@ -4,5 +4,6 @@ stages:
 validate:
   stage: validate
   image: alpine:3.20
+  timeout: 30m
   script:
     - sh app.sh

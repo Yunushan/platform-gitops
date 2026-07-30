@@ -147,6 +147,7 @@ Woodpecker is configured for the 3-node cluster with:
 - `agent.replicas: 3` for Kubernetes-backed build agents.
 - Explicit server and agent image repositories plus `WOODPECKER_IMAGE_TAG`, defaulting to `v3.16.0`.
 - PostgreSQL-backed state through `WOODPECKER_DATABASE_DRIVER=postgres`.
+- A 60-minute default and 120-minute maximum pipeline timeout, enforced by the Woodpecker server.
 - Traefik ingress at the effective CI hostname, defaulting to `woodpecker.<PLATFORM_DOMAIN>` unless `platform_ci_host` or `platform_woodpecker_host` is set.
 
 The first-deploy renderer defaults Woodpecker to PostgreSQL HA against the
