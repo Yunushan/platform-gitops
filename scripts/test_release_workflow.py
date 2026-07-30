@@ -29,8 +29,10 @@ def main() -> int:
     for needle in (
         "tags:\n      - 'v*.*.*'",
         "  verify:",
+        "  approval:",
         "  release:",
         "needs: verify",
+        "needs: approval",
         "environment: production-release",
         "actions: read",
         "contents: read",
@@ -69,6 +71,7 @@ def main() -> int:
         "sha256sum",
         "actions/upload-artifact@",
         "actions/download-artifact@",
+        "approved-release-bundle-${{ github.sha }}",
         "sha256sum -c SHA256SUMS",
         "Bind release approval to checksum manifest",
         "actions/attest-build-provenance@",
@@ -88,11 +91,55 @@ def main() -> int:
         if not ACTION_SHA_RE.search(line):
             raise AssertionError(f"release workflow action is not pinned to a full commit SHA: {line}")
 
-    verify_section, release_section = workflow.split("\n  release:\n", 1)
+    verify_section, approval_and_release = workflow.split("\n  approval:\n", 1)
+    approval_section, release_section = approval_and_release.split("\n  release:\n", 1)
+
+    require(approval_section, "needs: verify", "read-only release approval job")
+    require(
+        approval_section,
+        "environment: production-release",
+        "read-only release approval job",
+    )
+    require(approval_section, "actions: read", "read-only release approval job")
+    require(approval_section, "contents: read", "read-only release approval job")
+    require(
+        approval_section,
+        "python scripts/verify_github_release_approval.py",
+        "read-only release approval job",
+    )
+    require(
+        approval_section,
+        "GITHUB_TOKEN: ${{ secrets.GOVERNANCE_AUDIT_TOKEN }}",
+        "read-only release approval job",
+    )
+    require(
+        approval_section,
+        "approved-release-bundle-${{ github.sha }}",
+        "read-only release approval job",
+    )
+
+    require(release_section, "needs: approval", "privileged release publication job")
+    require(
+        release_section,
+        "approved-release-bundle-${{ github.sha }}",
+        "privileged release publication job",
+    )
     for permission in ("attestations: write", "contents: write", "id-token: write"):
         if permission in verify_section:
             raise AssertionError(f"read-only release verification job must not receive {permission}")
+        if permission in approval_section:
+            raise AssertionError(f"read-only release approval job must not receive {permission}")
         require(release_section, permission, "privileged release publication job")
+    if re.search(r"(?m)^\s{6}[a-z-]+:\s+write\s*$", approval_section):
+        raise AssertionError("read-only release approval job must not receive write permissions")
+    if "environment: production-release" in release_section:
+        raise AssertionError("privileged release publication job must run only after the approval job")
+    if "actions/checkout@" in release_section:
+        raise AssertionError("privileged release publication job must not check out repository source")
+    if "python " in release_section or "scripts/" in release_section:
+        raise AssertionError("privileged release publication job must not execute repository scripts")
+    if "GOVERNANCE_AUDIT_TOKEN" in release_section:
+        raise AssertionError("privileged release publication job must not receive the audit token")
     for verifier in (
         "gitleaks/gitleaks-action@",
         "aquasecurity/trivy-action@",
@@ -104,6 +151,16 @@ def main() -> int:
         require(verify_section, verifier, "read-only release verification job")
         if verifier in release_section:
             raise AssertionError(f"privileged release publication job must not run verifier {verifier}")
+    require(
+        approval_section,
+        "sha256sum -c SHA256SUMS",
+        "read-only release approval job",
+    )
+    require(
+        release_section,
+        "sha256sum -c SHA256SUMS",
+        "privileged release publication job",
+    )
 
     guide = read(GUIDE)
     for needle in (
@@ -114,6 +171,8 @@ def main() -> int:
         "platform-production-check",
         "platform-production-score",
         "production-release",
+        "read-only approval job",
+        "publication job receives write and OIDC permissions only after",
         "Gitleaks, Semgrep, Trivy",
         "Kyverno CEL",
         "annotated and GitHub-verified",

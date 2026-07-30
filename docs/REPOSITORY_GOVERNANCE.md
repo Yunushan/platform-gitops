@@ -86,15 +86,18 @@ boundary. A successful static-governance run writes a sanitized report to:
 rendered/governance/github-governance-evidence.json
 ```
 
-The tagged release workflow runs the same verifier before receiving write or
-OIDC permissions. It includes the sanitized report in `SHA256SUMS`; the
-environment-gated release job then emits
+The tagged release workflow runs the static-governance verifier in its
+read-only verification job and includes the sanitized report in `SHA256SUMS`.
+A separate read-only approval job is attached to the environment gate. After
+the gate opens, that job verifies the recorded reviewer, emits
 `*.github-release-approval.json`, appends its digest, verifies the complete
-manifest, signs it with keyless Cosign, and publishes all reports with the
-release bundle. The workflow also retains `*.github-release.json`, which binds
-the GitHub-verified annotated tag and signed release commit by SHA-256. `make
-platform-production-score` requires all three public reports to match the
-private live production evidence commit.
+manifest, and transfers an approved artifact. Only the downstream publication
+job receives write and OIDC permissions. It does not check out source or run
+repository scripts; it verifies the approved manifest, signs it with keyless
+Cosign, and publishes all reports with the release bundle. The workflow also
+retains `*.github-release.json`, which binds the GitHub-verified annotated tag
+and signed release commit by SHA-256. `make platform-production-score` requires
+all three public reports to match the private live production evidence commit.
 
 ## Plan and Configure the Release Boundary
 

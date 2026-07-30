@@ -70,7 +70,11 @@ Stable semantic-version tags run the attested release workflow. It validates
 the tagged commit, creates a reproducible source archive, emits SPDX and
 CycloneDX SBOMs, signs their checksum set through keyless Cosign, attaches
 GitHub build and SBOM attestations, and publishes all evidence with the GitHub
-release. Verification commands are documented in `docs/RELEASE_GUIDE.md`.
+release. Verification and independent environment approval run in separate
+read-only jobs. Only the final downstream job receives write and OIDC
+permissions, and it publishes a checksummed approved artifact without checking
+out or executing repository source. Verification commands are documented in
+`docs/RELEASE_GUIDE.md`.
 
 GitLab, Forgejo/Gitea Actions, and Woodpecker continue to run the portable
 source-contract suite. Install Trivy, Gitleaks, Semgrep, Syft, Scorecard, and
