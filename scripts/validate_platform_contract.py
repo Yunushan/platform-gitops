@@ -71,6 +71,8 @@ platform_tls_verify_playbook = root / "ansible/playbooks/verify-platform-tls.yml
 production_evidence_script = root / "scripts/verify_production_evidence.py"
 production_evidence_runner = root / "scripts/bootstrap/run-platform-production-evidence.sh"
 production_evidence_test = root / "scripts/test_production_evidence.py"
+atomic_file_writer = root / "scripts/atomic_file.py"
+atomic_file_test = root / "scripts/test_atomic_file.py"
 image_inventory_capture = root / "scripts/capture_live_image_inventory.py"
 image_inventory_reconciler = root / "scripts/reconcile_image_inventory.py"
 image_inventory_validator = root / "scripts/verify_image_inventory_evidence.py"
@@ -2911,6 +2913,8 @@ def main() -> None:
         production_evidence_script,
         production_evidence_runner,
         production_evidence_test,
+        atomic_file_writer,
+        atomic_file_test,
         image_inventory_capture,
         image_inventory_reconciler,
         image_inventory_validator,
@@ -3004,6 +3008,7 @@ def main() -> None:
 
     production_evidence_runner_text = read(production_evidence_runner)
     for needle in (
+        "umask 077",
         "PLATFORM_RELEASE_ID",
         "PLATFORM_EVIDENCE_OPERATOR",
         "PLATFORM_EVIDENCE_APPROVER",
@@ -3024,6 +3029,8 @@ def main() -> None:
         '"openbaoCeremony": "passed"',
         '"observability": "passed"',
         '"capacity": "passed"',
+        "from scripts.atomic_file import atomic_write_text",
+        "atomic_write_text(",
         "sha256sum",
         "verify_production_evidence.py",
     ):
@@ -3031,6 +3038,34 @@ def main() -> None:
             production_evidence_runner_text,
             needle,
             f"production evidence runner must retain release proof: {needle}",
+        )
+
+    atomic_file_writer_text = read(atomic_file_writer)
+    for needle in (
+        "tempfile.mkstemp(",
+        "os.fchmod(descriptor, mode)",
+        "os.fsync(handle.fileno())",
+        "os.replace(temporary, destination)",
+        "temporary.unlink(missing_ok=True)",
+        "PRIVATE_FILE_MODE = 0o600",
+    ):
+        require_text(
+            atomic_file_writer_text,
+            needle,
+            f"private artifact writer must remain atomic and owner-only: {needle}",
+        )
+
+    atomic_file_test_text = read(atomic_file_test)
+    for needle in (
+        "ATOMIC_ARTIFACT_PRODUCERS",
+        "simulated replace failure",
+        "failed atomic write damaged the prior artifact",
+        "production evidence runner is missing private atomic output control",
+    ):
+        require_text(
+            atomic_file_test_text,
+            needle,
+            f"private artifact writer self-test must retain failure coverage: {needle}",
         )
 
     image_inventory_capture_text = read(image_inventory_capture)

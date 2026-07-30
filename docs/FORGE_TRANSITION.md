@@ -362,8 +362,10 @@ snapshot.
 Store the private plan, discovery, preparation, shadow verification, handover,
 relay, status, fallback, rollback, finalization, failback, and automatic
 recovery proofs, plus the integrity-checked state, in an access-controlled
-evidence store. Proofs are tied to the plan digest and have a maximum approval
-age. State and proof tampering is rejected.
+evidence store. Local state and proof updates are owner-only and atomically
+replace a complete prior file only after a durable write. Proofs are tied to
+the plan digest and have a maximum approval age. State and proof tampering is
+rejected.
 
 A successful run means 100 percent of the declared, supported contract was
 verified. It is not proof that every provider-specific behavior was translated.

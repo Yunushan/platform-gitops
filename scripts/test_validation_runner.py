@@ -33,6 +33,7 @@ def test_validation_script_list() -> None:
     for required in (
         "scripts/validate_project.py",
         "scripts/test_python_syntax.py",
+        "scripts/test_atomic_file.py",
         "scripts/test_validation_runner.py",
         "scripts/test_line_endings.py",
         "scripts/test_ci_reference_pinning.py",

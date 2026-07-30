@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from atomic_file import atomic_write_text
 import verify_production_evidence as production_evidence
 
 
@@ -662,8 +663,7 @@ def main() -> int:
     report["evidenceSha256"] = evidence_hashes
 
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(args.output, json.dumps(report, indent=2) + "\n")
 
     print(
         f"Production readiness score: {report['score']}/{report['maximumScore']} "

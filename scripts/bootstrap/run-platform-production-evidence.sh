@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${repo_root}"
@@ -187,6 +188,8 @@ import json
 import os
 from pathlib import Path
 
+from scripts.atomic_file import atomic_write_text
+
 document = {
     "schemaVersion": 6,
     "releaseId": os.environ["PLATFORM_RELEASE_ID"],
@@ -235,8 +238,9 @@ document = {
         "dataProtection": "passed",
     },
 }
-Path(os.environ["PLATFORM_EVIDENCE_OUTPUT_PATH"]).write_text(
-    json.dumps(document, indent=2) + "\n", encoding="utf-8"
+atomic_write_text(
+    Path(os.environ["PLATFORM_EVIDENCE_OUTPUT_PATH"]),
+    json.dumps(document, indent=2) + "\n",
 )
 PY
 

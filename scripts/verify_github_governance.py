@@ -19,6 +19,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from atomic_file import atomic_write_text
+
 
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 DEFAULT_REQUIRED_CHECKS = ("validate", "Analyze (actions)", "Analyze (python)")
@@ -669,8 +671,7 @@ def main() -> int:
             workflow_permissions_document=workflow_permissions_document,
             actions_permissions_document=actions_permissions_document,
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(args.output, json.dumps(evidence, indent=2) + "\n")
     except (OSError, GovernanceError) as exc:
         print(f"GitHub governance verification failed: {exc}", file=sys.stderr)
         return 1

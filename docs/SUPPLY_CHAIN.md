@@ -170,7 +170,9 @@ make supply-chain-verify
 The inventory should cover every organization-owned image in the release.
 Public verification keys are not secrets, but private registry names and the
 approved image inventory can be deployment-sensitive and should remain in the
-ignored private evidence area.
+ignored private evidence area. Inventory and reconciliation outputs are written
+atomically with owner-only mode `0600`; a failed write leaves the prior complete
+artifact intact.
 
 `platform-production-check` invokes this strict gate. A missing scanner,
 missing Scorecard report, score below threshold, tag-only image, absent key,

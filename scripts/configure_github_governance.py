@@ -18,6 +18,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from atomic_file import atomic_write_text
+
 
 API_VERSION = "2026-03-10"
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -762,8 +764,7 @@ def main() -> int:
                 "run make github-governance-verify with a read-only audit token",
             ],
         }
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(plan, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(args.output, json.dumps(plan, indent=2) + "\n")
     except (ConfigurationError, KeyError, OSError, TypeError, ValueError) as exc:
         print(f"GitHub governance configuration failed: {exc}", file=sys.stderr)
         return 1

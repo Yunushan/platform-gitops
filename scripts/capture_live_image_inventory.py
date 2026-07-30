@@ -13,6 +13,8 @@ import subprocess
 import sys
 from typing import Any
 
+from atomic_file import atomic_write_text
+
 
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 CONTAINER_GROUPS = (
@@ -215,8 +217,7 @@ def main() -> int:
         pods, source_hash = read_pods(args)
         document = capture(pods, cluster_uid=cluster_uid(args))
         document["sourceSha256"] = source_hash
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(args.output, json.dumps(document, indent=2) + "\n")
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         print(f"Live image inventory capture failed: {exc}", file=sys.stderr)
         return 1

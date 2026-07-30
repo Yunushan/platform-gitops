@@ -18,6 +18,9 @@ proof, restore proof, access proof, private evidence, and accepted exceptions.
 - Expired exceptions block launch.
 - Private deployment records hold real evidence; this template defines the
   evidence model.
+- Local proof, state, inventory, governance, and score artifacts are written
+  through an atomic same-directory replacement with owner-only file mode;
+  interrupted writes must not replace the last complete record.
 - The final decision should be reproducible from commands, pull requests,
   health gates, restore drills, and private review records.
 
@@ -153,7 +156,8 @@ The command writes a JSON record and hashed log below the ignored
 `private/production-evidence/` directory. It never creates a passing record
 when a gate fails. Run `git fetch <REMOTE>` first. If the current branch tracks
 the reviewed deployment ref, the expected-ref setting can be omitted and the
-upstream is used automatically.
+upstream is used automatically. The runner uses `umask 077`, and the shared
+artifact writer flushes and atomically replaces JSON evidence with mode `0600`.
 
 ## 100-Point Production Gate
 

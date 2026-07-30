@@ -16,6 +16,7 @@ from typing import Any, Iterable
 
 from capture_live_image_inventory import repository_from_image
 from verify_image_inventory_evidence import validate_evidence
+from atomic_file import atomic_write_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -396,8 +397,7 @@ def main() -> int:
     args = parse_args()
     try:
         document = reconcile(args)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(args.output, json.dumps(document, indent=2) + "\n")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Image inventory reconciliation failed: {exc}", file=sys.stderr)
         return 1

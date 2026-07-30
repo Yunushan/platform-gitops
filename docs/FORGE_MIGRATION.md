@@ -181,7 +181,10 @@ Every proof contains a canonical SHA-256 integrity digest. This detects an
 accidentally or casually modified artifact; it is not a cryptographic signature
 of operator identity. Store proofs in an access-controlled evidence system and
 sign or attest them with the organization's normal release process when
-non-repudiation is required.
+non-repudiation is required. Local migration, cutover, transition, and live
+acceptance proof files use a unique same-directory temporary file, durable
+flush, atomic replacement, and owner-only mode `0600`, so an interrupted write
+does not replace the previous complete proof.
 
 The proof is successful only when all selected repositories report
 `"verified": true`, every branch/tag/note ref matches between source and

@@ -4,6 +4,7 @@ steps:
     commands:
       - python scripts/validate_project.py
       - python scripts/test_python_syntax.py
+      - python scripts/test_atomic_file.py
       - python scripts/test_validation_runner.py
       - python scripts/test_line_endings.py
       - python scripts/test_profile_checker.py

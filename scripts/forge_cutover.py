@@ -33,6 +33,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 import forge_migration as migration
+from atomic_file import atomic_write_text
 
 
 TOOL = "scripts/forge_cutover.py"
@@ -1212,10 +1213,7 @@ def write_proof(path: Path | None, proof: dict[str, Any]) -> dict[str, Any]:
     text = json.dumps(safe_proof, indent=2, sort_keys=True) + "\n"
     if path:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_name(f".{path.name}.tmp")
-            temporary.write_text(text, encoding="utf-8")
-            temporary.replace(path)
+            atomic_write_text(path, text)
         except OSError as exc:
             raise CutoverError(f"could not write proof {path}: {exc}") from exc
     else:

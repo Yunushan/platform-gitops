@@ -30,6 +30,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
+from atomic_file import atomic_write_text
+
 
 SUPPORTED_DIRECTIONS = {
     "github-to-forgejo",
@@ -2698,8 +2700,7 @@ def write_proof(path: Path | None, proof: dict[str, Any]) -> None:
     proof["proof_sha256"] = proof_digest(proof)
     text = json.dumps(proof, indent=2, sort_keys=True) + "\n"
     if path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        atomic_write_text(path, text)
     else:
         print(text, end="")
 

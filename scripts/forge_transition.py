@@ -27,6 +27,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 import forge_cutover as cutover
 import forge_migration as migration
+from atomic_file import atomic_write_text
 
 
 PLAN_VERSION = 1
@@ -363,10 +364,7 @@ def write_proof(path: Path | None, proof: dict[str, Any]) -> dict[str, Any]:
         print(text, end="")
         return safe
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(path)
+        atomic_write_text(path, text)
     except OSError as exc:
         raise TransitionError(f"could not write proof {path}: {exc}") from exc
     return safe
@@ -1489,10 +1487,7 @@ def write_state(path: Path, state: dict[str, Any]) -> dict[str, Any]:
     safe["state_sha256"] = canonical_digest(safe)
     text = json.dumps(safe, indent=2, sort_keys=True) + "\n"
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp")
-        temporary.write_text(text, encoding="utf-8")
-        temporary.replace(path)
+        atomic_write_text(path, text)
     except OSError as exc:
         raise TransitionError(f"could not write transition state {path}: {exc}") from exc
     return safe

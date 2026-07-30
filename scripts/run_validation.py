@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VALIDATION_SCRIPTS = (
     "scripts/validate_project.py",
     "scripts/test_python_syntax.py",
+    "scripts/test_atomic_file.py",
     "scripts/test_validation_runner.py",
     "scripts/test_line_endings.py",
     "scripts/test_profile_checker.py",

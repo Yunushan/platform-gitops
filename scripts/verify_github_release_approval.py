@@ -19,6 +19,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from atomic_file import atomic_write_text
+
 
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -545,8 +547,7 @@ def main() -> int:
             rulesets_document=rulesets_document,
             team_members_document=team_members_document,
         )
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+        atomic_write_text(args.output, json.dumps(evidence, indent=2) + "\n")
     except (OSError, ReleaseApprovalError) as exc:
         print(f"GitHub release approval verification failed: {exc}", file=sys.stderr)
         return 1
