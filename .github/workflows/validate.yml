@@ -97,7 +97,7 @@ jobs:
           name: rendered-schema-${{ github.sha }}
           path: |
             rendered/schema-validation
-            rendered/synthetic-private-schema/repo/rendered/schema-validation
+            rendered/synthetic-private-schema/schema-validation
           if-no-files-found: error
           retention-days: 30
       - name: Validate project

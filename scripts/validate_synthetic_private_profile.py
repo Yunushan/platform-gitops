@@ -4,26 +4,66 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 
 from synthetic_private_profile import prepare_synthetic_private_profile
 from validate_rendered_manifests import ROOT, application_sources, validate
 
 
 OUTPUT_ROOT = ROOT / "rendered/synthetic-private-schema"
+REPORT_SUFFIXES = (
+    ".kubeconform.json",
+    ".kubeconform.stderr.log",
+    ".render.log",
+)
 
 
-def remove_generated_sources(repo_root: Path) -> None:
-    for generated_source in (
-        repo_root / "gitops",
-        repo_root / "inventory",
-        repo_root / "private",
-    ):
-        if generated_source.exists():
-            shutil.rmtree(generated_source)
+def retained_summary(summary: dict[str, object]) -> dict[str, object]:
+    retained = deepcopy(summary)
+    for collection in ("rendered", "failures"):
+        records = retained.get(collection)
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            for field in ("log", "report"):
+                value = record.get(field)
+                if isinstance(value, str) and value:
+                    record[field] = f"reports/{Path(value).name}"
+    retained["artifactPolicy"] = "sanitized-reports-only"
+    return retained
+
+
+def retain_sanitized_artifacts(
+    schema_output: Path,
+    output_root: Path,
+    summary: dict[str, object],
+) -> None:
+    """Copy only known-safe reports out of the temporary rendered checkout."""
+
+    if output_root.exists():
+        shutil.rmtree(output_root)
+    reports_source = schema_output / "reports"
+    reports_destination = output_root / "schema-validation/reports"
+    reports_destination.mkdir(parents=True)
+    if reports_source.is_dir():
+        for report in reports_source.rglob("*"):
+            if not report.is_file():
+                continue
+            relative = report.relative_to(reports_source)
+            if len(relative.parts) != 1 or not report.name.endswith(REPORT_SUFFIXES):
+                raise RuntimeError(f"unexpected rendered-schema report artifact: {relative}")
+            shutil.copy2(report, reports_destination / report.name)
+    (output_root / "schema-validation/summary.json").write_text(
+        json.dumps(retained_summary(summary), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
@@ -35,30 +75,36 @@ def main() -> int:
     if output_root.exists():
         shutil.rmtree(output_root)
 
-    repo_root = output_root / "repo"
-    try:
-        prepare_synthetic_private_profile(repo_root, source_root=ROOT)
-    except (OSError, RuntimeError, ValueError) as exc:
-        remove_generated_sources(repo_root)
-        print(str(exc), file=sys.stderr)
-        return 1
+    with tempfile.TemporaryDirectory(prefix="platform-synthetic-private-schema-") as temporary:
+        repo_root = Path(temporary) / "repo"
+        try:
+            prepare_synthetic_private_profile(repo_root, source_root=ROOT)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
-    args = argparse.Namespace(
-        profile=["premium-3node"],
-        allow_incomplete=False,
-        require_complete=True,
-        kubernetes_version=None,
-        output_dir="rendered/schema-validation",
-    )
-    expected = {name for name, _ in application_sources("premium-3node", repo_root)}
-    result = validate(args, root=repo_root)
-    summary_path = repo_root / "rendered/schema-validation/summary.json"
-    summary = (
-        json.loads(summary_path.read_text(encoding="utf-8"))
-        if summary_path.is_file()
-        else {}
-    )
-    remove_generated_sources(repo_root)
+        args = argparse.Namespace(
+            profile=["premium-3node"],
+            allow_incomplete=False,
+            require_complete=True,
+            kubernetes_version=None,
+            output_dir="rendered/schema-validation",
+        )
+        expected = {name for name, _ in application_sources("premium-3node", repo_root)}
+        result = validate(args, root=repo_root)
+        schema_output = repo_root / "rendered/schema-validation"
+        summary_path = schema_output / "summary.json"
+        summary = (
+            json.loads(summary_path.read_text(encoding="utf-8"))
+            if summary_path.is_file()
+            else {}
+        )
+        if summary:
+            try:
+                retain_sanitized_artifacts(schema_output, output_root, summary)
+            except (OSError, RuntimeError, ValueError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
     if result != 0 or not summary:
         return result or 1
 
