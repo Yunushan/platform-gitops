@@ -157,8 +157,11 @@ or CI process before the byte limit applies.
 First-party JSON is decoded through one strict parser after its transport or
 file bound is enforced. Duplicate object keys, `NaN`, positive or negative
 `Infinity`, and numeric literals that overflow to non-finite values are
-rejected. Do not normalize and retry an ambiguous document; correct the
-producer and regenerate the evidence, plan, inventory, or API response.
+rejected. Decoded structures are also limited to 128 nested containers and
+1,000,000 total keys/values/containers; decoder recursion is classified as a
+normal input rejection. Do not normalize and retry an ambiguous or excessive
+document; correct the producer and regenerate the evidence, plan, inventory,
+or API response.
 
 Direct first-party HTTP clients use `PLATFORM_HTTP_TIMEOUT_SECONDS`, defaulting
 to `30` seconds with a hard maximum of `300` seconds. API response bodies are

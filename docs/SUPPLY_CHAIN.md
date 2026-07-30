@@ -310,7 +310,8 @@ hard ceiling.
 Those JSON documents also use the shared strict decoder. Duplicate object keys,
 non-standard `NaN`/`Infinity` constants, and numeric overflow are rejected so
 the producer, verifier, and retained evidence cannot assign different meanings
-to the same bytes.
+to the same bytes. Structures deeper than 128 containers or larger than
+1,000,000 total nodes are also rejected before evidence evaluation.
 
 The schema-v6 production evidence generator copies the exact image inventory
 report into its private packet and binds it by SHA-256. Retain that packet. Do not

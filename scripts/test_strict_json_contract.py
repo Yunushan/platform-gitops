@@ -7,6 +7,7 @@ import ast
 import json
 from pathlib import Path
 import sys
+from unittest import mock
 
 
 sys.dont_write_bytecode = True
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
+import strict_json  # noqa: E402
 from strict_json import StrictJsonError, loads_strict_json  # noqa: E402
 
 
@@ -104,6 +106,37 @@ def test_standard_syntax_errors_are_preserved() -> None:
             raise AssertionError(f"strict JSON decoder accepted invalid syntax: {document!r}")
 
 
+def test_structure_limits_are_enforced() -> None:
+    with mock.patch.object(strict_json, "MAX_JSON_DEPTH", 2):
+        try:
+            loads_strict_json('{"first":{"second":{"third":true}}}')
+        except StrictJsonError as exc:
+            if "nesting" not in str(exc):
+                raise AssertionError("JSON depth rejection lost its classification")
+        else:
+            raise AssertionError("strict JSON decoder accepted excessive nesting")
+
+    with mock.patch.object(strict_json, "MAX_JSON_NODES", 3):
+        try:
+            loads_strict_json("[0,1,2]")
+        except StrictJsonError as exc:
+            if "node limit" not in str(exc):
+                raise AssertionError("JSON node rejection lost its classification")
+        else:
+            raise AssertionError("strict JSON decoder accepted too many nodes")
+
+
+def test_decoder_recursion_is_classified() -> None:
+    with mock.patch.object(strict_json.json, "loads", side_effect=RecursionError):
+        try:
+            loads_strict_json("[]")
+        except StrictJsonError as exc:
+            if "decoder nesting" not in str(exc):
+                raise AssertionError("decoder recursion rejection lost its classification")
+        else:
+            raise AssertionError("strict JSON decoder leaked RecursionError")
+
+
 def test_production_parsers_use_shared_policy() -> None:
     direct_calls: list[str] = []
     strict_calls = 0
@@ -144,6 +177,8 @@ def main() -> int:
     test_duplicate_keys_are_rejected()
     test_non_finite_numbers_are_rejected()
     test_standard_syntax_errors_are_preserved()
+    test_structure_limits_are_enforced()
+    test_decoder_recursion_is_classified()
     test_direct_parser_detection()
     test_production_parsers_use_shared_policy()
     print("Strict first-party JSON parsing contract passed.")

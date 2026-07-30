@@ -3210,11 +3210,17 @@ def main() -> None:
 
     strict_json_helper_text = read(strict_json_helper)
     for needle in (
+        "MAX_JSON_DEPTH = 128",
+        "MAX_JSON_NODES = 1_000_000",
         "class StrictJsonError(json.JSONDecodeError):",
         "object_pairs_hook=_reject_duplicate_keys",
         "parse_constant=_reject_non_standard_constant",
         "parse_float=_finite_float",
         "math.isfinite(parsed)",
+        "def _validate_structure(",
+        "node_count > MAX_JSON_NODES",
+        "len(pending) > MAX_JSON_DEPTH",
+        "except RecursionError as exc:",
         "def loads_strict_json(",
     ):
         require_text(
@@ -3229,6 +3235,8 @@ def main() -> None:
         "test_duplicate_keys_are_rejected",
         "test_non_finite_numbers_are_rejected",
         "test_standard_syntax_errors_are_preserved",
+        "test_structure_limits_are_enforced",
+        "test_decoder_recursion_is_classified",
         "test_direct_parser_detection",
         "test_production_parsers_use_shared_policy",
         "direct production JSON parsing remains",

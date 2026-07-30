@@ -273,7 +273,9 @@ disabling the control.
 Migration plans, API responses, and proof documents use the shared strict JSON
 decoder. Duplicate object keys, `NaN`, `Infinity`, and numbers that overflow
 the runtime's finite range are rejected instead of being silently normalized.
-Regenerate an ambiguous source document before migration or cutover.
+The same decoder rejects structures deeper than 128 containers or larger than
+1,000,000 total nodes. Regenerate an ambiguous or excessive source document
+before migration or cutover.
 
 ## Live Four-Direction Acceptance
 
