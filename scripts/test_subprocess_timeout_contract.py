@@ -26,16 +26,21 @@ def production_python_files() -> list[Path]:
     )
 
 
-def subprocess_run_calls(path: Path) -> list[ast.Call]:
+def subprocess_calls(path: Path) -> list[ast.Call]:
     document = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     return [
         node
         for node in ast.walk(document)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "run"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "subprocess"
+        and (
+            (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "run"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "subprocess"
+            )
+            or (isinstance(node.func, ast.Name) and node.func.id == "run_bounded")
+        )
     ]
 
 
@@ -43,14 +48,14 @@ def test_every_production_subprocess_is_bounded() -> None:
     checked = 0
     failures: list[str] = []
     for path in production_python_files():
-        for call in subprocess_run_calls(path):
+        for call in subprocess_calls(path):
             checked += 1
             timeout = next((item.value for item in call.keywords if item.arg == "timeout"), None)
             if timeout is None or (
                 isinstance(timeout, ast.Constant) and timeout.value is None
             ):
-                failures.append(f"{path.relative_to(ROOT)}:{call.lineno}: subprocess.run lacks timeout")
-    if checked < 10:
+                failures.append(f"{path.relative_to(ROOT)}:{call.lineno}: subprocess call lacks timeout")
+    if checked < 13:
         raise AssertionError(f"subprocess timeout scan covered too few calls: {checked}")
     if failures:
         raise AssertionError("\n".join(failures))

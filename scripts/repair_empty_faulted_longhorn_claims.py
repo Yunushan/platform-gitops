@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -241,10 +242,9 @@ class Kubectl:
         except ValueError as exc:
             raise RuntimeError(str(exc)) from None
         try:
-            return subprocess.run(
+            return run_bounded(
                 self.command + list(args),
                 text=True,
-                capture_output=True,
                 check=False,
                 timeout=timeout,
             )
@@ -252,6 +252,8 @@ class Kubectl:
             raise RuntimeError(
                 f"kubectl timed out after {timeout:g} seconds: {' '.join(args)}"
             ) from None
+        except (BoundedSubprocessError, ValueError) as exc:
+            raise RuntimeError(f"kubectl output rejected: {exc}") from None
 
     def run(self, *args: str, check: bool = True) -> str:
         result = self.execute(*args)

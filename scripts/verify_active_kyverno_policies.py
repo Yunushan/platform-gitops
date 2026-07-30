@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds, timeout_stream_text
 
 
@@ -60,10 +61,9 @@ def apply(kyverno: Path, fixture: str, policies: tuple[Path, ...] = POLICIES) ->
     except ValueError as exc:
         return subprocess.CompletedProcess(command, 2, "", str(exc))
     try:
-        return subprocess.run(
+        return run_bounded(
             command,
             cwd=ROOT,
-            capture_output=True,
             text=True,
             check=False,
             timeout=timeout,
@@ -74,6 +74,14 @@ def apply(kyverno: Path, fixture: str, policies: tuple[Path, ...] = POLICIES) ->
         detail = f"Kyverno CLI timed out after {timeout:g} seconds"
         stderr = f"{stderr.rstrip()}\n{detail}" if stderr else detail
         return subprocess.CompletedProcess(command, 124, stdout, stderr)
+    except BoundedSubprocessError as exc:
+        stdout = getattr(exc, "stdout", "")
+        stderr = getattr(exc, "stderr", "")
+        detail = f"Kyverno CLI output rejected: {exc}"
+        stderr = f"{stderr.rstrip()}\n{detail}" if stderr else detail
+        return subprocess.CompletedProcess(command, 125, stdout, stderr)
+    except ValueError as exc:
+        return subprocess.CompletedProcess(command, 2, "", str(exc))
 
 
 def combined_output(result: subprocess.CompletedProcess[str]) -> str:

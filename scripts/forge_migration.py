@@ -31,6 +31,7 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from atomic_file import atomic_write_text
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
@@ -130,12 +131,10 @@ def run_command(args: list[str], cwd: Path | None = None, check: bool = True) ->
     except ValueError as exc:
         raise MigrationError(str(exc)) from None
     try:
-        result = subprocess.run(
+        result = run_bounded(
             args,
             cwd=str(cwd) if cwd else None,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
             check=False,
             timeout=timeout,
         )
@@ -144,6 +143,9 @@ def run_command(args: list[str], cwd: Path | None = None, check: bool = True) ->
         raise MigrationError(
             f"command timed out after {timeout:g} seconds: {command}"
         ) from None
+    except (BoundedSubprocessError, ValueError) as exc:
+        command = " ".join(redact_url(arg) for arg in args)
+        raise MigrationError(f"command output rejected: {command}: {exc}") from None
     if check and result.returncode != 0:
         command = " ".join(redact_url(arg) for arg in args)
         stdout = result.stdout

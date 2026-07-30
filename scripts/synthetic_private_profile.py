@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -195,14 +196,13 @@ def prepare_synthetic_private_profile(
     except ValueError as exc:
         raise RuntimeError(str(exc)) from None
     try:
-        result = subprocess.run(
+        result = run_bounded(
             [sys.executable, str(source_root / "scripts/render_private_platform_values.py")],
             cwd=destination,
             env=sanitized_environment(values),
             text=True,
             encoding="utf-8",
             errors="replace",
-            capture_output=True,
             check=False,
             timeout=timeout,
         )
@@ -210,6 +210,8 @@ def prepare_synthetic_private_profile(
         raise RuntimeError(
             f"synthetic premium profile rendering timed out after {timeout:g} seconds"
         ) from None
+    except (BoundedSubprocessError, ValueError) as exc:
+        raise RuntimeError(f"synthetic premium profile output rejected: {exc}") from None
     if result.returncode != 0:
         raise RuntimeError(
             "synthetic premium profile rendering failed\n"

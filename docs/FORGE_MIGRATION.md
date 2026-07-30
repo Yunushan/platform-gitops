@@ -193,6 +193,13 @@ Overrides must remain finite, positive, and at most `86400` seconds. A timeout
 fails the affected repository proof, redacts credentials embedded in command
 URLs, and leaves later repositories eligible for their normal batch result.
 
+Git and Git LFS stdout/stderr are also drained through the shared bounded
+subprocess runner. The default combined retained output is 32 MiB and the hard
+maximum is 256 MiB. `PLATFORM_SUBPROCESS_OUTPUT_MAX_BYTES` may raise the limit
+for a measured repository transfer. Crossing the limit fails that repository,
+retains only bounded diagnostics, and keeps credential-bearing command URLs
+redacted.
+
 Migration and cutover API calls use the shared HTTP transport policy. They time
 out after 30 seconds by default and reject response or error bodies larger than
 16 MiB before JSON parsing. `PLATFORM_HTTP_TIMEOUT_SECONDS` may be set to at

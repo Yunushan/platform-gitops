@@ -126,6 +126,15 @@ override is set. Every value must be finite, positive, and no greater than
 child process; increasing a bound is not proof that the underlying operation
 is healthy.
 
+Captured child output is bounded independently of command duration. The shared
+runner drains stdout and stderr concurrently, retains at most 32 MiB combined
+by default, and terminates a child that crosses that ceiling. Set
+`PLATFORM_SUBPROCESS_OUTPUT_MAX_BYTES` only for a measured command that needs a
+larger diagnostic payload; the hard maximum is 256 MiB (`268435456` bytes).
+Values must be whole, positive byte counts within that ceiling. Exceeding the
+limit fails the operation while preserving only bounded output; it must not be
+worked around by disabling capture controls.
+
 Direct first-party HTTP clients use `PLATFORM_HTTP_TIMEOUT_SECONDS`, defaulting
 to `30` seconds with a hard maximum of `300` seconds. API response bodies are
 read only through the shared bounded reader. The default maximum is 16 MiB;

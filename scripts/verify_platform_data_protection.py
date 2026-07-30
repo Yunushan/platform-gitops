@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -126,11 +127,9 @@ class Kubectl:
         except ValueError as exc:
             raise ProtectionError(str(exc)) from None
         try:
-            process = subprocess.run(
+            process = run_bounded(
                 [*self.prefix, *args],
                 check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 text=True,
                 timeout=timeout,
             )
@@ -138,6 +137,8 @@ class Kubectl:
             raise ProtectionError(
                 f"kubectl timed out after {timeout:g} seconds: {' '.join(args)}"
             ) from None
+        except (BoundedSubprocessError, ValueError) as exc:
+            raise ProtectionError(f"kubectl output rejected: {exc}") from None
         if process.returncode != 0:
             detail = process.stderr.strip().splitlines()
             message = detail[-1] if detail else "kubectl returned no error detail"

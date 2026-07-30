@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from atomic_file import atomic_write_text
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 import verify_production_evidence as production_evidence
 
@@ -328,7 +329,7 @@ def verify_release_bundle(
     repository: str,
     tag: str,
     cosign_bin: str,
-    runner: Any = subprocess.run,
+    runner: Any = run_bounded,
 ) -> dict[str, str]:
     if not bundle_path.is_file():
         raise ReadinessError(f"release Sigstore bundle does not exist: {bundle_path}")
@@ -383,7 +384,6 @@ def verify_release_bundle(
                 str(checksums_path),
             ],
             text=True,
-            capture_output=True,
             timeout=timeout,
             check=False,
         )
@@ -393,6 +393,8 @@ def verify_release_bundle(
         raise ReadinessError(
             f"Cosign release checksum verification timed out after {timeout:g} seconds"
         ) from None
+    except BoundedSubprocessError as exc:
+        raise ReadinessError(f"Cosign release checksum output rejected: {exc}") from None
     except OSError as exc:
         raise ReadinessError(f"Cosign release checksum verification could not run: {exc}") from exc
     if result.returncode != 0:

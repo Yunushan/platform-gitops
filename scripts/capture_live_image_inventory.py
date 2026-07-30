@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 from atomic_file import atomic_write_text
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from subprocess_timeout import bounded_timeout_seconds
 
 
@@ -175,9 +176,8 @@ def read_pods(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "PLATFORM_KUBECTL_COMMAND_TIMEOUT_SECONDS",
     )
     try:
-        result = subprocess.run(
+        result = run_bounded(
             command,
-            capture_output=True,
             check=False,
             timeout=timeout,
         )
@@ -185,6 +185,8 @@ def read_pods(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         raise RuntimeError(
             f"kubectl Pod inventory query timed out after {timeout:g} seconds"
         ) from None
+    except (BoundedSubprocessError, ValueError) as exc:
+        raise RuntimeError(f"kubectl Pod inventory output rejected: {exc}") from None
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode("utf-8", errors="replace").strip())
     return json.loads(result.stdout), hashlib.sha256(result.stdout).hexdigest()
@@ -200,7 +202,7 @@ def cluster_uid(args: argparse.Namespace) -> str:
         "PLATFORM_KUBECTL_COMMAND_TIMEOUT_SECONDS",
     )
     try:
-        result = subprocess.run(
+        result = run_bounded(
             [
                 args.kubectl,
                 "--kubeconfig",
@@ -212,7 +214,6 @@ def cluster_uid(args: argparse.Namespace) -> str:
                 "jsonpath={.metadata.uid}",
             ],
             text=True,
-            capture_output=True,
             check=False,
             timeout=timeout,
         )
@@ -220,6 +221,8 @@ def cluster_uid(args: argparse.Namespace) -> str:
         raise RuntimeError(
             f"kubectl cluster UID query timed out after {timeout:g} seconds"
         ) from None
+    except (BoundedSubprocessError, ValueError) as exc:
+        raise RuntimeError(f"kubectl cluster UID output rejected: {exc}") from None
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "failed to read kube-system namespace UID")
     return result.stdout.strip()

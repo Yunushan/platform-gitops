@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from render_deployable_gitops_apps import (
     APPLICATION_NAME_RE,
     APPLICATION_PATH_RE,
@@ -102,14 +103,13 @@ def run(
     except ValueError as exc:
         return subprocess.CompletedProcess(command, 2, "", str(exc))
     try:
-        return subprocess.run(
+        return run_bounded(
             command,
             cwd=root,
             env=env,
             text=True,
             encoding="utf-8",
             errors="replace",
-            capture_output=True,
             check=False,
             timeout=timeout,
         )
@@ -119,6 +119,14 @@ def run(
         detail = f"command timed out after {timeout:g} seconds"
         stderr = f"{stderr.rstrip()}\n{detail}" if stderr else detail
         return subprocess.CompletedProcess(command, 124, stdout, stderr)
+    except BoundedSubprocessError as exc:
+        stdout = getattr(exc, "stdout", "")
+        stderr = getattr(exc, "stderr", "")
+        detail = f"command output rejected: {exc}"
+        stderr = f"{stderr.rstrip()}\n{detail}" if stderr else detail
+        return subprocess.CompletedProcess(command, 125, stdout, stderr)
+    except ValueError as exc:
+        return subprocess.CompletedProcess(command, 2, "", str(exc))
 
 
 def write_log(path: Path, result: subprocess.CompletedProcess[str]) -> None:

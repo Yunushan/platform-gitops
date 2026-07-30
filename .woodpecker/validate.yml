@@ -6,6 +6,7 @@ steps:
       - python scripts/test_python_syntax.py
       - python scripts/test_atomic_file.py
       - python scripts/test_subprocess_timeout_contract.py
+      - python scripts/test_subprocess_output_contract.py
       - python scripts/test_http_transport_contract.py
       - python scripts/test_validation_runner.py
       - python scripts/test_line_endings.py

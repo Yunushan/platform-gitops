@@ -75,6 +75,8 @@ atomic_file_writer = root / "scripts/atomic_file.py"
 atomic_file_test = root / "scripts/test_atomic_file.py"
 subprocess_timeout_helper = root / "scripts/subprocess_timeout.py"
 subprocess_timeout_test = root / "scripts/test_subprocess_timeout_contract.py"
+bounded_subprocess_helper = root / "scripts/bounded_subprocess.py"
+bounded_subprocess_test = root / "scripts/test_subprocess_output_contract.py"
 http_transport_helper = root / "scripts/http_transport.py"
 http_transport_test = root / "scripts/test_http_transport_contract.py"
 image_inventory_capture = root / "scripts/capture_live_image_inventory.py"
@@ -2921,6 +2923,8 @@ def main() -> None:
         atomic_file_test,
         subprocess_timeout_helper,
         subprocess_timeout_test,
+        bounded_subprocess_helper,
+        bounded_subprocess_test,
         http_transport_helper,
         http_transport_test,
         image_inventory_capture,
@@ -3094,10 +3098,10 @@ def main() -> None:
     subprocess_timeout_test_text = read(subprocess_timeout_test)
     for needle in (
         "production_python_files",
-        "subprocess_run_calls",
+        "subprocess_calls",
         "ast.parse",
         'node.func.value.id == "subprocess"',
-        "subprocess.run lacks timeout",
+        "subprocess call lacks timeout",
         "test_injected_subprocess_runner_is_bounded",
         "injected production-readiness subprocess runner lacks timeout",
         "test_timeout_precedence_and_validation",
@@ -3107,6 +3111,46 @@ def main() -> None:
             subprocess_timeout_test_text,
             needle,
             f"subprocess timeout self-test must retain fail-closed coverage: {needle}",
+        )
+
+    bounded_subprocess_helper_text = read(bounded_subprocess_helper)
+    for needle in (
+        'OUTPUT_LIMIT_ENV = "PLATFORM_SUBPROCESS_OUTPUT_MAX_BYTES"',
+        "DEFAULT_OUTPUT_MAX_BYTES = 32 * 1024 * 1024",
+        "MAX_OUTPUT_MAX_BYTES = 256 * 1024 * 1024",
+        "class SubprocessOutputLimitExceeded(",
+        "stdout=subprocess.PIPE",
+        "stderr=subprocess.PIPE",
+        "threading.Thread(",
+        "process.wait(timeout=timeout)",
+        "len(chunk) > remaining",
+        "def run_bounded(",
+    ):
+        require_text(
+            bounded_subprocess_helper_text,
+            needle,
+            f"bounded subprocess helper must retain output limits: {needle}",
+        )
+
+    bounded_subprocess_test_text = read(bounded_subprocess_test)
+    for needle in (
+        "test_limit_validation",
+        "test_text_and_binary_capture",
+        "test_combined_output_limit",
+        "test_timeout_preserves_bounded_partial_output",
+        "test_check_behavior",
+        "test_production_capture_uses_shared_runner",
+        "test_injected_runner_defaults_to_bounded_capture",
+        "direct production subprocess capture remains",
+        "production Popen escaped the shared runner",
+        "run_bounded call lacks timeout",
+        "production-readiness injected runner does not default to run_bounded",
+        "256 * 1024 * 1024 + 1",
+    ):
+        require_text(
+            bounded_subprocess_test_text,
+            needle,
+            f"bounded subprocess self-test must retain fail-closed coverage: {needle}",
         )
 
     http_transport_helper_text = read(http_transport_helper)
@@ -4616,6 +4660,7 @@ def main() -> None:
             "scripts/validate_project.py",
             "scripts/test_python_syntax.py",
             "scripts/test_subprocess_timeout_contract.py",
+            "scripts/test_subprocess_output_contract.py",
             "scripts/test_http_transport_contract.py",
             "scripts/test_validation_runner.py",
             "scripts/test_line_endings.py",
@@ -4706,6 +4751,7 @@ def main() -> None:
         "first failing validation script exit code",
         "scripts/test_validation_runner.py",
         "scripts/test_subprocess_timeout_contract.py",
+        "scripts/test_subprocess_output_contract.py",
         "scripts/test_http_transport_contract.py",
         "scripts/test_ansible_shell_blocks.py",
         "scripts/test_ansible_curl_timeout_contract.py",

@@ -88,8 +88,8 @@ def test_command_timeout_redacts_credentials() -> None:
     ]
     with (
         mock.patch.object(
-            migration.subprocess,
-            "run",
+            migration,
+            "run_bounded",
             side_effect=subprocess.TimeoutExpired(command, 7),
         ),
         mock.patch.dict(
