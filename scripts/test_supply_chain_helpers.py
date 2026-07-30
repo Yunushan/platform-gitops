@@ -15,6 +15,7 @@ POLICY_README = ROOT / "policies/README.md"
 README = ROOT / "README.md"
 ARCHITECTURE = ROOT / "docs/ARCHITECTURE.md"
 PREMIUM = ROOT / "docs/PREMIUM_3NODE.md"
+INSTALLATION = ROOT / "docs/INSTALLATION.md"
 EVIDENCE_VALIDATOR = ROOT / "scripts/verify_supply_chain_evidence.py"
 EVIDENCE_TEST = ROOT / "scripts/test_supply_chain_evidence.py"
 IMAGE_INVENTORY_TEST = ROOT / "scripts/test_image_inventory_evidence.py"
@@ -30,6 +31,10 @@ GITHUB_WORKFLOWS = ROOT / ".github/workflows"
 GITLEAKS_CONFIG = ROOT / ".gitleaks.toml"
 SEMGREP_CONFIG = ROOT / ".semgrep.yml"
 SEMGREP_IGNORE = ROOT / ".semgrepignore"
+RKE2_BOOTSTRAP_SCRIPTS = (
+    ROOT / "scripts/bootstrap/install-rke2-first-server.sh",
+    ROOT / "scripts/bootstrap/install-rke2-server.sh",
+)
 
 
 def fail(message: str) -> int:
@@ -62,6 +67,76 @@ def assert_contains(text: str, *needles: str, label: str) -> None:
 
 def main() -> int:
     problems: list[str] = []
+
+    for script in RKE2_BOOTSTRAP_SCRIPTS:
+        try:
+            script_text = read(script)
+            label = str(script.relative_to(ROOT))
+            assert_contains(
+                script_text,
+                ': "${RKE2_VERSION:?',
+                ': "${RKE2_INSTALL_SCRIPT_SHA256:?',
+                "umask 077",
+                'export INSTALL_RKE2_TYPE="server"',
+                'export INSTALL_RKE2_VERSION="${RKE2_VERSION}"',
+                "unset INSTALL_RKE2_CHANNEL",
+                "10#${timeout_value}",
+                "--proto '=https'",
+                "--proto-redir '=https'",
+                "sha256sum --check --strict",
+                'chmod 0700 "${installer}"',
+                "mktemp /etc/rancher/rke2/.config.yaml.XXXXXX",
+                'chmod 0600 "${config_tmp}"',
+                'mv -f -- "${config_tmp}" /etc/rancher/rke2/config.yaml',
+                "quoted_cluster_credential=",
+                label=label,
+            )
+            for insecure_pattern in (
+                'export INSTALL_RKE2_TYPE="${INSTALL_RKE2_TYPE:-server}"',
+                "cat >/etc/rancher/rke2/config.yaml",
+                "curl -sfL https://get.rke2.io |",
+            ):
+                if insecure_pattern in script_text:
+                    problems.append(
+                        f"{label} retains insecure manual bootstrap pattern: "
+                        f"{insecure_pattern}"
+                    )
+
+            checksum_index = script_text.index("sha256sum --check --strict")
+            config_install_index = script_text.index(
+                'mv -f -- "${config_tmp}" /etc/rancher/rke2/config.yaml'
+            )
+            execution_index = script_text.index(
+                'timeout "${RKE2_INSTALL_TIMEOUT}" "${installer}"'
+            )
+            if not checksum_index < config_install_index < execution_index:
+                problems.append(
+                    f"{label} must verify the installer before installing config "
+                    "and executing it"
+                )
+        except (AssertionError, ValueError) as exc:
+            problems.append(str(exc))
+
+    try:
+        installation_text = read(INSTALLATION)
+        assert_contains(
+            installation_text,
+            "Manual bootstrap scripts always require an exact RKE2 release",
+            "RKE2_INSTALL_SCRIPT_SHA256=<REVIEWED_INSTALLER_SHA256>",
+            "`/etc/rancher/rke2/config.yaml`",
+            "atomically with mode `0600`",
+            label=str(INSTALLATION.relative_to(ROOT)),
+        )
+        if installation_text.count(
+            "RKE2_INSTALL_SCRIPT_SHA256=<REVIEWED_INSTALLER_SHA256>"
+        ) < len(RKE2_BOOTSTRAP_SCRIPTS):
+            problems.append(
+                "docs/INSTALLATION.md must show the reviewed installer digest "
+                "for both manual RKE2 bootstrap commands"
+            )
+    except AssertionError as exc:
+        problems.append(str(exc))
+
     for workflow in sorted(GITHUB_WORKFLOWS.glob("*.yml")):
         if "runs-on: ubuntu-latest" in read(workflow):
             problems.append(
@@ -357,7 +432,11 @@ def main() -> int:
             print(f" - {problem}", file=sys.stderr)
         return 1
 
-    print("Supply-chain helper validation passed for CI scans, narrowed Gitleaks exceptions, SBOM evidence, Scorecard, Renovate, and Cosign.")
+    print(
+        "Supply-chain helper validation passed for manual RKE2 bootstrap, CI "
+        "scans, narrowed Gitleaks exceptions, SBOM evidence, Scorecard, "
+        "Renovate, and Cosign."
+    )
     return 0
 
 

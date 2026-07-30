@@ -5028,6 +5028,9 @@ def main() -> None:
         "matchImageReferences:",
         "validationActions:",
         "<COSIGN_PUBLIC_KEY>",
+        "RKE2_BOOTSTRAP_SCRIPTS",
+        "RKE2_INSTALL_SCRIPT_SHA256",
+        "sha256sum --check --strict",
         "Supply-chain helper validation passed",
     ):
         require_text(

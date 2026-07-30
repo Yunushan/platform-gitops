@@ -220,11 +220,19 @@ ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml
 Manual scripts remain available for debugging:
 
 ```bash
-sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> scripts/bootstrap/install-rke2-first-server.sh
-sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> scripts/bootstrap/install-rke2-server.sh
+sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> RKE2_INSTALL_SCRIPT_SHA256=<REVIEWED_INSTALLER_SHA256> scripts/bootstrap/install-rke2-first-server.sh
+sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> RKE2_INSTALL_SCRIPT_SHA256=<REVIEWED_INSTALLER_SHA256> scripts/bootstrap/install-rke2-server.sh
 ```
 
-Never store the real token in git.
+Manual bootstrap scripts always require an exact RKE2 release and a reviewed
+SHA-256 for the installer returned by `https://get.rke2.io`, including outside
+strict production mode. They permit only HTTPS redirects, verify the download
+before changing the node configuration or executing it, reject conflicting
+installer channel/type overrides, and write
+`/etc/rancher/rke2/config.yaml` atomically with mode `0600`. Never store the
+real token in git. The installer digest is not secret, but treat it as a
+reviewed release input and obtain it through your approved release or internal
+mirror process rather than trusting the download being verified.
 
 ## Step 5: Bootstrap the platform control plane
 
