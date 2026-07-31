@@ -2,6 +2,7 @@ steps:
   validate:
     image: python:3.12-slim
     commands:
+      - python -m pip install --disable-pip-version-check PyYAML==6.0.3
       - python scripts/validate_project.py
       - python scripts/test_python_syntax.py
       - python scripts/test_atomic_file.py
@@ -9,6 +10,7 @@ steps:
       - python scripts/test_subprocess_output_contract.py
       - python scripts/test_bounded_file_contract.py
       - python scripts/test_strict_json_contract.py
+      - python scripts/test_strict_yaml_contract.py
       - python scripts/test_http_transport_contract.py
       - python scripts/test_validation_runner.py
       - python scripts/test_line_endings.py

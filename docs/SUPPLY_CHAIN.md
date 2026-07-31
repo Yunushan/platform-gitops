@@ -271,7 +271,9 @@ on strict schema rendering and strict supply-chain verification, then:
    image ID, never Pod environment values or mounted Secret data;
 3. requires each runtime image ID to resolve to an immutable SHA-256 digest;
 4. extracts image references from every successfully rendered application in
-   the exact selected profile, with no skipped applications;
+   the exact selected profile, with no skipped applications; rendered YAML is
+   byte-bounded and decoded through the shared strict loader, which rejects
+   duplicate keys, aliases, non-JSON types, and excessive semantic complexity;
 5. resolves rendered tags through the observed live digest or an explicitly
    approved dormant-image exception;
 6. requires every private-registry digest in the Cosign report and inside the

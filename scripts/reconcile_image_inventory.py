@@ -19,6 +19,7 @@ from verify_image_inventory_evidence import validate_evidence
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_bytes, read_bounded_text
 from strict_json import loads_strict_json
+from strict_yaml import loads_strict_yaml_all
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,13 +64,7 @@ def manifest_documents(path: Path) -> Iterable[Any]:
     if stripped.startswith("{") or stripped.startswith("["):
         loaded = loads_strict_json(stripped)
         return loaded if isinstance(loaded, list) else [loaded]
-    try:
-        import yaml  # type: ignore[import-untyped]
-    except ImportError as exc:
-        raise ValueError(
-            "PyYAML is required to inspect rendered YAML; install the Ansible/PyYAML runtime"
-        ) from exc
-    return list(yaml.safe_load_all(text))
+    return loads_strict_yaml_all(text)
 
 
 def image_values(value: Any, *, path: str = "") -> Iterable[tuple[str, str]]:

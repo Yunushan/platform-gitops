@@ -83,6 +83,8 @@ bounded_file_helper = root / "scripts/bounded_file.py"
 bounded_file_test = root / "scripts/test_bounded_file_contract.py"
 strict_json_helper = root / "scripts/strict_json.py"
 strict_json_test = root / "scripts/test_strict_json_contract.py"
+strict_yaml_helper = root / "scripts/strict_yaml.py"
+strict_yaml_test = root / "scripts/test_strict_yaml_contract.py"
 http_transport_helper = root / "scripts/http_transport.py"
 http_transport_test = root / "scripts/test_http_transport_contract.py"
 image_inventory_capture = root / "scripts/capture_live_image_inventory.py"
@@ -2890,6 +2892,11 @@ def main() -> None:
         )
     for workflow_path in (github_validate_workflow, github_release_workflow):
         workflow_text = read(workflow_path)
+        require_text(
+            workflow_text,
+            "PyYAML==6.0.3",
+            f"{workflow_path.relative_to(root)} must install the pinned strict YAML runtime",
+        )
         for needle in (
             "scripts/bootstrap/install-kyverno-cli.sh",
             "python scripts/verify_active_kyverno_policies.py",
@@ -3268,6 +3275,51 @@ def main() -> None:
             f"strict JSON self-test must retain fail-closed coverage: {needle}",
         )
 
+    strict_yaml_helper_text = read(strict_yaml_helper)
+    for needle in (
+        "MAX_YAML_DEPTH = 128",
+        "MAX_YAML_NODES = 1_000_000",
+        "MAX_YAML_DOCUMENTS = 10_000",
+        "class StrictYamlError(ValueError):",
+        "class _StrictSafeLoader(yaml.SafeLoader):",
+        "yaml.events.AliasEvent",
+        "YAML anchors and aliases are not allowed",
+        "duplicate YAML mapping keys are not allowed",
+        "YAML mapping keys must be strings",
+        "math.isfinite(value)",
+        "def _validate_json_compatible(",
+        "bytes(document) if isinstance(document, bytearray) else document",
+        "def loads_strict_yaml_all(",
+        "except RecursionError as exc:",
+    ):
+        require_text(
+            strict_yaml_helper_text,
+            needle,
+            f"strict YAML helper must retain deterministic parsing: {needle}",
+        )
+
+    strict_yaml_test_text = read(strict_yaml_test)
+    for needle in (
+        "test_valid_documents",
+        "test_duplicate_keys_are_rejected",
+        "test_anchors_and_aliases_are_rejected",
+        "test_non_json_types_are_rejected",
+        "test_non_finite_numbers_are_rejected",
+        "test_structure_limits_are_enforced",
+        "test_invalid_syntax_is_classified_without_content",
+        "test_decoder_recursion_is_classified",
+        "test_direct_parser_detection",
+        "test_production_parsers_use_shared_policy",
+        "direct production YAML parsing remains",
+        'SCRIPTS.rglob("*.py")',
+        "strict_calls < 1",
+    ):
+        require_text(
+            strict_yaml_test_text,
+            needle,
+            f"strict YAML self-test must retain fail-closed coverage: {needle}",
+        )
+
     http_transport_helper_text = read(http_transport_helper)
     for needle in (
         'HTTP_TIMEOUT_ENV = "PLATFORM_HTTP_TIMEOUT_SECONDS"',
@@ -3354,6 +3406,7 @@ def main() -> None:
 
     image_inventory_reconciler_text = read(image_inventory_reconciler)
     for needle in (
+        "loads_strict_yaml_all",
         "rendered images were neither observed live nor resolved by exception",
         "private/supply-chain",
         "must expire within 90 days",
@@ -4925,6 +4978,11 @@ def main() -> None:
         fail("Makefile help must describe seed sync as source-push opt-in")
     for ci_file in ci_validation_files:
         ci_text = read(ci_file)
+        require_text(
+            ci_text,
+            "PyYAML==6.0.3",
+            f"{ci_file.relative_to(root)} must install the pinned strict YAML runtime",
+        )
         for script_name in (
             "scripts/validate_project.py",
             "scripts/test_python_syntax.py",
@@ -4932,6 +4990,7 @@ def main() -> None:
             "scripts/test_subprocess_output_contract.py",
             "scripts/test_bounded_file_contract.py",
             "scripts/test_strict_json_contract.py",
+            "scripts/test_strict_yaml_contract.py",
             "scripts/test_http_transport_contract.py",
             "scripts/test_validation_runner.py",
             "scripts/test_line_endings.py",
@@ -5025,6 +5084,7 @@ def main() -> None:
         "scripts/test_subprocess_output_contract.py",
         "scripts/test_bounded_file_contract.py",
         "scripts/test_strict_json_contract.py",
+        "scripts/test_strict_yaml_contract.py",
         "scripts/test_http_transport_contract.py",
         "scripts/test_ansible_shell_blocks.py",
         "scripts/test_ansible_curl_timeout_contract.py",

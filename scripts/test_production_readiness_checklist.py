@@ -61,6 +61,7 @@ def main() -> int:
         "make validate",
         "make no-secrets",
         "python scripts/validate_no_secrets.py",
+        "python scripts/test_strict_yaml_contract.py",
         "PLATFORM_PROFILE=<PROFILE> make platform-profile-check",
         "PLATFORM_PROFILE=<PROFILE> make platform-production-check",
         "make platform-production-score",

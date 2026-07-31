@@ -28,6 +28,8 @@ jobs:
         uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
           python-version: '3.x'
+      - name: Install pinned YAML parser
+        run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
       - name: Verify immutable release ref
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
