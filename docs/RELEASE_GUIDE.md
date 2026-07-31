@@ -116,6 +116,7 @@ comment for readability, but release evidence should show the immutable SHA.
 - [ ] Third-party CI actions are pinned by full commit SHA.
 - [ ] Python CI tools install from reviewed hash locks, and Semgrep runs from the reviewed OCI digest without container network or checkout writes.
 - [ ] Actionlint, Kustomize, Helm, and Kubeconform install from reviewed, size-bounded release archives whose Linux amd64 SHA-256 values match the repository contract.
+- [ ] Kyverno CLI installs from its reviewed Linux amd64 release checksum and reports the expected staged version before replacing the active verifier.
 - [ ] Actionlint validates every GitHub Actions workflow.
 - [ ] The release commit and annotated semantic-version tag both show GitHub's Verified status.
 - [ ] The checksummed release bundle retains `*.github-release.json` with the verified tag object, release commit, and input hashes.

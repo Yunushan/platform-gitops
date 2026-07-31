@@ -577,7 +577,10 @@ def main() -> int:
             'install --mode=0755 -- "${candidate}" "${pending_destination}"',
             'timeout 15s "${pending_destination}"',
             'mv -f -- "${pending_destination}" "${destination}"',
-            "trap cleanup EXIT HUP INT TERM",
+            "trap cleanup EXIT",
+            "trap 'exit 129' HUP",
+            "trap 'exit 130' INT",
+            "trap 'exit 143' TERM",
             label=str(CI_TOOL_INSTALLER.relative_to(ROOT)),
         )
         renovate_records = {
@@ -804,25 +807,50 @@ def main() -> int:
         kyverno_installer_text = read(KYVERNO_CLI_INSTALLER)
         assert_contains(
             kyverno_installer_text,
-            'version="1.18.1"',
-            'sha256="5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c"',
+            "# renovate: datasource=github-releases depName=kyverno/kyverno "
+            "extractVersion=^v(?<version>.*)$",
+            'kyverno_version="1.18.1"',
+            'kyverno_sha256="5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c"',
             "umask 077",
+            "Linux:x86_64|Linux:amd64",
             "max_archive_bytes=$((64 * 1024 * 1024))",
+            "download_timeout_seconds=180",
             "mktemp -d",
             "trap cleanup EXIT",
+            "trap 'exit 129' HUP",
+            "trap 'exit 130' INT",
+            "trap 'exit 143' TERM",
             "--proto '=https'",
             "--proto-redir '=https'",
+            "--tlsv1.2",
+            "--max-redirs 3",
             '--max-filesize "${max_archive_bytes}"',
             "sha256sum --check --strict",
             "--no-same-owner --no-same-permissions",
             'target_tmp="$(mktemp',
+            'timeout 15s "${target_tmp}" version',
             'mv -f -- "${target_tmp}" "${target_dir}/kyverno"',
             label=str(KYVERNO_CLI_INSTALLER.relative_to(ROOT)),
         )
+        checksum_index = kyverno_installer_text.index("sha256sum --check --strict")
+        extraction_index = kyverno_installer_text.index("tar --extract --gzip")
+        version_index = kyverno_installer_text.index(
+            'timeout 15s "${target_tmp}" version'
+        )
+        install_index = kyverno_installer_text.index(
+            'mv -f -- "${target_tmp}" "${target_dir}/kyverno"'
+        )
+        if not checksum_index < extraction_index < version_index < install_index:
+            problems.append(
+                f"{KYVERNO_CLI_INSTALLER.relative_to(ROOT)} must checksum before "
+                "extracting, verify the staged version, and only then install"
+            )
         for unsafe_pattern in (
             'archive="${download_dir}/${archive_name}"',
             'tar --extract --gzip --file "${archive}" --directory "${target_dir}"',
             'chmod 0755 "${target_dir}/kyverno"',
+            'mkdir -p -- "${target_dir}" "${download_dir}"',
+            '"${target_dir}/kyverno" version',
         ):
             if unsafe_pattern in kyverno_installer_text:
                 problems.append(
@@ -1241,9 +1269,11 @@ def main() -> int:
                 r"(?P<\1>",
                 candidate_patterns[0],
             )
-            matches = list(
-                re.finditer(ci_tools_pattern, read(CI_TOOL_INSTALLER))
-            )
+            matches = [
+                match
+                for installer in (CI_TOOL_INSTALLER, KYVERNO_CLI_INSTALLER)
+                for match in re.finditer(ci_tools_pattern, read(installer))
+            ]
         except (IndexError, re.error) as exc:
             problems.append(f"Renovate CI-tool regex is not executable: {exc}")
         else:
@@ -1280,6 +1310,12 @@ def main() -> int:
                     "yannh/kubeconform",
                     "^v(?<version>.*)$",
                     "0.7.0",
+                ),
+                (
+                    "github-releases",
+                    "kyverno/kyverno",
+                    "^v(?<version>.*)$",
+                    "1.18.1",
                 ),
             ]
             if actual != expected:

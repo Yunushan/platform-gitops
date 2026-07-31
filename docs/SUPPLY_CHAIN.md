@@ -14,11 +14,12 @@ pull request:
 - Semgrep executes the repository security rules and fails on findings.
 - Trivy scans dependencies, secrets, and infrastructure misconfiguration and
   fails on fixed HIGH or CRITICAL findings.
-- A checksum-pinned Kyverno CLI `v1.18.1` is downloaded through HTTPS-only
-  redirects into a private temporary directory, size-bounded, safely extracted,
-  and atomically installed before it compiles and behavior-tests every active CEL
-  admission policy against positive, negative, and exemption fixtures and
-  compiles the stable image-signature policy without registry access.
+- A checksum-pinned Linux amd64 Kyverno CLI `v1.18.1` is downloaded through
+  TLS 1.2 and HTTPS-only bounded redirects into a private temporary directory,
+  size-bounded, safely extracted, staged-version checked, and atomically
+  installed before it compiles and behavior-tests every active CEL admission
+  policy against positive, negative, and exemption fixtures and compiles the
+  stable image-signature policy without registry access.
 - Syft produces an SPDX JSON SBOM.
 - `scripts/verify_supply_chain_evidence.py` rejects malformed or empty SBOMs.
 - Checksum-pinned Actionlint `1.7.12`, Kustomize `5.8.1`, Helm `3.21.0`, and

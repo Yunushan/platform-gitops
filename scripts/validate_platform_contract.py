@@ -2871,19 +2871,26 @@ def main() -> None:
         )
     kyverno_cli_installer_text = read(kyverno_cli_installer)
     for needle in (
-        'version="1.18.1"',
-        'sha256="5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c"',
+        "# renovate: datasource=github-releases depName=kyverno/kyverno",
+        'kyverno_version="1.18.1"',
+        'kyverno_sha256="5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c"',
         "umask 077",
+        "Linux:x86_64|Linux:amd64",
         "max_archive_bytes=$((64 * 1024 * 1024))",
+        "download_timeout_seconds=180",
         "mktemp -d",
         "trap cleanup EXIT",
+        "trap 'exit 143' TERM",
         "--proto '=https'",
         "--proto-redir '=https'",
+        "--tlsv1.2",
+        "--max-redirs 3",
         '--max-filesize "${max_archive_bytes}"',
-        "releases/download/v${version}/${archive_name}",
+        "releases/download/v${kyverno_version}/${archive_name}",
         "sha256sum --check --strict",
         "--no-same-owner --no-same-permissions",
         'target_tmp="$(mktemp',
+        'timeout 15s "${target_tmp}" version',
         'mv -f -- "${target_tmp}" "${target_dir}/kyverno"',
     ):
         require_text(
@@ -6906,6 +6913,7 @@ def main() -> None:
         "SEMGREP_IMAGE",
         "(?<currentDigest>",
         "install-ci-tools",
+        "install-kyverno-cli",
         "(?<datasource>",
         "(?<extractVersion>",
         '"dependencyDashboardApproval": true',

@@ -33,6 +33,10 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
+if ! command -v uname >/dev/null 2>&1; then
+  printf 'Required installer command is unavailable: uname\n' >&2
+  exit 1
+fi
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64|Linux:amd64) ;;
   *)
@@ -41,7 +45,7 @@ case "$(uname -s):$(uname -m)" in
     ;;
 esac
 
-for required_command in curl install mktemp mv sha256sum tar timeout wc; do
+for required_command in chmod curl install mkdir mktemp mv rm sha256sum tar timeout wc; do
   if ! command -v "${required_command}" >/dev/null 2>&1; then
     printf 'Required installer command is unavailable: %s\n' "${required_command}" >&2
     exit 1
@@ -78,7 +82,10 @@ cleanup() {
   fi
   rm -rf -- "${work_dir}"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 tool_version=""
 tool_sha256=""
