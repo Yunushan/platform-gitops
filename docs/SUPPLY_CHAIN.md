@@ -128,6 +128,14 @@ CI compares every deployable archive member with the vendored source. Runtime
 chart-repository and CRD-manifest URL overrides are rejected so a storage
 recovery cannot silently widen the supply-chain trust boundary.
 
+The platform ingress bootstrap follows the same offline model for MetalLB
+`0.16.1` and Traefik `41.0.1`. Their reviewed source trees and chart archives
+are committed together, archive sizes and SHA-256 values are verified on the
+Ansible controller, and RKE2 receives only checksum-annotated `chartContent`.
+The production Kustomizations render those same local chart trees. External
+chart-repository DNS probes remain explicit diagnostics and are not deployment
+prerequisites.
+
 The Argo CD bootstrap derives its application release from the vendored chart
 and uses only the matching exact-tag core and HA manifest paths. Each manifest
 has a reviewed SHA-256 in the playbook; downloads are HTTPS-only, redirect-free,

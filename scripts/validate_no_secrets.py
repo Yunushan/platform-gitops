@@ -38,6 +38,13 @@ forbidden_private_markers = [
 
 default_rke2_pod_cidr = '.'.join(('10', '42', '0', '0')) + '/16'
 
+vendored_document_exceptions = {
+    'gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/'
+    'traefik-41.0.1/traefik/Changelog.md',
+    'gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/'
+    'traefik-41.0.1/traefik/EXAMPLES.md',
+}
+
 allow_fragments = [
     '<GENERATE_WITH_PASSWORD_MANAGER>', '<NODE_1_IP>', '<NODE_2_IP>', '<NODE_3_IP>',
     '<VIP_ADDRESS>', '<PLATFORM_DOMAIN>', '<VIP_DNS_NAME>', 'example.com',
@@ -67,8 +74,10 @@ def should_scan(path: Path) -> bool:
         return False
     # Vendored upstream chart READMEs contain example credentials, private-key
     # snippets, and RFC1918 addresses. Keep this exception name- and path-bound;
-    # first-party docs and every non-README vendor artifact remain scanned.
+    # first-party docs and every non-reviewed vendor artifact remain scanned.
     if '/charts/' in rel_posix and rel.name.lower() == 'readme.md':
+        return False
+    if rel_posix in vendored_document_exceptions:
         return False
     if rel.name.startswith('.env') and rel.name != '.env.example':
         return False

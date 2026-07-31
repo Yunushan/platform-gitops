@@ -35,11 +35,13 @@ GITHUB_WORKFLOWS = ROOT / ".github/workflows"
 GITLEAKS_CONFIG = ROOT / ".gitleaks.toml"
 SEMGREP_CONFIG = ROOT / ".semgrep.yml"
 SEMGREP_IGNORE = ROOT / ".semgrepignore"
+NO_SECRETS_SCANNER = ROOT / "scripts/validate_no_secrets.py"
 RKE2_BOOTSTRAP_SCRIPTS = (
     ROOT / "scripts/bootstrap/install-rke2-first-server.sh",
     ROOT / "scripts/bootstrap/install-rke2-server.sh",
 )
 ARGOCD_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-argocd.yml"
+INGRESS_BOOTSTRAP = ROOT / "ansible/playbooks/deploy-platform-ingress.yml"
 LONGHORN_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-longhorn.yml"
 LONGHORN_CRD_REPAIR = ROOT / "ansible/playbooks/repair-longhorn-crds.yml"
 LONGHORN_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn"
@@ -47,6 +49,15 @@ LONGHORN_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/lo
 LONGHORN_CHART_ARCHIVE_MAX_BYTES = 1 * 1024 * 1024
 LONGHORN_CHART_EXPANDED_MAX_BYTES = 4 * 1024 * 1024
 LONGHORN_CHART_MEMBER_MAX = 128
+METALLB_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/apps/metallb/charts/metallb-0.16.1/metallb"
+METALLB_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/apps/metallb/charts/metallb-0.16.1/metallb-0.16.1.tgz"
+TRAEFIK_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik"
+TRAEFIK_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik-41.0.1.tgz"
+METALLB_KUSTOMIZATION = ROOT / "gitops/clusters/rke2-main/apps/metallb/kustomization.yaml"
+TRAEFIK_KUSTOMIZATION = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/traefik/kustomization.yaml"
+INGRESS_CHART_ARCHIVE_MAX_BYTES = 1 * 1024 * 1024
+INGRESS_CHART_EXPANDED_MAX_BYTES = 8 * 1024 * 1024
+INGRESS_CHART_MEMBER_MAX = 512
 
 
 def fail(message: str) -> int:
@@ -77,30 +88,39 @@ def assert_contains(text: str, *needles: str, label: str) -> None:
             raise AssertionError(f"{label} is missing required text: {needle}")
 
 
-def validate_longhorn_chart_archive() -> list[str]:
+def validate_vendored_chart_archive(
+    *,
+    archive_path: Path,
+    source_path: Path,
+    consumer_path: Path,
+    chart_root: str,
+    archive_max_bytes: int,
+    expanded_max_bytes: int,
+    member_max: int,
+) -> list[str]:
     problems: list[str] = []
-    label = str(LONGHORN_CHART_ARCHIVE.relative_to(ROOT))
+    label = str(archive_path.relative_to(ROOT))
     try:
-        archive_size = LONGHORN_CHART_ARCHIVE.stat().st_size
-        if not 0 < archive_size <= LONGHORN_CHART_ARCHIVE_MAX_BYTES:
+        archive_size = archive_path.stat().st_size
+        if not 0 < archive_size <= archive_max_bytes:
             return [
                 f"{label} must be non-empty and no larger than "
-                f"{LONGHORN_CHART_ARCHIVE_MAX_BYTES} bytes"
+                f"{archive_max_bytes} bytes"
             ]
-        archive_bytes = LONGHORN_CHART_ARCHIVE.read_bytes()
+        archive_bytes = archive_path.read_bytes()
         archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
-        if archive_sha256 not in read(LONGHORN_BOOTSTRAP):
+        if archive_sha256 not in read(consumer_path):
             problems.append(
                 f"{label} SHA-256 {archive_sha256} is not pinned by "
-                f"{LONGHORN_BOOTSTRAP.relative_to(ROOT)}"
+                f"{consumer_path.relative_to(ROOT)}"
             )
 
-        with tarfile.open(LONGHORN_CHART_ARCHIVE, mode="r:gz") as archive:
+        with tarfile.open(archive_path, mode="r:gz") as archive:
             members = archive.getmembers()
-            if not 0 < len(members) <= LONGHORN_CHART_MEMBER_MAX:
+            if not 0 < len(members) <= member_max:
                 problems.append(
                     f"{label} must contain 1 through "
-                    f"{LONGHORN_CHART_MEMBER_MAX} members"
+                    f"{member_max} members"
                 )
                 return problems
 
@@ -113,7 +133,7 @@ def validate_longhorn_chart_archive() -> list[str]:
                     or ".." in member_path.parts
                     or "\\" in member.name
                     or len(member_path.parts) < 2
-                    or member_path.parts[0] != "longhorn"
+                    or member_path.parts[0] != chart_root
                 ):
                     problems.append(f"{label} has unsafe member path: {member.name}")
                     continue
@@ -126,27 +146,27 @@ def validate_longhorn_chart_archive() -> list[str]:
                         f"{label} may contain only regular files: {member.name}"
                     )
                     continue
-                if member.size < 0 or member.size > LONGHORN_CHART_EXPANDED_MAX_BYTES:
+                if member.size < 0 or member.size > expanded_max_bytes:
                     problems.append(
                         f"{label} member exceeds the expansion bound: {member.name}"
                     )
                     continue
                 expanded_size += member.size
-                if expanded_size > LONGHORN_CHART_EXPANDED_MAX_BYTES:
+                if expanded_size > expanded_max_bytes:
                     problems.append(
                         f"{label} expands beyond "
-                        f"{LONGHORN_CHART_EXPANDED_MAX_BYTES} bytes"
+                        f"{expanded_max_bytes} bytes"
                     )
                     break
 
                 relative_source = Path(*member_path.parts[1:])
-                source_path = LONGHORN_CHART_SOURCE / relative_source
-                if not source_path.is_file():
+                member_source_path = source_path / relative_source
+                if not member_source_path.is_file():
                     problems.append(
                         f"{label} member has no vendored source: {member.name}"
                     )
                     continue
-                if source_path.stat().st_size != member.size:
+                if member_source_path.stat().st_size != member.size:
                     problems.append(
                         f"{label} member size differs from vendored source: "
                         f"{member.name}"
@@ -156,25 +176,21 @@ def validate_longhorn_chart_archive() -> list[str]:
                 if stream is None:
                     problems.append(f"{label} cannot read member: {member.name}")
                     continue
-                payload = stream.read(LONGHORN_CHART_EXPANDED_MAX_BYTES + 1)
+                payload = stream.read(expanded_max_bytes + 1)
                 if len(payload) != member.size:
                     problems.append(
                         f"{label} member size is inconsistent: {member.name}"
                     )
                     continue
-                if payload != source_path.read_bytes():
+                if payload != member_source_path.read_bytes():
                     problems.append(
                         f"{label} member differs from vendored source: {member.name}"
                     )
 
             required_members = {
-                "longhorn/Chart.yaml",
-                "longhorn/values.yaml",
-                *(
-                    "longhorn/" + path.relative_to(LONGHORN_CHART_SOURCE).as_posix()
-                    for path in (LONGHORN_CHART_SOURCE / "templates").rglob("*")
-                    if path.is_file()
-                ),
+                f"{chart_root}/{path.relative_to(source_path).as_posix()}"
+                for path in source_path.rglob("*")
+                if path.is_file()
             }
             missing = sorted(required_members - member_names)
             if missing:
@@ -187,10 +203,44 @@ def validate_longhorn_chart_archive() -> list[str]:
     return problems
 
 
+def validate_longhorn_chart_archive() -> list[str]:
+    return validate_vendored_chart_archive(
+        archive_path=LONGHORN_CHART_ARCHIVE,
+        source_path=LONGHORN_CHART_SOURCE,
+        consumer_path=LONGHORN_BOOTSTRAP,
+        chart_root="longhorn",
+        archive_max_bytes=LONGHORN_CHART_ARCHIVE_MAX_BYTES,
+        expanded_max_bytes=LONGHORN_CHART_EXPANDED_MAX_BYTES,
+        member_max=LONGHORN_CHART_MEMBER_MAX,
+    )
+
+
 def main() -> int:
     problems: list[str] = []
 
     problems.extend(validate_longhorn_chart_archive())
+    problems.extend(
+        validate_vendored_chart_archive(
+            archive_path=METALLB_CHART_ARCHIVE,
+            source_path=METALLB_CHART_SOURCE,
+            consumer_path=INGRESS_BOOTSTRAP,
+            chart_root="metallb",
+            archive_max_bytes=INGRESS_CHART_ARCHIVE_MAX_BYTES,
+            expanded_max_bytes=INGRESS_CHART_EXPANDED_MAX_BYTES,
+            member_max=INGRESS_CHART_MEMBER_MAX,
+        )
+    )
+    problems.extend(
+        validate_vendored_chart_archive(
+            archive_path=TRAEFIK_CHART_ARCHIVE,
+            source_path=TRAEFIK_CHART_SOURCE,
+            consumer_path=INGRESS_BOOTSTRAP,
+            chart_root="traefik",
+            archive_max_bytes=INGRESS_CHART_ARCHIVE_MAX_BYTES,
+            expanded_max_bytes=INGRESS_CHART_EXPANDED_MAX_BYTES,
+            member_max=INGRESS_CHART_MEMBER_MAX,
+        )
+    )
 
     try:
         argocd_bootstrap_text = read(ARGOCD_BOOTSTRAP)
@@ -284,6 +334,61 @@ def main() -> int:
                     )
         except AssertionError as exc:
             problems.append(str(exc))
+
+    try:
+        ingress_bootstrap_text = read(INGRESS_BOOTSTRAP)
+        assert_contains(
+            ingress_bootstrap_text,
+            "platform_metallb_vendored_chart_archive_sha256",
+            "fb06bb584fcb7856f15733b2a6a2aff5b61b5c350687e341c163ae24a5938adc",
+            "platform_traefik_vendored_chart_archive_sha256",
+            "150f5c608f2d25eaa292d306470cbfd1b0681d67d88da5985433354f716c5a7f",
+            "Verify vendored platform ingress chart archives",
+            "platform_metallb_chart_archive.content",
+            "platform_traefik_chart_archive.content",
+            "failurePolicy: abort",
+            "platform_traefik_chart_repo_dns_check_effective",
+            label=str(INGRESS_BOOTSTRAP.relative_to(ROOT)),
+        )
+        for forbidden in (
+            "PLATFORM_METALLB_CHART_REPO",
+            "repo: {{ platform_metallb_chart_repo_effective }}",
+            "repo: {{ platform_traefik_chart_repo_effective }}",
+            "chart: metallb",
+            "chart: traefik",
+        ):
+            if forbidden in ingress_bootstrap_text:
+                problems.append(
+                    f"{INGRESS_BOOTSTRAP.relative_to(ROOT)} contains unsafe "
+                    f"runtime ingress chart input: {forbidden}"
+                )
+        if ingress_bootstrap_text.count("chartContent:") < 2:
+            problems.append(
+                f"{INGRESS_BOOTSTRAP.relative_to(ROOT)} must embed both "
+                "reviewed ingress chart archives"
+            )
+        if "platform-ingress: platform-dns-repair" in read(MAKEFILE):
+            problems.append(
+                "platform-ingress must not depend on external chart-repository "
+                "DNS diagnostics when using local chartContent"
+            )
+        for path, chart_home, chart_repo in (
+            (METALLB_KUSTOMIZATION, "charts/metallb-0.16.1", "https://metallb.github.io/metallb"),
+            (TRAEFIK_KUSTOMIZATION, "charts/traefik-41.0.1", "https://traefik.github.io/charts"),
+        ):
+            kustomization_text = read(path)
+            assert_contains(
+                kustomization_text,
+                "helmGlobals:",
+                f"chartHome: {chart_home}",
+                label=str(path.relative_to(ROOT)),
+            )
+            if chart_repo in kustomization_text:
+                problems.append(
+                    f"{path.relative_to(ROOT)} must render its reviewed local chart"
+                )
+    except AssertionError as exc:
+        problems.append(str(exc))
 
     for script in RKE2_BOOTSTRAP_SCRIPTS:
         try:
@@ -410,6 +515,31 @@ def main() -> int:
                 ".semgrepignore must contain only the reviewed generated/private paths; "
                 f"expected={sorted(expected_ignored)} actual={sorted(semgrep_ignored)}"
             )
+    except AssertionError as exc:
+        problems.append(str(exc))
+
+    try:
+        no_secrets_text = read(NO_SECRETS_SCANNER)
+        assert_contains(
+            no_secrets_text,
+            "vendored_document_exceptions = {",
+            "traefik-41.0.1/traefik/Changelog.md",
+            "traefik-41.0.1/traefik/EXAMPLES.md",
+            "if rel_posix in vendored_document_exceptions:",
+            label=str(NO_SECRETS_SCANNER.relative_to(ROOT)),
+        )
+        for broad_exception in (
+            "if '/charts/' in rel_posix and rel.suffix == '.md'",
+            "if '/charts/' in rel_posix and rel.suffix in {'.md'",
+            'if "/charts/" in rel_posix and rel.suffix == ".md"',
+            'if "/charts/" in rel_posix and rel.suffix in {".md"',
+        ):
+            if broad_exception in no_secrets_text:
+                problems.append(
+                    "scripts/validate_no_secrets.py must not broadly exempt "
+                    "vendored Markdown files"
+                )
+                break
     except AssertionError as exc:
         problems.append(str(exc))
     try:
@@ -646,6 +776,10 @@ def main() -> int:
                 "offline artifact",
                 "HelmChart `chartContent`",
                 "chart-repository and CRD-manifest URL overrides are rejected",
+                "platform ingress bootstrap follows the same offline model",
+                "MetalLB",
+                "`0.16.1` and Traefik `41.0.1`",
+                "chart-repository DNS probes remain explicit diagnostics",
                 "Argo CD bootstrap derives its application release",
                 "reviewed SHA-256 in the playbook",
                 "HA-to-core fallback enforces the same policy",
@@ -660,6 +794,9 @@ def main() -> int:
                 "verifies its pinned SHA-256",
                 "Runtime overrides such as a remote CRD",
                 "manifest URL are intentionally unsupported",
+                "checksum-verified local chart",
+                "chart-repository check is now an explicit diagnostic",
+                "HelmChart uses embedded `chartContent`",
                 "exact Argo CD release recorded by the vendored",
                 "HA-to-core fallback verifies its separate core manifest",
             ),
@@ -677,8 +814,9 @@ def main() -> int:
 
     print(
         "Supply-chain helper validation passed for verified Argo CD and manual "
-        "RKE2 bootstrap, offline Longhorn recovery, CI scans, narrowed "
-        "Gitleaks exceptions, SBOM evidence, Scorecard, Renovate, and Cosign."
+        "RKE2 bootstrap, offline Longhorn and ingress charts, CI scans, "
+        "narrowed Gitleaks exceptions, SBOM evidence, Scorecard, Renovate, "
+        "and Cosign."
     )
     return 0
 

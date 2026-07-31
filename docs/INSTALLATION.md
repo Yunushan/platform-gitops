@@ -707,24 +707,28 @@ If the webhook path is unhealthy, the ingress playbook automatically restarts Me
 PLATFORM_METALLB_WEBHOOK_REPAIR=false make platform-ingress
 ```
 
-If your enterprise network requires internal Helm mirrors:
+`make platform-ingress` verifies the reviewed MetalLB `0.16.1` and Traefik
+`41.0.1` archives committed beside their vendored chart source, then embeds the
+base64 payloads in RKE2 HelmChart `chartContent`. It does not download a chart
+index or accept a runtime chart-repository override. A chart update requires a
+reviewed source/archive change and matching SHA-256 contract update.
+
+External DNS repair is therefore not a prerequisite for chart installation.
+Run it explicitly when image pulls or another in-cluster external request shows
+resolver or service-path failures. For IPv4-only environments it suppresses
+external AAAA answers by default; disable that only if the cluster has working
+IPv6 egress:
 
 ```bash
-PLATFORM_METALLB_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/metallb" \
-PLATFORM_TRAEFIK_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/traefik" \
-make platform-ingress
+PLATFORM_DNS_IPV4_ONLY=false make platform-dns-repair
 ```
 
-`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. It checks the MetalLB chart repository, then the Traefik chart repository, then verifies the Traefik chart repository from a pod pinned to every Kubernetes node before installing either controller. The per-node Traefik check prints Kubernetes DNS service IP and CoreDNS endpoint probes, retries Helm repository add/update inside each pinned pod, and waits for all node checks before printing diagnostics. If a single node still cannot use the Kubernetes DNS service path, the playbook repairs CNI sysctls, active-interface reverse-path filtering, firewalld service-path and node-peer trust, direct pod/CNI ACCEPT rules on every RKE2 node, refreshes kube-proxy/Cilium, and retries. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
+The older per-node Traefik repository probe remains available as an explicit
+network diagnostic, but it is disabled during normal ingress installation:
 
 ```bash
-PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
-```
-
-If your network has short DNS or chart-repository flaps, increase only the per-node Helm check tolerance:
-
-```bash
-PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
+make platform-dns-repair-traefik
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true make platform-ingress
 ```
 
 It then installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at the effective Argo CD hostname, verifies the route, and removes the temporary Argo CD NodePort exposure.

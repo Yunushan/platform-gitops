@@ -184,7 +184,7 @@
           Detected node resolver candidates were: {{ platform_node_nameservers_detected_all | default('') }}.
           Ignored Kubernetes DNS service IPs were: {{ platform_cluster_dns_service_ips_list | default([]) | join(' ') }}.
           Set PLATFORM_DNS_UPSTREAMS, for example:
-          PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+          PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-dns-repair
       run_once: true
 
     - name: Guard platform workloads from unavailable OpenBao injector admission
@@ -2899,13 +2899,13 @@
               make platform-ingress
 
               If no upstream DNS checks succeed, set explicit DNS servers and retry:
-              PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+              PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-dns-repair
 
               If the output shows successful resolution but Helm command times
               out, fix pod egress/NAT/firewall/proxy access to the chart
               repository, or configure an internal chart mirror. To tolerate
               short Helm DNS/egress flaps while debugging:
-              PLATFORM_DNS_HELM_ATTEMPTS=5 PLATFORM_DNS_HELM_TIMEOUT=60 make platform-ingress
+              PLATFORM_DNS_HELM_ATTEMPTS=5 PLATFORM_DNS_HELM_TIMEOUT=60 make platform-dns-repair
 
               This playbook defaults to IPv4-only external DNS mode so Helm jobs
               do not choose unreachable public IPv6 addresses on IPv4-only networks.

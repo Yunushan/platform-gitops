@@ -77,6 +77,15 @@ token: ${PLATFORM_TOKEN}
             raise AssertionError(f"expected {local_dir} directory to be skipped")
     if scanner.should_scan(root / "gitops/apps/example/charts/vendor/README.md"):
         raise AssertionError("expected vendored chart README files to be skipped")
+    for relative_path in scanner.vendored_document_exceptions:
+        if scanner.should_scan(root / relative_path):
+            raise AssertionError(
+                f"expected reviewed vendored documentation to be skipped: {relative_path}"
+            )
+    if not scanner.should_scan(root / "gitops/apps/example/charts/vendor/EXAMPLES.md"):
+        raise AssertionError("expected unlisted vendored example documentation to remain scanned")
+    if not scanner.should_scan(root / "docs/Changelog.md"):
+        raise AssertionError("expected first-party changelog files to remain scanned")
     if not scanner.should_scan(root / "docs/README.md"):
         raise AssertionError("expected first-party README files to remain scanned")
     if not scanner.should_scan(root / "gitops/apps/example/charts/vendor/credentials.txt"):

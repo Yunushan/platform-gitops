@@ -95,7 +95,7 @@ help:
 	@echo "  platform-dns-repair  Verify pod DNS and repair CoreDNS upstreams for external chart repositories"
 	@echo "  platform-service-path-consumers-repair  Refresh Woodpecker agents after ClusterIP service-path repair"
 	@echo "  platform-service-path-repair  Repair ClusterIP/DNS service paths and refresh Woodpecker consumers"
-	@echo "  platform-dns-repair-traefik  Verify pod DNS against the Traefik chart repository"
+	@echo "  platform-dns-repair-traefik  Optional external DNS diagnostic against the Traefik chart repository"
 	@echo "  platform-ingress  Install MetalLB/Traefik, bind the app VIP, and publish Argo CD on 443"
 	@echo "  platform-ingress-vip  Alias for platform-ingress"
 	@echo "  platform-ingress-diagnose  Classify app VIP, Traefik, MetalLB, and controller reachability without redeploying"
@@ -604,7 +604,7 @@ platform-service-path-repair:
 platform-dns-repair-traefik:
 	@PLATFORM_DNS_CHECK_REPO=$${PLATFORM_TRAEFIK_CHART_REPO:-https://traefik.github.io/charts} ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-cluster-dns.yml
 
-platform-ingress: platform-dns-repair platform-dns-repair-traefik
+platform-ingress:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/deploy-platform-ingress.yml
 
 platform-ingress-vip: platform-ingress

@@ -3421,6 +3421,68 @@ def main() -> None:
             )
     if bootstrap_argocd_text.count("sha256sum --check --strict") != 2:
         fail("Argo CD bootstrap must verify selected and core fallback manifests")
+    ingress_bootstrap_text = read(root / "ansible/playbooks/deploy-platform-ingress.yml")
+    for needle in (
+        "platform_metallb_vendored_chart_archive_sha256",
+        "fb06bb584fcb7856f15733b2a6a2aff5b61b5c350687e341c163ae24a5938adc",
+        "platform_traefik_vendored_chart_archive_sha256",
+        "150f5c608f2d25eaa292d306470cbfd1b0681d67d88da5985433354f716c5a7f",
+        "Validate vendored platform ingress chart selection",
+        "Verify vendored platform ingress chart archives",
+        "platform_metallb_chart_archive.content",
+        "platform_traefik_chart_archive.content",
+        "failurePolicy: abort",
+        "platform_traefik_chart_repo_dns_check_effective",
+    ):
+        require_text(
+            ingress_bootstrap_text,
+            needle,
+            f"platform ingress artifact verification must include {needle}",
+        )
+    for forbidden in (
+        "PLATFORM_METALLB_CHART_REPO",
+        "repo: {{ platform_metallb_chart_repo_effective }}",
+        "repo: {{ platform_traefik_chart_repo_effective }}",
+        "chart: metallb",
+        "chart: traefik",
+    ):
+        if forbidden in ingress_bootstrap_text:
+            fail(
+                "platform ingress bootstrap must not execute mutable or "
+                f"arbitrary chart inputs: {forbidden}"
+            )
+    if ingress_bootstrap_text.count("chartContent:") < 2:
+        fail("platform ingress bootstrap must embed both reviewed chart archives")
+    if "platform-ingress: platform-dns-repair" in makefile_text:
+        fail(
+            "platform-ingress must not depend on external chart-repository DNS "
+            "diagnostics when using local chartContent"
+        )
+    for relative_path, chart_home, chart_repo in (
+        (
+            "gitops/clusters/rke2-main/apps/metallb/kustomization.yaml",
+            "charts/metallb-0.16.1",
+            "https://metallb.github.io/metallb",
+        ),
+        (
+            "gitops/clusters/rke2-main/premium-3node/apps/traefik/kustomization.yaml",
+            "charts/traefik-41.0.1",
+            "https://traefik.github.io/charts",
+        ),
+    ):
+        kustomization_text = read(root / relative_path)
+        require_text(
+            kustomization_text,
+            "helmGlobals:",
+            f"local ingress chart declaration must set helmGlobals in {relative_path}",
+        )
+        require_text(
+            kustomization_text,
+            f"chartHome: {chart_home}",
+            f"local ingress chart declaration must pin chartHome in {relative_path}",
+        )
+        if chart_repo in kustomization_text:
+            fail(f"{relative_path} must render its reviewed local chart")
     argocd_repo_credentials_task = require_ansible_task_block(
         bootstrap_argocd_text,
         "Register private Git repository credentials when provided",
