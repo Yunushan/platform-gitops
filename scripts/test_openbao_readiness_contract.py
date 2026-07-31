@@ -83,14 +83,14 @@ def main() -> int:
     require(premium, "make platform-openbao-verify", str(PREMIUM.relative_to(ROOT)))
 
     runner = read(EVIDENCE_RUNNER)
-    require(runner, '"schemaVersion": 6', "production evidence runner")
+    require(runner, '"schemaVersion": 7', "production evidence runner")
     require(runner, '"openbaoReadiness": "passed"', "production evidence runner")
     require(runner, '"openbaoCeremony": "passed"', "production evidence runner")
 
     validator = read(EVIDENCE_VALIDATOR)
     require(validator, '"openbaoReadiness"', "production evidence validator")
     require(validator, '"openbaoCeremony"', "production evidence validator")
-    require(validator, "schemaVersion must be 6", "production evidence validator")
+    require(validator, "schemaVersion must be 7", "production evidence validator")
 
     print("OpenBao production-readiness contract passed.")
     return 0

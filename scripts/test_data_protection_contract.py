@@ -161,9 +161,22 @@ def test_restore_evidence() -> None:
         now=now,
         max_age_days=92,
         expected_profile="premium-3node",
+        expected_commit="a" * 40,
     )
     if summary["drill_id"] != "drill-test":
         fail("valid restore evidence did not preserve the drill id")
+
+    try:
+        evidence.validate_evidence(
+            document,
+            now=now,
+            max_age_days=92,
+            expected_commit="b" * 40,
+        )
+    except evidence.EvidenceError:
+        pass
+    else:
+        fail("restore evidence from a different Git revision was accepted")
 
     stale = valid_evidence(now)
     stale["completedAt"] = (now - timedelta(days=93)).isoformat()
@@ -380,6 +393,8 @@ def test_contract_wiring() -> None:
     wrapper_text = wrapper.read_text(encoding="utf-8")
     if "PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE" not in wrapper_text:
         fail("production data protection does not require Forgejo recovery evidence")
+    if '--expected-commit "${expected_commit}"' not in wrapper_text:
+        fail("production data protection does not bind restore evidence to HEAD")
     with tempfile.TemporaryDirectory(prefix="platform-restore-evidence-") as directory:
         path = Path(directory) / "evidence.json"
         path.write_text(json.dumps(valid_evidence(datetime.now(timezone.utc))), encoding="utf-8")

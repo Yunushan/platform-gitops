@@ -146,7 +146,7 @@ make platform-forgejo-recovery-drill
 PLATFORM_PROFILE=<PROFILE> make platform-production-check
 ```
 
-After the production gate passes, retain a fresh private schema-v6 record that
+After the production gate passes, retain a fresh private schema-v7 record that
 binds every repository, profile, schema, supply-chain, cluster, security,
 OpenBao readiness/custody, observability, capacity, application, and
 data-protection gate to the exact Git revision and requires a distinct operator
@@ -154,15 +154,20 @@ and approver. The generator rejects a dirty or detached checkout and requires
 `HEAD` to exactly match a fetched remote tracking ref; it stores the branch,
 Git tree, remote name, and a non-secret hash of the remote URL. It also copies
 the exact rendered/live image reconciliation and independently approved
-OpenBao ceremony record into the private packet and binds both artifacts by
-SHA-256. Earlier schema-v1/v2/v3/v4/v5 records remain historical evidence but
-do not certify the current gate set:
+OpenBao ceremony record into the private packet. It also atomically retains the
+exact restore/continuity and Forgejo cross-node recovery records that passed the
+gate, binds all four artifacts by SHA-256, and revalidates their profile,
+revision, freshness, and recovery controls when calculating the final score.
+Earlier schema-v1/v2/v3/v4/v5/v6 records remain historical evidence but do not
+certify the current gate set:
 
 ```bash
 PLATFORM_RELEASE_ID=<APPROVED_CHANGE_ID> \
 PLATFORM_EVIDENCE_OPERATOR=<OPERATOR_ID> \
 PLATFORM_EVIDENCE_APPROVER=<INDEPENDENT_APPROVER_ID> \
 PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE=private/openbao-ceremony/<CEREMONY>.json \
+PLATFORM_RESTORE_EVIDENCE_FILE=private/restore-evidence.json \
+PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE=private/forgejo-recovery-evidence.json \
 PLATFORM_PRODUCTION_EVIDENCE_EXPECTED_REF=seed/main \
 make platform-production-evidence
 ```

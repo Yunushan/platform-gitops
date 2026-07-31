@@ -23,6 +23,14 @@ from verify_openbao_ceremony_evidence import (
     EvidenceError as OpenBaoCeremonyEvidenceError,
     validate_evidence as validate_openbao_ceremony,
 )
+from verify_restore_evidence import (
+    EvidenceError as RestoreEvidenceError,
+    validate_evidence as validate_restore_evidence,
+)
+from verify_forgejo_recovery_evidence import (
+    EvidenceError as ForgejoRecoveryEvidenceError,
+    validate_evidence as validate_forgejo_recovery,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,13 +107,15 @@ def validate_evidence(
     now: datetime,
     max_age_days: int,
     openbao_recovery_max_age_days: int = 180,
+    restore_max_age_days: int = 92,
+    forgejo_recovery_max_age_days: int = 92,
     expected_profile: str = "",
     expected_commit: str = "",
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise EvidenceError("production evidence must be a JSON object")
-    if document.get("schemaVersion") != 6:
-        raise EvidenceError("schemaVersion must be 6")
+    if document.get("schemaVersion") != 7:
+        raise EvidenceError("schemaVersion must be 7")
 
     release_id = nonempty(document, "releaseId")
     profile = nonempty(document, "profile")
@@ -252,6 +262,64 @@ def validate_evidence(
     except (OSError, json.JSONDecodeError, OpenBaoCeremonyEvidenceError) as exc:
         raise EvidenceError(f"retained OpenBao ceremony evidence is invalid: {exc}") from exc
 
+    restore_reference = document.get("restoreEvidence")
+    if not isinstance(restore_reference, dict):
+        raise EvidenceError("restoreEvidence must be an object")
+    restore_path_value = restore_reference.get("path")
+    restore_hash = str(restore_reference.get("sha256", "")).lower()
+    if not isinstance(restore_path_value, str) or not restore_path_value.strip():
+        raise EvidenceError("restoreEvidence.path must be a non-empty string")
+    if not SHA256_RE.fullmatch(restore_hash):
+        raise EvidenceError("restoreEvidence.sha256 must be a lowercase SHA-256")
+    restore_path = retained_path(
+        restore_path_value.strip(), root, "restoreEvidence.path"
+    )
+    if not restore_path.is_file():
+        raise EvidenceError(f"retained restore evidence is missing: {restore_path}")
+    if sha256_file(restore_path) != restore_hash:
+        raise EvidenceError("retained restore evidence hash does not match restoreEvidence.sha256")
+    try:
+        restore_document = loads_strict_json(read_bounded_text(restore_path))
+        restore_summary = validate_restore_evidence(
+            restore_document,
+            now=now,
+            max_age_days=restore_max_age_days,
+            expected_profile=profile,
+            expected_commit=commit,
+        )
+    except (OSError, json.JSONDecodeError, RestoreEvidenceError) as exc:
+        raise EvidenceError(f"retained restore evidence is invalid: {exc}") from exc
+
+    forgejo_reference = document.get("forgejoRecovery")
+    if not isinstance(forgejo_reference, dict):
+        raise EvidenceError("forgejoRecovery must be an object")
+    forgejo_path_value = forgejo_reference.get("path")
+    forgejo_hash = str(forgejo_reference.get("sha256", "")).lower()
+    if not isinstance(forgejo_path_value, str) or not forgejo_path_value.strip():
+        raise EvidenceError("forgejoRecovery.path must be a non-empty string")
+    if not SHA256_RE.fullmatch(forgejo_hash):
+        raise EvidenceError("forgejoRecovery.sha256 must be a lowercase SHA-256")
+    forgejo_path = retained_path(
+        forgejo_path_value.strip(), root, "forgejoRecovery.path"
+    )
+    if not forgejo_path.is_file():
+        raise EvidenceError(f"retained Forgejo recovery evidence is missing: {forgejo_path}")
+    if sha256_file(forgejo_path) != forgejo_hash:
+        raise EvidenceError(
+            "retained Forgejo recovery evidence hash does not match forgejoRecovery.sha256"
+        )
+    try:
+        forgejo_document = loads_strict_json(read_bounded_text(forgejo_path))
+        forgejo_summary = validate_forgejo_recovery(
+            forgejo_document,
+            now=now,
+            max_age_days=forgejo_recovery_max_age_days,
+            expected_profile=profile,
+            expected_commit=commit,
+        )
+    except (OSError, json.JSONDecodeError, ForgejoRecoveryEvidenceError) as exc:
+        raise EvidenceError(f"retained Forgejo recovery evidence is invalid: {exc}") from exc
+
     return {
         "release_id": release_id,
         "profile": profile,
@@ -267,6 +335,10 @@ def validate_evidence(
         "openbao_ceremony_path": ceremony_path,
         "openbao_ceremony_id": ceremony_summary["ceremony_id"],
         "openbao_seal_mode": ceremony_summary["seal_mode"],
+        "restore_evidence_path": restore_path,
+        "restore_drill_id": restore_summary["drill_id"],
+        "forgejo_recovery_path": forgejo_path,
+        "forgejo_recovery_drill_id": forgejo_summary["drill_id"],
     }
 
 
@@ -283,6 +355,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("PLATFORM_OPENBAO_RECOVERY_MAX_AGE_DAYS", "180")),
     )
+    parser.add_argument(
+        "--restore-max-age-days",
+        type=int,
+        default=int(os.environ.get("PLATFORM_RESTORE_DRILL_MAX_AGE_DAYS", "92")),
+    )
+    parser.add_argument(
+        "--forgejo-recovery-max-age-days",
+        type=int,
+        default=int(os.environ.get("PLATFORM_FORGEJO_RECOVERY_MAX_AGE_DAYS", "92")),
+    )
     parser.add_argument("--expected-profile", default=os.environ.get("PLATFORM_PROFILE", ""))
     parser.add_argument("--expected-commit", default=os.environ.get("PLATFORM_EXPECTED_COMMIT", ""))
     return parser.parse_args()
@@ -296,6 +378,12 @@ def main() -> int:
     if args.openbao_recovery_max_age_days <= 0:
         print("--openbao-recovery-max-age-days must be greater than zero", file=sys.stderr)
         return 2
+    if args.restore_max_age_days <= 0:
+        print("--restore-max-age-days must be greater than zero", file=sys.stderr)
+        return 2
+    if args.forgejo_recovery_max_age_days <= 0:
+        print("--forgejo-recovery-max-age-days must be greater than zero", file=sys.stderr)
+        return 2
     if not args.evidence_file.is_file():
         print(f"Production evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
@@ -307,6 +395,8 @@ def main() -> int:
             now=datetime.now(timezone.utc),
             max_age_days=args.max_age_days,
             openbao_recovery_max_age_days=args.openbao_recovery_max_age_days,
+            restore_max_age_days=args.restore_max_age_days,
+            forgejo_recovery_max_age_days=args.forgejo_recovery_max_age_days,
             expected_profile=args.expected_profile,
             expected_commit=args.expected_commit,
         )

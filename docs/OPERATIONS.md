@@ -428,8 +428,9 @@ deployment reviews.
 Keep private evidence for:
 
 - Latest `make platform-production-check`.
-- Hash-bound rendered/live image inventory and OpenBao ceremony reports retained by the schema-v6
-  production evidence packet.
+- Hash-bound rendered/live image inventory, OpenBao ceremony, restore-drill,
+  and Forgejo recovery reports retained by the schema-v7 production evidence
+  packet.
 - Latest `make platform-app-health`.
 - Latest production readiness go/no-go record from `docs/PRODUCTION_READINESS.md`.
 - Latest service catalog ownership and dependency review from `docs/SERVICE_CATALOG.md`.

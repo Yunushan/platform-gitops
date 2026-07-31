@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import verify_production_evidence as evidence  # noqa: E402
 import verify_openbao_ceremony_evidence as ceremony_evidence  # noqa: E402
+import test_data_protection_contract as protection_fixture  # noqa: E402
 
 
 def fail(message: str) -> None:
@@ -147,8 +148,18 @@ def fixture(root: Path, now: datetime) -> dict[str, object]:
         + "\n",
         encoding="utf-8",
     )
+    restore = directory / "acceptance-restore-evidence.json"
+    restore.write_text(
+        json.dumps(protection_fixture.valid_evidence(now), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    forgejo_recovery = directory / "acceptance-forgejo-recovery.json"
+    forgejo_recovery.write_text(
+        json.dumps(protection_fixture.valid_forgejo_evidence(now), indent=2) + "\n",
+        encoding="utf-8",
+    )
     return {
-        "schemaVersion": 6,
+        "schemaVersion": 7,
         "releaseId": "release-test",
         "completedAt": (now - timedelta(minutes=15)).isoformat(),
         "operator": "operator@example.test",
@@ -166,6 +177,14 @@ def fixture(root: Path, now: datetime) -> dict[str, object]:
             "path": "private/production-evidence/acceptance-openbao-ceremony.json",
             "sha256": hashlib.sha256(ceremony.read_bytes()).hexdigest(),
         },
+        "restoreEvidence": {
+            "path": "private/production-evidence/acceptance-restore-evidence.json",
+            "sha256": hashlib.sha256(restore.read_bytes()).hexdigest(),
+        },
+        "forgejoRecovery": {
+            "path": "private/production-evidence/acceptance-forgejo-recovery.json",
+            "sha256": hashlib.sha256(forgejo_recovery.read_bytes()).hexdigest(),
+        },
         "source": {
             "branch": "private-deploy",
             "expectedRef": "seed/main",
@@ -180,6 +199,20 @@ def fixture(root: Path, now: datetime) -> dict[str, object]:
 
 def main() -> int:
     now = datetime.now(timezone.utc)
+    runner = (
+        ROOT / "scripts" / "bootstrap" / "run-platform-production-evidence.sh"
+    ).read_text(encoding="utf-8")
+    for marker in (
+        "require_value PLATFORM_RESTORE_EVIDENCE_FILE",
+        "require_value PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE",
+        "atomic_write_text(destination, read_bounded_text(source))",
+        '"restoreEvidence"',
+        '"forgejoRecovery"',
+        '"schemaVersion": 7',
+    ):
+        if marker not in runner:
+            fail(f"production evidence runner is missing retained proof: {marker}")
+
     with tempfile.TemporaryDirectory(prefix="platform-production-evidence-") as directory:
         root = Path(directory)
         document = fixture(root, now)
@@ -199,6 +232,10 @@ def main() -> int:
             fail("valid production evidence did not preserve image inventory proof")
         if summary["openbao_ceremony_id"] != "CHG-OPENBAO-TEST":
             fail("valid production evidence did not preserve OpenBao ceremony proof")
+        if summary["restore_drill_id"] != "drill-test":
+            fail("valid production evidence did not preserve restore drill proof")
+        if summary["forgejo_recovery_drill_id"] != "forgejo-test":
+            fail("valid production evidence did not preserve Forgejo recovery proof")
 
         stale = dict(document)
         stale["completedAt"] = (now - timedelta(days=8)).isoformat()
@@ -274,6 +311,78 @@ def main() -> int:
         else:
             fail("production evidence accepted a changed OpenBao ceremony artifact")
         changed_ceremony.write_text(original_ceremony, encoding="utf-8")
+
+        changed_restore = (
+            root
+            / "private"
+            / "production-evidence"
+            / "acceptance-restore-evidence.json"
+        )
+        original_restore = changed_restore.read_text(encoding="utf-8")
+        changed_restore.write_text("{}\n", encoding="utf-8")
+        try:
+            evidence.validate_evidence(document, root=root, now=now, max_age_days=7)
+        except evidence.EvidenceError:
+            pass
+        else:
+            fail("production evidence accepted a changed restore artifact")
+
+        wrong_source_restore = json.loads(original_restore)
+        wrong_source_restore["sourceCommit"] = "9" * 40
+        changed_restore.write_text(
+            json.dumps(wrong_source_restore, indent=2) + "\n", encoding="utf-8"
+        )
+        wrong_restore_source = dict(document)
+        wrong_restore_source["restoreEvidence"] = dict(
+            document["restoreEvidence"],
+            sha256=hashlib.sha256(changed_restore.read_bytes()).hexdigest(),
+        )
+        try:
+            evidence.validate_evidence(
+                wrong_restore_source, root=root, now=now, max_age_days=7
+            )
+        except evidence.EvidenceError:
+            pass
+        else:
+            fail("production evidence accepted a restore drill from another revision")
+        changed_restore.write_text(original_restore, encoding="utf-8")
+
+        changed_forgejo = (
+            root
+            / "private"
+            / "production-evidence"
+            / "acceptance-forgejo-recovery.json"
+        )
+        original_forgejo = changed_forgejo.read_text(encoding="utf-8")
+        changed_forgejo.write_text("{}\n", encoding="utf-8")
+        try:
+            evidence.validate_evidence(document, root=root, now=now, max_age_days=7)
+        except evidence.EvidenceError:
+            pass
+        else:
+            fail("production evidence accepted a changed Forgejo recovery artifact")
+
+        wrong_source_forgejo = json.loads(original_forgejo)
+        wrong_source_forgejo["sourceCommit"] = "9" * 40
+        wrong_source_forgejo["preRecovery"]["argocdRevision"] = "9" * 40
+        wrong_source_forgejo["postRecovery"]["argocdRevision"] = "9" * 40
+        changed_forgejo.write_text(
+            json.dumps(wrong_source_forgejo, indent=2) + "\n", encoding="utf-8"
+        )
+        wrong_forgejo_source = dict(document)
+        wrong_forgejo_source["forgejoRecovery"] = dict(
+            document["forgejoRecovery"],
+            sha256=hashlib.sha256(changed_forgejo.read_bytes()).hexdigest(),
+        )
+        try:
+            evidence.validate_evidence(
+                wrong_forgejo_source, root=root, now=now, max_age_days=7
+            )
+        except evidence.EvidenceError:
+            pass
+        else:
+            fail("production evidence accepted Forgejo recovery from another revision")
+        changed_forgejo.write_text(original_forgejo, encoding="utf-8")
 
         changed_log = root / "private" / "production-evidence" / "acceptance.log"
         changed_log.write_text("changed\n", encoding="utf-8")

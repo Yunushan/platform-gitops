@@ -37,6 +37,8 @@ require_value PLATFORM_RELEASE_ID
 require_value PLATFORM_EVIDENCE_OPERATOR
 require_value PLATFORM_EVIDENCE_APPROVER
 require_value PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE
+require_value PLATFORM_RESTORE_EVIDENCE_FILE
+require_value PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE
 if [[ "${PLATFORM_EVIDENCE_OPERATOR,,}" == "${PLATFORM_EVIDENCE_APPROVER,,}" ]]; then
   printf '%s\n' 'PLATFORM_EVIDENCE_OPERATOR and PLATFORM_EVIDENCE_APPROVER must be different.' >&2
   exit 1
@@ -51,6 +53,16 @@ commit="$(git rev-parse HEAD)"
 if [[ ! -f "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" ]]; then
   printf 'OpenBao ceremony evidence file does not exist: %s\n' \
     "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" >&2
+  exit 1
+fi
+if [[ ! -f "${PLATFORM_RESTORE_EVIDENCE_FILE}" ]]; then
+  printf 'Restore evidence file does not exist: %s\n' \
+    "${PLATFORM_RESTORE_EVIDENCE_FILE}" >&2
+  exit 1
+fi
+if [[ ! -f "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}" ]]; then
+  printf 'Forgejo recovery evidence file does not exist: %s\n' \
+    "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}" >&2
   exit 1
 fi
 openbao_configuration_sha256="$(
@@ -153,19 +165,41 @@ PLATFORM_OPENBAO_CLUSTER_ID_SHA256="${openbao_cluster_id_sha256}" \
 python3 scripts/verify_openbao_ceremony_evidence.py \
   "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}"
 
-openbao_ceremony_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-openbao-ceremony.json"
-cp -- "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" "${openbao_ceremony_path}"
-openbao_ceremony_hash="$(sha256sum "${openbao_ceremony_path}" | awk '{print $1}')"
-
 image_inventory_source="${PLATFORM_IMAGE_INVENTORY_EVIDENCE_OUTPUT:-rendered/supply-chain/image-inventory-evidence.json}"
 if [[ ! -f "${image_inventory_source}" ]]; then
   printf 'Production gate did not retain required image inventory evidence: %s\n' \
     "${image_inventory_source}" >&2
   exit 1
 fi
+openbao_ceremony_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-openbao-ceremony.json"
 image_inventory_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-image-inventory.json"
-cp -- "${image_inventory_source}" "${image_inventory_path}"
+restore_evidence_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-restore-evidence.json"
+forgejo_recovery_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-forgejo-recovery.json"
+
+python3 - \
+  "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" "${openbao_ceremony_path}" \
+  "${image_inventory_source}" "${image_inventory_path}" \
+  "${PLATFORM_RESTORE_EVIDENCE_FILE}" "${restore_evidence_path}" \
+  "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}" "${forgejo_recovery_path}" <<'PY'
+import sys
+from pathlib import Path
+
+from scripts.atomic_file import atomic_write_text
+from scripts.bounded_file import read_bounded_text
+
+arguments = sys.argv[1:]
+if len(arguments) % 2:
+    raise SystemExit("evidence retention requires source/destination pairs")
+for index in range(0, len(arguments), 2):
+    source = Path(arguments[index])
+    destination = Path(arguments[index + 1])
+    atomic_write_text(destination, read_bounded_text(source))
+PY
+
+openbao_ceremony_hash="$(sha256sum "${openbao_ceremony_path}" | awk '{print $1}')"
 image_inventory_hash="$(sha256sum "${image_inventory_path}" | awk '{print $1}')"
+restore_evidence_hash="$(sha256sum "${restore_evidence_path}" | awk '{print $1}')"
+forgejo_recovery_hash="$(sha256sum "${forgejo_recovery_path}" | awk '{print $1}')"
 log_hash="$(sha256sum "${log_path}" | awk '{print $1}')"
 completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 PLATFORM_EVIDENCE_LOG_PATH="${log_path}" \
@@ -175,6 +209,10 @@ PLATFORM_EVIDENCE_IMAGE_INVENTORY_PATH="${image_inventory_path}" \
 PLATFORM_EVIDENCE_IMAGE_INVENTORY_SHA256="${image_inventory_hash}" \
 PLATFORM_EVIDENCE_OPENBAO_CEREMONY_PATH="${openbao_ceremony_path}" \
 PLATFORM_EVIDENCE_OPENBAO_CEREMONY_SHA256="${openbao_ceremony_hash}" \
+PLATFORM_EVIDENCE_RESTORE_PATH="${restore_evidence_path}" \
+PLATFORM_EVIDENCE_RESTORE_SHA256="${restore_evidence_hash}" \
+PLATFORM_EVIDENCE_FORGEJO_RECOVERY_PATH="${forgejo_recovery_path}" \
+PLATFORM_EVIDENCE_FORGEJO_RECOVERY_SHA256="${forgejo_recovery_hash}" \
 PLATFORM_EVIDENCE_COMPLETED_AT="${completed_at}" \
 PLATFORM_EVIDENCE_COMMIT="${commit}" \
 PLATFORM_EVIDENCE_PROFILE="${profile}" \
@@ -191,7 +229,7 @@ from pathlib import Path
 from scripts.atomic_file import atomic_write_text
 
 document = {
-    "schemaVersion": 6,
+    "schemaVersion": 7,
     "releaseId": os.environ["PLATFORM_RELEASE_ID"],
     "completedAt": os.environ["PLATFORM_EVIDENCE_COMPLETED_AT"],
     "operator": os.environ["PLATFORM_EVIDENCE_OPERATOR"],
@@ -208,6 +246,14 @@ document = {
     "openbaoCeremony": {
         "path": os.environ["PLATFORM_EVIDENCE_OPENBAO_CEREMONY_PATH"],
         "sha256": os.environ["PLATFORM_EVIDENCE_OPENBAO_CEREMONY_SHA256"],
+    },
+    "restoreEvidence": {
+        "path": os.environ["PLATFORM_EVIDENCE_RESTORE_PATH"],
+        "sha256": os.environ["PLATFORM_EVIDENCE_RESTORE_SHA256"],
+    },
+    "forgejoRecovery": {
+        "path": os.environ["PLATFORM_EVIDENCE_FORGEJO_RECOVERY_PATH"],
+        "sha256": os.environ["PLATFORM_EVIDENCE_FORGEJO_RECOVERY_SHA256"],
     },
     "source": {
         "branch": os.environ["PLATFORM_EVIDENCE_SOURCE_BRANCH"],

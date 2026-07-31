@@ -423,7 +423,7 @@ the producer, verifier, and retained evidence cannot assign different meanings
 to the same bytes. Structures deeper than 128 containers or larger than
 1,000,000 total nodes are also rejected before evidence evaluation.
 
-The schema-v6 production evidence generator copies the exact image inventory
+The schema-v7 production evidence generator copies the exact image inventory
 report into its private packet and binds it by SHA-256. Retain that packet. Do not
 commit private registry inventories, internal identities, credentials, or
 private operational reports to this public repository.

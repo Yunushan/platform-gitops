@@ -110,6 +110,7 @@ def validate_evidence(
     now: datetime,
     max_age_days: int,
     expected_profile: str = "",
+    expected_commit: str = "",
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise EvidenceError("restore evidence must be a JSON object")
@@ -123,6 +124,8 @@ def validate_evidence(
     source_commit = nonempty_string(document, "sourceCommit").lower()
     if not COMMIT_RE.fullmatch(source_commit):
         raise EvidenceError("sourceCommit must be a 40-character lowercase Git SHA")
+    if expected_commit and source_commit != expected_commit.lower():
+        raise EvidenceError("sourceCommit does not match the expected Git revision")
     if nonempty_string(document, "result").lower() != "passed":
         raise EvidenceError("result must be passed")
     if operator.casefold() == approver.casefold():
@@ -258,6 +261,10 @@ def parse_args() -> argparse.Namespace:
         "--expected-profile",
         default=os.environ.get("PLATFORM_PROFILE", ""),
     )
+    parser.add_argument(
+        "--expected-commit",
+        default=os.environ.get("PLATFORM_EXPECTED_COMMIT", ""),
+    )
     return parser.parse_args()
 
 
@@ -276,6 +283,7 @@ def main() -> int:
             now=datetime.now(timezone.utc),
             max_age_days=args.max_age_days,
             expected_profile=args.expected_profile,
+            expected_commit=args.expected_commit,
         )
     except (OSError, json.JSONDecodeError, EvidenceError) as exc:
         print(f"Restore evidence validation failed: {exc}", file=sys.stderr)

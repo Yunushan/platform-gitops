@@ -3106,7 +3106,7 @@ def main() -> None:
         "refs/remotes/",
         "HEAD to exactly match",
         "make platform-production-check",
-        '"schemaVersion": 6',
+        '"schemaVersion": 7',
         '"sourceProvenance": "passed"',
         '"renderedSchema": "passed"',
         '"supplyChain": "passed"',

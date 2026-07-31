@@ -95,6 +95,11 @@ PLATFORM_DATA_PROTECTION_MAX_BACKUP_AGE_HOURS=26
 
 The operator and approver must be different people. Every required check must
 be `passed` and contain an approved evidence URI, SHA-256 digest, and timestamp.
+The restore record's `sourceCommit` must exactly match the Git revision under
+production acceptance; evidence from an older or different deployment is
+rejected even when it is otherwise fresh. The schema-v7 production packet
+atomically retains and hash-binds the exact restore and Forgejo recovery records
+that passed so the final score can revalidate them independently.
 The `longhornEncryptionKey` check must point to proof that recovery personnel
 retrieved the escrowed key and mounted restored encrypted data; the evidence
 must never contain the key itself.

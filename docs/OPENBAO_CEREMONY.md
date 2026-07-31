@@ -113,7 +113,7 @@ PLATFORM_EVIDENCE_APPROVER=<INDEPENDENT_APPROVER_ID> \
 make platform-production-evidence
 ```
 
-The schema-v6 production packet copies the ceremony record below the ignored
+The schema-v7 production packet copies the ceremony record below the ignored
 `private/production-evidence/` directory, binds it by SHA-256, verifies its
 configuration digest, and matches its hashed cluster identity to the live
 OpenBao readiness output. Its `sourceCommit` must also equal the exact revision

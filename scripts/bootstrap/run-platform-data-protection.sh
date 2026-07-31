@@ -44,7 +44,8 @@ expected_commit="$(git rev-parse HEAD)"
 python3 scripts/verify_restore_evidence.py \
   "${evidence_file}" \
   --max-age-days "${PLATFORM_RESTORE_DRILL_MAX_AGE_DAYS:-92}" \
-  --expected-profile "${PLATFORM_PROFILE:-premium-3node}"
+  --expected-profile "${PLATFORM_PROFILE:-premium-3node}" \
+  --expected-commit "${expected_commit}"
 
 python3 scripts/verify_forgejo_recovery_evidence.py \
   "${forgejo_recovery_evidence_file}" \
