@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      SEMGREP_IMAGE: semgrep/semgrep:1.171.0@sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8
     steps:
       - name: Checkout tagged source
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -29,7 +31,8 @@ jobs:
         with:
           python-version: '3.12.13'
       - name: Install pinned YAML parser
-        run: python -m pip install --disable-pip-version-check PyYAML==6.0.3
+        run: >-
+          python -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes --requirement requirements/ci-yaml.txt
       - name: Verify immutable release ref
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -74,10 +77,18 @@ jobs:
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Install Semgrep
-        run: python -m pip install --disable-pip-version-check semgrep==1.171.0
       - name: Run Semgrep gate
-        run: semgrep scan --config .semgrep.yml --error .
+        run: >-
+          docker run --rm
+          --network none
+          --read-only
+          --security-opt no-new-privileges
+          --tmpfs /tmp:rw,noexec,nosuid,size=512m
+          --env HOME=/tmp
+          --volume "${PWD}:/src:ro"
+          --workdir /src
+          "${SEMGREP_IMAGE}"
+          semgrep scan --config .semgrep.yml --error --metrics=off .
       - name: Run Trivy repository gate
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

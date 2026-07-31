@@ -12,6 +12,11 @@ the new upstream tag to its commit SHA first, update the comment, then rerun
 release. Update every workflow consumer together; wildcard or minor-only
 selectors are rejected by the CI contract.
 
+CI Python tools use reviewed hash locks for CPython 3.12 Linux amd64 and arm64
+wheels. GitHub runs Semgrep from its exact OCI index digest with the network and
+filesystem write paths disabled; Renovate proposes explicit version/digest
+updates rather than silently following a tag.
+
 ## GitHub
 
 ```bash

@@ -41,6 +41,7 @@ IMAGE_INVENTORY_WRAPPER = ROOT / "scripts/bootstrap/run-platform-image-inventory
 POSTURE_SCRIPT = ROOT / "scripts/supply-chain-posture.sh"
 SECURITY_SCAN_SCRIPT = ROOT / "scripts/security-scan.sh"
 GITHUB_VALIDATION = ROOT / ".github/workflows/validate.yml"
+GITHUB_RELEASE = ROOT / ".github/workflows/release.yml"
 SCORECARD_WORKFLOW = ROOT / ".github/workflows/scorecard.yml"
 VENDORED_CHART_PROVENANCE_WORKFLOW = (
     ROOT / ".github/workflows/vendored-chart-provenance.yml"
@@ -912,6 +913,7 @@ def main() -> int:
 
     custom_managers = renovate.get("customManagers", [])
     vendored_manager: dict[str, object] | None = None
+    semgrep_manager: dict[str, object] | None = None
     if isinstance(custom_managers, list):
         for manager in custom_managers:
             if not isinstance(manager, dict):
@@ -942,7 +944,31 @@ def main() -> int:
                 )
             ):
                 vendored_manager = manager
-                break
+            if (
+                manager.get("customType") == "regex"
+                and manager.get("datasourceTemplate") == "docker"
+                and isinstance(manager_patterns, list)
+                and any(
+                    ".github" in pattern and "workflows" in pattern
+                    for pattern in manager_patterns
+                    if isinstance(pattern, str)
+                )
+                and isinstance(match_strings, list)
+                and any(
+                    all(
+                        capture in match_string
+                        for capture in (
+                            "SEMGREP_IMAGE",
+                            "(?<depName>",
+                            "(?<currentValue>",
+                            "(?<currentDigest>",
+                        )
+                    )
+                    for match_string in match_strings
+                    if isinstance(match_string, str)
+                )
+            ):
+                semgrep_manager = manager
     if vendored_manager is None:
         problems.append(
             "renovate.json must discover repository, name, and version from "
@@ -1005,6 +1031,63 @@ def main() -> int:
                         "Renovate vendored-chart regex must extract every reviewed "
                         "repository, name, and version exactly once and in order"
                     )
+
+    if semgrep_manager is None:
+        problems.append(
+            "renovate.json must discover the Semgrep image version and digest "
+            "from GitHub validation and release workflows"
+        )
+    else:
+        match_strings = semgrep_manager.get("matchStrings", [])
+        assert isinstance(match_strings, list)
+        candidate_patterns = [
+            pattern
+            for pattern in match_strings
+            if isinstance(pattern, str)
+            and all(
+                capture in pattern
+                for capture in (
+                    "SEMGREP_IMAGE",
+                    "(?<depName>",
+                    "(?<currentValue>",
+                    "(?<currentDigest>",
+                )
+            )
+        ]
+        try:
+            semgrep_pattern = re.sub(
+                r"\(\?<([A-Za-z][A-Za-z0-9_]*)>",
+                r"(?P<\1>",
+                candidate_patterns[0],
+            )
+            matches = [
+                match
+                for workflow in (GITHUB_VALIDATION, GITHUB_RELEASE)
+                for match in re.finditer(semgrep_pattern, read(workflow))
+            ]
+        except (IndexError, re.error) as exc:
+            problems.append(f"Renovate Semgrep image regex is not executable: {exc}")
+        else:
+            actual = [
+                (
+                    match.group("depName"),
+                    match.group("currentValue"),
+                    match.group("currentDigest"),
+                )
+                for match in matches
+            ]
+            expected = [
+                (
+                    "semgrep/semgrep",
+                    "1.171.0",
+                    "sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8",
+                )
+            ] * 2
+            if actual != expected:
+                problems.append(
+                    "Renovate Semgrep image regex must extract both reviewed "
+                    "workflow version/digest references exactly once"
+                )
 
     rules = renovate.get("packageRules", [])
     if not isinstance(rules, list) or not rules:
@@ -1138,7 +1221,12 @@ def main() -> int:
             (
                 "anchore/sbom-action/download-syft@",
                 "gitleaks/gitleaks-action@",
-                "semgrep==",
+                "SEMGREP_IMAGE: semgrep/semgrep:1.171.0@sha256:",
+                "docker run --rm",
+                "--network none",
+                "--read-only",
+                "requirements/ci-coverage.txt",
+                "--require-hashes",
                 "aquasecurity/trivy-action@",
                 "github.com/rhysd/actionlint/cmd/actionlint@v1.7.12",
                 "verify_supply_chain_evidence.py",

@@ -2892,11 +2892,17 @@ def main() -> None:
         )
     for workflow_path in (github_validate_workflow, github_release_workflow):
         workflow_text = read(workflow_path)
-        require_text(
-            workflow_text,
-            "PyYAML==6.0.3",
-            f"{workflow_path.relative_to(root)} must install the pinned strict YAML runtime",
-        )
+        for needle in (
+            "requirements/ci-yaml.txt",
+            "--require-hashes",
+            "--no-deps",
+            "--only-binary=:all:",
+        ):
+            require_text(
+                workflow_text,
+                needle,
+                f"{workflow_path.relative_to(root)} must install the hash-locked strict YAML runtime",
+            )
         for needle in (
             "scripts/bootstrap/install-kyverno-cli.sh",
             "python scripts/verify_active_kyverno_policies.py",
@@ -4978,11 +4984,17 @@ def main() -> None:
         fail("Makefile help must describe seed sync as source-push opt-in")
     for ci_file in ci_validation_files:
         ci_text = read(ci_file)
-        require_text(
-            ci_text,
-            "PyYAML==6.0.3",
-            f"{ci_file.relative_to(root)} must install the pinned strict YAML runtime",
-        )
+        for needle in (
+            "requirements/ci-yaml.txt",
+            "--require-hashes",
+            "--no-deps",
+            "--only-binary=:all:",
+        ):
+            require_text(
+                ci_text,
+                needle,
+                f"{ci_file.relative_to(root)} must install the hash-locked strict YAML runtime",
+            )
         for script_name in (
             "scripts/validate_project.py",
             "scripts/test_python_syntax.py",
@@ -6858,6 +6870,9 @@ def main() -> None:
         "(?<registryUrl>",
         "(?<depName>",
         "(?<currentValue>",
+        '"datasourceTemplate": "docker"',
+        "SEMGREP_IMAGE",
+        "(?<currentDigest>",
         '"dependencyDashboardApproval": true',
     ):
         require_text(
@@ -7645,6 +7660,9 @@ def main() -> None:
         "IMAGE_TEMPLATE_MARKERS",
         "PINNED_PYTHON_VERSION",
         "PYTHON_VERSION_RE",
+        "CI_REQUIREMENT_LOCKS",
+        "CI_REQUIRED_LOCKS",
+        "SEMGREP_IMAGE_REF",
         "MAX_JOB_TIMEOUT_MINUTES",
         "action reference must include @ref",
         "action reference uses floating ref",
@@ -7655,6 +7673,13 @@ def main() -> None:
         "check_python_runtime_contract",
         "setup-python must declare exactly",
         "Python runtime self-test accepted an invalid selector",
+        "check_requirement_lock_parser_contract",
+        "check_requirement_lock_contract",
+        "check_requirement_usage_contract",
+        "check_pip_install",
+        "CI pip install must include",
+        "check_semgrep_container_contract",
+        "hardened Semgrep container is missing",
         "checkout must set persist-credentials: false",
         "uses moving runner label",
         "GitLab job",

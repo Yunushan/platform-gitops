@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 
@@ -35,6 +36,10 @@ CI_FILES = ACTIONS_WORKFLOW_FILES + GITLAB_CI_FILES + (
     ROOT / ".woodpecker" / "validate.yml",
     ROOT / "examples" / "service-template" / ".woodpecker.yml",
 )
+SEMGREP_WORKFLOWS = (
+    ROOT / ".github" / "workflows" / "validate.yml",
+    ROOT / ".github" / "workflows" / "release.yml",
+)
 WOODPECKER_VALUES = (
     ROOT
     / "gitops"
@@ -45,6 +50,37 @@ WOODPECKER_VALUES = (
     / "woodpecker"
     / "values.yaml"
 )
+CI_REQUIREMENT_LOCKS = {
+    ROOT / "requirements" / "ci-yaml.txt": (
+        "PyYAML==6.0.3",
+        frozenset(
+            {
+                "9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28",
+                "ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc",
+            }
+        ),
+    ),
+    ROOT / "requirements" / "ci-coverage.txt": (
+        "coverage==7.15.2",
+        frozenset(
+            {
+                "68af907f595ab01a78f794932ff3bdf929c316d3000810d38dbc247129e26f8b",
+                "afa29e2eff3d5729267e2cb2fd4ce9d61c952932fb2694e34ccb5d9540c6a296",
+            }
+        ),
+    ),
+}
+CI_REQUIRED_LOCKS = {
+    ROOT / ".github" / "workflows" / "validate.yml": (
+        "requirements/ci-yaml.txt",
+        "requirements/ci-coverage.txt",
+    ),
+    ROOT / ".github" / "workflows" / "release.yml": ("requirements/ci-yaml.txt",),
+    ROOT / ".gitea" / "workflows" / "validate.yml": ("requirements/ci-yaml.txt",),
+    ROOT / ".forgejo" / "workflows" / "validate.yml": ("requirements/ci-yaml.txt",),
+    ROOT / ".gitlab-ci.yml": ("requirements/ci-yaml.txt",),
+    ROOT / ".woodpecker" / "validate.yml": ("requirements/ci-yaml.txt",),
+}
 DOCKERFILES = tuple(ROOT.rglob("Dockerfile"))
 MUTABLE_REFS = {
     "latest",
@@ -72,6 +108,8 @@ JOB_RE = re.compile(r"^  (?P<name>[A-Za-z_][A-Za-z0-9_-]*):\s*$")
 TIMEOUT_RE = re.compile(r"^    timeout-minutes:\s*(?P<minutes>[0-9]+)\s*$")
 RUNNER_RE = re.compile(r"^    runs-on:\s*(?P<runner>[^#\s]+)")
 PYTHON_VERSION_RE = re.compile(r"^\s+python-version:\s*(?P<version>[^#\s]+)\s*(?:#.*)?$")
+PACKAGE_PIN_RE = re.compile(r"^[A-Za-z0-9_.-]+==[A-Za-z0-9_.+-]+$")
+HASH_TOKEN_RE = re.compile(r"^--hash=sha256:(?P<digest>[0-9a-f]{64})$")
 GITLAB_KEY_RE = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_.-]*):\s*$")
 GITLAB_TIMEOUT_RE = re.compile(r"^  timeout:\s*(?P<minutes>[0-9]+)m\s*$")
 GITLAB_RESERVED_KEYS = {
@@ -88,6 +126,10 @@ GITLAB_RESERVED_KEYS = {
 }
 MAX_JOB_TIMEOUT_MINUTES = 120
 PINNED_PYTHON_VERSION = "3.12.13"
+SEMGREP_IMAGE_REF = (
+    "semgrep/semgrep:1.171.0@"
+    "sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8"
+)
 
 
 def rel_path(path: Path) -> str:
@@ -98,6 +140,182 @@ def strip_quotes(value: str) -> str:
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
         return value[1:-1]
     return value
+
+
+def parse_requirement_lock_text(text: str) -> tuple[str, frozenset[str]]:
+    logical = re.sub(r"\\[ \t]*\r?\n[ \t]*", " ", text)
+    entries = [
+        line.strip()
+        for line in logical.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if len(entries) != 1:
+        raise ValueError("lock file must contain exactly one requirement")
+    tokens = entries[0].split()
+    if not tokens or not PACKAGE_PIN_RE.fullmatch(tokens[0]):
+        raise ValueError("requirement must use one exact name==version pin")
+    hashes: list[str] = []
+    for token in tokens[1:]:
+        match = HASH_TOKEN_RE.fullmatch(token)
+        if not match:
+            raise ValueError("requirement may contain only lowercase sha256 hashes")
+        hashes.append(match.group("digest"))
+    if not hashes or len(hashes) != len(set(hashes)):
+        raise ValueError("requirement hashes must be present and unique")
+    return tokens[0], frozenset(hashes)
+
+
+def parse_requirement_lock(path: Path) -> tuple[str, frozenset[str]]:
+    if not path.is_file():
+        raise ValueError("lock file is missing")
+    return parse_requirement_lock_text(path.read_text(encoding="utf-8"))
+
+
+def check_requirement_lock_parser_contract() -> list[str]:
+    digest_a = "a" * 64
+    digest_b = "b" * 64
+    valid = (
+        f"example==1.2.3 \\\n"
+        f"    --hash=sha256:{digest_a} \\\n"
+        f"    --hash=sha256:{digest_b}\n"
+    )
+    invalid = (
+        "example>=1.2.3 --hash=sha256:" + digest_a,
+        "example==1.2.3",
+        "example==1.2.3 --hash=sha256:" + digest_a + " --index-url=https://example.test",
+        "example==1.2.3 --hash=sha256:" + digest_a + " --hash=sha256:" + digest_a,
+        "example==1.2.3 --hash=sha256:" + digest_a.upper(),
+        "example==1.2.3 --hash=sha256:" + digest_a + "\nother==2.0 --hash=sha256:" + digest_b,
+    )
+    problems: list[str] = []
+    try:
+        pin, hashes = parse_requirement_lock_text(valid)
+    except ValueError as exc:
+        problems.append(f"CI requirement lock parser self-test rejected valid lock: {exc}")
+    else:
+        if pin != "example==1.2.3" or hashes != frozenset({digest_a, digest_b}):
+            problems.append("CI requirement lock parser self-test changed valid lock meaning")
+    for text in invalid:
+        try:
+            parse_requirement_lock_text(text)
+        except ValueError:
+            continue
+        problems.append("CI requirement lock parser self-test accepted an unsafe lock")
+    return problems
+
+
+def check_requirement_lock_contract() -> list[str]:
+    problems: list[str] = []
+    for path, (expected_pin, expected_hashes) in CI_REQUIREMENT_LOCKS.items():
+        try:
+            pin, hashes = parse_requirement_lock(path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            problems.append(f"{rel_path(path)}: invalid CI requirement lock: {exc}")
+            continue
+        if pin != expected_pin:
+            problems.append(f"{rel_path(path)}: expected exact package pin {expected_pin}; found {pin}")
+        if hashes != expected_hashes:
+            problems.append(f"{rel_path(path)}: package wheel hashes do not match the reviewed lock")
+    return problems
+
+
+def check_pip_install(path: Path, line_number: int, line: str) -> list[str]:
+    if "python -m pip install" not in line:
+        return []
+    problems: list[str] = []
+    for flag in (
+        "--disable-pip-version-check",
+        "--no-deps",
+        "--only-binary=:all:",
+        "--require-hashes",
+    ):
+        if flag not in line:
+            problems.append(f"{rel_path(path)}:{line_number}: CI pip install must include {flag}")
+    try:
+        tokens = shlex.split(line, comments=False, posix=True)
+        command_index = next(
+            index
+            for index in range(len(tokens) - 3)
+            if tokens[index : index + 4] == ["python", "-m", "pip", "install"]
+        )
+    except (ValueError, StopIteration):
+        return [f"{rel_path(path)}:{line_number}: CI pip install command could not be parsed"]
+
+    requirement_paths: list[str] = []
+    allowed_flags = {
+        "--disable-pip-version-check",
+        "--no-deps",
+        "--only-binary=:all:",
+        "--require-hashes",
+    }
+    install_tokens = tokens[command_index + 4 :]
+    index = 0
+    while index < len(install_tokens):
+        argument = install_tokens[index]
+        if argument == "--requirement":
+            if index + 1 >= len(install_tokens):
+                problems.append(f"{rel_path(path)}:{line_number}: --requirement needs a lock path")
+                break
+            requirement_paths.append(install_tokens[index + 1])
+            index += 2
+            continue
+        if argument not in allowed_flags:
+            problems.append(
+                f"{rel_path(path)}:{line_number}: CI pip install contains unapproved argument {argument}"
+            )
+        index += 1
+
+    allowed_paths = {rel_path(lock) for lock in CI_REQUIREMENT_LOCKS}
+    if not requirement_paths:
+        problems.append(f"{rel_path(path)}:{line_number}: CI pip install must use a reviewed requirement lock")
+    elif any(requirement not in allowed_paths for requirement in requirement_paths):
+        problems.append(f"{rel_path(path)}:{line_number}: CI pip install references an unreviewed lock")
+    expected_paths = CI_REQUIRED_LOCKS.get(path)
+    if expected_paths is None:
+        problems.append(f"{rel_path(path)}:{line_number}: CI pip install is not registered in the lock contract")
+    elif tuple(requirement_paths) != expected_paths:
+        problems.append(
+            f"{rel_path(path)}:{line_number}: CI pip install must use locks in reviewed order: "
+            f"{', '.join(expected_paths)}"
+        )
+    return problems
+
+
+def check_requirement_usage_contract() -> list[str]:
+    problems: list[str] = []
+    for path in CI_REQUIRED_LOCKS:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        installs = [line for line in lines if "python -m pip install" in line]
+        if len(installs) != 1:
+            problems.append(
+                f"{rel_path(path)}: must contain exactly one hash-locked CI pip install; "
+                f"found {len(installs)}"
+            )
+    return problems
+
+
+def check_semgrep_container_contract() -> list[str]:
+    problems: list[str] = []
+    for path in SEMGREP_WORKFLOWS:
+        text = path.read_text(encoding="utf-8")
+        for marker in (
+            f"SEMGREP_IMAGE: {SEMGREP_IMAGE_REF}",
+            "docker run --rm",
+            "--network none",
+            "--read-only",
+            "--security-opt no-new-privileges",
+            "--tmpfs /tmp:rw,noexec,nosuid,size=512m",
+            "--env HOME=/tmp",
+            '--volume "${PWD}:/src:ro"',
+            "--workdir /src",
+            '"${SEMGREP_IMAGE}"',
+            "semgrep scan --config .semgrep.yml --error --metrics=off .",
+        ):
+            if marker not in text:
+                problems.append(f"{rel_path(path)}: hardened Semgrep container is missing {marker}")
+        if re.search(r"pip\s+install[^\n]*semgrep", text, re.I):
+            problems.append(f"{rel_path(path)}: Semgrep must not be installed from an unhashed pip graph")
+    return problems
 
 
 def is_mutable(ref: str) -> bool:
@@ -304,6 +522,7 @@ def scan_ci_file(path: Path) -> list[str]:
         return problems
     lines = path.read_text(encoding="utf-8").splitlines()
     for line_number, line in enumerate(lines, start=1):
+        problems.extend(check_pip_install(path, line_number, line))
         uses = USES_RE.match(line)
         if uses:
             problems.extend(check_action_ref(path, line_number, strip_quotes(uses.group("ref"))))
@@ -330,7 +549,14 @@ def scan_dockerfile(path: Path) -> list[str]:
 
 
 def main() -> int:
-    problems = check_image_ref_contract() + check_python_runtime_contract()
+    problems = (
+        check_image_ref_contract()
+        + check_python_runtime_contract()
+        + check_requirement_lock_parser_contract()
+        + check_requirement_lock_contract()
+        + check_requirement_usage_contract()
+        + check_semgrep_container_contract()
+    )
     for path in CI_FILES:
         problems.extend(scan_ci_file(path))
     for path in GITLAB_CI_FILES:

@@ -27,6 +27,7 @@ def main() -> int:
     config = read(".coveragerc")
     script = read("scripts/forge-coverage.sh")
     workflow = read(".github/workflows/validate.yml")
+    coverage_lock = read("requirements/ci-coverage.txt")
 
     require(
         config,
@@ -56,12 +57,22 @@ def main() -> int:
         raise AssertionError("forge branch-coverage threshold must not fall below the measured 81.0% ratchet")
     require(
         workflow,
-        "coverage==7.15.2",
+        "requirements/ci-coverage.txt",
+        "--require-hashes",
+        "--no-deps",
+        "--only-binary=:all:",
         "bash scripts/forge-coverage.sh",
         "name: forge-coverage-${{ github.sha }}",
         "path: rendered/coverage",
         "if: always()",
         label=".github/workflows/validate.yml",
+    )
+    require(
+        coverage_lock,
+        "coverage==7.15.2",
+        "68af907f595ab01a78f794932ff3bdf929c316d3000810d38dbc247129e26f8b",
+        "afa29e2eff3d5729267e2cb2fd4ce9d61c952932fb2694e34ccb5d9540c6a296",
+        label="requirements/ci-coverage.txt",
     )
 
     print("Forge subprocess branch-coverage contract passed at an 81.0% minimum.")

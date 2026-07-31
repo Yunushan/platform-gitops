@@ -1,0 +1,4 @@
+# Python 3.12 Linux wheels verified from official PyPI for amd64 and arm64.
+coverage==7.15.2 \
+    --hash=sha256:68af907f595ab01a78f794932ff3bdf929c316d3000810d38dbc247129e26f8b \
+    --hash=sha256:afa29e2eff3d5729267e2cb2fd4ce9d61c952932fb2694e34ccb5d9540c6a296

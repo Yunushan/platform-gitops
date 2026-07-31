@@ -49,7 +49,7 @@ The readiness decision covers:
 | Platform apps | Argo CD, Forgejo, Woodpecker, Harbor, monitoring, Loki, Velero, cert-manager, trust-manager, and optional step-ca are healthy when required |
 | Support and lifecycle | Supported OS, component versions, upgrade path, and exceptions are reviewed through `docs/PLATFORM_SUPPORT.md` |
 | Access control | Human roles, robot accounts, branch protection, and break-glass flow are reviewed |
-| Security and supply chain | SOPS or external secrets, image/chart pinning, exact upstream chart package provenance with declared local patches, CI action SHA, execution-image digest, and exact runtime patch pinning, parser fuzzing, branch-coverage evidence, update review, release-time Cosign proof, and admission-time signature verification are in place |
+| Security and supply chain | SOPS or external secrets, image/chart pinning, exact upstream chart package provenance with declared local patches, CI action SHA, execution-image digest, exact runtime patch pinning, hash-locked amd64/arm64 CI wheels, no-network digest-pinned Semgrep, parser fuzzing, branch-coverage evidence, update review, release-time Cosign proof, and admission-time signature verification are in place |
 | Admission controls | Three stable Kyverno CEL policies plus the stable image-signature policy are Ready, legacy policies are pruned, and Enforce promotion has zero managed violations plus a successful signed/invalid canary |
 | Operations | Owners, maintenance windows, incident response, alerting, capacity, compliance evidence, and release promotion are current |
 

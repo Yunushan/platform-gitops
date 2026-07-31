@@ -30,6 +30,8 @@ required = [
     '.semgrepignore',
     '.dockerignore',
     '.coveragerc',
+    'requirements/ci-yaml.txt',
+    'requirements/ci-coverage.txt',
     '.clusterfuzzlite/project.yaml',
     '.clusterfuzzlite/Dockerfile',
     '.clusterfuzzlite/build.sh',

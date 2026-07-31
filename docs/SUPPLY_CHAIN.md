@@ -34,7 +34,12 @@ remain beside those digests for review, while the digest selects the exact
 multi-architecture OCI index. The CI contract rejects tag-only, templated,
 uppercase, and malformed image references. Actions-style workflows also select
 the exact Python `3.12.13` patch release; wildcard, minor-only, templated,
-missing, or duplicate runtime selectors fail validation. Renovate keeps Docker
+missing, or duplicate runtime selectors fail validation. PyYAML and Coverage.py
+are installed only from reviewed CPython 3.12 Linux wheels through
+`--require-hashes`, `--no-deps`, and `--only-binary=:all:` locks that cover
+amd64 and arm64. Semgrep runs from an exact multi-architecture OCI index digest
+with no container network, a read-only root filesystem and checkout, and
+no-new-privileges. Renovate keeps the Semgrep version/digest and other Docker
 digest updates visible for explicit review. The separate weekly OpenSSF
 Scorecard workflow publishes results and uploads SARIF to code scanning.
 
@@ -119,7 +124,9 @@ Install the pinned CI release of Coverage.py and reproduce the branch-coverage
 evidence with:
 
 ```bash
-python -m pip install coverage==7.15.2
+python -m pip install --disable-pip-version-check --no-deps \
+  --only-binary=:all: --require-hashes \
+  --requirement requirements/ci-coverage.txt
 bash scripts/forge-coverage.sh
 ```
 

@@ -24,6 +24,18 @@
         "\\\"repository\\\"\\s*:\\s*\\\"(?<registryUrl>[^\\\"]+)\\\"\\s*,\\s*\\\"name\\\"\\s*:\\s*\\\"(?<depName>[^\\\"]+)\\\"\\s*,\\s*\\\"version\\\"\\s*:\\s*\\\"(?<currentValue>[^\\\"]+)\\\""
       ],
       "datasourceTemplate": "helm"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the digest-pinned Semgrep CI image.",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/(validate|release)\\.yml$/"
+      ],
+      "matchStrings": [
+        "SEMGREP_IMAGE:\\s*(?<depName>semgrep\\/semgrep):(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)@(?<currentDigest>sha256:[0-9a-f]{64})"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [
