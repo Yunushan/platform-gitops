@@ -128,6 +128,13 @@ CI compares every deployable archive member with the vendored source. Runtime
 chart-repository and CRD-manifest URL overrides are rejected so a storage
 recovery cannot silently widen the supply-chain trust boundary.
 
+The Argo CD bootstrap derives its application release from the vendored chart
+and uses only the matching exact-tag core and HA manifest paths. Each manifest
+has a reviewed SHA-256 in the playbook; downloads are HTTPS-only, redirect-free,
+time-bounded, and size-bounded, and verification occurs before cluster-admin
+server-side apply. The HA-to-core fallback enforces the same policy. Arbitrary
+runtime bootstrap-manifest URL overrides are intentionally unsupported.
+
 ## Local Scans
 
 Run the repository scanners without generating release evidence:

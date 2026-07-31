@@ -39,6 +39,7 @@ RKE2_BOOTSTRAP_SCRIPTS = (
     ROOT / "scripts/bootstrap/install-rke2-first-server.sh",
     ROOT / "scripts/bootstrap/install-rke2-server.sh",
 )
+ARGOCD_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-argocd.yml"
 LONGHORN_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-longhorn.yml"
 LONGHORN_CRD_REPAIR = ROOT / "ansible/playbooks/repair-longhorn-crds.yml"
 LONGHORN_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn"
@@ -190,6 +191,43 @@ def main() -> int:
     problems: list[str] = []
 
     problems.extend(validate_longhorn_chart_archive())
+
+    try:
+        argocd_bootstrap_text = read(ARGOCD_BOOTSTRAP)
+        assert_contains(
+            argocd_bootstrap_text,
+            "platform_argocd_vendored_chart_metadata",
+            "platform_argocd_core_manifest_sha256",
+            "b0f9119821f2e19b852c842b9cb235eb9c3ef1549554fbda6aa5904e8d440eae",
+            "platform_argocd_ha_manifest_sha256",
+            "278787c5f36b790ab0338d5b30d4a3fec3fddb532bf0d12f78a8977c06ecea80",
+            "Download, verify, and apply Argo CD bootstrap manifest",
+            "Download, verify, and apply core Argo CD fallback manifest",
+            "--proto '=https'",
+            "--connect-timeout",
+            "--max-time",
+            "--max-filesize",
+            "sha256sum --check --strict",
+            label=str(ARGOCD_BOOTSTRAP.relative_to(ROOT)),
+        )
+        for forbidden in (
+            "PLATFORM_ARGOCD_MANIFEST_URL",
+            "/stable/manifests/",
+            "-f {{ platform_argocd_manifest_url_effective }}",
+            "curl --fail --show-error --silent --location",
+        ):
+            if forbidden in argocd_bootstrap_text:
+                problems.append(
+                    f"{ARGOCD_BOOTSTRAP.relative_to(ROOT)} contains unsafe "
+                    f"Argo CD bootstrap artifact behavior: {forbidden}"
+                )
+        if argocd_bootstrap_text.count("sha256sum --check --strict") != 2:
+            problems.append(
+                f"{ARGOCD_BOOTSTRAP.relative_to(ROOT)} must verify both the "
+                "selected and fallback Argo CD manifests"
+            )
+    except AssertionError as exc:
+        problems.append(str(exc))
 
     for playbook, required in (
         (
@@ -608,6 +646,9 @@ def main() -> int:
                 "offline artifact",
                 "HelmChart `chartContent`",
                 "chart-repository and CRD-manifest URL overrides are rejected",
+                "Argo CD bootstrap derives its application release",
+                "reviewed SHA-256 in the playbook",
+                "HA-to-core fallback enforces the same policy",
             ),
         ),
         (
@@ -619,6 +660,8 @@ def main() -> int:
                 "verifies its pinned SHA-256",
                 "Runtime overrides such as a remote CRD",
                 "manifest URL are intentionally unsupported",
+                "exact Argo CD release recorded by the vendored",
+                "HA-to-core fallback verifies its separate core manifest",
             ),
         ),
     ):
@@ -633,9 +676,9 @@ def main() -> int:
         return 1
 
     print(
-        "Supply-chain helper validation passed for manual RKE2 bootstrap, "
-        "offline Longhorn recovery, CI scans, narrowed Gitleaks exceptions, "
-        "SBOM evidence, Scorecard, Renovate, and Cosign."
+        "Supply-chain helper validation passed for verified Argo CD and manual "
+        "RKE2 bootstrap, offline Longhorn recovery, CI scans, narrowed "
+        "Gitleaks exceptions, SBOM evidence, Scorecard, Renovate, and Cosign."
     )
     return 0
 

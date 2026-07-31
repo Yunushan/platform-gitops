@@ -3392,6 +3392,35 @@ def main() -> None:
     platform_secret_contract_test_text = read(platform_secret_contract_test)
     app_secrets_text = read(app_secrets_playbook)
     bootstrap_argocd_text = read(root / "ansible/playbooks/bootstrap-argocd.yml")
+    for needle in (
+        "platform_argocd_vendored_chart_metadata",
+        "platform_argocd_core_manifest_sha256",
+        "platform_argocd_ha_manifest_sha256",
+        "Download, verify, and apply Argo CD bootstrap manifest",
+        "Download, verify, and apply core Argo CD fallback manifest",
+        "--proto '=https'",
+        "--connect-timeout",
+        "--max-time",
+        "--max-filesize",
+        "sha256sum --check --strict",
+    ):
+        require_text(
+            bootstrap_argocd_text,
+            needle,
+            f"Argo CD bootstrap artifact verification must include {needle}",
+        )
+    for forbidden in (
+        "PLATFORM_ARGOCD_MANIFEST_URL",
+        "/stable/manifests/",
+        "-f {{ platform_argocd_manifest_url_effective }}",
+    ):
+        if forbidden in bootstrap_argocd_text:
+            fail(
+                "Argo CD bootstrap must not execute mutable or arbitrary "
+                f"remote manifests: {forbidden}"
+            )
+    if bootstrap_argocd_text.count("sha256sum --check --strict") != 2:
+        fail("Argo CD bootstrap must verify selected and core fallback manifests")
     argocd_repo_credentials_task = require_ansible_task_block(
         bootstrap_argocd_text,
         "Register private Git repository credentials when provided",

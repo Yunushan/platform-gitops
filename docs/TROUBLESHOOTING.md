@@ -405,6 +405,13 @@ To bootstrap Argo CD without manually copying commands:
 make platform-argocd
 ```
 
+This target downloads only the exact Argo CD release recorded by the vendored
+chart, rejects redirects, caps the manifest size and transfer time, and checks
+its reviewed SHA-256 before applying cluster-scoped resources. The automatic
+HA-to-core fallback verifies its separate core manifest the same way. A digest
+failure is a hard stop: update the vendored chart and both reviewed manifest
+hashes together instead of bypassing verification with a runtime URL.
+
 `make platform-argocd` also exposes Argo CD through a temporary bootstrap NodePort. The default browser URL is `https://<NODE_1_IP>:30443`. The NodePort probe is soft by default because some host firewalls or CNI/kube-proxy paths block direct NodePort access even though the final Traefik/MetalLB ingress will work. To expose an already-installed Argo CD instance again:
 
 ```bash

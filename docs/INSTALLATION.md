@@ -283,6 +283,13 @@ To install only Argo CD and expose it through a temporary bootstrap NodePort:
 make platform-argocd
 ```
 
+The bootstrap release is derived from the vendored `argo-cd` chart. Its core
+and HA install manifests use exact release URLs and reviewed SHA-256 values;
+the playbook rejects redirects, bounds each download, verifies it before
+server-side apply, and does not accept a runtime manifest URL override. An
+Argo CD upgrade therefore requires the vendored chart and both reviewed
+bootstrap-manifest digests to move together.
+
 The default bootstrap Argo CD URL is:
 
 ```text
