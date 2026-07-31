@@ -40,6 +40,29 @@ External Secrets, Tetragon, and Velero. They remain exact-version pinned and are
 explicit residual dependencies rather than being mistaken for
 offline-reproducible inputs.
 
+`config/vendored-charts.json` is the reviewed provenance and integrity inventory
+for every local chart that a Kustomization consumes. Each entry binds the chart
+path to its upstream HTTPS or OCI repository, `Chart.yaml` name and version, and
+a deterministic SHA-256 over every regular file's normalized path, byte length,
+and exact content. Validation rejects unlisted consumers, stale entries,
+metadata drift, content drift, symlinks, non-regular files, unsafe paths or
+repository URLs, duplicate JSON keys, and oversized inputs.
+
+Renovate reads those inventory entries through a Helm custom manager so newer
+upstream releases remain visible after network-time chart resolution is
+removed. A version-only Renovate change intentionally fails validation: review
+and replace the committed chart tree first, then refresh its metadata and
+digest with:
+
+```bash
+python scripts/vendored_chart_inventory.py --refresh
+python scripts/test_gitops_helm_chart_pinning.py
+```
+
+Keep automerge disabled for these updates. The resulting pull request must
+include the reviewed upstream chart content, refreshed inventory, rendered
+manifest comparison, and the normal supply-chain evidence.
+
 ## Migration Parser Fuzzing and Coverage
 
 `.github/workflows/fuzz.yml` uses ClusterFuzzLite and Atheris to fuzz the

@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from pathlib import Path, PurePosixPath
 
+from vendored_chart_inventory import DEFAULT_INVENTORY, validate_inventory
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCAN_ROOT = ROOT / "gitops" / "clusters" / "rke2-main"
@@ -172,6 +174,24 @@ def matching_vendored_charts(path: Path, name: str, version: str) -> list[Path]:
     return sorted(matches)
 
 
+def consumed_local_chart_paths(path: Path) -> set[str]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    chart_home = helm_chart_home(lines)
+    if not is_static_local_path(chart_home):
+        return set()
+    consumed: set[str] = set()
+    for _line_number, chart in parse_helm_charts(lines):
+        name = chart.get("name", "")
+        if chart.get("repo") or not name:
+            continue
+        parsed_name = PurePosixPath(name)
+        if parsed_name.is_absolute() or len(parsed_name.parts) != 1 or "\\" in name:
+            continue
+        chart_path = path.parent / chart_home / name
+        consumed.add(chart_path.relative_to(ROOT).as_posix())
+    return consumed
+
+
 def find_problems(path: Path) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
     kustomization_namespace = top_level_namespace(lines)
@@ -247,10 +267,20 @@ def find_problems(path: Path) -> list[str]:
 def main() -> int:
     problems: list[str] = []
     scanned = 0
+    consumed_local_charts: set[str] = set()
     for path in sorted(SCAN_ROOT.rglob("kustomization.yaml")):
         if should_scan(path):
             scanned += 1
             problems.extend(find_problems(path))
+            consumed_local_charts.update(consumed_local_chart_paths(path))
+
+    problems.extend(
+        validate_inventory(
+            root=ROOT,
+            inventory_path=DEFAULT_INVENTORY,
+            expected_paths=consumed_local_charts,
+        )
+    )
 
     if problems:
         print("GitOps Helm chart pinning validation failed:")
@@ -258,7 +288,11 @@ def main() -> int:
             print(f" - {problem}")
         return 1
 
-    print(f"GitOps Helm chart pinning validation passed for {scanned} kustomization files.")
+    print(
+        "GitOps Helm chart pinning validation passed for "
+        f"{scanned} kustomization files and "
+        f"{len(consumed_local_charts)} consumed local charts."
+    )
     return 0
 
 

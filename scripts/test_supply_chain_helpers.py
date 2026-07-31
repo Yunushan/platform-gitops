@@ -6,8 +6,16 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
+import re
 import sys
 import tarfile
+import tempfile
+
+from vendored_chart_inventory import (
+    chart_tree_sha256,
+    refresh_inventory,
+    validate_inventory,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +44,8 @@ GITLEAKS_CONFIG = ROOT / ".gitleaks.toml"
 SEMGREP_CONFIG = ROOT / ".semgrep.yml"
 SEMGREP_IGNORE = ROOT / ".semgrepignore"
 NO_SECRETS_SCANNER = ROOT / "scripts/validate_no_secrets.py"
+VENDORED_CHART_INVENTORY = ROOT / "config/vendored-charts.json"
+VENDORED_CHART_INVENTORY_HELPER = ROOT / "scripts/vendored_chart_inventory.py"
 RKE2_BOOTSTRAP_SCRIPTS = (
     ROOT / "scripts/bootstrap/install-rke2-first-server.sh",
     ROOT / "scripts/bootstrap/install-rke2-server.sh",
@@ -87,6 +97,120 @@ def assert_contains(text: str, *needles: str, label: str) -> None:
     for needle in needles:
         if needle not in text:
             raise AssertionError(f"{label} is missing required text: {needle}")
+
+
+def validate_vendored_chart_inventory_contract() -> list[str]:
+    problems: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="platform-chart-inventory-") as directory:
+        root = Path(directory)
+        chart_root = root / "charts" / "demo"
+        chart_root.mkdir(parents=True)
+        (chart_root / "Chart.yaml").write_text(
+            "apiVersion: v2\nname: demo\nversion: 1.2.3\n",
+            encoding="utf-8",
+        )
+        (chart_root / "values.yaml").write_text("replicaCount: 1\n", encoding="utf-8")
+        inventory_path = root / "inventory.json"
+        entry = {
+            "path": "charts/demo",
+            "repository": "https://charts.example.test/stable",
+            "name": "stale",
+            "version": "0.0.0",
+            "treeSha256": "",
+        }
+        inventory_path.write_text(
+            json.dumps({"schemaVersion": 1, "charts": [entry]}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        refresh_problems = refresh_inventory(root=root, inventory_path=inventory_path)
+        if refresh_problems:
+            problems.append(
+                "vendored chart inventory refresh rejected a valid fixture: "
+                + "; ".join(refresh_problems)
+            )
+            return problems
+        refreshed = json.loads(inventory_path.read_text(encoding="utf-8"))
+        refreshed_entry = refreshed["charts"][0]
+        if refreshed_entry["name"] != "demo" or refreshed_entry["version"] != "1.2.3":
+            problems.append("vendored chart inventory refresh did not use Chart.yaml metadata")
+        if refreshed_entry["treeSha256"] != chart_tree_sha256(chart_root):
+            problems.append("vendored chart inventory refresh did not bind the chart tree digest")
+
+        valid_problems = validate_inventory(
+            root=root,
+            inventory_path=inventory_path,
+            expected_paths={"charts/demo"},
+        )
+        if valid_problems:
+            problems.append(
+                "vendored chart inventory rejected a refreshed fixture: "
+                + "; ".join(valid_problems)
+            )
+
+        refreshed["charts"][0]["version"] = "1.2.4"
+        inventory_path.write_text(json.dumps(refreshed), encoding="utf-8")
+        version_problems = validate_inventory(root=root, inventory_path=inventory_path)
+        if not any("does not match Chart.yaml" in problem for problem in version_problems):
+            problems.append("vendored chart inventory accepted a version-only update")
+
+        refreshed["charts"][0]["version"] = "1.2.3"
+        inventory_path.write_text(json.dumps(refreshed), encoding="utf-8")
+        (chart_root / "values.yaml").write_text("replicaCount: 2\n", encoding="utf-8")
+        digest_problems = validate_inventory(root=root, inventory_path=inventory_path)
+        if not any("treeSha256 does not match" in problem for problem in digest_problems):
+            problems.append("vendored chart inventory accepted modified chart content")
+
+        (chart_root / "values.yaml").write_text("replicaCount: 1\n", encoding="utf-8")
+        missing_problems = validate_inventory(
+            root=root,
+            inventory_path=inventory_path,
+            expected_paths={"charts/demo", "charts/missing"},
+        )
+        if not any("consumed local chart is missing" in problem for problem in missing_problems):
+            problems.append("vendored chart inventory accepted an unlisted local consumer")
+
+        escaping = json.loads(json.dumps(refreshed))
+        escaping["charts"][0]["path"] = "../outside"
+        inventory_path.write_text(json.dumps(escaping), encoding="utf-8")
+        escaping_problems = validate_inventory(root=root, inventory_path=inventory_path)
+        if not any(
+            "normalized, relative, and non-escaping" in problem
+            for problem in escaping_problems
+        ):
+            problems.append("vendored chart inventory accepted an escaping chart path")
+
+        linked_chart = root / "charts" / "linked-demo"
+        try:
+            linked_chart.symlink_to(chart_root, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            pass
+        else:
+            linked = json.loads(json.dumps(refreshed))
+            linked["charts"][0]["path"] = "charts/linked-demo"
+            inventory_path.write_text(json.dumps(linked), encoding="utf-8")
+            linked_problems = validate_inventory(root=root, inventory_path=inventory_path)
+            if not any(
+                "symbolic link or junction" in problem
+                for problem in linked_problems
+            ):
+                problems.append("vendored chart inventory accepted a linked chart path")
+            linked_chart.unlink()
+
+        refreshed["charts"][0]["repository"] = "http://charts.example.test/stable"
+        inventory_path.write_text(json.dumps(refreshed), encoding="utf-8")
+        repository_problems = validate_inventory(root=root, inventory_path=inventory_path)
+        if not any("HTTPS or OCI" in problem for problem in repository_problems):
+            problems.append("vendored chart inventory accepted an insecure source URL")
+
+        inventory_path.write_text(
+            '{"schemaVersion":1,"schemaVersion":1,"charts":[]}',
+            encoding="utf-8",
+        )
+        duplicate_problems = validate_inventory(root=root, inventory_path=inventory_path)
+        if not any("duplicate JSON object keys" in problem for problem in duplicate_problems):
+            problems.append("vendored chart inventory accepted duplicate JSON keys")
+    return problems
 
 
 def validate_vendored_chart_archive(
@@ -219,6 +343,7 @@ def validate_longhorn_chart_archive() -> list[str]:
 def main() -> int:
     problems: list[str] = []
 
+    problems.extend(validate_vendored_chart_inventory_contract())
     problems.extend(validate_longhorn_chart_archive())
     problems.extend(
         validate_vendored_chart_archive(
@@ -575,6 +700,29 @@ def main() -> int:
                 break
     except AssertionError as exc:
         problems.append(str(exc))
+    inventory: dict[str, object] = {}
+    try:
+        assert_contains(
+            read(VENDORED_CHART_INVENTORY_HELPER),
+            "read_bounded_text",
+            "loads_strict_json",
+            "CHART_TREE_MAX_BYTES",
+            "CHART_TREE_MAX_FILES",
+            "followlinks=False",
+            "_is_link_like",
+            "not stat.S_ISREG",
+            "parsed.scheme not in {\"https\", \"oci\"}",
+            "atomic_write_text",
+            "mode=0o644",
+            label=str(VENDORED_CHART_INVENTORY_HELPER.relative_to(ROOT)),
+        )
+        inventory = json.loads(read(VENDORED_CHART_INVENTORY))
+        if inventory.get("schemaVersion") != 1 or not inventory.get("charts"):
+            problems.append(
+                "config/vendored-charts.json must contain schemaVersion 1 and chart entries"
+            )
+    except (AssertionError, json.JSONDecodeError) as exc:
+        problems.append(str(exc))
     try:
         renovate = load_renovate()
     except AssertionError as exc:
@@ -595,6 +743,102 @@ def main() -> int:
         problems.append("renovate.json must set a positive prConcurrentLimit")
     if not isinstance(renovate.get("prHourlyLimit"), int) or int(renovate["prHourlyLimit"]) < 1:
         problems.append("renovate.json must set a positive prHourlyLimit")
+
+    custom_managers = renovate.get("customManagers", [])
+    vendored_manager: dict[str, object] | None = None
+    if isinstance(custom_managers, list):
+        for manager in custom_managers:
+            if not isinstance(manager, dict):
+                continue
+            manager_patterns = manager.get("managerFilePatterns", [])
+            match_strings = manager.get("matchStrings", [])
+            if (
+                manager.get("customType") == "regex"
+                and manager.get("datasourceTemplate") == "helm"
+                and isinstance(manager_patterns, list)
+                and any(
+                    "vendored-charts" in pattern
+                    for pattern in manager_patterns
+                    if isinstance(pattern, str)
+                )
+                and isinstance(match_strings, list)
+                and any(
+                    all(
+                        capture in match_string
+                        for capture in (
+                            "(?<registryUrl>",
+                            "(?<depName>",
+                            "(?<currentValue>",
+                        )
+                    )
+                    for match_string in match_strings
+                    if isinstance(match_string, str)
+                )
+            ):
+                vendored_manager = manager
+                break
+    if vendored_manager is None:
+        problems.append(
+            "renovate.json must discover repository, name, and version from "
+            "config/vendored-charts.json with the Helm datasource"
+        )
+    elif inventory:
+        match_strings = vendored_manager.get("matchStrings", [])
+        assert isinstance(match_strings, list)
+        candidate_patterns = [
+            pattern
+            for pattern in match_strings
+            if isinstance(pattern, str)
+            and all(
+                capture in pattern
+                for capture in (
+                    "(?<registryUrl>",
+                    "(?<depName>",
+                    "(?<currentValue>",
+                )
+            )
+        ]
+        try:
+            renovate_pattern = candidate_patterns[0]
+            python_pattern = re.sub(
+                r"\(\?<([A-Za-z][A-Za-z0-9_]*)>",
+                r"(?P<\1>",
+                renovate_pattern,
+            )
+            matches = list(
+                re.finditer(
+                    python_pattern,
+                    read(VENDORED_CHART_INVENTORY),
+                    flags=re.DOTALL,
+                )
+            )
+        except (IndexError, re.error) as exc:
+            problems.append(f"Renovate vendored-chart regex is not executable: {exc}")
+        else:
+            chart_entries = inventory.get("charts", [])
+            if isinstance(chart_entries, list):
+                expected = [
+                    (
+                        entry.get("repository"),
+                        entry.get("name"),
+                        entry.get("version"),
+                    )
+                    for entry in chart_entries
+                    if isinstance(entry, dict)
+                ]
+                actual = [
+                    (
+                        match.group("registryUrl"),
+                        match.group("depName"),
+                        match.group("currentValue"),
+                    )
+                    for match in matches
+                ]
+                if actual != expected:
+                    problems.append(
+                        "Renovate vendored-chart regex must extract every reviewed "
+                        "repository, name, and version exactly once and in order"
+                    )
 
     rules = renovate.get("packageRules", [])
     if not isinstance(rules, list) or not rules:
@@ -815,6 +1059,10 @@ def main() -> int:
                 "chart-repository DNS probes remain explicit diagnostics",
                 "remaining premium remote charts are cert-manager, trust-manager, Kyverno",
                 "External Secrets, Tetragon, and Velero",
+                "`config/vendored-charts.json`",
+                "deterministic SHA-256",
+                "version-only Renovate change intentionally fails validation",
+                "python scripts/vendored_chart_inventory.py --refresh",
                 "Argo CD bootstrap derives its application release",
                 "reviewed SHA-256 in the playbook",
                 "HA-to-core fallback enforces the same policy",
@@ -849,9 +1097,9 @@ def main() -> int:
 
     print(
         "Supply-chain helper validation passed for verified Argo CD and manual "
-        "RKE2 bootstrap, offline Longhorn and ingress charts, CI scans, "
-        "narrowed Gitleaks exceptions, SBOM evidence, Scorecard, Renovate, "
-        "and Cosign."
+        "RKE2 bootstrap, offline Longhorn and ingress charts, vendored chart "
+        "inventory, CI scans, narrowed Gitleaks exceptions, SBOM evidence, "
+        "Scorecard, Renovate, and Cosign."
     )
     return 0
 

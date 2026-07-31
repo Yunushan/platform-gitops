@@ -13,6 +13,19 @@
   "prHourlyLimit": 2,
   "rangeStrategy": "pin",
   "automerge": false,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Discover reviewed local Helm charts without mutating vendored source.",
+      "managerFilePatterns": [
+        "/^config\\/vendored-charts\\.json$/"
+      ],
+      "matchStrings": [
+        "\\\"repository\\\"\\s*:\\s*\\\"(?<registryUrl>[^\\\"]+)\\\"\\s*,\\s*\\\"name\\\"\\s*:\\s*\\\"(?<depName>[^\\\"]+)\\\"\\s*,\\s*\\\"version\\\"\\s*:\\s*\\\"(?<currentValue>[^\\\"]+)\\\""
+      ],
+      "datasourceTemplate": "helm"
+    }
+  ],
   "packageRules": [
     {
       "description": "Pin container image digests and review runtime changes explicitly.",

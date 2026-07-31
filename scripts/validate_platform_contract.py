@@ -190,6 +190,8 @@ ansible_playbook_references_test = root / "scripts/test_ansible_playbook_referen
 gitops_application_contract_test = root / "scripts/test_gitops_application_contract.py"
 kustomization_references_test = root / "scripts/test_kustomization_references.py"
 gitops_helm_chart_pinning_test = root / "scripts/test_gitops_helm_chart_pinning.py"
+vendored_chart_inventory_helper = root / "scripts/vendored_chart_inventory.py"
+vendored_chart_inventory = root / "config/vendored-charts.json"
 gitops_image_pinning_test = root / "scripts/test_gitops_image_pinning.py"
 makefile_help_test = root / "scripts/test_makefile_help.py"
 validation_surface_parity_test = root / "scripts/test_validation_surface_parity.py"
@@ -4319,6 +4321,16 @@ def main() -> None:
     )
     require_text(
         validate_project_text,
+        "config/vendored-charts.json",
+        "project validator must require the vendored chart inventory",
+    )
+    require_text(
+        validate_project_text,
+        "scripts/vendored_chart_inventory.py",
+        "project validator must require the vendored chart inventory helper",
+    )
+    require_text(
+        validate_project_text,
         "config/sops.age.example.yaml",
         "project validator must require the SOPS age starter policy",
     )
@@ -5131,6 +5143,15 @@ def main() -> None:
         "config:recommended",
         "pinDigests",
         "dependencyDashboardApproval",
+        "VENDORED_CHART_INVENTORY",
+        "validate_vendored_chart_inventory_contract",
+        "version-only update",
+        "modified chart content",
+        "unlisted local consumer",
+        "escaping chart path",
+        "linked chart path",
+        "insecure source URL",
+        "duplicate JSON keys",
         "verify-signed-images.example.yaml",
         "ImageValidatingPolicy",
         "matchImageReferences:",
@@ -6703,6 +6724,7 @@ def main() -> None:
         "/.github/ @org/platform-maintainers @org/security-maintainers",
         "/ansible/ @org/platform-automation-maintainers",
         "/scripts/ @org/platform-automation-maintainers @org/security-maintainers",
+        "/config/vendored-charts.json @org/supply-chain-maintainers @org/security-maintainers",
         "/gitops/ @org/gitops-maintainers @org/security-maintainers",
         "/policies/ @org/security-maintainers",
         "/renovate.json @org/supply-chain-maintainers",
@@ -6747,6 +6769,13 @@ def main() -> None:
         '"docker"',
         '"pinDigests": true',
         '"helm"',
+        '"customManagers"',
+        '"customType": "regex"',
+        '"datasourceTemplate": "helm"',
+        "vendored-charts",
+        "(?<registryUrl>",
+        "(?<depName>",
+        "(?<currentValue>",
         '"dependencyDashboardApproval": true',
     ):
         require_text(
@@ -7065,6 +7094,10 @@ def main() -> None:
         "valuesFile",
         "top_level_namespace",
         "matching_vendored_charts",
+        "consumed_local_chart_paths",
+        "DEFAULT_INVENTORY",
+        "validate_inventory",
+        "expected_paths=consumed_local_charts",
         "must set",
         "must match kustomization namespace",
         "references missing valuesFile",
@@ -7073,11 +7106,46 @@ def main() -> None:
         "uses mutable version",
         "uses prerelease version",
         "GitOps Helm chart pinning validation passed",
+        "consumed local charts",
     ):
         require_text(
             gitops_helm_chart_pinning_test_text,
             needle,
             f"GitOps Helm chart pinning self-test must cover {needle}",
+        )
+    vendored_chart_inventory_helper_text = read(vendored_chart_inventory_helper)
+    for needle in (
+        "read_bounded_bytes",
+        "read_bounded_text",
+        "loads_strict_json",
+        "CHART_TREE_MAX_BYTES",
+        "CHART_TREE_MAX_FILES",
+        "followlinks=False",
+        "_is_link_like",
+        "not stat.S_ISREG",
+        "chart_tree_sha256",
+        "validate_inventory",
+        "refresh_inventory",
+        "parsed.scheme not in {\"https\", \"oci\"}",
+        "atomic_write_text",
+    ):
+        require_text(
+            vendored_chart_inventory_helper_text,
+            needle,
+            f"vendored chart inventory helper must cover {needle}",
+        )
+    vendored_chart_inventory_text = read(vendored_chart_inventory)
+    for needle in (
+        '"schemaVersion": 1',
+        '"repository"',
+        '"name"',
+        '"version"',
+        '"treeSha256"',
+    ):
+        require_text(
+            vendored_chart_inventory_text,
+            needle,
+            f"vendored chart inventory must include {needle}",
         )
     gitops_image_pinning_test_text = read(gitops_image_pinning_test)
     for needle in (
