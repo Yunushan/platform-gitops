@@ -9,6 +9,7 @@ set -euo pipefail
 : "${RKE2_INSTALL_TIMEOUT:=1200}"
 : "${RKE2_INSTALL_DOWNLOAD_TIMEOUT:=120}"
 umask 077
+readonly RKE2_INSTALLER_MAX_BYTES=$((2 * 1024 * 1024))
 
 if [[ -n "${INSTALL_RKE2_TYPE:-}" && "${INSTALL_RKE2_TYPE}" != "server" ]]; then
   echo "INSTALL_RKE2_TYPE must be server for this bootstrap script." >&2
@@ -55,6 +56,14 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
+for required_command in chmod chown curl id install mktemp mv rm sed sha256sum systemctl timeout wc; do
+  if ! command -v "${required_command}" >/dev/null 2>&1; then
+    printf 'Required RKE2 bootstrap command is unavailable: %s\n' \
+      "${required_command}" >&2
+    exit 1
+  fi
+done
+
 config_tmp=""
 installer=""
 cleanup() {
@@ -62,12 +71,28 @@ cleanup() {
   [[ -z "${installer:-}" ]] || rm -f -- "${installer}"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 installer="$(mktemp)"
-curl --fail --show-error --location --retry 3 \
+curl --fail --show-error --silent --location --retry 3 \
+  --retry-all-errors \
   --proto '=https' --proto-redir '=https' --tlsv1.2 \
+  --max-redirs 3 \
   --connect-timeout 20 --max-time "${RKE2_INSTALL_DOWNLOAD_TIMEOUT}" \
+  --max-filesize "${RKE2_INSTALLER_MAX_BYTES}" \
   --output "${installer}" https://get.rke2.io
+if [[ ! -f "${installer}" || -L "${installer}" ]]; then
+  echo "Downloaded RKE2 installer is not a regular file." >&2
+  exit 1
+fi
+installer_bytes="$(wc -c <"${installer}")"
+if [[ ! "${installer_bytes}" =~ ^[1-9][0-9]*$ ]] ||
+  (( 10#${installer_bytes} > RKE2_INSTALLER_MAX_BYTES )); then
+  echo "Downloaded RKE2 installer has an unsafe size." >&2
+  exit 1
+fi
 printf '%s  %s\n' "${installer_sha256}" "${installer}" | sha256sum --check --strict
 chmod 0700 "${installer}"
 
@@ -87,11 +112,7 @@ chown root:root "${config_tmp}"
 mv -f -- "${config_tmp}" /etc/rancher/rke2/config.yaml
 config_tmp=""
 
-if command -v timeout >/dev/null 2>&1; then
-  timeout "${RKE2_INSTALL_TIMEOUT}" "${installer}"
-else
-  "${installer}"
-fi
+timeout "${RKE2_INSTALL_TIMEOUT}" "${installer}"
 systemctl enable rke2-server
 systemctl --no-block restart rke2-server
 echo "RKE2 first server start requested. Follow progress with: journalctl -u rke2-server -f"

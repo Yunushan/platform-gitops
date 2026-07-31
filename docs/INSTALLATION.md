@@ -228,9 +228,11 @@ sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERS
 
 Manual bootstrap scripts always require an exact RKE2 release and a reviewed
 SHA-256 for the installer returned by `https://get.rke2.io`, including outside
-strict production mode. They permit only HTTPS redirects, verify the download
-before changing the node configuration or executing it, reject conflicting
-installer channel/type overrides, and write
+strict production mode. They permit only TLS 1.2 HTTPS redirects, cap the
+installer at 2 MiB, verify its regular-file shape, byte count, and digest before
+changing the node configuration or executing it, and require a bounded
+`timeout` implementation rather than falling back to unbounded execution. They
+also reject conflicting installer channel/type overrides and write
 `/etc/rancher/rke2/config.yaml` atomically with mode `0600`. Never store the
 real token in git. The installer digest is not secret, but treat it as a
 reviewed release input and obtain it through your approved release or internal
