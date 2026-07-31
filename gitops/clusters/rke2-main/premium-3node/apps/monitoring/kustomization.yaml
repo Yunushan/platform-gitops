@@ -10,10 +10,10 @@ components:
   - ../../components/external-smtp-egress
   - ../../components/external-database-egress
   - ../../components/kubernetes-api-egress
+helmGlobals:
+  chartHome: charts/kube-prometheus-stack-87.4.0
 helmCharts:
   - name: kube-prometheus-stack
-    version: 87.4.0
-    repo: https://prometheus-community.github.io/helm-charts
     releaseName: kube-prometheus-stack
     namespace: monitoring
     includeCRDs: true

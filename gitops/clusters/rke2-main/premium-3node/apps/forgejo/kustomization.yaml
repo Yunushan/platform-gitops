@@ -11,10 +11,10 @@ components:
   - ../../components/external-git-egress
   - ../../components/external-smtp-egress
   - ../../components/external-database-egress
+helmGlobals:
+  chartHome: charts/forgejo-15.0.3
 helmCharts:
   - name: forgejo
-    version: 15.0.3
-    repo: oci://code.forgejo.org/forgejo-helm
     releaseName: forgejo
     namespace: forgejo
     valuesFile: values.yaml

@@ -31,6 +31,15 @@ All third-party GitHub Actions are pinned to full commit SHAs. The separate
 weekly OpenSSF Scorecard workflow publishes results and uploads SARIF to code
 scanning.
 
+Kustomizations consume committed local chart trees whenever that reviewed chart
+is present beside the application. The chart contract rejects a remote
+repository reference for the same chart name and version, preventing an
+already-vendored dependency from silently returning to network-time resolution.
+The remaining premium remote charts are cert-manager, trust-manager, Kyverno,
+External Secrets, Tetragon, and Velero. They remain exact-version pinned and are
+explicit residual dependencies rather than being mistaken for
+offline-reproducible inputs.
+
 ## Migration Parser Fuzzing and Coverage
 
 `.github/workflows/fuzz.yml` uses ClusterFuzzLite and Atheris to fuzz the

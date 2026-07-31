@@ -7056,16 +7056,19 @@ def main() -> None:
         )
     gitops_helm_chart_pinning_test_text = read(gitops_helm_chart_pinning_test)
     for needle in (
-        "Validate remote Kustomize Helm charts are pinned and fully declared",
+        "Validate Kustomize Helm charts are local or pinned and fully declared",
         "SCAN_ROOT",
         "helmCharts:",
         "REQUIRED_REMOTE_CHART_FIELDS",
+        "REQUIRED_LOCAL_CHART_FIELDS",
         "releaseName",
         "valuesFile",
         "top_level_namespace",
+        "matching_vendored_charts",
         "must set",
         "must match kustomization namespace",
         "references missing valuesFile",
+        "must use committed local chart content",
         "Helm chart {name} must pin version",
         "uses mutable version",
         "uses prerelease version",

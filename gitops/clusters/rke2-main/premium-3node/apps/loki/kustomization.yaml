@@ -7,16 +7,14 @@ components:
   - ../../components/network-isolation
   - ../../components/external-web-egress
   - ../../components/external-object-storage-egress
+helmGlobals:
+  chartHome: charts
 helmCharts:
   - name: loki
-    version: 7.0.0
-    repo: https://grafana.github.io/helm-charts
     releaseName: loki
     namespace: logging
     valuesFile: values.yaml
   - name: alloy
-    version: 1.11.0
-    repo: https://grafana.github.io/helm-charts
     releaseName: alloy
     namespace: logging
     valuesFile: alloy-values.yaml

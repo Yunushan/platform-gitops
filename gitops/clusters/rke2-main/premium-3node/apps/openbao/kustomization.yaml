@@ -8,10 +8,10 @@ components:
 resources:
   - namespace.yaml
   - server-certificate.yaml
+helmGlobals:
+  chartHome: charts/openbao-0.28.3
 helmCharts:
   - name: openbao
-    version: 0.28.3
-    repo: https://openbao.github.io/openbao-helm
     releaseName: openbao
     namespace: openbao
     valuesFile: values.yaml

@@ -8,10 +8,10 @@ resources:
   - server-certificate.yaml
   - allow-valkey-ingress.yaml
   - service-primary.yaml
+helmGlobals:
+  chartHome: charts/valkey-0.10.0
 helmCharts:
   - name: valkey
-    version: 0.10.0
-    repo: https://valkey.io/valkey-helm
     releaseName: platform-valkey
     namespace: platform-cache
     valuesFile: values.yaml

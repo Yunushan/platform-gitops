@@ -11,10 +11,10 @@ components:
   - ../../components/external-smtp-egress
   - ../../components/external-database-egress
   - ../../components/external-object-storage-egress
+helmGlobals:
+  chartHome: charts/harbor-1.19.1
 helmCharts:
   - name: harbor
-    version: 1.19.1
-    repo: https://helm.goharbor.io
     releaseName: harbor
     namespace: harbor
     valuesFile: values.yaml

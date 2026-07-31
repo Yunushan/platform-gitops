@@ -8,10 +8,10 @@ components:
   - ../../components/external-web-egress
   - ../../components/external-git-egress
   - ../../components/kubernetes-api-egress
+helmGlobals:
+  chartHome: charts/argo-cd-10.0.0
 helmCharts:
   - name: argo-cd
-    version: 10.0.0
-    repo: https://argoproj.github.io/argo-helm
     releaseName: argo-cd
     namespace: argocd
     valuesFile: values.yaml

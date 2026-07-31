@@ -813,6 +813,8 @@ def main() -> int:
                 "MetalLB",
                 "`0.16.1` and Traefik `41.0.1`",
                 "chart-repository DNS probes remain explicit diagnostics",
+                "remaining premium remote charts are cert-manager, trust-manager, Kyverno",
+                "External Secrets, Tetragon, and Velero",
                 "Argo CD bootstrap derives its application release",
                 "reviewed SHA-256 in the playbook",
                 "HA-to-core fallback enforces the same policy",

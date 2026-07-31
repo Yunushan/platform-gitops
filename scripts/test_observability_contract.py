@@ -29,6 +29,8 @@ def forbid(text: str, needle: str, label: str) -> None:
 def main() -> int:
     loki = read(PREMIUM / "loki/values.yaml")
     loki_kustomization = read(PREMIUM / "loki/kustomization.yaml")
+    loki_chart = read(PREMIUM / "loki/charts/loki/Chart.yaml")
+    alloy_chart = read(PREMIUM / "loki/charts/alloy/Chart.yaml")
     alloy = read(PREMIUM / "loki/alloy-values.yaml")
     monitoring = read(PREMIUM / "monitoring/values.yaml")
     secrets = read(ROOT / "ansible/playbooks/configure-platform-app-secrets.yml")
@@ -52,11 +54,20 @@ def main() -> int:
     forbid(loki, "auth_enabled: false", "Loki values")
 
     for needle in (
+        "helmGlobals:",
+        "chartHome: charts",
+        "name: loki",
         "name: alloy",
-        "version: 1.11.0",
         "valuesFile: alloy-values.yaml",
     ):
         require(loki_kustomization, needle, "Loki kustomization")
+    forbid(loki_kustomization, "repo:", "Loki kustomization")
+    for chart, label, name, version in (
+        (loki_chart, "Loki chart", "loki", "7.0.0"),
+        (alloy_chart, "Alloy chart", "alloy", "1.11.0"),
+    ):
+        require(chart, f"name: {name}", label)
+        require(chart, f"version: {version}", label)
 
     for needle in (
         'discovery.kubernetes "pods"',

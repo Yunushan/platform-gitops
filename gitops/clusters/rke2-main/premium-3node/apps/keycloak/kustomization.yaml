@@ -9,12 +9,12 @@ components:
   - ../../components/external-database-egress
 resources:
   - namespace.yaml
+helmGlobals:
+  # 25.2.0 is the reviewed Bitnami chart release for Keycloak 26.3.3.
+  # Do not advance this independently of the image/value compatibility check.
+  chartHome: charts/keycloak-25.2.0
 helmCharts:
   - name: keycloak
-    # 25.2.0 is the published Bitnami chart release for Keycloak 26.3.3.
-    # Do not advance this independently of the image/value compatibility check.
-    version: 25.2.0
-    repo: https://charts.bitnami.com/bitnami
     releaseName: keycloak
     namespace: keycloak
     valuesFile: values.yaml

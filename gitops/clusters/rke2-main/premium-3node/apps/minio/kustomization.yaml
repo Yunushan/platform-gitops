@@ -7,10 +7,10 @@ components:
   - ../../components/external-object-storage-egress
 resources:
   - namespace.yaml
+helmGlobals:
+  chartHome: charts/minio-17.0.21
 helmCharts:
   - name: minio
-    version: 17.0.21
-    repo: https://charts.bitnami.com/bitnami
     releaseName: platform-minio
     namespace: object-storage
     valuesFile: values.yaml

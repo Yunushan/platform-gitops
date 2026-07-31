@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate remote Kustomize Helm charts are pinned and fully declared."""
+"""Validate Kustomize Helm charts are local or pinned and fully declared."""
 
 from __future__ import annotations
 
@@ -157,6 +157,21 @@ def is_static_local_path(value: str) -> bool:
     return not parsed.is_absolute() and ".." not in parsed.parts
 
 
+def matching_vendored_charts(path: Path, name: str, version: str) -> list[Path]:
+    charts_root = path.parent / "charts"
+    if not charts_root.is_dir() or not name or not version:
+        return []
+    matches: list[Path] = []
+    for chart_yaml in charts_root.rglob("Chart.yaml"):
+        parts = chart_yaml.relative_to(charts_root).parts
+        if len(parts) not in {2, 3} or chart_yaml.parent.name != name:
+            continue
+        metadata = chart_metadata(chart_yaml)
+        if metadata.get("name") == name and metadata.get("version") == version:
+            matches.append(chart_yaml.parent)
+    return sorted(matches)
+
+
 def find_problems(path: Path) -> list[str]:
     lines = path.read_text(encoding="utf-8").splitlines()
     kustomization_namespace = top_level_namespace(lines)
@@ -219,6 +234,13 @@ def find_problems(path: Path) -> list[str]:
             problems.append(f"{rel_path(path)}:{line_number}: Helm chart {name} uses mutable version {version}")
         elif PRERELEASE_RE.search(version):
             problems.append(f"{rel_path(path)}:{line_number}: Helm chart {name} uses prerelease version {version}")
+        vendored_matches = matching_vendored_charts(path, name, version)
+        if vendored_matches:
+            rendered_matches = ", ".join(rel_path(candidate) for candidate in vendored_matches)
+            problems.append(
+                f"{rel_path(path)}:{line_number}: Helm chart {name} {version} "
+                f"must use committed local chart content: {rendered_matches}"
+            )
     return problems
 
 
