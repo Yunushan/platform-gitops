@@ -127,11 +127,13 @@ etcd snapshot and the RKE2 rotation procedure.
 
 Supply-chain promotion is also deliberate. Install Trivy, Gitleaks, Semgrep,
 Syft, OpenSSF Scorecard, Cosign, Kustomize `v5.8.1`, Helm `v3.21.0`, and
-Kubeconform `v0.7.0` on the promotion runner. Install Kyverno CLI `v1.18.1` as
-`kyverno` or set `KYVERNO_BIN` to that binary. Configure the digest-only private
-image inventory described in `docs/SUPPLY_CHAIN.md`, then confirm both
-`make rendered-schema-verify` and `make policy-cel-verify` pass before running
-`platform-production-check`.
+Kubeconform `v0.7.0` on the promotion runner. Run
+`scripts/bootstrap/install-kyverno-cli.sh <PRIVATE_TOOL_DIRECTORY>` to install
+the checksum-pinned Kyverno CLI `v1.18.1` through its bounded, safely extracted,
+atomic installer, or set `KYVERNO_BIN` to an equivalently verified binary.
+Configure the digest-only private image inventory described in
+`docs/SUPPLY_CHAIN.md`, then confirm both `make rendered-schema-verify` and
+`make policy-cel-verify` pass before running `platform-production-check`.
 
 Kyverno policy promotion is deliberate. Keep `PLATFORM_POLICY_ENFORCEMENT=Audit`
 while remediating report findings. Run `make platform-policy-readiness` to show

@@ -2865,8 +2865,18 @@ def main() -> None:
     for needle in (
         'version="1.18.1"',
         'sha256="5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c"',
+        "umask 077",
+        "max_archive_bytes=$((64 * 1024 * 1024))",
+        "mktemp -d",
+        "trap cleanup EXIT",
+        "--proto '=https'",
+        "--proto-redir '=https'",
+        '--max-filesize "${max_archive_bytes}"',
         "releases/download/v${version}/${archive_name}",
         "sha256sum --check --strict",
+        "--no-same-owner --no-same-permissions",
+        'target_tmp="$(mktemp',
+        'mv -f -- "${target_tmp}" "${target_dir}/kyverno"',
     ):
         require_text(
             kyverno_cli_installer_text,

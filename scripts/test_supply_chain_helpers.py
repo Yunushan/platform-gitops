@@ -40,6 +40,7 @@ RKE2_BOOTSTRAP_SCRIPTS = (
     ROOT / "scripts/bootstrap/install-rke2-first-server.sh",
     ROOT / "scripts/bootstrap/install-rke2-server.sh",
 )
+KYVERNO_CLI_INSTALLER = ROOT / "scripts/bootstrap/install-kyverno-cli.sh"
 ARGOCD_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-argocd.yml"
 INGRESS_BOOTSTRAP = ROOT / "ansible/playbooks/deploy-platform-ingress.yml"
 LONGHORN_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-longhorn.yml"
@@ -438,6 +439,38 @@ def main() -> int:
                 )
         except (AssertionError, ValueError) as exc:
             problems.append(str(exc))
+
+    try:
+        kyverno_installer_text = read(KYVERNO_CLI_INSTALLER)
+        assert_contains(
+            kyverno_installer_text,
+            'version="1.18.1"',
+            'sha256="5e6bba9ca85beec6c93e94ca7fb0972a66df3b2e67636a08bef090cd3fc6535c"',
+            "umask 077",
+            "max_archive_bytes=$((64 * 1024 * 1024))",
+            "mktemp -d",
+            "trap cleanup EXIT",
+            "--proto '=https'",
+            "--proto-redir '=https'",
+            '--max-filesize "${max_archive_bytes}"',
+            "sha256sum --check --strict",
+            "--no-same-owner --no-same-permissions",
+            'target_tmp="$(mktemp',
+            'mv -f -- "${target_tmp}" "${target_dir}/kyverno"',
+            label=str(KYVERNO_CLI_INSTALLER.relative_to(ROOT)),
+        )
+        for unsafe_pattern in (
+            'archive="${download_dir}/${archive_name}"',
+            'tar --extract --gzip --file "${archive}" --directory "${target_dir}"',
+            'chmod 0755 "${target_dir}/kyverno"',
+        ):
+            if unsafe_pattern in kyverno_installer_text:
+                problems.append(
+                    f"{KYVERNO_CLI_INSTALLER.relative_to(ROOT)} retains unsafe "
+                    f"artifact handling: {unsafe_pattern}"
+                )
+    except AssertionError as exc:
+        problems.append(str(exc))
 
     try:
         installation_text = read(INSTALLATION)
