@@ -64,6 +64,7 @@ MUTABLE_REFS = {
 MUTABLE_PREFIXES = tuple(f"{ref}-" for ref in MUTABLE_REFS)
 ACTION_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 IMAGE_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+IMAGE_TEMPLATE_MARKERS = ("$", "{{", "}}", "<", ">")
 USES_RE = re.compile(r"^\s*(?:-\s+)?uses:\s*(?P<ref>\S+)\s*(?:#.*)?$")
 IMAGE_RE = re.compile(r"^\s*image:\s*(?P<image>\S+)\s*(?:#.*)?$")
 FROM_RE = re.compile(r"^\s*FROM\s+(?P<image>\S+)(?:\s+AS\s+\S+)?\s*(?:#.*)?$", re.I)
@@ -102,15 +103,6 @@ def is_mutable(ref: str) -> bool:
     return normalized in MUTABLE_REFS or normalized.startswith(MUTABLE_PREFIXES)
 
 
-def image_tag(image: str) -> str:
-    if "@sha256:" in image:
-        return ""
-    last_segment = image.rsplit("/", 1)[-1]
-    if ":" not in last_segment:
-        return "<missing>"
-    return last_segment.rsplit(":", 1)[-1]
-
-
 def check_action_ref(path: Path, line_number: int, value: str) -> list[str]:
     problems: list[str] = []
     if "@" not in value:
@@ -128,14 +120,38 @@ def check_action_ref(path: Path, line_number: int, value: str) -> list[str]:
 
 def check_image_ref(path: Path, line_number: int, value: str) -> list[str]:
     image = strip_quotes(value)
-    if "$" in image or "{{" in image or "<" in image:
-        return []
-    tag = image_tag(image)
-    if tag == "<missing>":
-        return [f"{rel_path(path)}:{line_number}: container image must pin a tag or sha256 digest: {image}"]
-    if tag and is_mutable(tag):
-        return [f"{rel_path(path)}:{line_number}: container image uses floating tag {tag}: {image}"]
+    if any(marker in image for marker in IMAGE_TEMPLATE_MARKERS) or not IMAGE_DIGEST_RE.search(image):
+        return [
+            f"{rel_path(path)}:{line_number}: CI container image must pin a literal lowercase "
+            f"sha256 digest: {image}"
+        ]
     return []
+
+
+def check_image_ref_contract() -> list[str]:
+    path = ROOT / ".gitlab-ci.yml"
+    digest = "a" * 64
+    valid = (
+        f"python:3.12-slim@sha256:{digest}",
+        f"'python:3.12-slim@sha256:{digest}'",
+    )
+    invalid = (
+        "python:3.12-slim",
+        "python:latest",
+        f"python:3.12-slim@sha256:{digest.upper()}",
+        "${CI_IMAGE}",
+        "{{ image }}",
+        f"${{CI_IMAGE}}@sha256:{digest}",
+        f"{{{{ image }}}}@sha256:{digest}",
+    )
+    problems: list[str] = []
+    for image in valid:
+        if check_image_ref(path, 1, image):
+            problems.append(f"CI image pinning self-test rejected valid digest reference: {image}")
+    for image in invalid:
+        if not check_image_ref(path, 1, image):
+            problems.append(f"CI image pinning self-test accepted mutable reference: {image}")
+    return problems
 
 
 def actions_job_blocks(path: Path, lines: list[str]) -> list[tuple[str, int, list[str]]]:
@@ -268,7 +284,7 @@ def scan_dockerfile(path: Path) -> list[str]:
 
 
 def main() -> int:
-    problems: list[str] = []
+    problems = check_image_ref_contract()
     for path in CI_FILES:
         problems.extend(scan_ci_file(path))
     for path in GITLAB_CI_FILES:

@@ -27,9 +27,14 @@ pull request:
   coverage ratchet across the forge migration, cutover, and transition engines.
 - The SBOM is retained as a workflow artifact for 30 days.
 
-All third-party GitHub Actions are pinned to full commit SHAs. The separate
-weekly OpenSSF Scorecard workflow publishes results and uploads SARIF to code
-scanning.
+All third-party GitHub Actions are pinned to full commit SHAs. Every static CI
+execution image in the GitHub-compatible, GitLab, and Woodpecker validation
+surfaces is pinned to a literal lowercase SHA-256 digest. Human-readable tags
+remain beside those digests for review, while the digest selects the exact
+multi-architecture OCI index. The CI contract rejects tag-only, templated,
+uppercase, and malformed image references. Renovate keeps Docker digest updates
+visible for explicit review. The separate weekly OpenSSF Scorecard workflow
+publishes results and uploads SARIF to code scanning.
 
 Kustomizations consume committed local chart trees whenever that reviewed chart
 is present beside the application. The chart contract rejects a remote
