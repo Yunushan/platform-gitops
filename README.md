@@ -352,8 +352,11 @@ proves a signed image is admitted while an invalid digest is rejected. Run
 
 For production promotion, `make supply-chain-verify` requires the scanner
 suite, a non-empty SBOM, a thresholded Scorecard report, and Cosign proof for
-digest-pinned images. `make platform-image-inventory-verify` then binds those
-results to the exact rendered manifests and live Pod digests. See
+digest-pinned images. `make vendored-chart-provenance-verify` separately
+downloads every pinned Helm package and proves its package digest, upstream
+tree, committed tree, and exact declared local patches. `make
+platform-image-inventory-verify` then binds image results to the exact rendered
+manifests and live Pod digests. See
 `docs/SUPPLY_CHAIN.md`.
 
 `make security-scan` runs Trivy, Gitleaks, and Semgrep. Semgrep defaults to the

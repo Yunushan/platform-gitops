@@ -49,7 +49,7 @@ The readiness decision covers:
 | Platform apps | Argo CD, Forgejo, Woodpecker, Harbor, monitoring, Loki, Velero, cert-manager, trust-manager, and optional step-ca are healthy when required |
 | Support and lifecycle | Supported OS, component versions, upgrade path, and exceptions are reviewed through `docs/PLATFORM_SUPPORT.md` |
 | Access control | Human roles, robot accounts, branch protection, and break-glass flow are reviewed |
-| Security and supply chain | SOPS or external secrets, image/chart pinning, CI SHA pinning, parser fuzzing, branch-coverage evidence, update review, release-time Cosign proof, and admission-time signature verification are in place |
+| Security and supply chain | SOPS or external secrets, image/chart pinning, exact upstream chart package provenance with declared local patches, CI SHA pinning, parser fuzzing, branch-coverage evidence, update review, release-time Cosign proof, and admission-time signature verification are in place |
 | Admission controls | Three stable Kyverno CEL policies plus the stable image-signature policy are Ready, legacy policies are pruned, and Enforce promotion has zero managed violations plus a successful signed/invalid canary |
 | Operations | Owners, maintenance windows, incident response, alerting, capacity, compliance evidence, and release promotion are current |
 
@@ -78,6 +78,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | OpenBao custody and recovery accepted | `EVIDENCE=private/openbao-ceremony/<CEREMONY>.json make platform-openbao-ceremony-evidence-verify`; evidence binds the current OpenBao configuration and live cluster identity, independent 5-of-3-or-stronger custody, encrypted-at-creation recovery material, root-token revocation, audit/auth bootstrap, and a recovery test no older than 180 days |
 | Observability delivery verified | `make platform-observability-verify`; Loki rejects anonymous requests, Alloy logs are queryable, retention is active, and Alertmanager configuration is valid. The production gate also sends a synthetic alert and requires a successful delivery metric |
 | Supply-chain evidence verified | `COSIGN_IMAGES_FILE=<PRIVATE_INVENTORY> make supply-chain-verify`; scanners pass, the SPDX SBOM is non-empty, Scorecard meets threshold, and digest-bound Cosign verification succeeds |
+| Vendored chart provenance verified | `make vendored-chart-provenance-verify`; every pinned upstream Helm package matches its reviewed package and tree SHA-256, every committed chart tree matches its inventory digest, and the complete local changed-path set equals the declared reviewed patches |
 | Exact image inventory reconciled | `PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE=<PRIVATE_EXCEPTIONS> make platform-image-inventory-verify`; every rendered and live runtime image resolves to one digest, private images are signed and admission-enforced, and any upstream admission gap has current independent approval plus hash-bound vulnerability evidence |
 | Runtime capacity verified | `make platform-capacity-verify`; every node and Longhorn retain the configured filesystem, scheduler, and storage headroom, encrypted StorageClasses and CSI Secret references are valid, and every bound Longhorn volume is encrypted |
 | Profile validation passed | `PLATFORM_PROFILE=<PROFILE> make platform-profile-check` |
@@ -134,6 +135,7 @@ make rendered-schema-verify
 make rendered-private-schema-verify
 KYVERNO_BIN=<KYVERNO_1_18_1_BINARY> make policy-cel-verify
 COSIGN_IMAGES_FILE=<PRIVATE_INVENTORY> make supply-chain-verify
+make vendored-chart-provenance-verify
 PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE=<PRIVATE_EXCEPTIONS> \
 make platform-image-inventory-verify
 PLATFORM_FORGEJO_RECOVERY_OPERATOR=<OPERATOR_ID> \

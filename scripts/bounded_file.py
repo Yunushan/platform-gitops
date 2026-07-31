@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import stat
+from typing import BinaryIO
 
 
 FILE_INPUT_LIMIT_ENV = "PLATFORM_FILE_INPUT_MAX_BYTES"
@@ -28,6 +29,15 @@ class FileInputNotRegular(ValueError):
     def __init__(self, path: Path) -> None:
         super().__init__(f"file input is not a regular file: {path}")
         self.path = path
+
+
+class StreamInputTooLarge(ValueError):
+    """Raised when a bounded binary stream exceeds its explicit byte limit."""
+
+    def __init__(self, label: str, limit: int) -> None:
+        super().__init__(f"stream input exceeds the {limit}-byte limit: {label}")
+        self.label = label
+        self.limit = limit
 
 
 def bounded_file_input_max_bytes(default: int = DEFAULT_FILE_INPUT_MAX_BYTES) -> int:
@@ -96,6 +106,29 @@ def read_bounded_bytes(
     if len(data) > limit:
         raise FileInputTooLarge(target, limit)
     return data
+
+
+def read_bounded_stream(
+    stream: BinaryIO,
+    *,
+    max_bytes: int,
+    label: str = "stream",
+) -> bytes:
+    """Read a binary stream to EOF while retaining at most an explicit limit."""
+    limit = _explicit_limit(max_bytes)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = stream.read(min(64 * 1024, limit + 1 - total))
+        if not chunk:
+            break
+        if not isinstance(chunk, bytes):
+            raise TypeError(f"bounded stream must return bytes: {label}")
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > limit:
+            raise StreamInputTooLarge(label, limit)
+    return b"".join(chunks)
 
 
 def read_bounded_text(

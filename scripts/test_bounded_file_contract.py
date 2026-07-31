@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import io
 import os
 from pathlib import Path
 import stat
@@ -36,6 +37,14 @@ def direct_file_read(node: ast.Call, path: Path) -> bool:
     }:
         return True
     if path.name == "bounded_file.py":
+        return False
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "open"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "tarfile"
+        and any(keyword.arg == "fileobj" for keyword in node.keywords)
+    ):
         return False
 
     mode_index: int
@@ -139,6 +148,29 @@ def test_explicit_limit_ignores_environment_override() -> None:
                 raise AssertionError("explicit local input limit did not override the environment")
 
 
+def test_binary_stream_boundaries() -> None:
+    exact = io.BytesIO(b"a" * 32)
+    if bounded_file.read_bounded_stream(
+        exact,
+        max_bytes=32,
+        label="exact fixture",
+    ) != b"a" * 32:
+        raise AssertionError("an exact-limit binary stream changed")
+
+    oversized = io.BytesIO(b"b" * 33)
+    try:
+        bounded_file.read_bounded_stream(
+            oversized,
+            max_bytes=32,
+            label="oversized fixture",
+        )
+    except bounded_file.StreamInputTooLarge as exc:
+        if exc.label != "oversized fixture" or exc.limit != 32:
+            raise AssertionError("oversized stream error lost its label or limit")
+    else:
+        raise AssertionError("an oversized binary stream was accepted")
+
+
 def test_non_regular_inputs_are_rejected() -> None:
     with tempfile.TemporaryDirectory(prefix="bounded-file-regular-") as temporary:
         root = Path(temporary)
@@ -178,6 +210,7 @@ def test_production_reads_use_shared_policy() -> None:
             if isinstance(node.func, ast.Name) and node.func.id in {
                 "read_bounded_text",
                 "read_bounded_bytes",
+                "read_bounded_stream",
             }:
                 bounded_reads += 1
 
@@ -194,6 +227,7 @@ def test_direct_read_detection() -> None:
         'open("input", "rb")',
         'path.open()',
         'path.open(mode="r+")',
+        'tarfile.open("input.tgz", mode="r:gz")',
     ):
         document = ast.parse(source)
         calls = [node for node in ast.walk(document) if isinstance(node, ast.Call)]
@@ -205,11 +239,17 @@ def test_direct_read_detection() -> None:
     if direct_file_read(call, synthetic_path):
         raise AssertionError("write-only file output was classified as a local input")
 
+    document = ast.parse('tarfile.open(fileobj=stream, mode="r:gz")')
+    call = next(node for node in ast.walk(document) if isinstance(node, ast.Call))
+    if direct_file_read(call, synthetic_path):
+        raise AssertionError("an in-memory tar stream was classified as a local file read")
+
 
 def main() -> int:
     test_limit_validation()
     test_binary_and_text_boundaries()
     test_explicit_limit_ignores_environment_override()
+    test_binary_stream_boundaries()
     test_non_regular_inputs_are_rejected()
     test_direct_read_detection()
     test_production_reads_use_shared_policy()

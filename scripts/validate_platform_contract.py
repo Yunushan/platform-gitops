@@ -192,6 +192,9 @@ kustomization_references_test = root / "scripts/test_kustomization_references.py
 gitops_helm_chart_pinning_test = root / "scripts/test_gitops_helm_chart_pinning.py"
 vendored_chart_inventory_helper = root / "scripts/vendored_chart_inventory.py"
 vendored_chart_inventory = root / "config/vendored-charts.json"
+vendored_chart_provenance_workflow = (
+    root / ".github/workflows/vendored-chart-provenance.yml"
+)
 gitops_image_pinning_test = root / "scripts/test_gitops_image_pinning.py"
 makefile_help_test = root / "scripts/test_makefile_help.py"
 validation_surface_parity_test = root / "scripts/test_validation_surface_parity.py"
@@ -3186,12 +3189,14 @@ def main() -> None:
         "MAX_FILE_INPUT_BYTES = 512 * 1024 * 1024",
         "class FileInputTooLarge(ValueError):",
         "class FileInputNotRegular(ValueError):",
+        "class StreamInputTooLarge(ValueError):",
         'getattr(os, "O_NONBLOCK", 0)',
         "metadata = os.fstat(descriptor)",
         "stat.S_ISREG(metadata.st_mode)",
         "handle.read(limit + 1)",
         'decoded.replace("\\r\\n", "\\n").replace("\\r", "\\n")',
         "def read_bounded_bytes(",
+        "def read_bounded_stream(",
         "def read_bounded_text(",
     ):
         require_text(
@@ -3204,6 +3209,7 @@ def main() -> None:
     for needle in (
         "test_limit_validation",
         "test_binary_and_text_boundaries",
+        "test_binary_stream_boundaries",
         "test_explicit_limit_ignores_environment_override",
         "test_non_regular_inputs_are_rejected",
         "test_direct_read_detection",
@@ -3213,6 +3219,7 @@ def main() -> None:
         "512 * 1024 * 1024 + 1",
         "read_bounded_text",
         "read_bounded_bytes",
+        "read_bounded_stream",
     ):
         require_text(
             bounded_file_test_text,
@@ -4699,6 +4706,12 @@ def main() -> None:
         fail("Makefile is missing supply-chain-posture target")
     if "bash scripts/supply-chain-posture.sh" not in makefile_text:
         fail("supply-chain-posture target must invoke scripts/supply-chain-posture.sh")
+    if "vendored-chart-provenance-verify:" not in makefile_text:
+        fail("Makefile is missing vendored-chart-provenance-verify target")
+    if "scripts/vendored_chart_inventory.py --verify-upstream" not in makefile_text:
+        fail(
+            "vendored-chart-provenance-verify target must verify exact upstream packages"
+        )
     security_scan_text = read(security_scan_script)
     for needle in (
         "set -euo pipefail",
@@ -7131,13 +7144,19 @@ def main() -> None:
         "loads_strict_json",
         "CHART_TREE_MAX_BYTES",
         "CHART_TREE_MAX_FILES",
+        "CHART_PACKAGE_MAX_MEMBERS",
         "followlinks=False",
         "_is_link_like",
         "not stat.S_ISREG",
         "chart_tree_sha256",
+        "chart_package_record",
         "validate_inventory",
+        "verify_package_directory",
+        "verify_upstream_packages",
         "refresh_inventory",
         "parsed.scheme not in {\"https\", \"oci\"}",
+        "run_bounded",
+        "--verify-upstream",
         "atomic_write_text",
     ):
         require_text(
@@ -7147,16 +7166,37 @@ def main() -> None:
         )
     vendored_chart_inventory_text = read(vendored_chart_inventory)
     for needle in (
-        '"schemaVersion": 1',
+        '"schemaVersion": 2',
         '"repository"',
         '"name"',
         '"version"',
+        '"packageSha256"',
+        '"upstreamTreeSha256"',
         '"treeSha256"',
+        '"patches"',
     ):
         require_text(
             vendored_chart_inventory_text,
             needle,
             f"vendored chart inventory must include {needle}",
+        )
+    vendored_chart_provenance_workflow_text = read(
+        vendored_chart_provenance_workflow
+    )
+    for needle in (
+        "name: vendored-chart-provenance",
+        "gitops/clusters/rke2-main/**/charts/**",
+        "schedule:",
+        "workflow_dispatch:",
+        "permissions:\n  contents: read",
+        "runs-on: ubuntu-24.04",
+        "go install helm.sh/helm/v3/cmd/helm@v3.21.0",
+        "--verify-upstream",
+    ):
+        require_text(
+            vendored_chart_provenance_workflow_text,
+            needle,
+            f"vendored chart provenance workflow must include {needle}",
         )
     gitops_image_pinning_test_text = read(gitops_image_pinning_test)
     for needle in (

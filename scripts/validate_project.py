@@ -20,6 +20,7 @@ required = [
     '.github/workflows/fuzz.yml',
     '.github/workflows/release.yml',
     '.github/workflows/scorecard.yml',
+    '.github/workflows/vendored-chart-provenance.yml',
     '.github/ISSUE_TEMPLATE/config.yml',
     '.github/ISSUE_TEMPLATE/bug_report.yml',
     '.github/ISSUE_TEMPLATE/feature_request.yml',

@@ -44,25 +44,46 @@ still enforced without representing those paths as offline-reproducible.
 `config/vendored-charts.json` is the reviewed provenance and integrity inventory
 for every local chart that a Kustomization consumes. Each entry binds the chart
 path to its upstream HTTPS or OCI repository, `Chart.yaml` name and version, and
-a deterministic SHA-256 over every regular file's normalized path, byte length,
-and exact content. Validation rejects unlisted consumers, stale entries,
-metadata drift, content drift, symlinks, non-regular files, unsafe paths or
-repository URLs, duplicate JSON keys, and oversized inputs.
+three separate integrity values: the exact upstream `.tgz` SHA-256, a
+deterministic SHA-256 over the upstream package tree, and the same deterministic
+SHA-256 over the committed local tree. Tree hashes cover every regular file's
+normalized path, byte length, and exact content. Any intentional local change
+must also declare its exact relative path and a one-line review reason under
+`patches`. Validation rejects unlisted consumers, stale entries, metadata or
+content drift, undeclared or stale patches, symlinks, non-regular archive
+members, path traversal, duplicate paths or JSON keys, unsafe repository URLs,
+and oversized compressed or expanded inputs.
+
+The current reviewed local changes are limited to immutable image pins,
+authenticated Valkey probes, and one upstream CRLF-to-LF normalization. The
+package verifier compares the complete changed-path set, so a reason cannot
+authorize a different file or a broader subtree.
 
 Renovate reads those inventory entries through a Helm custom manager so newer
 upstream releases remain visible after network-time chart resolution is
 removed. A version-only Renovate change intentionally fails validation: review
-and replace the committed chart tree first, then refresh its metadata and
-digest with:
+and download the exact package first. Inspect its bounded identity and digests,
+replace the committed chart tree, review every local difference, update the
+inventory provenance fields, then refresh the local metadata and tree digest:
 
 ```bash
+python scripts/vendored_chart_inventory.py --inspect-package <CHART.tgz>
 python scripts/vendored_chart_inventory.py --refresh
+python scripts/vendored_chart_inventory.py --verify-packages <PACKAGE_DIRECTORY>
 python scripts/test_gitops_helm_chart_pinning.py
 ```
 
 Keep automerge disabled for these updates. The resulting pull request must
 include the reviewed upstream chart content, refreshed inventory, rendered
 manifest comparison, and the normal supply-chain evidence.
+
+`make vendored-chart-provenance-verify` downloads every exact inventory version
+with the pinned Helm client and verifies package bytes, upstream trees, local
+trees, and exact patch paths. The path-filtered
+`.github/workflows/vendored-chart-provenance.yml` runs this network-dependent
+check for chart or verifier changes, weekly to detect upstream package
+replacement, and on demand. Ordinary unrelated pull requests remain independent
+of upstream chart repository availability.
 
 ## Migration Parser Fuzzing and Coverage
 

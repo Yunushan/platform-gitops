@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
+import io
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -12,9 +14,11 @@ import tarfile
 import tempfile
 
 from vendored_chart_inventory import (
+    chart_package_record,
     chart_tree_sha256,
     refresh_inventory,
     validate_inventory,
+    verify_package_directory,
 )
 
 
@@ -38,6 +42,9 @@ POSTURE_SCRIPT = ROOT / "scripts/supply-chain-posture.sh"
 SECURITY_SCAN_SCRIPT = ROOT / "scripts/security-scan.sh"
 GITHUB_VALIDATION = ROOT / ".github/workflows/validate.yml"
 SCORECARD_WORKFLOW = ROOT / ".github/workflows/scorecard.yml"
+VENDORED_CHART_PROVENANCE_WORKFLOW = (
+    ROOT / ".github/workflows/vendored-chart-provenance.yml"
+)
 MAKEFILE = ROOT / "Makefile"
 GITHUB_WORKFLOWS = ROOT / ".github/workflows"
 GITLEAKS_CONFIG = ROOT / ".gitleaks.toml"
@@ -105,21 +112,44 @@ def validate_vendored_chart_inventory_contract() -> list[str]:
         root = Path(directory)
         chart_root = root / "charts" / "demo"
         chart_root.mkdir(parents=True)
-        (chart_root / "Chart.yaml").write_text(
-            "apiVersion: v2\nname: demo\nversion: 1.2.3\n",
-            encoding="utf-8",
-        )
-        (chart_root / "values.yaml").write_text("replicaCount: 1\n", encoding="utf-8")
+        chart_files = {
+            "Chart.yaml": b"apiVersion: v2\nname: demo\nversion: 1.2.3\n",
+            "values.yaml": b"replicaCount: 1\n",
+        }
+        for relative, data in chart_files.items():
+            (chart_root / relative).write_bytes(data)
+
+        package_directory = root / "packages"
+        package_directory.mkdir()
+        package_path = package_directory / "demo-1.2.3.tgz"
+        with package_path.open("wb") as output:
+            with gzip.GzipFile(fileobj=output, mode="wb", mtime=0) as compressed:
+                with tarfile.open(fileobj=compressed, mode="w") as archive:
+                    for relative, data in sorted(chart_files.items()):
+                        member = tarfile.TarInfo(f"demo/{relative}")
+                        member.size = len(data)
+                        member.mtime = 0
+                        member.mode = 0o644
+                        member.uid = 0
+                        member.gid = 0
+                        member.uname = ""
+                        member.gname = ""
+                        archive.addfile(member, io.BytesIO(data))
+        package_record = chart_package_record(package_path)
+
         inventory_path = root / "inventory.json"
         entry = {
             "path": "charts/demo",
             "repository": "https://charts.example.test/stable",
             "name": "stale",
             "version": "0.0.0",
-            "treeSha256": "",
+            "packageSha256": package_record["packageSha256"],
+            "upstreamTreeSha256": package_record["upstreamTreeSha256"],
+            "treeSha256": chart_tree_sha256(chart_root),
+            "patches": [],
         }
         inventory_path.write_text(
-            json.dumps({"schemaVersion": 1, "charts": [entry]}, indent=2) + "\n",
+            json.dumps({"schemaVersion": 2, "charts": [entry]}, indent=2) + "\n",
             encoding="utf-8",
         )
 
@@ -136,6 +166,10 @@ def validate_vendored_chart_inventory_contract() -> list[str]:
             problems.append("vendored chart inventory refresh did not use Chart.yaml metadata")
         if refreshed_entry["treeSha256"] != chart_tree_sha256(chart_root):
             problems.append("vendored chart inventory refresh did not bind the chart tree digest")
+        if refreshed_entry["packageSha256"] != package_record["packageSha256"]:
+            problems.append("vendored chart inventory refresh discarded the package digest")
+        if refreshed_entry["upstreamTreeSha256"] != package_record["upstreamTreeSha256"]:
+            problems.append("vendored chart inventory refresh discarded the upstream tree digest")
 
         valid_problems = validate_inventory(
             root=root,
@@ -147,6 +181,33 @@ def validate_vendored_chart_inventory_contract() -> list[str]:
                 "vendored chart inventory rejected a refreshed fixture: "
                 + "; ".join(valid_problems)
             )
+        package_problems = verify_package_directory(
+            root=root,
+            inventory_path=inventory_path,
+            package_directory=package_directory,
+        )
+        if package_problems:
+            problems.append(
+                "vendored chart inventory rejected its exact upstream package: "
+                + "; ".join(package_problems)
+            )
+
+        invalid_provenance = json.loads(json.dumps(refreshed))
+        invalid_provenance["charts"][0]["packageSha256"] = "invalid"
+        invalid_text = json.dumps(invalid_provenance)
+        inventory_path.write_text(invalid_text, encoding="utf-8")
+        invalid_refresh_problems = refresh_inventory(
+            root=root,
+            inventory_path=inventory_path,
+        )
+        if not any(
+            "packageSha256 must be a lowercase SHA-256 digest" in problem
+            for problem in invalid_refresh_problems
+        ):
+            problems.append("vendored chart refresh accepted invalid package provenance")
+        if inventory_path.read_text(encoding="utf-8") != invalid_text:
+            problems.append("failed vendored chart refresh changed the inventory")
+        inventory_path.write_text(json.dumps(refreshed), encoding="utf-8")
 
         refreshed["charts"][0]["version"] = "1.2.4"
         inventory_path.write_text(json.dumps(refreshed), encoding="utf-8")
@@ -162,6 +223,7 @@ def validate_vendored_chart_inventory_contract() -> list[str]:
             problems.append("vendored chart inventory accepted modified chart content")
 
         (chart_root / "values.yaml").write_text("replicaCount: 1\n", encoding="utf-8")
+        refreshed["charts"][0]["treeSha256"] = chart_tree_sha256(chart_root)
         missing_problems = validate_inventory(
             root=root,
             inventory_path=inventory_path,
@@ -203,8 +265,82 @@ def validate_vendored_chart_inventory_contract() -> list[str]:
         if not any("HTTPS or OCI" in problem for problem in repository_problems):
             problems.append("vendored chart inventory accepted an insecure source URL")
 
+        patched = json.loads(json.dumps(refreshed))
+        patched["charts"][0]["repository"] = "https://charts.example.test/stable"
+        (chart_root / "values.yaml").write_text("replicaCount: 2\n", encoding="utf-8")
+        patched["charts"][0]["treeSha256"] = chart_tree_sha256(chart_root)
+        patched["charts"][0]["patches"] = [
+            {
+                "path": "values.yaml",
+                "reason": "Exercise an explicitly reviewed local chart override.",
+            }
+        ]
+        inventory_path.write_text(json.dumps(patched), encoding="utf-8")
+        patch_problems = verify_package_directory(
+            root=root,
+            inventory_path=inventory_path,
+            package_directory=package_directory,
+        )
+        if patch_problems:
+            problems.append(
+                "vendored chart package verification rejected a declared patch: "
+                + "; ".join(patch_problems)
+            )
+
+        undeclared = json.loads(json.dumps(patched))
+        undeclared["charts"][0]["patches"] = []
+        inventory_path.write_text(json.dumps(undeclared), encoding="utf-8")
+        undeclared_refresh_problems = refresh_inventory(
+            root=root,
+            inventory_path=inventory_path,
+        )
+        if not any(
+            "local tree differs from upstream but declares no patches" in problem
+            for problem in undeclared_refresh_problems
+        ):
+            problems.append("vendored chart refresh accepted an undeclared patch")
+        undeclared_problems = verify_package_directory(
+            root=root,
+            inventory_path=inventory_path,
+            package_directory=package_directory,
+        )
+        if not any(
+            "undeclared local chart patches" in problem
+            for problem in undeclared_problems
+        ):
+            problems.append("vendored chart package verification accepted an undeclared patch")
+
+        tampered = json.loads(json.dumps(patched))
+        tampered["charts"][0]["packageSha256"] = "0" * 64
+        inventory_path.write_text(json.dumps(tampered), encoding="utf-8")
+        tampered_problems = verify_package_directory(
+            root=root,
+            inventory_path=inventory_path,
+            package_directory=package_directory,
+        )
+        if not any("packageSha256 does not match" in problem for problem in tampered_problems):
+            problems.append("vendored chart package verification accepted a changed package")
+
+        unsafe_package = root / "unsafe.tgz"
+        with unsafe_package.open("wb") as output:
+            with gzip.GzipFile(fileobj=output, mode="wb", mtime=0) as compressed:
+                with tarfile.open(fileobj=compressed, mode="w") as archive:
+                    data = b"escape"
+                    member = tarfile.TarInfo("demo/../escape")
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+        try:
+            chart_package_record(unsafe_package)
+        except ValueError as exc:
+            if "unsafe member path" not in str(exc):
+                problems.append(
+                    "vendored chart archive traversal produced an unclear error"
+                )
+        else:
+            problems.append("vendored chart package inspection accepted path traversal")
+
         inventory_path.write_text(
-            '{"schemaVersion":1,"schemaVersion":1,"charts":[]}',
+            '{"schemaVersion":2,"schemaVersion":2,"charts":[]}',
             encoding="utf-8",
         )
         duplicate_problems = validate_inventory(root=root, inventory_path=inventory_path)
@@ -705,24 +841,53 @@ def main() -> int:
     try:
         assert_contains(
             read(VENDORED_CHART_INVENTORY_HELPER),
+            "read_bounded_stream",
             "read_bounded_text",
             "loads_strict_json",
             "CHART_TREE_MAX_BYTES",
             "CHART_TREE_MAX_FILES",
+            "CHART_PACKAGE_MAX_MEMBERS",
             "followlinks=False",
             "_is_link_like",
             "not stat.S_ISREG",
             "parsed.scheme not in {\"https\", \"oci\"}",
+            "packageSha256",
+            "upstreamTreeSha256",
+            "verify_package_directory",
+            "--verify-upstream",
+            "run_bounded",
             "atomic_write_text",
             "mode=0o644",
             label=str(VENDORED_CHART_INVENTORY_HELPER.relative_to(ROOT)),
         )
         inventory = json.loads(read(VENDORED_CHART_INVENTORY))
-        if inventory.get("schemaVersion") != 1 or not inventory.get("charts"):
+        if inventory.get("schemaVersion") != 2 or not inventory.get("charts"):
             problems.append(
-                "config/vendored-charts.json must contain schemaVersion 1 and chart entries"
+                "config/vendored-charts.json must contain schemaVersion 2 and chart entries"
             )
     except (AssertionError, json.JSONDecodeError) as exc:
+        problems.append(str(exc))
+    try:
+        provenance_workflow_text = read(VENDORED_CHART_PROVENANCE_WORKFLOW)
+        assert_contains(
+            provenance_workflow_text,
+            "name: vendored-chart-provenance",
+            "pull_request:",
+            "push:",
+            "schedule:",
+            "workflow_dispatch:",
+            "gitops/clusters/rke2-main/**/charts/**",
+            "permissions:\n  contents: read",
+            "runs-on: ubuntu-24.04",
+            "timeout-minutes: 30",
+            "actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8",
+            "actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c",
+            "go install helm.sh/helm/v3/cmd/helm@v3.21.0",
+            "python scripts/vendored_chart_inventory.py",
+            "--verify-upstream",
+            label=str(VENDORED_CHART_PROVENANCE_WORKFLOW.relative_to(ROOT)),
+        )
+    except AssertionError as exc:
         problems.append(str(exc))
     try:
         renovate = load_renovate()
@@ -1062,8 +1227,14 @@ def main() -> int:
                 "zero chart-repository network dependency",
                 "`config/vendored-charts.json`",
                 "deterministic SHA-256",
+                "exact upstream `.tgz` SHA-256",
+                "complete changed-path set",
                 "version-only Renovate change intentionally fails validation",
+                "--inspect-package",
                 "python scripts/vendored_chart_inventory.py --refresh",
+                "--verify-packages",
+                "make vendored-chart-provenance-verify",
+                ".github/workflows/vendored-chart-provenance.yml",
                 "Argo CD bootstrap derives its application release",
                 "reviewed SHA-256 in the playbook",
                 "HA-to-core fallback enforces the same policy",
