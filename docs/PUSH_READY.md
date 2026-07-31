@@ -8,7 +8,9 @@ check, and secret safety scan. Locally, `make validate` and
 Actions-style workflows pin third-party actions to full commit SHAs, with the
 human-readable upstream tag kept as a comment. When updating an action, resolve
 the new upstream tag to its commit SHA first, update the comment, then rerun
-`make validate`.
+`make validate`. Actions-style Python jobs also pin the exact `3.12.13` patch
+release. Update every workflow consumer together; wildcard or minor-only
+selectors are rejected by the CI contract.
 
 ## GitHub
 

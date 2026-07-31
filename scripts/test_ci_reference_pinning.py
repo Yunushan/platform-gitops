@@ -71,6 +71,7 @@ FROM_RE = re.compile(r"^\s*FROM\s+(?P<image>\S+)(?:\s+AS\s+\S+)?\s*(?:#.*)?$", r
 JOB_RE = re.compile(r"^  (?P<name>[A-Za-z_][A-Za-z0-9_-]*):\s*$")
 TIMEOUT_RE = re.compile(r"^    timeout-minutes:\s*(?P<minutes>[0-9]+)\s*$")
 RUNNER_RE = re.compile(r"^    runs-on:\s*(?P<runner>[^#\s]+)")
+PYTHON_VERSION_RE = re.compile(r"^\s+python-version:\s*(?P<version>[^#\s]+)\s*(?:#.*)?$")
 GITLAB_KEY_RE = re.compile(r"^(?P<name>[A-Za-z_][A-Za-z0-9_.-]*):\s*$")
 GITLAB_TIMEOUT_RE = re.compile(r"^  timeout:\s*(?P<minutes>[0-9]+)m\s*$")
 GITLAB_RESERVED_KEYS = {
@@ -86,6 +87,7 @@ GITLAB_RESERVED_KEYS = {
     "workflow",
 }
 MAX_JOB_TIMEOUT_MINUTES = 120
+PINNED_PYTHON_VERSION = "3.12.13"
 
 
 def rel_path(path: Path) -> str:
@@ -174,6 +176,58 @@ def actions_job_blocks(path: Path, lines: list[str]) -> list[tuple[str, int, lis
     return blocks
 
 
+def action_step_lines(lines: list[str], index: int) -> list[str]:
+    base_indent = len(lines[index]) - len(lines[index].lstrip())
+    end = len(lines)
+    for next_index in range(index + 1, len(lines)):
+        candidate = lines[next_index]
+        if not candidate.strip():
+            continue
+        indent = len(candidate) - len(candidate.lstrip())
+        if indent <= base_indent and candidate.lstrip().startswith("- "):
+            end = next_index
+            break
+    return lines[index + 1 : end]
+
+
+def check_setup_python_step(path: Path, line_number: int, step: list[str]) -> list[str]:
+    versions = [
+        strip_quotes(match.group("version"))
+        for line in step
+        if (match := PYTHON_VERSION_RE.match(line))
+    ]
+    if versions != [PINNED_PYTHON_VERSION]:
+        actual = ",".join(versions) if versions else "missing"
+        return [
+            f"{rel_path(path)}:{line_number}: setup-python must declare exactly "
+            f"python-version {PINNED_PYTHON_VERSION}; found {actual}"
+        ]
+    return []
+
+
+def check_python_runtime_contract() -> list[str]:
+    path = ROOT / ".github" / "workflows" / "validate.yml"
+    valid = [[f"          python-version: '{PINNED_PYTHON_VERSION}'"]]
+    invalid = [
+        [],
+        ["          python-version: '3.x'"],
+        ["          python-version: '3.12'"],
+        ["          python-version: '${{ matrix.python }}'"],
+        [
+            f"          python-version: '{PINNED_PYTHON_VERSION}'",
+            f"          python-version: '{PINNED_PYTHON_VERSION}'",
+        ],
+    ]
+    problems: list[str] = []
+    for step in valid:
+        if check_setup_python_step(path, 1, step):
+            problems.append("Python runtime self-test rejected the exact pinned version")
+    for step in invalid:
+        if not check_setup_python_step(path, 1, step):
+            problems.append(f"Python runtime self-test accepted an invalid selector: {step}")
+    return problems
+
+
 def check_actions_execution_contract(path: Path, lines: list[str]) -> list[str]:
     problems: list[str] = []
     blocks = actions_job_blocks(path, lines)
@@ -205,23 +259,15 @@ def check_actions_execution_contract(path: Path, lines: list[str]) -> list[str]:
         if not uses:
             continue
         action = strip_quotes(uses.group("ref")).rsplit("@", 1)[0].rstrip("/").lower()
-        if not action.endswith("actions/checkout"):
-            continue
-        base_indent = len(line) - len(line.lstrip())
-        end = len(lines)
-        for next_index in range(index + 1, len(lines)):
-            candidate = lines[next_index]
-            if not candidate.strip():
-                continue
-            indent = len(candidate) - len(candidate.lstrip())
-            if indent <= base_indent and candidate.lstrip().startswith("- "):
-                end = next_index
-                break
-        step = lines[index + 1 : end]
-        if not any(re.match(r"^\s+persist-credentials:\s*false\s*$", item) for item in step):
+        step = action_step_lines(lines, index)
+        if action.endswith("actions/checkout") and not any(
+            re.match(r"^\s+persist-credentials:\s*false\s*$", item) for item in step
+        ):
             problems.append(
                 f"{rel_path(path)}:{index + 1}: checkout must set persist-credentials: false"
             )
+        if action.endswith("actions/setup-python"):
+            problems.extend(check_setup_python_step(path, index + 1, step))
     return problems
 
 
@@ -284,7 +330,7 @@ def scan_dockerfile(path: Path) -> list[str]:
 
 
 def main() -> int:
-    problems = check_image_ref_contract()
+    problems = check_image_ref_contract() + check_python_runtime_contract()
     for path in CI_FILES:
         problems.extend(scan_ci_file(path))
     for path in GITLAB_CI_FILES:

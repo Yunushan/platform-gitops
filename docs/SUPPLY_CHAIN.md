@@ -32,9 +32,11 @@ execution image in the GitHub-compatible, GitLab, and Woodpecker validation
 surfaces is pinned to a literal lowercase SHA-256 digest. Human-readable tags
 remain beside those digests for review, while the digest selects the exact
 multi-architecture OCI index. The CI contract rejects tag-only, templated,
-uppercase, and malformed image references. Renovate keeps Docker digest updates
-visible for explicit review. The separate weekly OpenSSF Scorecard workflow
-publishes results and uploads SARIF to code scanning.
+uppercase, and malformed image references. Actions-style workflows also select
+the exact Python `3.12.13` patch release; wildcard, minor-only, templated,
+missing, or duplicate runtime selectors fail validation. Renovate keeps Docker
+digest updates visible for explicit review. The separate weekly OpenSSF
+Scorecard workflow publishes results and uploads SARIF to code scanning.
 
 Kustomizations consume committed local chart trees whenever that reviewed chart
 is present beside the application. The chart contract rejects a remote
