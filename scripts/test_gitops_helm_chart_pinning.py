@@ -11,6 +11,7 @@ from vendored_chart_inventory import DEFAULT_INVENTORY, validate_inventory
 
 ROOT = Path(__file__).resolve().parents[1]
 SCAN_ROOT = ROOT / "gitops" / "clusters" / "rke2-main"
+PREMIUM_ROOT = SCAN_ROOT / "premium-3node"
 SKIP_PARTS = {"charts", "crds"}
 MUTABLE_VERSIONS = {"latest", "main", "master", "dev", "edge", "nightly", "snapshot"}
 PRERELEASE_RE = re.compile(r"(?:^|[._+-])(alpha|beta|rc)(?:[._+-]?\d*)?$", re.I)
@@ -248,6 +249,11 @@ def find_problems(path: Path) -> list[str]:
                 )
             continue
         version = chart.get("version", "")
+        if PREMIUM_ROOT in path.parents:
+            problems.append(
+                f"{rel_path(path)}:{line_number}: premium Helm chart {name} "
+                "must use committed local chart content"
+            )
         if not version:
             problems.append(f"{rel_path(path)}:{line_number}: Helm chart {name} must pin version")
         elif version.lower() in MUTABLE_VERSIONS:

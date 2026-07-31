@@ -287,9 +287,10 @@ RKE2-managed exception. The Pod-security ValidatingPolicy excludes exactly those
 namespaces while the workload resource-request policy still applies to their
 controllers. Every other AppProject destination must have a namespace manifest
 with a baseline or restricted enforcement level, and validation fails when a
-new destination is left unclassified. Semgrep's privileged-container exception
-is limited to the three exact Longhorn 1.12.0 host-storage templates; changing
-the vendored chart version therefore requires an explicit exception review.
+new destination is left unclassified. Semgrep's privileged-container exceptions
+are limited to the three exact Longhorn 1.12.0 host-storage templates and the
+exact Tetragon 1.6.0 values file that enables required eBPF host access; changing
+either vendored chart version therefore requires an explicit exception review.
 
 The profile also installs Tetragon in a dedicated privileged namespace for
 Cilium/eBPF runtime observability. Tetragon exports process and policy events,

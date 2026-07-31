@@ -3,10 +3,11 @@ kind: Kustomization
 namespace: velero
 resources:
   - namespace.yaml
+helmGlobals:
+  chartHome: charts/velero-12.1.0
 helmCharts:
   - name: velero
     version: 12.1.0
-    repo: https://vmware-tanzu.github.io/helm-charts
     releaseName: velero
     namespace: velero
     valuesFile: values.yaml

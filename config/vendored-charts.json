@@ -51,11 +51,25 @@
       "treeSha256": "ff8e9333e57aca8950449b67185a48586605188e10bb6999f5b53c9ee0a61fba"
     },
     {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/cert-manager/charts/cert-manager-v1.20.3/cert-manager",
+      "repository": "https://charts.jetstack.io",
+      "name": "cert-manager",
+      "version": "v1.20.3",
+      "treeSha256": "e63c0235fa7f2c91c563b3adfccff3b7e1671a68445d590795d04040ebc60469"
+    },
+    {
       "path": "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/charts/cloudnative-pg",
       "repository": "https://cloudnative-pg.github.io/charts",
       "name": "cloudnative-pg",
       "version": "0.29.0",
       "treeSha256": "f5ddd9c35194991c168ce25fa85eafac42c687d843bbf8fa166951ee80e33a3b"
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/external-secrets/charts/external-secrets-2.6.0/external-secrets",
+      "repository": "https://charts.external-secrets.io",
+      "name": "external-secrets",
+      "version": "2.6.0",
+      "treeSha256": "9df677c8c64ea1fc022208e3e9c58eca0a565b28a70e1a749bcd84ae6df3aab6"
     },
     {
       "path": "gitops/clusters/rke2-main/premium-3node/apps/forgejo/charts/forgejo-15.0.3/forgejo",
@@ -77,6 +91,13 @@
       "name": "keycloak",
       "version": "25.2.0",
       "treeSha256": "cbfab8aece1d120553f3d4c349ceb564062e08768c59eb7c2994e4a7a90135d1"
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/kyverno/charts/kyverno-3.8.1/kyverno",
+      "repository": "https://kyverno.github.io/kyverno",
+      "name": "kyverno",
+      "version": "3.8.1",
+      "treeSha256": "df8d7b425ba2c1c42f9b97bffe34c7cecf1bf3649f87228320321e6984b3b64b"
     },
     {
       "path": "gitops/clusters/rke2-main/premium-3node/apps/loki/charts/alloy",
@@ -135,11 +156,32 @@
       "treeSha256": "a256e849f2bcc149d9035f5b88947aa2fa56c38508c5ebd9d70a4e062a35a5f1"
     },
     {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/tetragon/charts/tetragon-1.6.0/tetragon",
+      "repository": "https://helm.cilium.io",
+      "name": "tetragon",
+      "version": "1.6.0",
+      "treeSha256": "5700065f583bbd20c886f91679aa5674b07e03aefb905520103327e81b639e77"
+    },
+    {
       "path": "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik",
       "repository": "https://traefik.github.io/charts",
       "name": "traefik",
       "version": "41.0.1",
       "treeSha256": "2f4566977b27df25b0373dac7d1ae62cdb84fe35db9e7469f67924da36754124"
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/trust-manager/charts/trust-manager-v0.23.0/trust-manager",
+      "repository": "https://charts.jetstack.io",
+      "name": "trust-manager",
+      "version": "v0.23.0",
+      "treeSha256": "7b07cbcd458a07978d071dd3bb69410cc51332ded4518b159967307094c492fb"
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/velero/charts/velero-12.1.0/velero",
+      "repository": "https://vmware-tanzu.github.io/helm-charts",
+      "name": "velero",
+      "version": "12.1.0",
+      "treeSha256": "f153355e8e50fabccd167f50fb621942cd4c8d25c55358eed4618fb8d4feb5e5"
     },
     {
       "path": "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/charts/woodpecker-3.6.5/woodpecker",

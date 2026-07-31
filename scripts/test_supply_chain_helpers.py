@@ -657,6 +657,7 @@ def main() -> int:
             "longhorn/charts/longhorn-1.12.0/longhorn/templates/daemonset-sa.yaml",
             "longhorn/charts/longhorn-1.12.0/longhorn/templates/preupgrade-job.yaml",
             "longhorn/charts/longhorn-1.12.0/longhorn/templates/psp.yaml",
+            "tetragon/charts/tetragon-1.6.0/tetragon/values.yaml",
             label=str(SEMGREP_CONFIG.relative_to(ROOT)),
         )
         if '        - "**/charts/**"' in semgrep_text:
@@ -1057,8 +1058,8 @@ def main() -> int:
                 "MetalLB",
                 "`0.16.1` and Traefik `41.0.1`",
                 "chart-repository DNS probes remain explicit diagnostics",
-                "remaining premium remote charts are cert-manager, trust-manager, Kyverno",
-                "External Secrets, Tetragon, and Velero",
+                "active premium profile resolves every Helm chart from committed local",
+                "zero chart-repository network dependency",
                 "`config/vendored-charts.json`",
                 "deterministic SHA-256",
                 "version-only Renovate change intentionally fails validation",

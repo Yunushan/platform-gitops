@@ -5,10 +5,12 @@ namespace: cert-manager
 resources:
   - bundles.yaml
 
+helmGlobals:
+  chartHome: charts/trust-manager-v0.23.0
+
 helmCharts:
   - name: trust-manager
     version: v0.23.0
-    repo: https://charts.jetstack.io
     releaseName: trust-manager
     namespace: cert-manager
     valuesFile: values.yaml

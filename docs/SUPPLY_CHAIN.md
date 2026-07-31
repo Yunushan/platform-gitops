@@ -35,10 +35,11 @@ Kustomizations consume committed local chart trees whenever that reviewed chart
 is present beside the application. The chart contract rejects a remote
 repository reference for the same chart name and version, preventing an
 already-vendored dependency from silently returning to network-time resolution.
-The remaining premium remote charts are cert-manager, trust-manager, Kyverno,
-External Secrets, Tetragon, and Velero. They remain exact-version pinned and are
-explicit residual dependencies rather than being mistaken for
-offline-reproducible inputs.
+The active premium profile resolves every Helm chart from committed local
+content and rejects any remote chart repository reference. Its render therefore
+has zero chart-repository network dependency. Remote chart references can remain
+in non-premium examples and opt-in alternatives, where exact-version pinning is
+still enforced without representing those paths as offline-reproducible.
 
 `config/vendored-charts.json` is the reviewed provenance and integrity inventory
 for every local chart that a Kustomization consumes. Each entry binds the chart

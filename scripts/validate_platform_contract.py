@@ -4729,7 +4729,16 @@ def main() -> None:
         require_text(supply_chain_posture_text, needle, f"supply-chain posture wrapper must include {needle}")
     for config_path, required_needles in (
         (gitleaks_config, ("[extend]", "useDefault = true", "allowlists")),
-        (semgrep_config, ("rules:", "shell-curl-pipe-shell", "kubernetes-latest-image-tag", "kubernetes-privileged-container")),
+        (
+            semgrep_config,
+            (
+                "rules:",
+                "shell-curl-pipe-shell",
+                "kubernetes-latest-image-tag",
+                "kubernetes-privileged-container",
+                "tetragon/charts/tetragon-1.6.0/tetragon/values.yaml",
+            ),
+        ),
         (
             trivy_config,
             (
@@ -7095,6 +7104,7 @@ def main() -> None:
         "top_level_namespace",
         "matching_vendored_charts",
         "consumed_local_chart_paths",
+        "PREMIUM_ROOT",
         "DEFAULT_INVENTORY",
         "validate_inventory",
         "expected_paths=consumed_local_charts",
@@ -7102,6 +7112,7 @@ def main() -> None:
         "must match kustomization namespace",
         "references missing valuesFile",
         "must use committed local chart content",
+        "premium Helm chart",
         "Helm chart {name} must pin version",
         "uses mutable version",
         "uses prerelease version",
