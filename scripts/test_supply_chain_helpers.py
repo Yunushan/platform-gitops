@@ -59,6 +59,7 @@ RKE2_BOOTSTRAP_SCRIPTS = (
     ROOT / "scripts/bootstrap/install-rke2-server.sh",
 )
 KYVERNO_CLI_INSTALLER = ROOT / "scripts/bootstrap/install-kyverno-cli.sh"
+CI_TOOL_INSTALLER = ROOT / "scripts/bootstrap/install-ci-tools.sh"
 ARGOCD_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-argocd.yml"
 INGRESS_BOOTSTRAP = ROOT / "ansible/playbooks/deploy-platform-ingress.yml"
 LONGHORN_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-longhorn.yml"
@@ -542,6 +543,103 @@ def main() -> int:
     except AssertionError as exc:
         problems.append(str(exc))
 
+    try:
+        ci_tool_installer_text = read(CI_TOOL_INSTALLER)
+        assert_contains(
+            ci_tool_installer_text,
+            "set -euo pipefail",
+            "umask 077",
+            "max_archive_bytes=$((64 * 1024 * 1024))",
+            "download_timeout_seconds=180",
+            "Linux:x86_64|Linux:amd64",
+            'actionlint_version="1.7.12"',
+            'actionlint_sha256="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"',
+            'kustomize_version="5.8.1"',
+            'kustomize_sha256="029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d"',
+            'helm_version="3.21.0"',
+            'helm_sha256="0093eb572e3d2380f094df162ddb525e219249de88957afe24cfbb19632acd36"',
+            'kubeconform_version="0.7.0"',
+            'kubeconform_sha256="c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3"',
+            "https://github.com/rhysd/actionlint/releases/download/",
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/",
+            "https://get.helm.sh/",
+            "https://github.com/yannh/kubeconform/releases/download/",
+            "curl --fail --show-error --silent --location --retry 3",
+            "--proto '=https' --proto-redir '=https' --tlsv1.2",
+            "--max-redirs 3",
+            '--connect-timeout 20 --max-time "${download_timeout_seconds}"',
+            '--max-filesize "${max_archive_bytes}"',
+            "sha256sum --check --strict",
+            "--no-same-owner --no-same-permissions",
+            'archive_member="linux-amd64/helm"',
+            'if [ ! -f "${candidate}" ] || [ -L "${candidate}" ]',
+            'pending_destination="$(mktemp "${target_dir}/.${executable_name}.XXXXXX")"',
+            'install --mode=0755 -- "${candidate}" "${pending_destination}"',
+            'timeout 15s "${pending_destination}"',
+            'mv -f -- "${pending_destination}" "${destination}"',
+            "trap cleanup EXIT HUP INT TERM",
+            label=str(CI_TOOL_INSTALLER.relative_to(ROOT)),
+        )
+        renovate_records = {
+            "actionlint": "rhysd/actionlint extractVersion=^v(?<version>.*)$",
+            "kustomize": (
+                "kubernetes-sigs/kustomize "
+                "extractVersion=^kustomize/v(?<version>.*)$"
+            ),
+            "helm": "helm/helm extractVersion=^v(?<version>.*)$",
+            "kubeconform": "yannh/kubeconform extractVersion=^v(?<version>.*)$",
+        }
+        for tool, dependency in renovate_records.items():
+            annotation = (
+                "# renovate: datasource=github-releases depName=" + dependency
+            )
+            if (
+                annotation not in ci_tool_installer_text
+                or f"readonly {tool}_version=" not in ci_tool_installer_text
+            ):
+                problems.append(
+                    f"{CI_TOOL_INSTALLER.relative_to(ROOT)} must expose a reviewed "
+                    f"Renovate version record for {tool}"
+                )
+        checksum_index = ci_tool_installer_text.index("sha256sum --check --strict")
+        preflight_index = ci_tool_installer_text.index("declare -A selected_tools=()")
+        download_index = ci_tool_installer_text.index(
+            "curl --fail --show-error --silent --location"
+        )
+        extraction_index = ci_tool_installer_text.index("tar --extract --gzip")
+        version_index = ci_tool_installer_text.index(
+            'timeout 15s "${pending_destination}"'
+        )
+        install_index = ci_tool_installer_text.index(
+            'mv -f -- "${pending_destination}" "${destination}"'
+        )
+        if not checksum_index < extraction_index < version_index < install_index:
+            problems.append(
+                f"{CI_TOOL_INSTALLER.relative_to(ROOT)} must checksum before "
+                "extracting, verify the staged version, and only then install"
+            )
+        if (
+            ci_tool_installer_text.count('for tool in "$@"; do') != 2
+            or not preflight_index < download_index
+        ):
+            problems.append(
+                f"{CI_TOOL_INSTALLER.relative_to(ROOT)} must reject unknown or "
+                "duplicate selections before its first network request"
+            )
+        for unsafe_pattern in (
+            "go install ",
+            "curl -sL",
+            "tar -xzf",
+            'timeout 15s "${destination}"',
+        ):
+            if unsafe_pattern in ci_tool_installer_text:
+                problems.append(
+                    f"{CI_TOOL_INSTALLER.relative_to(ROOT)} retains unsafe "
+                    f"release-artifact handling: {unsafe_pattern}"
+                )
+    except (AssertionError, ValueError) as exc:
+        problems.append(str(exc))
+
     for playbook, required in (
         (
             LONGHORN_BOOTSTRAP,
@@ -883,7 +981,8 @@ def main() -> int:
             "timeout-minutes: 30",
             "actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8",
             "actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c",
-            "go install helm.sh/helm/v3/cmd/helm@v3.21.0",
+            "scripts/bootstrap/install-ci-tools.sh",
+            '"${{ runner.temp }}/platform-tools" helm',
             "python scripts/vendored_chart_inventory.py",
             "--verify-upstream",
             label=str(VENDORED_CHART_PROVENANCE_WORKFLOW.relative_to(ROOT)),
@@ -914,6 +1013,7 @@ def main() -> int:
     custom_managers = renovate.get("customManagers", [])
     vendored_manager: dict[str, object] | None = None
     semgrep_manager: dict[str, object] | None = None
+    ci_tools_manager: dict[str, object] | None = None
     if isinstance(custom_managers, list):
         for manager in custom_managers:
             if not isinstance(manager, dict):
@@ -969,6 +1069,30 @@ def main() -> int:
                 )
             ):
                 semgrep_manager = manager
+            if (
+                manager.get("customType") == "regex"
+                and isinstance(manager_patterns, list)
+                and any(
+                    "install-ci-tools" in pattern
+                    for pattern in manager_patterns
+                    if isinstance(pattern, str)
+                )
+                and isinstance(match_strings, list)
+                and any(
+                    all(
+                        capture in match_string
+                        for capture in (
+                            "(?<datasource>",
+                            "(?<depName>",
+                            "(?<extractVersion>",
+                            "(?<currentValue>",
+                        )
+                    )
+                    for match_string in match_strings
+                    if isinstance(match_string, str)
+                )
+            ):
+                ci_tools_manager = manager
     if vendored_manager is None:
         problems.append(
             "renovate.json must discover repository, name, and version from "
@@ -1087,6 +1211,81 @@ def main() -> int:
                 problems.append(
                     "Renovate Semgrep image regex must extract both reviewed "
                     "workflow version/digest references exactly once"
+                )
+
+    if ci_tools_manager is None:
+        problems.append(
+            "renovate.json must discover all checksum-pinned CI release-tool "
+            "versions from scripts/bootstrap/install-ci-tools.sh"
+        )
+    else:
+        match_strings = ci_tools_manager.get("matchStrings", [])
+        assert isinstance(match_strings, list)
+        candidate_patterns = [
+            pattern
+            for pattern in match_strings
+            if isinstance(pattern, str)
+            and all(
+                capture in pattern
+                for capture in (
+                    "(?<datasource>",
+                    "(?<depName>",
+                    "(?<extractVersion>",
+                    "(?<currentValue>",
+                )
+            )
+        ]
+        try:
+            ci_tools_pattern = re.sub(
+                r"\(\?<([A-Za-z][A-Za-z0-9_]*)>",
+                r"(?P<\1>",
+                candidate_patterns[0],
+            )
+            matches = list(
+                re.finditer(ci_tools_pattern, read(CI_TOOL_INSTALLER))
+            )
+        except (IndexError, re.error) as exc:
+            problems.append(f"Renovate CI-tool regex is not executable: {exc}")
+        else:
+            actual = [
+                (
+                    match.group("datasource"),
+                    match.group("depName"),
+                    match.group("extractVersion"),
+                    match.group("currentValue"),
+                )
+                for match in matches
+            ]
+            expected = [
+                (
+                    "github-releases",
+                    "rhysd/actionlint",
+                    "^v(?<version>.*)$",
+                    "1.7.12",
+                ),
+                (
+                    "github-releases",
+                    "kubernetes-sigs/kustomize",
+                    "^kustomize/v(?<version>.*)$",
+                    "5.8.1",
+                ),
+                (
+                    "github-releases",
+                    "helm/helm",
+                    "^v(?<version>.*)$",
+                    "3.21.0",
+                ),
+                (
+                    "github-releases",
+                    "yannh/kubeconform",
+                    "^v(?<version>.*)$",
+                    "0.7.0",
+                ),
+            ]
+            if actual != expected:
+                problems.append(
+                    "Renovate CI-tool regex must extract every exact reviewed "
+                    "release-tool version once and in installer order"
                 )
 
     rules = renovate.get("packageRules", [])
@@ -1228,7 +1427,9 @@ def main() -> int:
                 "requirements/ci-coverage.txt",
                 "--require-hashes",
                 "aquasecurity/trivy-action@",
-                "github.com/rhysd/actionlint/cmd/actionlint@v1.7.12",
+                "scripts/bootstrap/install-ci-tools.sh",
+                '"${{ runner.temp }}/platform-tools" actionlint',
+                "kustomize helm kubeconform",
                 "verify_supply_chain_evidence.py",
             ),
         ),

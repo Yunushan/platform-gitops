@@ -16,6 +16,10 @@ CI Python tools use reviewed hash locks for CPython 3.12 Linux amd64 and arm64
 wheels. GitHub runs Semgrep from its exact OCI index digest with the network and
 filesystem write paths disabled; Renovate proposes explicit version/digest
 updates rather than silently following a tag.
+Actionlint, Kustomize, Helm, and Kubeconform likewise install through the
+repository's bounded release-artifact helper with exact Linux amd64 SHA-256
+proof. Renovate may propose their versions, but CI fails closed until the
+corresponding official digest is reviewed too; runtime `go install` is rejected.
 
 ## GitHub
 

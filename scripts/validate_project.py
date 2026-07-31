@@ -82,6 +82,7 @@ required = [
     'scripts/render_deployable_gitops_apps.py',
     'scripts/run_validation.py',
     'scripts/bootstrap/validate-gitops-selection.sh',
+    'scripts/bootstrap/install-ci-tools.sh',
     'scripts/supply-chain-posture.sh',
     'scripts/vendored_chart_inventory.py',
     'scripts/test_python_syntax.py',

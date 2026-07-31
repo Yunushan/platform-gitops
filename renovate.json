@@ -36,6 +36,17 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "description": "Track checksum-pinned CI tool releases; checksum review remains mandatory.",
+      "managerFilePatterns": [
+        "/^scripts\\/bootstrap\\/install-ci-tools\\.sh$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+) extractVersion=(?<extractVersion>\\S+)\\nreadonly [a-z0-9_]+_version=\\\"(?<currentValue>[^\\\"]+)\\\""
+      ],
+      "versioningTemplate": "semver"
     }
   ],
   "packageRules": [

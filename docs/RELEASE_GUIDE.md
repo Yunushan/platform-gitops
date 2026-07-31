@@ -15,8 +15,11 @@ v1.0.0
 Pushing a stable semantic-version tag matching `vMAJOR.MINOR.PATCH` invokes
 `.github/workflows/release.yml`. Its read-only verification job reruns the
 portable validation suite, Actionlint, Gitleaks, digest-pinned no-network
-Semgrep, Trivy, and rendered Kubernetes schema validation, plus checksum-pinned Kyverno CEL policy
-compilation and behavior tests, before building the release bundle. A separate
+Semgrep, Trivy, and rendered Kubernetes schema validation. Actionlint,
+Kustomize, Helm, and Kubeconform come from exact SHA-256-verified release
+archives rather than network-resolved Go module graphs. The gate also runs
+checksum-pinned Kyverno CEL policy compilation and behavior tests before
+building the release bundle. A separate
 read-only approval job is the only job attached to the `production-release`
 environment. It verifies the recorded independent reviewer after the gate
 opens, adds that sanitized approval evidence to the checksum manifest, and
@@ -112,6 +115,7 @@ comment for readability, but release evidence should show the immutable SHA.
 - [ ] Profiles updated.
 - [ ] Third-party CI actions are pinned by full commit SHA.
 - [ ] Python CI tools install from reviewed hash locks, and Semgrep runs from the reviewed OCI digest without container network or checkout writes.
+- [ ] Actionlint, Kustomize, Helm, and Kubeconform install from reviewed, size-bounded release archives whose Linux amd64 SHA-256 values match the repository contract.
 - [ ] Actionlint validates every GitHub Actions workflow.
 - [ ] The release commit and annotated semantic-version tag both show GitHub's Verified status.
 - [ ] The checksummed release bundle retains `*.github-release.json` with the verified tag object, release commit, and input hashes.

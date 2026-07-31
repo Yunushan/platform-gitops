@@ -66,6 +66,7 @@ premium_image_integrity_policy = root / "gitops/clusters/rke2-main/premium-3node
 policy_readiness_playbook = root / "ansible/playbooks/verify-platform-policy-readiness.yml"
 active_policy_verifier = root / "scripts/verify_active_kyverno_policies.py"
 kyverno_cli_installer = root / "scripts/bootstrap/install-kyverno-cli.sh"
+ci_tool_installer = root / "scripts/bootstrap/install-ci-tools.sh"
 github_validate_workflow = root / ".github/workflows/validate.yml"
 github_release_workflow = root / ".github/workflows/release.yml"
 platform_tls_playbook = root / "ansible/playbooks/manage-platform-tls.yml"
@@ -2913,6 +2914,37 @@ def main() -> None:
                 needle,
                 f"{workflow_path.relative_to(root)} must enforce active CEL policy proof",
             )
+        for needle in (
+            "scripts/bootstrap/install-ci-tools.sh",
+            '"${{ runner.temp }}/platform-tools" actionlint',
+            "kustomize helm kubeconform",
+        ):
+            require_text(
+                workflow_text,
+                needle,
+                f"{workflow_path.relative_to(root)} must use checksum-pinned CI release tools",
+            )
+
+    ci_tool_installer_text = read(ci_tool_installer)
+    for needle in (
+        'actionlint_version="1.7.12"',
+        'actionlint_sha256="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"',
+        'kustomize_version="5.8.1"',
+        'kustomize_sha256="029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d"',
+        'helm_version="3.21.0"',
+        'helm_sha256="0093eb572e3d2380f094df162ddb525e219249de88957afe24cfbb19632acd36"',
+        'kubeconform_version="0.7.0"',
+        'kubeconform_sha256="c31518ddd122663b3f3aa874cfe8178cb0988de944f29c74a0b9260920d115d3"',
+        "sha256sum --check --strict",
+        "--no-same-owner --no-same-permissions",
+        'timeout 15s "${pending_destination}"',
+        'mv -f -- "${pending_destination}" "${destination}"',
+    ):
+        require_text(
+            ci_tool_installer_text,
+            needle,
+            f"CI tool installer must retain reviewed release proof: {needle}",
+        )
 
     platform_tls_text = read(platform_tls_playbook)
     for needle in (
@@ -6873,6 +6905,9 @@ def main() -> None:
         '"datasourceTemplate": "docker"',
         "SEMGREP_IMAGE",
         "(?<currentDigest>",
+        "install-ci-tools",
+        "(?<datasource>",
+        "(?<extractVersion>",
         '"dependencyDashboardApproval": true',
     ):
         require_text(
@@ -7265,7 +7300,8 @@ def main() -> None:
         "workflow_dispatch:",
         "permissions:\n  contents: read",
         "runs-on: ubuntu-24.04",
-        "go install helm.sh/helm/v3/cmd/helm@v3.21.0",
+        "scripts/bootstrap/install-ci-tools.sh",
+        '"${{ runner.temp }}/platform-tools" helm',
         "--verify-upstream",
     ):
         require_text(

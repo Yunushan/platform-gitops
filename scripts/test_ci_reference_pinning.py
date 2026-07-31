@@ -318,6 +318,26 @@ def check_semgrep_container_contract() -> list[str]:
     return problems
 
 
+def check_go_install(path: Path, line_number: int, line: str) -> list[str]:
+    if "go install " not in line:
+        return []
+    return [
+        f"{rel_path(path)}:{line_number}: CI must install reviewed release "
+        "artifacts instead of resolving a Go module graph at runtime"
+    ]
+
+
+def check_go_install_contract() -> list[str]:
+    path = ROOT / ".github" / "workflows" / "validate.yml"
+    if check_go_install(path, 1, "run: echo safe") or not check_go_install(
+        path,
+        1,
+        "run: go install example.invalid/tool@v1.2.3",
+    ):
+        return ["CI Go-install rejection self-test changed meaning"]
+    return []
+
+
 def is_mutable(ref: str) -> bool:
     normalized = ref.lower()
     return normalized in MUTABLE_REFS or normalized.startswith(MUTABLE_PREFIXES)
@@ -522,6 +542,7 @@ def scan_ci_file(path: Path) -> list[str]:
         return problems
     lines = path.read_text(encoding="utf-8").splitlines()
     for line_number, line in enumerate(lines, start=1):
+        problems.extend(check_go_install(path, line_number, line))
         problems.extend(check_pip_install(path, line_number, line))
         uses = USES_RE.match(line)
         if uses:
@@ -556,6 +577,7 @@ def main() -> int:
         + check_requirement_lock_contract()
         + check_requirement_usage_contract()
         + check_semgrep_container_contract()
+        + check_go_install_contract()
     )
     for path in CI_FILES:
         problems.extend(scan_ci_file(path))

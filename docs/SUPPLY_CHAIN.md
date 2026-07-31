@@ -21,8 +21,13 @@ pull request:
   compiles the stable image-signature policy without registry access.
 - Syft produces an SPDX JSON SBOM.
 - `scripts/verify_supply_chain_evidence.py` rejects malformed or empty SBOMs.
-- Kustomize and Helm render every complete base and premium application, then
-  Kubeconform validates built-in Kubernetes objects against the target schema.
+- Checksum-pinned Actionlint `1.7.12`, Kustomize `5.8.1`, Helm `3.21.0`, and
+  Kubeconform `0.7.0` release archives are downloaded through bounded,
+  HTTPS-only requests, verified before exact-member extraction, version-checked
+  while staged, and atomically installed. CI never resolves their Go module
+  graphs at runtime. Kustomize and Helm render every complete base and premium
+  application, then Kubeconform validates built-in Kubernetes objects against
+  the target schema.
 - Coverage.py traces Python subprocesses and enforces the measured 81.0% branch
   coverage ratchet across the forge migration, cutover, and transition engines.
 - The SBOM is retained as a workflow artifact for 30 days.
@@ -40,8 +45,11 @@ are installed only from reviewed CPython 3.12 Linux wheels through
 amd64 and arm64. Semgrep runs from an exact multi-architecture OCI index digest
 with no container network, a read-only root filesystem and checkout, and
 no-new-privileges. Renovate keeps the Semgrep version/digest and other Docker
-digest updates visible for explicit review. The separate weekly OpenSSF
-Scorecard workflow publishes results and uploads SARIF to code scanning.
+digest updates visible for explicit review. It also discovers each pinned CI
+release-tool version; a proposed version update remains blocked until its
+official Linux amd64 SHA-256 is reviewed and updated alongside it. The separate
+weekly OpenSSF Scorecard workflow publishes results and uploads SARIF to code
+scanning.
 
 Kustomizations consume committed local chart trees whenever that reviewed chart
 is present beside the application. The chart contract rejects a remote
@@ -165,7 +173,10 @@ release gate.
 
 ## Rendered Manifest Schemas
 
-Install Kustomize `v5.8.1`, Helm `v3.21.0`, and Kubeconform `v0.7.0`, then run:
+On the pinned GitHub runners, `scripts/bootstrap/install-ci-tools.sh` installs
+Kustomize `v5.8.1`, Helm `v3.21.0`, and Kubeconform `v0.7.0` from the reviewed
+release archives. On another trusted promotion runner, install those exact
+versions and then run:
 
 ```bash
 make rendered-schema-verify

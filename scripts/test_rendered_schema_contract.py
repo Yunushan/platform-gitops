@@ -136,9 +136,8 @@ def main() -> int:
         require(synthetic_validator, needle, "synthetic premium validator")
 
     for needle in (
-        "sigs.k8s.io/kustomize/kustomize/v5@v5.8.1",
-        "helm.sh/helm/v3/cmd/helm@v3.21.0",
-        "github.com/yannh/kubeconform/cmd/kubeconform@v0.7.0",
+        "scripts/bootstrap/install-ci-tools.sh",
+        "kustomize helm kubeconform",
         "PLATFORM_RENDERED_SCHEMA_PROFILES: base,premium-3node",
         "PLATFORM_RENDERED_SCHEMA_ALLOW_INCOMPLETE: \"true\"",
         "make rendered-schema-verify",
