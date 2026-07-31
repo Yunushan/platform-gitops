@@ -7,13 +7,13 @@
   vars:
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_longhorn_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CHART_VERSION') }}"
-    platform_longhorn_crd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CRD_MANIFEST_URL') }}"
     platform_longhorn_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_WAIT_TIMEOUT') }}"
-    platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) | default('1.12.0', true) }}"
-    platform_longhorn_crd_manifest_url_effective: >-
-      {{ platform_longhorn_crd_manifest_url
-         | default(platform_longhorn_crd_manifest_url_from_env, true)
-         | default('https://raw.githubusercontent.com/longhorn/longhorn/v' ~ platform_longhorn_chart_version_effective ~ '/deploy/longhorn.yaml', true) }}
+    platform_longhorn_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn"
+    platform_longhorn_vendored_chart_metadata: "{{ lookup('ansible.builtin.file', platform_longhorn_vendored_chart_path ~ '/Chart.yaml') | from_yaml }}"
+    platform_longhorn_vendored_chart_version: "{{ platform_longhorn_vendored_chart_metadata.version }}"
+    platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) | default(platform_longhorn_vendored_chart_version, true) }}"
+    platform_longhorn_render_kube_version: "1.35.0"
+    platform_longhorn_crd_render_max_bytes: 4194304
     platform_longhorn_wait_timeout_effective: "{{ platform_longhorn_wait_timeout | default(platform_longhorn_wait_timeout_from_env, true) | default(900, true) | int }}"
     platform_longhorn_required_crds:
       - nodes.longhorn.io
@@ -24,6 +24,52 @@
       - instancemanagers.longhorn.io
       - settings.longhorn.io
   tasks:
+    - name: Validate vendored Longhorn CRD source
+      ansible.builtin.assert:
+        that:
+          - platform_longhorn_vendored_chart_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+          - platform_longhorn_chart_version_effective == platform_longhorn_vendored_chart_version
+        fail_msg: >-
+          Longhorn CRD repair only accepts the Git-tracked vendored chart
+          version {{ platform_longhorn_vendored_chart_version }}. Update and
+          review the vendored chart before selecting another version; runtime
+          CRD manifest downloads are intentionally disabled.
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Render Longhorn CRDs from vendored chart
+      ansible.builtin.command:
+        argv:
+          - helm
+          - template
+          - platform-longhorn
+          - "{{ platform_longhorn_vendored_chart_path }}"
+          - --namespace
+          - longhorn-system
+          - --kube-version
+          - "{{ platform_longhorn_render_kube_version }}"
+          - --show-only
+          - templates/crds.yaml
+      register: platform_longhorn_vendored_crds
+      changed_when: false
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Bound rendered Longhorn CRDs
+      ansible.builtin.assert:
+        that:
+          - platform_longhorn_vendored_crds.stdout | length > 0
+          - platform_longhorn_vendored_crds.stdout | length <= platform_longhorn_crd_render_max_bytes
+          - "'kind: CustomResourceDefinition' in platform_longhorn_vendored_crds.stdout"
+        fail_msg: >-
+          The vendored Longhorn CRD render is empty, oversized, or does not
+          contain CustomResourceDefinition objects.
+      delegate_to: localhost
+      become: false
+      run_once: true
+
     - name: Check required Longhorn CRDs
       ansible.builtin.shell: |
         set -o pipefail
@@ -46,44 +92,18 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Restore missing Longhorn CRDs from upstream manifest
-      ansible.builtin.shell: |
-        set -o pipefail
-        K=/var/lib/rancher/rke2/bin/kubectl
-        C=/etc/rancher/rke2/rke2.yaml
-        url={{ platform_longhorn_crd_manifest_url_effective | quote }}
-        tmp="$(mktemp)"
-        crds="$(mktemp)"
-        cleanup() {
-          rm -f "${tmp}" "${crds}"
-        }
-        trap cleanup EXIT
-
-        curl -fsSL --connect-timeout 20 --max-time 120 "${url}" -o "${tmp}"
-        awk '
-          /^---[[:space:]]*$/ {
-            if (doc ~ /kind:[[:space:]]*CustomResourceDefinition/) {
-              printf "%s", doc
-            }
-            doc = $0 "\n"
-            next
-          }
-          { doc = doc $0 "\n" }
-          END {
-            if (doc ~ /kind:[[:space:]]*CustomResourceDefinition/) {
-              printf "%s", doc
-            }
-          }
-        ' "${tmp}" > "${crds}"
-
-        if [ ! -s "${crds}" ]; then
-          echo "No CRD documents were extracted from ${url}" >&2
-          exit 1
-        fi
-
-        "$K" --kubeconfig "$C" apply -f "${crds}"
+    - name: Restore missing Longhorn CRDs from vendored chart
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - apply
+          - -f
+          - -
+        stdin: "{{ platform_longhorn_vendored_crds.stdout }}"
       args:
-        executable: /bin/bash
+        stdin_add_newline: true
       register: platform_longhorn_crd_restore
       changed_when: >-
         'created' in platform_longhorn_crd_restore.stdout or

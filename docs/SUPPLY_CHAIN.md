@@ -120,6 +120,14 @@ does not fail on missing third-party CRD schemas. The live server-side checks
 in `platform-production-check` remain required because OpenAPI validation does
 not exercise admission webhooks or controller behavior.
 
+The direct Longhorn bootstrap and CRD recovery paths are offline artifact
+consumers. They load the reviewed chart archive committed beside the vendored
+Longhorn `1.12.0` source, enforce its size and SHA-256, embed it with RKE2
+HelmChart `chartContent`, and render recovery CRDs from the matching local chart.
+CI compares every deployable archive member with the vendored source. Runtime
+chart-repository and CRD-manifest URL overrides are rejected so a storage
+recovery cannot silently widen the supply-chain trust boundary.
+
 ## Local Scans
 
 Run the repository scanners without generating release evidence:

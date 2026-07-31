@@ -496,6 +496,14 @@ and Forgejo Argo CD applications, and prints storage/PVC status. If the
 Helm metadata instead of changing immutable fields. It is a first-deployment
 recovery path for the storage chicken-and-egg case; after Argo CD and pod
 networking are healthy, GitOps continues to own the desired Longhorn manifests.
+The bootstrap loads the reviewed chart archive committed beside the vendored
+Longhorn source, verifies its pinned SHA-256, and places it in RKE2 HelmChart
+`chartContent`. It does not download a chart repository index or CRD manifest at
+runtime. Helm `v3.21.0` must be installed on the Ansible controller so the CRDs
+can be rendered from the same vendored chart with the project's Kubernetes
+`1.35` API capabilities. `PLATFORM_LONGHORN_CHART_VERSION`
+may only select the version recorded in that chart's `Chart.yaml`; upgrading
+Longhorn requires a reviewed source, archive, checksum, and GitOps pin update.
 
 If Longhorn pods show `ImagePullBackOff` for `docker.io/longhornio/*` with
 `TLS handshake timeout` or `connection reset by peer`, the Longhorn chart is
@@ -615,6 +623,11 @@ resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
 ```bash
 make platform-longhorn-crd-repair
 ```
+
+The repair renders `templates/crds.yaml` from the reviewed vendored Longhorn
+chart and applies only that local output. Runtime overrides such as a remote CRD
+manifest URL are intentionally unsupported, preventing cluster-scoped recovery
+from trusting mutable network content.
 
 If `kubectl apply` reports `PriorityClass "longhorn-critical" is invalid:
 value: Forbidden: may not be changed in an update`, leave the existing

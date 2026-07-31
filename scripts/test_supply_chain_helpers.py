@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import sys
+import tarfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,8 @@ README = ROOT / "README.md"
 ARCHITECTURE = ROOT / "docs/ARCHITECTURE.md"
 PREMIUM = ROOT / "docs/PREMIUM_3NODE.md"
 INSTALLATION = ROOT / "docs/INSTALLATION.md"
+SUPPLY_CHAIN = ROOT / "docs/SUPPLY_CHAIN.md"
+TROUBLESHOOTING = ROOT / "docs/TROUBLESHOOTING.md"
 EVIDENCE_VALIDATOR = ROOT / "scripts/verify_supply_chain_evidence.py"
 EVIDENCE_TEST = ROOT / "scripts/test_supply_chain_evidence.py"
 IMAGE_INVENTORY_TEST = ROOT / "scripts/test_image_inventory_evidence.py"
@@ -35,6 +39,13 @@ RKE2_BOOTSTRAP_SCRIPTS = (
     ROOT / "scripts/bootstrap/install-rke2-first-server.sh",
     ROOT / "scripts/bootstrap/install-rke2-server.sh",
 )
+LONGHORN_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-longhorn.yml"
+LONGHORN_CRD_REPAIR = ROOT / "ansible/playbooks/repair-longhorn-crds.yml"
+LONGHORN_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn"
+LONGHORN_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn-1.12.0.tgz"
+LONGHORN_CHART_ARCHIVE_MAX_BYTES = 1 * 1024 * 1024
+LONGHORN_CHART_EXPANDED_MAX_BYTES = 4 * 1024 * 1024
+LONGHORN_CHART_MEMBER_MAX = 128
 
 
 def fail(message: str) -> int:
@@ -65,8 +76,176 @@ def assert_contains(text: str, *needles: str, label: str) -> None:
             raise AssertionError(f"{label} is missing required text: {needle}")
 
 
+def validate_longhorn_chart_archive() -> list[str]:
+    problems: list[str] = []
+    label = str(LONGHORN_CHART_ARCHIVE.relative_to(ROOT))
+    try:
+        archive_size = LONGHORN_CHART_ARCHIVE.stat().st_size
+        if not 0 < archive_size <= LONGHORN_CHART_ARCHIVE_MAX_BYTES:
+            return [
+                f"{label} must be non-empty and no larger than "
+                f"{LONGHORN_CHART_ARCHIVE_MAX_BYTES} bytes"
+            ]
+        archive_bytes = LONGHORN_CHART_ARCHIVE.read_bytes()
+        archive_sha256 = hashlib.sha256(archive_bytes).hexdigest()
+        if archive_sha256 not in read(LONGHORN_BOOTSTRAP):
+            problems.append(
+                f"{label} SHA-256 {archive_sha256} is not pinned by "
+                f"{LONGHORN_BOOTSTRAP.relative_to(ROOT)}"
+            )
+
+        with tarfile.open(LONGHORN_CHART_ARCHIVE, mode="r:gz") as archive:
+            members = archive.getmembers()
+            if not 0 < len(members) <= LONGHORN_CHART_MEMBER_MAX:
+                problems.append(
+                    f"{label} must contain 1 through "
+                    f"{LONGHORN_CHART_MEMBER_MAX} members"
+                )
+                return problems
+
+            member_names: set[str] = set()
+            expanded_size = 0
+            for member in members:
+                member_path = PurePosixPath(member.name)
+                if (
+                    member_path.is_absolute()
+                    or ".." in member_path.parts
+                    or "\\" in member.name
+                    or len(member_path.parts) < 2
+                    or member_path.parts[0] != "longhorn"
+                ):
+                    problems.append(f"{label} has unsafe member path: {member.name}")
+                    continue
+                if member.name in member_names:
+                    problems.append(f"{label} has duplicate member: {member.name}")
+                    continue
+                member_names.add(member.name)
+                if not member.isfile():
+                    problems.append(
+                        f"{label} may contain only regular files: {member.name}"
+                    )
+                    continue
+                if member.size < 0 or member.size > LONGHORN_CHART_EXPANDED_MAX_BYTES:
+                    problems.append(
+                        f"{label} member exceeds the expansion bound: {member.name}"
+                    )
+                    continue
+                expanded_size += member.size
+                if expanded_size > LONGHORN_CHART_EXPANDED_MAX_BYTES:
+                    problems.append(
+                        f"{label} expands beyond "
+                        f"{LONGHORN_CHART_EXPANDED_MAX_BYTES} bytes"
+                    )
+                    break
+
+                relative_source = Path(*member_path.parts[1:])
+                source_path = LONGHORN_CHART_SOURCE / relative_source
+                if not source_path.is_file():
+                    problems.append(
+                        f"{label} member has no vendored source: {member.name}"
+                    )
+                    continue
+                if source_path.stat().st_size != member.size:
+                    problems.append(
+                        f"{label} member size differs from vendored source: "
+                        f"{member.name}"
+                    )
+                    continue
+                stream = archive.extractfile(member)
+                if stream is None:
+                    problems.append(f"{label} cannot read member: {member.name}")
+                    continue
+                payload = stream.read(LONGHORN_CHART_EXPANDED_MAX_BYTES + 1)
+                if len(payload) != member.size:
+                    problems.append(
+                        f"{label} member size is inconsistent: {member.name}"
+                    )
+                    continue
+                if payload != source_path.read_bytes():
+                    problems.append(
+                        f"{label} member differs from vendored source: {member.name}"
+                    )
+
+            required_members = {
+                "longhorn/Chart.yaml",
+                "longhorn/values.yaml",
+                *(
+                    "longhorn/" + path.relative_to(LONGHORN_CHART_SOURCE).as_posix()
+                    for path in (LONGHORN_CHART_SOURCE / "templates").rglob("*")
+                    if path.is_file()
+                ),
+            }
+            missing = sorted(required_members - member_names)
+            if missing:
+                problems.append(
+                    f"{label} omits deployable vendored chart members: "
+                    + ", ".join(missing)
+                )
+    except (FileNotFoundError, OSError, tarfile.TarError) as exc:
+        problems.append(f"cannot validate {label}: {exc}")
+    return problems
+
+
 def main() -> int:
     problems: list[str] = []
+
+    problems.extend(validate_longhorn_chart_archive())
+
+    for playbook, required in (
+        (
+            LONGHORN_BOOTSTRAP,
+            (
+                "platform_longhorn_vendored_chart_archive_sha256",
+                "Verify vendored Longhorn chart archive",
+                "chartContent:",
+                "platform_longhorn_chart_archive.content",
+                "Render vendored Longhorn CRDs",
+                "- helm",
+                "- template",
+                "platform_longhorn_render_kube_version",
+                "--kube-version",
+                "--show-only",
+                "templates/crds.yaml",
+                "base64 --decode",
+                "sha256sum --check --strict",
+                "helm upgrade --install platform-longhorn /chart/longhorn.tgz",
+            ),
+        ),
+        (
+            LONGHORN_CRD_REPAIR,
+            (
+                "platform_longhorn_vendored_chart_path",
+                "Render Longhorn CRDs from vendored chart",
+                "helm",
+                "template",
+                "platform_longhorn_render_kube_version",
+                "--kube-version",
+                "--show-only",
+                "templates/crds.yaml",
+                "Restore missing Longhorn CRDs from vendored chart",
+            ),
+        ),
+    ):
+        try:
+            playbook_text = read(playbook)
+            assert_contains(
+                playbook_text,
+                *required,
+                label=str(playbook.relative_to(ROOT)),
+            )
+            for forbidden in (
+                "PLATFORM_LONGHORN_CHART_REPO",
+                "PLATFORM_LONGHORN_CRD_MANIFEST_URL",
+                "raw.githubusercontent.com/longhorn",
+                "curl -fsSL",
+            ):
+                if forbidden in playbook_text:
+                    problems.append(
+                        f"{playbook.relative_to(ROOT)} must not use runtime "
+                        f"Longhorn artifact input: {forbidden}"
+                    )
+        except AssertionError as exc:
+            problems.append(str(exc))
 
     for script in RKE2_BOOTSTRAP_SCRIPTS:
         try:
@@ -421,6 +600,27 @@ def main() -> int:
             read(PREMIUM),
             ("renovate.json", "Cosign", "verify-signed-images.example.yaml", "pinDigests"),
         ),
+        (
+            SUPPLY_CHAIN,
+            read(SUPPLY_CHAIN),
+            (
+                "direct Longhorn bootstrap and CRD recovery paths",
+                "offline artifact",
+                "HelmChart `chartContent`",
+                "chart-repository and CRD-manifest URL overrides are rejected",
+            ),
+        ),
+        (
+            TROUBLESHOOTING,
+            read(TROUBLESHOOTING),
+            (
+                "reviewed chart archive",
+                "Longhorn source",
+                "verifies its pinned SHA-256",
+                "Runtime overrides such as a remote CRD",
+                "manifest URL are intentionally unsupported",
+            ),
+        ),
     ):
         try:
             assert_contains(text, *required, label=str(path.relative_to(ROOT)))
@@ -433,9 +633,9 @@ def main() -> int:
         return 1
 
     print(
-        "Supply-chain helper validation passed for manual RKE2 bootstrap, CI "
-        "scans, narrowed Gitleaks exceptions, SBOM evidence, Scorecard, "
-        "Renovate, and Cosign."
+        "Supply-chain helper validation passed for manual RKE2 bootstrap, "
+        "offline Longhorn recovery, CI scans, narrowed Gitleaks exceptions, "
+        "SBOM evidence, Scorecard, Renovate, and Cosign."
     )
     return 0
 
