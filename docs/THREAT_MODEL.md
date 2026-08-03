@@ -17,7 +17,9 @@ In scope:
   Harbor, CloudNativePG, Longhorn or alternate storage, monitoring, Loki,
   Velero, cert-manager, trust-manager, and optional step-ca.
 - Repository governance: pull requests, CODEOWNERS, branch protection,
-  required reviews, CI validation, and secret/privacy scanning.
+  release-environment reviewers, CI validation, and secret/privacy scanning.
+  required reviews are optional for routine PR merging; production promotion
+  uses the independent release-environment reviewer gate.
 - Secret handling patterns such as SOPS with age, External Secrets, Sealed
   Secrets, Vault/OpenBao, and ignored local files.
 
@@ -35,8 +37,8 @@ Out of scope:
 - The public repository does not contain real private deployment data.
 - Private deployments use a private GitOps repository as the Argo CD source of
   truth after first bootstrap.
-- Production changes flow through pull requests, required reviews, validation,
-  and Argo CD sync.
+- Production changes flow through pull requests, validation, an independent
+  release-environment approval, and Argo CD sync.
 - Operators keep SOPS age private keys, kubeconfigs, SSH keys, robot tokens,
   and backup credentials outside Git.
 - The 3-node profile tolerates one node failure but still requires off-cluster
@@ -98,7 +100,7 @@ Key boundary checks:
 | Threat | Example | Primary controls |
 |---|---|---|
 | Secret leakage | Private key, kubeconfig, token, internal hostname, or private IP committed to a public repo | `.gitignore`, ignored local files, SOPS, `make no-secrets`, pull request public-safety checks |
-| Unauthorized production change | A risky manifest or chart value is merged without owner review | Pull requests, `.github/CODEOWNERS.example` copied to private CODEOWNERS, branch protection, required reviews |
+| Unauthorized production change | A risky manifest or chart value is merged without owner review | Pull requests, `.github/CODEOWNERS.example` copied to private CODEOWNERS, branch protection, and the independent production-release reviewer gate |
 | Supply-chain compromise | Unreviewed chart, image, or CI Action change reaches production | Pinned chart versions, curated image pinning, CI SHA pinning, Renovate dashboard approval, staged Cosign/Kyverno verification, and signed/invalid admission canary proof |
 | CI credential misuse | A compromised CI job pushes images or edits desired state | Scoped robot accounts, protected branches, isolated runners, secret rotation, no direct cluster deploy from CI |
 | Argo CD over-privilege | One application can mutate unrelated namespaces or cluster resources | A namespace-only AppProject for ordinary services, a separate reviewed operator project, explicit destinations, drift review |
@@ -110,7 +112,7 @@ Key boundary checks:
 | Service-network failure | ClusterIP, DNS, or VIP path breaks deployments and health checks | Health gates, service-path repair runbooks, Cilium/kube-proxy/CoreDNS checks, production evidence |
 | Capacity exhaustion | Nodes, databases, storage, CI, registry, or observability stores saturate before operators scale them | Capacity planning, saturation alerts, load tests, retention review, private evidence from `docs/CAPACITY_PLANNING.md` |
 | Audit evidence gap | A production change, access grant, restore, exception, or incident cannot be traced later | Pull request history, audit logs, private evidence records, and `docs/COMPLIANCE_AUDIT.md` |
-| Unsafe promotion | A change skips staging, rollback review, or production health gates | Protected branches, required reviews, release evidence, and `docs/RELEASE_PROMOTION.md` |
+| Unsafe promotion | A change skips staging, rollback review, or production health gates | Protected branches, the independent production-release reviewer gate, release evidence, and `docs/RELEASE_PROMOTION.md` |
 
 ## High-Risk Changes
 

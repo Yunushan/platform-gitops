@@ -224,10 +224,19 @@ def validate_governance(
         require(check in check_names, f"branch protection is missing required check: {check}")
 
     reviews = require_object(protection.get("required_pull_request_reviews"), "pull request reviews")
-    require(reviews.get("required_approving_review_count", 0) >= 1, "pull requests require no approval")
+    require(
+        reviews.get("required_approving_review_count", 0) == 0,
+        "pull request approvals are enabled",
+    )
     require(reviews.get("dismiss_stale_reviews") is True, "stale approvals are not dismissed")
-    require(reviews.get("require_code_owner_reviews") is True, "CODEOWNER review is not required")
-    require(reviews.get("require_last_push_approval") is True, "last-push approval is not required")
+    require(
+        reviews.get("require_code_owner_reviews") is not True,
+        "CODEOWNER approval is enabled",
+    )
+    require(
+        reviews.get("require_last_push_approval") is not True,
+        "last-push approval is enabled",
+    )
     for field, message in (
         ("required_signatures", "signed commits are not required"),
         ("enforce_admins", "branch protection is not enforced for administrators"),

@@ -11,7 +11,7 @@ Thank you for improving Platform GitOps Workspace.
 5. Document every operational change in `docs/`.
 6. Report suspected vulnerabilities through `SECURITY.md`; do not include private exploit details or real deployment data in public issues.
 7. Use the pull request and issue templates under `.github/` so production impact, rollback, validation, and public-safety checks are visible during review.
-8. For private deployments, copy `.github/CODEOWNERS.example` to `.github/CODEOWNERS`, replace the `@org/...` placeholders with real owners, and enable branch protection with required reviews.
+8. For private deployments, copy `.github/CODEOWNERS.example` to `.github/CODEOWNERS`, replace the `@org/...` placeholders with real owners, and enable branch protection with required checks and conversation resolution. Routine PR merging may omit required reviews; production releases use the independent `production-release` reviewer gate.
 
 ## Pull request checklist
 
@@ -21,4 +21,4 @@ Thank you for improving Platform GitOps Workspace.
 - [ ] Profiles updated when component defaults change.
 - [ ] Validation passes.
 - [ ] Production impact and rollback notes are filled in when behavior changes.
-- [ ] Required reviewers from the private `.github/CODEOWNERS` file have approved sensitive areas.
+- [ ] CODEOWNERS routing is correct for sensitive areas; the independent production-release reviewer gate is configured for production promotion.
