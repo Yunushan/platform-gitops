@@ -20,13 +20,20 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts/bootstrap/validate-gitops-selection.sh"
 
 
+def python_command(flavor: str) -> str:
+    if flavor != "wsl":
+        return bash_path(Path(sys.executable), flavor)
+
+    result = run_bash("command -v python3 || command -v python")
+    if result.returncode != 0 or not result.stdout.strip():
+        raise BashRuntimeUnavailable(
+            "the WSL distribution has no usable Python interpreter"
+        )
+    return result.stdout.strip().splitlines()[-1]
+
+
 def run_helper(profile: str, mode: str) -> subprocess.CompletedProcess[str]:
     _, flavor = bash_executable()
-    python_command = (
-        "python3"
-        if flavor == "wsl"
-        else bash_path(Path(sys.executable), flavor)
-    )
 
     command = " ".join(
         [
@@ -36,7 +43,7 @@ def run_helper(profile: str, mode: str) -> subprocess.CompletedProcess[str]:
             f"PLATFORM_PROFILE={shlex.quote(profile)}",
             f"PLATFORM_GITOPS_PLACEHOLDER_MODE={shlex.quote(mode)}",
             "PLATFORM_REPO_URL=git://selection.example/platform-gitops.git",
-            f"PYTHON={shlex.quote(python_command)}",
+            f"PYTHON={shlex.quote(python_command(flavor))}",
             "PYTHONDONTWRITEBYTECODE=1",
             "bash",
             "scripts/bootstrap/validate-gitops-selection.sh",
