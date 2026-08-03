@@ -143,11 +143,11 @@ PLATFORM_PROFILE=premium-3node make platform-profile-check
 make platform-production-check
 ```
 
-After retaining the private live acceptance record and the checksummed GitHub
-governance, independent release-approval, and signed-release records, run
-`make platform-production-score`. It is the fail-closed final decision: it
-verifies the keyless Sigstore checksum bundle, and only commit-matched evidence
-that earns exactly 100/100 exits successfully. See
+After retaining the private live acceptance record, its detached independent
+approval under a pinned approver key, and the checksummed GitHub governance,
+release-approval, and signed-release records, run `make platform-production-score`.
+It is the fail-closed final decision: it verifies both Cosign trust boundaries,
+and only commit-matched evidence that earns exactly 100/100 exits successfully. See
 [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md#100-point-production-gate).
 
 The production gate is fail-closed: it requires external etcd, Velero,

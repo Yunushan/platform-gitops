@@ -20,7 +20,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import test_github_release_ref as release_fixture  # noqa: E402
 import test_production_evidence as production_fixture  # noqa: E402
+import create_production_approval as approval_creator  # noqa: E402
 import verify_github_release_ref as release_verifier  # noqa: E402
+import verify_production_approval as approval_verifier  # noqa: E402
 import verify_production_readiness_score as readiness  # noqa: E402
 
 
@@ -28,6 +30,8 @@ COMMIT = "a" * 40
 REPOSITORY = "example/platform-gitops"
 TAG = "v1.2.3"
 PROFILE = "premium-3node"
+PRODUCTION_EVIDENCE_SHA256 = "5" * 64
+APPROVAL_KEY_SHA256 = "6" * 64
 
 
 def governance_evidence(now: datetime) -> dict[str, object]:
@@ -82,8 +86,21 @@ def release_evidence(now: datetime) -> dict[str, object]:
     )
 
 
+def production_approval_evidence(
+    production: dict[str, object], now: datetime
+) -> dict[str, object]:
+    return approval_verifier.build_approval_document(
+        production,
+        production_sha256=PRODUCTION_EVIDENCE_SHA256,
+        approval_key_sha256=APPROVAL_KEY_SHA256,
+        approver=str(production["approver"]),
+        approved_at=now - timedelta(minutes=1),
+    )
+
+
 def evaluate(
     production: dict[str, object] | None,
+    production_approval: dict[str, object] | None,
     governance: dict[str, object] | None,
     release: dict[str, object] | None,
     release_approval: dict[str, object] | None,
@@ -93,6 +110,7 @@ def evaluate(
 ) -> tuple[dict[str, object], list[str]]:
     return readiness.evaluate_readiness(
         production_document=production,
+        production_approval_document=production_approval,
         governance_document=governance,
         release_document=release,
         release_approval_document=release_approval,
@@ -102,6 +120,8 @@ def evaluate(
         expected_repository=REPOSITORY,
         expected_commit=COMMIT,
         expected_tag=TAG,
+        production_evidence_sha256=PRODUCTION_EVIDENCE_SHA256,
+        production_approval_key_sha256=APPROVAL_KEY_SHA256,
     )
 
 
@@ -110,12 +130,14 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="platform-readiness-score-") as directory:
         root = Path(directory)
         production = production_fixture.fixture(root, now)
+        production_approval = production_approval_evidence(production, now)
         governance = governance_evidence(now)
         release = release_evidence(now)
         release_approval = release_approval_evidence(now)
 
         report, diagnostics = evaluate(
             production,
+            production_approval,
             governance,
             release,
             release_approval,
@@ -131,6 +153,7 @@ def main() -> int:
         failed_governance["controls"]["securityScanning"] = "failed"
         report, diagnostics = evaluate(
             production,
+            production_approval,
             failed_governance,
             release,
             release_approval,
@@ -145,7 +168,13 @@ def main() -> int:
         wrong_release = deepcopy(release)
         wrong_release["commit"] = "b" * 40
         report, _ = evaluate(
-            production, governance, wrong_release, release_approval, root=root, now=now
+            production,
+            production_approval,
+            governance,
+            wrong_release,
+            release_approval,
+            root=root,
+            now=now,
         )
         if report["score"] != 90 or report["result"] != "failed":
             raise AssertionError("a release for another commit was accepted")
@@ -153,7 +182,13 @@ def main() -> int:
         stale_governance = deepcopy(governance)
         stale_governance["generatedAt"] = (now - timedelta(hours=25)).isoformat()
         report, _ = evaluate(
-            production, stale_governance, release, release_approval, root=root, now=now
+            production,
+            production_approval,
+            stale_governance,
+            release,
+            release_approval,
+            root=root,
+            now=now,
         )
         if report["score"] != 90:
             raise AssertionError("stale governance evidence retained governance points")
@@ -161,7 +196,13 @@ def main() -> int:
         incomplete_release = deepcopy(release)
         del incomplete_release["inputSha256"]["annotatedTag"]
         report, _ = evaluate(
-            production, governance, incomplete_release, release_approval, root=root, now=now
+            production,
+            production_approval,
+            governance,
+            incomplete_release,
+            release_approval,
+            root=root,
+            now=now,
         )
         if report["score"] != 90:
             raise AssertionError("release evidence with missing input provenance was accepted")
@@ -169,7 +210,13 @@ def main() -> int:
         stale_production = deepcopy(production)
         stale_production["completedAt"] = (now - timedelta(days=8)).isoformat()
         report, _ = evaluate(
-            stale_production, governance, release, release_approval, root=root, now=now
+            stale_production,
+            production_approval,
+            governance,
+            release,
+            release_approval,
+            root=root,
+            now=now,
         )
         if report["score"] != 20:
             raise AssertionError("stale live acceptance evidence retained platform points")
@@ -177,13 +224,19 @@ def main() -> int:
         wrong_approval = deepcopy(release_approval)
         wrong_approval["commit"] = "b" * 40
         report, _ = evaluate(
-            production, governance, release, wrong_approval, root=root, now=now
+            production,
+            production_approval,
+            governance,
+            release,
+            wrong_approval,
+            root=root,
+            now=now,
         )
         if report["score"] != 90 or report["result"] != "failed":
             raise AssertionError("a release approval for another commit was accepted")
 
-        report, diagnostics = evaluate(None, None, None, None, root=root, now=now)
-        if report["score"] != 0 or len(diagnostics) != 4:
+        report, diagnostics = evaluate(None, None, None, None, None, root=root, now=now)
+        if report["score"] != 0 or len(diagnostics) != 5:
             raise AssertionError("missing evidence did not fail every readiness category")
 
         evidence_path = root / "release.json"
@@ -192,6 +245,9 @@ def main() -> int:
             raise AssertionError("readiness evidence hashing did not return a SHA-256")
 
         production_path = root / "production.json"
+        production_approval_path = root / "production-approval.json"
+        production_approval_bundle_path = root / "production-approval.sigstore.json"
+        production_approval_key_path = root / "production-approver.pub"
         governance_path = root / "governance.json"
         release_path = root / "release.json"
         release_approval_path = root / "release-approval.json"
@@ -199,6 +255,35 @@ def main() -> int:
         bundle_path = root / "SHA256SUMS.sigstore.json"
         score_path = root / "score.json"
         production_path.write_text(json.dumps(production) + "\n", encoding="utf-8")
+        production_approval_key_path.write_text(
+            "-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----\n",
+            encoding="utf-8",
+        )
+        actual_approval_key_sha256 = approval_verifier.artifact_sha256(
+            production_approval_key_path
+        )
+        creator_argv = [
+            "create_production_approval.py",
+            "--production-evidence",
+            str(production_path),
+            "--public-key",
+            str(production_approval_key_path),
+            "--public-key-sha256",
+            actual_approval_key_sha256,
+            "--approver",
+            str(production["approver"]),
+            "--output",
+            str(production_approval_path),
+        ]
+        with (
+            patch.object(approval_creator, "ROOT", root),
+            patch.object(sys, "argv", creator_argv),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            if approval_creator.main() != 0:
+                raise AssertionError("valid production approval could not be created")
+        production_approval_bundle_path.write_text("{}\n", encoding="utf-8")
         governance_path.write_text(json.dumps(governance) + "\n", encoding="utf-8")
         release_path.write_text(json.dumps(release) + "\n", encoding="utf-8")
         release_approval_path.write_text(json.dumps(release_approval) + "\n", encoding="utf-8")
@@ -219,6 +304,63 @@ def main() -> int:
         def successful_cosign(command: list[str], **_kwargs):  # type: ignore[no-untyped-def]
             runner_calls.append(command)
             return type("Result", (), {"returncode": 0})()
+
+        approval_runner_calls: list[list[str]] = []
+
+        def successful_approval_cosign(
+            command: list[str], **_kwargs
+        ):  # type: ignore[no-untyped-def]
+            approval_runner_calls.append(command)
+            return type("Result", (), {"returncode": 0})()
+
+        approval_hashes = approval_verifier.verify_signature(
+            approval_path=production_approval_path,
+            bundle_path=production_approval_bundle_path,
+            public_key_path=production_approval_key_path,
+            expected_key_sha256=actual_approval_key_sha256,
+            cosign_bin=sys.executable,
+            runner=successful_approval_cosign,
+        )
+        if set(approval_hashes) != {
+            "productionApprovalBundle",
+            "productionApprovalPublicKey",
+        }:
+            raise AssertionError("production approval did not retain signature trust hashes")
+        if not approval_runner_calls or "--key" not in approval_runner_calls[0]:
+            raise AssertionError("production approval did not use its pinned public key")
+
+        try:
+            approval_verifier.verify_signature(
+                approval_path=production_approval_path,
+                bundle_path=production_approval_bundle_path,
+                public_key_path=production_approval_key_path,
+                expected_key_sha256="0" * 64,
+                cosign_bin=sys.executable,
+                runner=successful_approval_cosign,
+            )
+        except approval_verifier.ApprovalError:
+            pass
+        else:
+            raise AssertionError("production approval accepted an unpinned public key")
+
+        def rejected_approval_cosign(
+            _command: list[str], **_kwargs
+        ):  # type: ignore[no-untyped-def]
+            return type("Result", (), {"returncode": 1})()
+
+        try:
+            approval_verifier.verify_signature(
+                approval_path=production_approval_path,
+                bundle_path=production_approval_bundle_path,
+                public_key_path=production_approval_key_path,
+                expected_key_sha256=actual_approval_key_sha256,
+                cosign_bin=sys.executable,
+                runner=rejected_approval_cosign,
+            )
+        except approval_verifier.ApprovalError:
+            pass
+        else:
+            raise AssertionError("production approval accepted a rejected signature")
 
         release_hashes = readiness.verify_release_bundle(
             checksums_path=checksums_path,
@@ -292,6 +434,14 @@ def main() -> int:
             "verify_production_readiness_score.py",
             "--production-evidence",
             str(production_path),
+            "--production-approval",
+            str(production_approval_path),
+            "--production-approval-bundle",
+            str(production_approval_bundle_path),
+            "--production-approval-public-key",
+            str(production_approval_key_path),
+            "--production-approval-public-key-sha256",
+            actual_approval_key_sha256,
             "--governance-evidence",
             str(governance_path),
             "--release-evidence",
@@ -315,6 +465,11 @@ def main() -> int:
         ]
         with (
             patch.object(readiness, "ROOT", root),
+            patch.object(
+                approval_verifier,
+                "verify_signature",
+                return_value=approval_hashes,
+            ),
             patch.object(readiness, "verify_release_bundle", return_value=release_hashes),
             patch.object(sys, "argv", argv),
             redirect_stdout(io.StringIO()),
@@ -325,6 +480,9 @@ def main() -> int:
         score_document = json.loads(score_path.read_text(encoding="utf-8"))
         if score_document["score"] != 100 or set(score_document["evidenceSha256"]) != {
             "production",
+            "productionApproval",
+            "productionApprovalBundle",
+            "productionApprovalPublicKey",
             "governance",
             "release",
             "releaseApproval",
@@ -332,6 +490,11 @@ def main() -> int:
             "sigstoreBundle",
         }:
             raise AssertionError("CLI score report is not complete and artifact-bound")
+        if (
+            score_document["expected"]["productionApprovalPublicKeySha256"]
+            != actual_approval_key_sha256
+        ):
+            raise AssertionError("CLI score report did not retain the approval trust root")
 
         with (
             patch.dict(os.environ, {}, clear=True),

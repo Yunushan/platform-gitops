@@ -20,6 +20,7 @@ from bounded_file import read_bounded_bytes, read_bounded_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
+import verify_production_approval as production_approval
 import verify_production_evidence as production_evidence
 
 
@@ -406,6 +407,7 @@ def verify_release_bundle(
 def evaluate_readiness(
     *,
     production_document: dict[str, Any] | None,
+    production_approval_document: dict[str, Any] | None,
     governance_document: dict[str, Any] | None,
     release_document: dict[str, Any] | None,
     release_approval_document: dict[str, Any] | None,
@@ -415,6 +417,8 @@ def evaluate_readiness(
     expected_repository: str,
     expected_commit: str,
     expected_tag: str,
+    production_evidence_sha256: str,
+    production_approval_key_sha256: str,
     expected_default_branch: str = "main",
     expected_environment: str = "production-release",
     expected_tag_pattern: str = "refs/tags/v*.*.*",
@@ -429,8 +433,13 @@ def evaluate_readiness(
     ]
     diagnostics: list[str] = []
 
-    if production_document is None:
-        diagnostics.append("live platform acceptance evidence is missing or unreadable")
+    if production_document is None or production_approval_document is None:
+        if production_document is None:
+            diagnostics.append("live platform acceptance evidence is missing or unreadable")
+        if production_approval_document is None:
+            diagnostics.append(
+                "signed independent production approval is missing or unreadable"
+            )
     else:
         try:
             production_evidence.validate_evidence(
@@ -441,7 +450,20 @@ def evaluate_readiness(
                 expected_profile=expected_profile,
                 expected_commit=expected_commit,
             )
-        except (production_evidence.EvidenceError, OSError, json.JSONDecodeError) as exc:
+            production_approval.validate_approval_document(
+                production_approval_document,
+                production_document=production_document,
+                production_sha256=production_evidence_sha256,
+                expected_key_sha256=production_approval_key_sha256,
+                now=now,
+                max_age_days=max_production_age_days,
+            )
+        except (
+            production_evidence.EvidenceError,
+            production_approval.ApprovalError,
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
             diagnostics.append(f"live platform acceptance evidence failed: {exc}")
         else:
             categories[0].update(earned=PRODUCTION_WEIGHT, result="passed")
@@ -505,6 +527,7 @@ def evaluate_readiness(
             "repository": expected_repository,
             "commit": expected_commit,
             "tag": expected_tag,
+            "productionApprovalPublicKeySha256": production_approval_key_sha256,
         },
         "categories": categories,
     }
@@ -522,6 +545,25 @@ def parser() -> argparse.ArgumentParser:
         "--governance-evidence",
         type=Path,
         default=os.environ.get("GITHUB_GOVERNANCE_EVIDENCE_FILE") or None,
+    )
+    result.add_argument(
+        "--production-approval",
+        type=Path,
+        default=os.environ.get("PLATFORM_PRODUCTION_APPROVAL_FILE") or None,
+    )
+    result.add_argument(
+        "--production-approval-bundle",
+        type=Path,
+        default=os.environ.get("PLATFORM_PRODUCTION_APPROVAL_BUNDLE_FILE") or None,
+    )
+    result.add_argument(
+        "--production-approval-public-key",
+        type=Path,
+        default=os.environ.get("PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_FILE") or None,
+    )
+    result.add_argument(
+        "--production-approval-public-key-sha256",
+        default=os.environ.get("PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256", ""),
     )
     result.add_argument(
         "--release-evidence",
@@ -573,6 +615,24 @@ def main() -> int:
     argument_problems: list[str] = []
     if not args.production_evidence:
         argument_problems.append("--production-evidence or PLATFORM_PRODUCTION_EVIDENCE_FILE is required")
+    if not args.production_approval:
+        argument_problems.append(
+            "--production-approval or PLATFORM_PRODUCTION_APPROVAL_FILE is required"
+        )
+    if not args.production_approval_bundle:
+        argument_problems.append(
+            "--production-approval-bundle or PLATFORM_PRODUCTION_APPROVAL_BUNDLE_FILE is required"
+        )
+    if not args.production_approval_public_key:
+        argument_problems.append(
+            "--production-approval-public-key or "
+            "PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_FILE is required"
+        )
+    if not SHA256_RE.fullmatch(args.production_approval_public_key_sha256):
+        argument_problems.append(
+            "--production-approval-public-key-sha256 or "
+            "PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256 must be a lowercase SHA-256"
+        )
     if not args.governance_evidence:
         argument_problems.append("--governance-evidence or GITHUB_GOVERNANCE_EVIDENCE_FILE is required")
     if not args.release_evidence:
@@ -614,6 +674,11 @@ def main() -> int:
     load_problems: list[str] = []
     for name, path, label in (
         ("production", args.production_evidence, "production evidence"),
+        (
+            "productionApproval",
+            args.production_approval,
+            "signed independent production approval",
+        ),
         ("governance", args.governance_evidence, "GitHub governance evidence"),
         ("release", args.release_evidence, "GitHub release evidence"),
         (
@@ -628,6 +693,24 @@ def main() -> int:
         except (ReadinessError, OSError) as exc:
             documents[name] = None
             load_problems.append(str(exc))
+
+    if (
+        documents.get("production") is not None
+        and documents.get("productionApproval") is not None
+    ):
+        try:
+            approval_hashes = production_approval.verify_signature(
+                approval_path=args.production_approval,
+                bundle_path=args.production_approval_bundle,
+                public_key_path=args.production_approval_public_key,
+                expected_key_sha256=args.production_approval_public_key_sha256,
+                cosign_bin=os.environ.get("COSIGN_BIN", "cosign"),
+            )
+        except (production_approval.ApprovalError, OSError) as exc:
+            documents["productionApproval"] = None
+            load_problems.append(f"signed production approval failed: {exc}")
+        else:
+            evidence_hashes.update(approval_hashes)
 
     if (
         documents.get("governance") is not None
@@ -655,6 +738,7 @@ def main() -> int:
 
     report, diagnostics = evaluate_readiness(
         production_document=documents["production"],
+        production_approval_document=documents["productionApproval"],
         governance_document=documents["governance"],
         release_document=documents["release"],
         release_approval_document=documents["releaseApproval"],
@@ -664,6 +748,8 @@ def main() -> int:
         expected_repository=args.repository,
         expected_commit=args.commit,
         expected_tag=args.tag,
+        production_evidence_sha256=evidence_hashes.get("production", ""),
+        production_approval_key_sha256=args.production_approval_public_key_sha256,
         expected_default_branch=args.default_branch,
         expected_environment=args.release_environment,
         expected_tag_pattern=args.tag_ref_pattern,

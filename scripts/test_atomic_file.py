@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ATOMIC_ARTIFACT_PRODUCERS = (
     "scripts/capture_live_image_inventory.py",
     "scripts/configure_github_governance.py",
+    "scripts/create_production_approval.py",
     "scripts/forge_cutover.py",
     "scripts/forge_migration.py",
     "scripts/forge_migration_live.py",

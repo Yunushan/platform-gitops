@@ -87,7 +87,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | Wildcard TLS deployed | `PLATFORM_WILDCARD_TLS_CERT_FILE=<CERT> PLATFORM_WILDCARD_TLS_KEY_FILE=<KEY> make platform-tls` |
 | TLS boundary verified | `make platform-tls-verify` |
 | Commit-bound acceptance retained | `PLATFORM_RELEASE_ID=<ID> PLATFORM_EVIDENCE_OPERATOR=<OPERATOR> PLATFORM_EVIDENCE_APPROVER=<APPROVER> make platform-production-evidence` |
-| Final production score passed | `make platform-production-score` verifies the signed checksum bundle and commit-matched live, governance, independent-approval, and release evidence, reports exactly 100/100, and exits zero |
+| Final production score passed | `make platform-production-score` verifies a detached live-acceptance approval under a pinned approver key, the signed release checksum bundle, and commit-matched live, governance, release-approval, and release evidence; it reports exactly 100/100 and exits zero |
 | App health gate passed | `make platform-app-health` |
 | Forgejo singleton recovery proven | Live Forgejo uses `Recreate` and a `minAvailable: 1` PodDisruptionBudget, and `make platform-forgejo-recovery-drill` produced current, independently approved, commit-bound cross-node evidence inside the accepted RTO without changing service, image, encrypted PVC/PV, or CSI key identity and with the source node restored schedulable |
 | RKE2 verification passed | `make rke2-verify` or production gate output |
@@ -183,9 +183,52 @@ artifact writer flushes and atomically replaces JSON evidence with mode `0600`.
 
 Repository checks, live cluster acceptance, GitHub governance, independently
 approved release execution, and signed release provenance are separate trust
-boundaries. A production score of 100/100 requires all four retained evidence
-records to identify the same 40-character commit. Partial evidence reports its
-earned score but exits non-zero; it must not be used as launch approval.
+boundaries. A production score of 100/100 requires the five retained JSON
+records to identify the same 40-character commit and requires the live
+acceptance record to carry a detached signature from the independent approver.
+Partial evidence reports its earned score but exits non-zero; it must not be
+used as launch approval.
+
+Keep the approval signing key outside the operator workspace in an approved
+KMS, HSM, or offline approver environment. Place only the public key on the
+deployment controller, and pin its lowercase SHA-256 through protected private
+configuration. The independent approver reviews the completed schema-v7 packet,
+creates the exact approval statement, signs it, and verifies it before handing
+the approval and Sigstore bundle to the operator:
+
+```bash
+PRODUCTION_EVIDENCE=private/production-evidence/<RELEASE>.json
+PRODUCTION_APPROVAL=private/production-evidence/<RELEASE>.approval.json
+PRODUCTION_APPROVAL_BUNDLE=private/production-evidence/<RELEASE>.approval.sigstore.json
+PRODUCTION_APPROVAL_PUBLIC_KEY=private/production-approver.pub
+PRODUCTION_APPROVAL_KEY_SHA256=<64_LOWERCASE_HEX_CHARACTERS>
+INDEPENDENT_APPROVER_ID=<INDEPENDENT_APPROVER_ID>
+
+python scripts/create_production_approval.py \
+  --production-evidence "$PRODUCTION_EVIDENCE" \
+  --public-key "$PRODUCTION_APPROVAL_PUBLIC_KEY" \
+  --public-key-sha256 "$PRODUCTION_APPROVAL_KEY_SHA256" \
+  --approver "$INDEPENDENT_APPROVER_ID" \
+  --output "$PRODUCTION_APPROVAL"
+
+cosign sign-blob --yes \
+  --key <APPROVER_KMS_HSM_OR_KEY_URI> \
+  --bundle "$PRODUCTION_APPROVAL_BUNDLE" \
+  "$PRODUCTION_APPROVAL"
+
+python scripts/verify_production_approval.py "$PRODUCTION_APPROVAL" \
+  --production-evidence "$PRODUCTION_EVIDENCE" \
+  --bundle "$PRODUCTION_APPROVAL_BUNDLE" \
+  --public-key "$PRODUCTION_APPROVAL_PUBLIC_KEY" \
+  --public-key-sha256 "$PRODUCTION_APPROVAL_KEY_SHA256" \
+  --profile <PROFILE> \
+  --commit <40_CHARACTER_RELEASE_COMMIT>
+```
+
+Do not let the operator generate or access the approver private key. The
+approval document binds the exact production-evidence SHA-256, release,
+profile, commit, approval identity, and pinned key digest. Replacing any one of
+those artifacts or allowing the approval to become stale fails closed.
 
 Download the checksummed `*.github-governance.json`,
 `*.github-release-approval.json`, and `*.github-release.json` files from the
@@ -193,6 +236,10 @@ immutable GitHub release, then run:
 
 ```bash
 PLATFORM_PRODUCTION_EVIDENCE_FILE=private/production-evidence/<RELEASE>.json \
+PLATFORM_PRODUCTION_APPROVAL_FILE=private/production-evidence/<RELEASE>.approval.json \
+PLATFORM_PRODUCTION_APPROVAL_BUNDLE_FILE=private/production-evidence/<RELEASE>.approval.sigstore.json \
+PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_FILE=private/production-approver.pub \
+PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256=<64_LOWERCASE_HEX_CHARACTERS> \
 GITHUB_GOVERNANCE_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-governance.json \
 GITHUB_RELEASE_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-release.json \
 GITHUB_RELEASE_APPROVAL_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-release-approval.json \
@@ -206,9 +253,10 @@ PLATFORM_READINESS_SCORE_OUTPUT=private/production-evidence/<RELEASE>.score.json
 make platform-production-score
 ```
 
-The gate first uses Cosign to verify the keyless `SHA256SUMS` signature against
-the exact release workflow identity and GitHub Actions OIDC issuer. It then
-assigns 80 points to fresh, independently approved live platform acceptance,
+The gate first uses Cosign to verify the detached live-acceptance approval under
+the pinned approver public key and to verify the keyless `SHA256SUMS` signature
+against the exact release workflow identity and GitHub Actions OIDC issuer. It
+then assigns 80 points to fresh, independently signed live platform acceptance,
 10 points to fresh GitHub governance, and 10 points to an independently approved
 workflow run plus a verified annotated semantic-version tag and signed release
 commit. It validates the underlying evidence schemas and SHA-256 bindings

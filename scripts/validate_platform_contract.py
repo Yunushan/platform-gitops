@@ -74,6 +74,9 @@ platform_tls_verify_playbook = root / "ansible/playbooks/verify-platform-tls.yml
 production_evidence_script = root / "scripts/verify_production_evidence.py"
 production_evidence_runner = root / "scripts/bootstrap/run-platform-production-evidence.sh"
 production_evidence_test = root / "scripts/test_production_evidence.py"
+production_approval_creator = root / "scripts/create_production_approval.py"
+production_approval_verifier = root / "scripts/verify_production_approval.py"
+production_readiness_score = root / "scripts/verify_production_readiness_score.py"
 atomic_file_writer = root / "scripts/atomic_file.py"
 atomic_file_test = root / "scripts/test_atomic_file.py"
 subprocess_timeout_helper = root / "scripts/subprocess_timeout.py"
@@ -3127,6 +3130,51 @@ def main() -> None:
             production_evidence_runner_text,
             needle,
             f"production evidence runner must retain release proof: {needle}",
+        )
+
+    production_approval_creator_text = read(production_approval_creator)
+    for needle in (
+        "production_evidence.validate_evidence(",
+        "approval.artifact_sha256(args.public_key)",
+        "approval.build_approval_document(",
+        "atomic_write_text(args.output",
+    ):
+        require_text(
+            production_approval_creator_text,
+            needle,
+            f"production approval creator must retain exact private proof: {needle}",
+        )
+
+    production_approval_verifier_text = read(production_approval_verifier)
+    for needle in (
+        'APPROVAL_STATEMENT = "production-acceptance-approved"',
+        "approval does not bind the exact production evidence",
+        "production approval public key does not match its pinned SHA-256",
+        "production operator cannot approve the same evidence",
+        "Cosign rejected the detached production approval signature",
+        '"verify-blob"',
+        "PLATFORM_PRODUCTION_APPROVAL_COSIGN_TIMEOUT_SECONDS",
+        "run_bounded",
+    ):
+        require_text(
+            production_approval_verifier_text,
+            needle,
+            f"production approval verifier must remain fail-closed: {needle}",
+        )
+
+    production_readiness_score_text = read(production_readiness_score)
+    for needle in (
+        "PLATFORM_PRODUCTION_APPROVAL_FILE",
+        "PLATFORM_PRODUCTION_APPROVAL_BUNDLE_FILE",
+        "PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_FILE",
+        "PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256",
+        "production_approval.verify_signature(",
+        '"productionApprovalPublicKeySha256"',
+    ):
+        require_text(
+            production_readiness_score_text,
+            needle,
+            f"production score must enforce detached live approval: {needle}",
         )
 
     atomic_file_writer_text = read(atomic_file_writer)
