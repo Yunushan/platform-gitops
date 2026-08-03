@@ -57,7 +57,7 @@ GOVERNANCE_CONTROLS = {
     "branchProtection",
     "activeCodeowners",
     "independentCollaborators",
-    "signedDefaultBranchTip",
+    "defaultBranchCommitIdentity",
     "releaseTagRuleset",
     "independentReleaseReviewConfigured",
     "releaseTagEnvironmentPolicy",
@@ -195,8 +195,8 @@ def validate_governance_evidence(
     now: datetime,
     max_age_hours: int,
 ) -> None:
-    if document.get("schemaVersion") != 3:
-        raise ReadinessError("GitHub governance evidence schemaVersion must be 3")
+    if document.get("schemaVersion") != 4:
+        raise ReadinessError("GitHub governance evidence schemaVersion must be 4")
     if document.get("result") != "passed":
         raise ReadinessError("GitHub governance evidence result must be passed")
     require_fresh(

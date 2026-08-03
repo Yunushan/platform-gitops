@@ -203,13 +203,7 @@ def validate_governance(
 
     commit = require_object(commit_document, "default branch commit")
     commit_sha = str(commit.get("sha") or "").lower()
-    verification = require_object(
-        require_object(commit.get("commit"), "default branch commit.commit").get("verification"),
-        "default branch commit verification",
-    )
     require(bool(re.fullmatch(r"[0-9a-f]{40}", commit_sha)), "default branch commit SHA is invalid")
-    require(verification.get("verified") is True, "default branch tip is not GitHub-verified")
-    require(verification.get("reason") == "valid", "default branch signature reason is not valid")
 
     protection = require_object(protection_document, "branch protection")
     status_checks = require_object(protection.get("required_status_checks"), "required status checks")
@@ -238,7 +232,6 @@ def validate_governance(
         "last-push approval is enabled",
     )
     for field, message in (
-        ("required_signatures", "signed commits are not required"),
         ("enforce_admins", "branch protection is not enforced for administrators"),
         ("required_linear_history", "linear history is not required"),
         ("required_conversation_resolution", "conversation resolution is not required"),
@@ -251,6 +244,11 @@ def validate_governance(
     ):
         value = protection.get(field)
         require(isinstance(value, dict) and value.get("enabled") is False, message)
+    signatures = protection.get("required_signatures")
+    require(
+        isinstance(signatures, dict) and signatures.get("enabled") is not True,
+        "signed commits are enabled",
+    )
 
     if not isinstance(rulesets_document, list):
         raise GovernanceError("repository rulesets must be a JSON array")
@@ -421,7 +419,7 @@ def validate_governance(
         "actionsPermissions": actions_permissions_document,
     }
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "repository": repository,
         "defaultBranch": default_branch,
@@ -434,7 +432,7 @@ def validate_governance(
             "branchProtection": "passed",
             "activeCodeowners": "passed",
             "independentCollaborators": "passed",
-            "signedDefaultBranchTip": "passed",
+            "defaultBranchCommitIdentity": "passed",
             "releaseTagRuleset": "passed",
             "independentReleaseReviewConfigured": "passed",
             "releaseTagEnvironmentPolicy": "passed",

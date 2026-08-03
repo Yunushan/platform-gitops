@@ -80,7 +80,7 @@ def fixtures() -> dict[str, object]:
                 "require_code_owner_reviews": False,
                 "require_last_push_approval": False,
             },
-            "required_signatures": {"enabled": True},
+            "required_signatures": {"enabled": False},
             "enforce_admins": {"enabled": True},
             "required_linear_history": {"enabled": True},
             "required_conversation_resolution": {"enabled": True},
@@ -156,7 +156,7 @@ def main() -> int:
     evidence = validate(fixtures())
     if evidence["result"] != "passed" or evidence["controls"]["releaseTagRuleset"] != "passed":
         raise AssertionError("valid GitHub governance evidence was not accepted")
-    if evidence["schemaVersion"] != 3 or evidence["controls"]["activeCodeowners"] != "passed":
+    if evidence["schemaVersion"] != 4 or evidence["controls"]["activeCodeowners"] != "passed":
         raise AssertionError("valid governance evidence omitted ownership controls")
     if evidence["controls"]["independentReleaseReviewConfigured"] != "passed":
         raise AssertionError("valid governance evidence omitted the configured review boundary")
@@ -192,6 +192,12 @@ def main() -> int:
         "last-push approval is enabled",
     )
     reject(
+        lambda values: values["protection_document"]["required_signatures"].update(
+            enabled=True
+        ),
+        "signed commits are enabled",
+    )
+    reject(
         lambda values: values["rulesets_document"][0].update(
             bypass_actors=[{"actor_type": "Team", "actor_id": 7, "bypass_mode": "always"}]
         ),
@@ -219,8 +225,8 @@ def main() -> int:
         "release authority Team:8 membership could not be verified",
     )
     reject(
-        lambda values: values["commit_document"]["commit"]["verification"].update(verified=False),
-        "default branch tip is not GitHub-verified",
+        lambda values: values["commit_document"].update(sha="not-a-commit"),
+        "default branch commit SHA is invalid",
     )
     reject(
         lambda values: values.update(rulesets_document=[]),

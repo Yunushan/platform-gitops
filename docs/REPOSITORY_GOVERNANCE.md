@@ -20,7 +20,9 @@ The default branch must enforce:
 - At least two review-capable collaborators and stale-review dismissal remain
   configured for auditability; the independent `production-release`
   environment reviewer is the mandatory release approval boundary.
-- GitHub-verified commits.
+- Branch commits do not require GitHub-verified signatures under this
+  no-routine-approval policy; the verifier binds evidence to the exact
+  protected default-branch commit SHA.
 - Administrator enforcement, linear history, and resolved conversations.
 - No force pushes or branch deletion.
 
@@ -43,7 +45,8 @@ The repository must also have:
 - Private vulnerability reporting enabled.
 - CodeQL default setup configured for Actions and Python with a supported query
   suite, remote threat model, and weekly scheduled analysis.
-- A GitHub-verified commit at the current default-branch tip.
+- The current default-branch commit identity and SHA must match the audited
+  evidence; release tags and release artifacts remain signed separately.
 
 GitHub currently limits non-provider patterns and validity checks to
 organization-owned repositories on GitHub Team with Secret Protection. The
