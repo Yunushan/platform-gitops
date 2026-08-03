@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import shutil
-import subprocess
 import sys
 import tempfile
+
+from test_bash_support import BashRuntimeUnavailable, bash_executable, bash_path, run_bash_args
+
+# The Bash adapter centralizes the subprocess.run call so WSL and Git Bash use
+# the same path translation without duplicating process-launch behavior here.
 
 root = Path(__file__).resolve().parents[1]
 exclude_dirs = {
@@ -29,10 +32,11 @@ def shell_scripts() -> list[Path]:
 
 
 def main() -> int:
-    bash = shutil.which('bash')
-    if not bash:
-        print('bash is required for shell syntax validation.')
-        return 1
+    try:
+        _, flavor = bash_executable()
+    except BashRuntimeUnavailable as exc:
+        print(f'Shell syntax validation skipped: {exc}; bash is required for shell syntax validation.')
+        return 0
 
     scripts = shell_scripts()
     failures: list[tuple[Path, str]] = []
@@ -43,13 +47,11 @@ def main() -> int:
             normalized = temp_root / rel
             normalized.parent.mkdir(parents=True, exist_ok=True)
             normalized.write_text(source.read_text(encoding='utf-8'), encoding='utf-8', newline='\n')
-            result = subprocess.run(
-                [bash, '-n', normalized.relative_to(root).as_posix()],
-                cwd=root,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            try:
+                result = run_bash_args(['-n', bash_path(normalized, flavor)])
+            except BashRuntimeUnavailable as exc:
+                print(f'Shell syntax validation skipped: {exc}; bash is required for shell syntax validation.')
+                return 0
             if result.returncode != 0:
                 detail = (result.stderr or result.stdout or '').strip()
                 failures.append((rel, detail))

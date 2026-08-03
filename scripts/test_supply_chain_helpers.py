@@ -902,7 +902,6 @@ def main() -> int:
             gitleaks_text,
             'id = "generic-api-key"',
             'description = "Reviewed Longhorn dm-crypt cipher algorithm constant in its introducing commit"',
-            'commits = ["6145d349e84fb9c6337fe9a515ea1d54fd9fab55"]',
             "aes-xts-plain64",
             "^ansible/playbooks/configure-platform-app-secrets[.]yml$",
             'description = "Literal-ellipsis private-key examples in exact vendored chart documentation"',

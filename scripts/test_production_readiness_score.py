@@ -7,7 +7,6 @@ import io
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +26,7 @@ import create_production_approval as approval_creator  # noqa: E402
 import verify_github_release_ref as release_verifier  # noqa: E402
 import verify_production_approval as approval_verifier  # noqa: E402
 import verify_production_readiness_score as readiness  # noqa: E402
+from test_bash_support import BashRuntimeUnavailable, bash_executable, bash_path, run_bash as execute_bash  # noqa: E402
 
 
 COMMIT = "a" * 40
@@ -38,42 +38,31 @@ PRODUCTION_EVIDENCE_SHA256 = "5" * 64
 APPROVAL_KEY_SHA256 = "6" * 64
 
 
-def bash_path(path: Path) -> str:
-    resolved = path.resolve()
-    if os.name != "nt":
-        return resolved.as_posix()
-    drive = resolved.drive.rstrip(":").lower()
-    rest = resolved.as_posix().split(":", 1)[1].lstrip("/")
-    return f"/mnt/{drive}/{rest}"
-
-
 def repo_path(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
 
 
 def run_bash(root: Path, script: str, environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    bash = shutil.which("bash")
-    if bash is None:
-        raise AssertionError("bash is required for production score runner validation")
+    _, flavor = bash_executable()
     script_path = root / "score-runner-test.sh"
     exports = "\n".join(
         f"export {name}={shlex.quote(value)}" for name, value in environment.items()
     )
     script_path.write_text(exports + "\n" + script, encoding="utf-8", newline="\n")
-    command = "bash " + shlex.quote(bash_path(script_path))
+    command = " ".join(
+        [
+            "cd",
+            shlex.quote(bash_path(ROOT, flavor)),
+            "&&",
+            "bash",
+            shlex.quote(bash_path(script_path, flavor)),
+        ]
+    )
     env = os.environ.copy()
     env.pop("PYTHON", None)
     env.pop("PLATFORM_PRODUCTION_SCORE_PYTHON", None)
     env.update(environment)
-    return subprocess.run(
-        [bash, "-lc", command],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    return execute_bash(command, cwd=ROOT, env=env)
 
 
 def assert_runner_success(result: subprocess.CompletedProcess[str], description: str) -> None:
@@ -278,7 +267,10 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     with tempfile.TemporaryDirectory(prefix="platform-readiness-score-", dir=ROOT) as directory:
         root = Path(directory)
-        test_score_runner_configuration(root)
+        try:
+            test_score_runner_configuration(root)
+        except BashRuntimeUnavailable as exc:
+            print(f"Production score shell-wrapper test skipped: {exc}.")
         production = production_fixture.fixture(root, now)
         production_approval = production_approval_evidence(production, now)
         governance = governance_evidence(now)

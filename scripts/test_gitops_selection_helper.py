@@ -3,54 +3,54 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-import shutil
 import shlex
 import subprocess
 import sys
+
+from test_bash_support import (
+    BashRuntimeUnavailable,
+    bash_executable,
+    bash_path,
+    run_bash,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts/bootstrap/validate-gitops-selection.sh"
 
 
-def bash_path(path: Path) -> str:
-    resolved = path.resolve()
-    if os.name != "nt":
-        return resolved.as_posix()
-    drive = resolved.drive.rstrip(":").lower()
-    rest = resolved.as_posix().split(":", 1)[1].lstrip("/")
-    return f"/mnt/{drive}/{rest}"
+def python_command(flavor: str) -> str:
+    if flavor != "wsl":
+        return bash_path(Path(sys.executable), flavor)
+
+    result = run_bash("command -v python3 || command -v python")
+    if result.returncode != 0 or not result.stdout.strip():
+        raise BashRuntimeUnavailable(
+            "the WSL distribution has no usable Python interpreter"
+        )
+    return result.stdout.strip().splitlines()[-1]
 
 
 def run_helper(profile: str, mode: str) -> subprocess.CompletedProcess[str]:
-    bash = shutil.which("bash")
-    if bash is None:
-        raise AssertionError("bash is required for GitOps selection helper validation")
+    _, flavor = bash_executable()
 
     command = " ".join(
         [
             "cd",
-            shlex.quote(bash_path(ROOT)),
+            shlex.quote(bash_path(ROOT, flavor)),
             "&&",
             f"PLATFORM_PROFILE={shlex.quote(profile)}",
             f"PLATFORM_GITOPS_PLACEHOLDER_MODE={shlex.quote(mode)}",
             "PLATFORM_REPO_URL=git://selection.example/platform-gitops.git",
-            f"PYTHON={shlex.quote(bash_path(Path(sys.executable)))}",
+            f"PYTHON={shlex.quote(python_command(flavor))}",
             "PYTHONDONTWRITEBYTECODE=1",
             "bash",
             "scripts/bootstrap/validate-gitops-selection.sh",
             ".",
         ]
     )
-    return subprocess.run(
-        [bash, "-lc", command],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    return run_bash(command)
 
 
 def output(result: subprocess.CompletedProcess[str]) -> str:
@@ -78,7 +78,11 @@ def assert_contains(text: str, needle: str, description: str) -> None:
 def main() -> int:
     existing_rendered = set(ROOT.glob(".platform-gitops-selection-*.yaml"))
 
-    strict = run_helper("premium-3node", "strict")
+    try:
+        strict = run_helper("premium-3node", "strict")
+    except BashRuntimeUnavailable as exc:
+        print(f"GitOps selection helper self-test skipped: {exc}.")
+        return 0
     strict_output = assert_rc(strict, 1, "premium strict template profile")
     assert_contains(strict_output, "unresolved placeholders", "strict failure")
     assert_contains(
