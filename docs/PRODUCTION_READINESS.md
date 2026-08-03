@@ -86,7 +86,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | Live production gate passed | `PLATFORM_PROFILE=<PROFILE> make platform-production-check` |
 | Wildcard TLS deployed | `PLATFORM_WILDCARD_TLS_CERT_FILE=<CERT> PLATFORM_WILDCARD_TLS_KEY_FILE=<KEY> make platform-tls` |
 | TLS boundary verified | `make platform-tls-verify` |
-| Commit-bound acceptance retained | `PLATFORM_RELEASE_ID=<ID> PLATFORM_EVIDENCE_OPERATOR=<OPERATOR> PLATFORM_EVIDENCE_APPROVER=<APPROVER> make platform-production-evidence` |
+| Commit-bound acceptance retained | `PLATFORM_RELEASE_ID=<ID> PLATFORM_EVIDENCE_OPERATOR=<OPERATOR> PLATFORM_EVIDENCE_APPROVER=<APPROVER> PLATFORM_PRODUCTION_APPROVAL_APPROVER=<APPROVER> make platform-production-evidence` |
 | Final production score passed | `make platform-production-score` verifies a detached live-acceptance approval under a pinned approver key, the signed release checksum bundle, and commit-matched live, governance, release-approval, and release evidence; it reports exactly 100/100 and exits zero |
 | App health gate passed | `make platform-app-health` |
 | Forgejo singleton recovery proven | Live Forgejo uses `Recreate` and a `minAvailable: 1` PodDisruptionBudget, and `make platform-forgejo-recovery-drill` produced current, independently approved, commit-bound cross-node evidence inside the accepted RTO without changing service, image, encrypted PVC/PV, or CSI key identity and with the source node restored schedulable |

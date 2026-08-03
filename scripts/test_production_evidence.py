@@ -205,6 +205,8 @@ def main() -> int:
     for marker in (
         "require_value PLATFORM_RESTORE_EVIDENCE_FILE",
         "require_value PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE",
+        "require_value PLATFORM_PRODUCTION_APPROVAL_APPROVER",
+        "PLATFORM_EVIDENCE_APPROVER must match the configured PLATFORM_PRODUCTION_APPROVAL_APPROVER.",
         "atomic_write_text(destination, read_bounded_text(source))",
         '"restoreEvidence"',
         '"forgejoRecovery"',

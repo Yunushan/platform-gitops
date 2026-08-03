@@ -3104,6 +3104,8 @@ def main() -> None:
         "PLATFORM_RELEASE_ID",
         "PLATFORM_EVIDENCE_OPERATOR",
         "PLATFORM_EVIDENCE_APPROVER",
+        "PLATFORM_PRODUCTION_APPROVAL_APPROVER",
+        "PLATFORM_EVIDENCE_APPROVER must match the configured PLATFORM_PRODUCTION_APPROVAL_APPROVER.",
         "PLATFORM_PRODUCTION_EVIDENCE_EXPECTED_REF",
         "git status --porcelain=v1 --untracked-files=all",
         "refs/remotes/",
