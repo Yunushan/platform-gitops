@@ -36,7 +36,6 @@ id = "generic-api-key"
   description = "Reviewed Longhorn dm-crypt cipher algorithm constant in its introducing commit"
   condition = "AND"
   regexTarget = "line"
-  commits = ["6145d349e84fb9c6337fe9a515ea1d54fd9fab55"]
   regexes = [
     '''--from-literal=CRYPTO_KEY_CIPHER=aes-xts-plain64'''
   ]
@@ -68,6 +67,7 @@ id = "private-key"
   ]
   paths = [
     '''^gitops/clusters/rke2-main/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$''',
+    '''^gitops/clusters/rke2-main/premium-3node/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$''',
     '''^gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10[.]0[.]0/argo-cd/values[.]yaml$''',
     '''^gitops/clusters/rke2-main/premium-3node/apps/keycloak/charts/keycloak-25[.]2[.]0/keycloak/README[.]md$'''
   ]

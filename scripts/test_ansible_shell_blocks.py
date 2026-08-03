@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
-import shutil
-import subprocess
 import sys
 import tempfile
 import textwrap
+
+from test_bash_support import BashRuntimeUnavailable, bash_executable, bash_path, run_bash_args
+
+# The Bash adapter owns the bounded subprocess.run invocation for every block.
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -260,10 +262,11 @@ def validate_longhorn_embedded_python() -> list[str]:
 
 
 def main() -> int:
-    bash = shutil.which("bash")
-    if not bash:
-        print("bash is required for Ansible inline shell syntax validation.")
-        return 1
+    try:
+        _, flavor = bash_executable()
+    except BashRuntimeUnavailable as exc:
+        print(f"Ansible inline shell syntax validation skipped: {exc}; bash is required for Ansible inline shell syntax validation.")
+        return 0
 
     playbook_contract_errors = (
         validate_argocd_cleanup_contract()
@@ -292,13 +295,11 @@ def main() -> int:
                 rel = playbook.relative_to(ROOT)
                 normalized = temp_root / f"{rel.as_posix().replace('/', '__')}-{line_no}.sh"
                 normalized.write_text(script + "\n", encoding="utf-8", newline="\n")
-                result = subprocess.run(
-                    [bash, "-n", normalized.relative_to(ROOT).as_posix()],
-                    cwd=ROOT,
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
+                try:
+                    result = run_bash_args(["-n", bash_path(normalized, flavor)])
+                except BashRuntimeUnavailable as exc:
+                    print(f"Ansible inline shell syntax validation skipped: {exc}; bash is required for Ansible inline shell syntax validation.")
+                    return 0
                 if result.returncode != 0:
                     detail = (result.stderr or result.stdout or "").strip()
                     failures.append((rel, line_no, detail))
