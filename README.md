@@ -144,7 +144,7 @@ make platform-production-check
 ```
 
 After retaining the private live acceptance record, its detached independent
-approval under a pinned approver key, and the checksummed GitHub governance,
+approval under a pinned approver key and configured approver identity, and the checksummed GitHub governance,
 release-approval, and signed-release records, run `make platform-production-score`.
 It is the fail-closed final decision: it verifies both Cosign trust boundaries,
 and only commit-matched evidence that earns exactly 100/100 exits successfully. See

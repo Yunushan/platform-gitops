@@ -191,10 +191,11 @@ used as launch approval.
 
 Keep the approval signing key outside the operator workspace in an approved
 KMS, HSM, or offline approver environment. Place only the public key on the
-deployment controller, and pin its lowercase SHA-256 through protected private
-configuration. The independent approver reviews the completed schema-v7 packet,
-creates the exact approval statement, signs it, and verifies it before handing
-the approval and Sigstore bundle to the operator:
+deployment controller, and pin its lowercase SHA-256 and authorized approver
+identity through protected private configuration. The independent approver
+reviews the completed schema-v7 packet, creates the exact approval statement,
+signs it, and verifies it before handing the approval and Sigstore bundle to
+the operator:
 
 ```bash
 PRODUCTION_EVIDENCE=private/production-evidence/<RELEASE>.json
@@ -221,14 +222,16 @@ python scripts/verify_production_approval.py "$PRODUCTION_APPROVAL" \
   --bundle "$PRODUCTION_APPROVAL_BUNDLE" \
   --public-key "$PRODUCTION_APPROVAL_PUBLIC_KEY" \
   --public-key-sha256 "$PRODUCTION_APPROVAL_KEY_SHA256" \
+  --authorized-approver "$INDEPENDENT_APPROVER_ID" \
   --profile <PROFILE> \
   --commit <40_CHARACTER_RELEASE_COMMIT>
 ```
 
 Do not let the operator generate or access the approver private key. The
 approval document binds the exact production-evidence SHA-256, release,
-profile, commit, approval identity, and pinned key digest. Replacing any one of
-those artifacts or allowing the approval to become stale fails closed.
+profile, commit, configured approval identity, and pinned key digest. Replacing
+any one of those artifacts, changing the authorized approver, or allowing the
+approval to become stale fails closed.
 
 Download the checksummed `*.github-governance.json`,
 `*.github-release-approval.json`, and `*.github-release.json` files from the
@@ -240,6 +243,7 @@ PLATFORM_PRODUCTION_APPROVAL_FILE=private/production-evidence/<RELEASE>.approval
 PLATFORM_PRODUCTION_APPROVAL_BUNDLE_FILE=private/production-evidence/<RELEASE>.approval.sigstore.json \
 PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_FILE=private/production-approver.pub \
 PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256=<64_LOWERCASE_HEX_CHARACTERS> \
+PLATFORM_PRODUCTION_APPROVAL_APPROVER=<INDEPENDENT_APPROVER_ID> \
 GITHUB_GOVERNANCE_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-governance.json \
 GITHUB_RELEASE_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-release.json \
 GITHUB_RELEASE_APPROVAL_EVIDENCE_FILE=private/release-evidence/<RELEASE>.github-release-approval.json \

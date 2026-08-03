@@ -30,6 +30,7 @@ COMMIT = "a" * 40
 REPOSITORY = "example/platform-gitops"
 TAG = "v1.2.3"
 PROFILE = "premium-3node"
+APPROVER = "approver@example.test"
 PRODUCTION_EVIDENCE_SHA256 = "5" * 64
 APPROVAL_KEY_SHA256 = "6" * 64
 
@@ -107,6 +108,7 @@ def evaluate(
     *,
     root: Path,
     now: datetime,
+    approval_approver: str = APPROVER,
 ) -> tuple[dict[str, object], list[str]]:
     return readiness.evaluate_readiness(
         production_document=production,
@@ -122,6 +124,7 @@ def evaluate(
         expected_tag=TAG,
         production_evidence_sha256=PRODUCTION_EVIDENCE_SHA256,
         production_approval_key_sha256=APPROVAL_KEY_SHA256,
+        expected_approval_approver=approval_approver,
     )
 
 
@@ -148,6 +151,21 @@ def main() -> int:
             raise AssertionError(f"valid evidence did not earn 100/100: {report} {diagnostics}")
         if sum(category["weight"] for category in report["categories"]) != 100:
             raise AssertionError("readiness category weights do not total 100")
+
+        report, diagnostics = evaluate(
+            production,
+            production_approval,
+            governance,
+            release,
+            release_approval,
+            root=root,
+            now=now,
+            approval_approver="unconfigured-approver@example.test",
+        )
+        if report["score"] != 20 or report["result"] != "failed":
+            raise AssertionError("an approval by an unauthorized identity was accepted")
+        if not any("configured authorized approver" in item for item in diagnostics):
+            raise AssertionError("unauthorized approval did not explain the rejected identity")
 
         failed_governance = deepcopy(governance)
         failed_governance["controls"]["securityScanning"] = "failed"
@@ -442,6 +460,8 @@ def main() -> int:
             str(production_approval_key_path),
             "--production-approval-public-key-sha256",
             actual_approval_key_sha256,
+            "--production-approval-approver",
+            APPROVER,
             "--governance-evidence",
             str(governance_path),
             "--release-evidence",
@@ -491,6 +511,8 @@ def main() -> int:
         }:
             raise AssertionError("CLI score report is not complete and artifact-bound")
         if (
+            score_document["expected"]["productionApprovalApprover"] != APPROVER
+            or
             score_document["expected"]["productionApprovalPublicKeySha256"]
             != actual_approval_key_sha256
         ):

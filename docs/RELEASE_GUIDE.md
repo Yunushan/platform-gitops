@@ -135,7 +135,7 @@ comment for readability, but release evidence should show the immutable SHA.
 - [ ] `make platform-image-inventory-verify` proves that every rendered image is observed by digest and is signed or covered by a current reviewed exception.
 - [ ] `make platform-app-health` passes on the target cluster.
 - [ ] `make platform-production-check` passes on the target cluster.
-- [ ] An independent approver signs the exact live acceptance packet with a protected Cosign key, and the pinned public-key SHA-256 verification passes.
+- [ ] An independent approver signs the exact live acceptance packet with a protected Cosign key; the pinned public-key SHA-256 and configured approver identity verification pass.
 - [ ] `make platform-production-score` verifies the detached live approval and keyless release checksum bundle, accepts commit-matched live, governance, release-approval, and signed-release records, and reports exactly 100/100.
 - [ ] Release archive checksum, Sigstore bundle, provenance, and SBOM attestation verify successfully.
 - [ ] Production readiness go/no-go record captured using `docs/PRODUCTION_READINESS.md`.

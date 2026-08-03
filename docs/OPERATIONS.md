@@ -431,8 +431,9 @@ Keep private evidence for:
 - Hash-bound rendered/live image inventory, OpenBao ceremony, restore-drill,
   and Forgejo recovery reports retained by the schema-v7 production evidence
   packet.
-- Detached live-acceptance approval, Sigstore bundle, approver public key, and
-  separately pinned public-key SHA-256 retained with the final 100-point score.
+- Detached live-acceptance approval, Sigstore bundle, approver public key,
+  separately pinned public-key SHA-256, and configured approver identity retained
+  with the final 100-point score.
 - Latest `make platform-app-health`.
 - Latest production readiness go/no-go record from `docs/PRODUCTION_READINESS.md`.
 - Latest service catalog ownership and dependency review from `docs/SERVICE_CATALOG.md`.

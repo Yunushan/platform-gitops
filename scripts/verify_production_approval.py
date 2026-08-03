@@ -115,6 +115,7 @@ def validate_approval_document(
     production_document: dict[str, Any],
     production_sha256: str,
     expected_key_sha256: str,
+    authorized_approver: str,
     now: datetime,
     max_age_days: int,
 ) -> dict[str, str | datetime]:
@@ -146,6 +147,9 @@ def validate_approval_document(
         raise ApprovalError("approval does not bind the exact production evidence")
     if nonempty(approval_document, "approvalKeySha256") != expected_key_sha256:
         raise ApprovalError("approval public-key SHA-256 does not match the trust root")
+    authorized_approver = authorized_approver.strip()
+    if not authorized_approver:
+        raise ApprovalError("authorized production approver is not configured")
 
     commit = nonempty(approval_document, "commit").lower()
     if not COMMIT_RE.fullmatch(commit):
@@ -158,6 +162,8 @@ def validate_approval_document(
     operator = nonempty(production_document, "operator")
     if approver.casefold() != expected_approver.casefold():
         raise ApprovalError("approval identity does not match production evidence")
+    if approver.casefold() != authorized_approver.casefold():
+        raise ApprovalError("approval identity is not the configured authorized approver")
     if approver.casefold() == operator.casefold():
         raise ApprovalError("production operator cannot approve the same evidence")
 
@@ -254,6 +260,10 @@ def parse_args() -> argparse.Namespace:
         "--public-key-sha256",
         default=os.environ.get("PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256", ""),
     )
+    parser.add_argument(
+        "--authorized-approver",
+        default=os.environ.get("PLATFORM_PRODUCTION_APPROVAL_APPROVER", ""),
+    )
     parser.add_argument("--profile", default=os.environ.get("PLATFORM_PROFILE", ""))
     parser.add_argument("--commit", default=os.environ.get("PLATFORM_EXPECTED_COMMIT", ""))
     parser.add_argument("--max-age-days", type=int, default=7)
@@ -265,6 +275,12 @@ def main() -> int:
     args = parse_args()
     if args.max_age_days <= 0:
         print("--max-age-days must be greater than zero", file=sys.stderr)
+        return 2
+    if not args.authorized_approver.strip():
+        print(
+            "--authorized-approver or PLATFORM_PRODUCTION_APPROVAL_APPROVER is required",
+            file=sys.stderr,
+        )
         return 2
     try:
         production_document = loads_strict_json(
@@ -286,6 +302,7 @@ def main() -> int:
             production_document=production_document,
             production_sha256=artifact_sha256(args.production_evidence),
             expected_key_sha256=args.public_key_sha256,
+            authorized_approver=args.authorized_approver,
             now=datetime.now(timezone.utc),
             max_age_days=args.max_age_days,
         )

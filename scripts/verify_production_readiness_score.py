@@ -419,6 +419,7 @@ def evaluate_readiness(
     expected_tag: str,
     production_evidence_sha256: str,
     production_approval_key_sha256: str,
+    expected_approval_approver: str,
     expected_default_branch: str = "main",
     expected_environment: str = "production-release",
     expected_tag_pattern: str = "refs/tags/v*.*.*",
@@ -455,6 +456,7 @@ def evaluate_readiness(
                 production_document=production_document,
                 production_sha256=production_evidence_sha256,
                 expected_key_sha256=production_approval_key_sha256,
+                authorized_approver=expected_approval_approver,
                 now=now,
                 max_age_days=max_production_age_days,
             )
@@ -527,6 +529,7 @@ def evaluate_readiness(
             "repository": expected_repository,
             "commit": expected_commit,
             "tag": expected_tag,
+            "productionApprovalApprover": expected_approval_approver,
             "productionApprovalPublicKeySha256": production_approval_key_sha256,
         },
         "categories": categories,
@@ -564,6 +567,10 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--production-approval-public-key-sha256",
         default=os.environ.get("PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256", ""),
+    )
+    result.add_argument(
+        "--production-approval-approver",
+        default=os.environ.get("PLATFORM_PRODUCTION_APPROVAL_APPROVER", ""),
     )
     result.add_argument(
         "--release-evidence",
@@ -632,6 +639,11 @@ def main() -> int:
         argument_problems.append(
             "--production-approval-public-key-sha256 or "
             "PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256 must be a lowercase SHA-256"
+        )
+    if not args.production_approval_approver.strip():
+        argument_problems.append(
+            "--production-approval-approver or "
+            "PLATFORM_PRODUCTION_APPROVAL_APPROVER is required"
         )
     if not args.governance_evidence:
         argument_problems.append("--governance-evidence or GITHUB_GOVERNANCE_EVIDENCE_FILE is required")
@@ -750,6 +762,7 @@ def main() -> int:
         expected_tag=args.tag,
         production_evidence_sha256=evidence_hashes.get("production", ""),
         production_approval_key_sha256=args.production_approval_public_key_sha256,
+        expected_approval_approver=args.production_approval_approver.strip(),
         expected_default_branch=args.default_branch,
         expected_environment=args.release_environment,
         expected_tag_pattern=args.tag_ref_pattern,

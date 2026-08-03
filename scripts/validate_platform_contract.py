@@ -3151,6 +3151,8 @@ def main() -> None:
         "approval does not bind the exact production evidence",
         "production approval public key does not match its pinned SHA-256",
         "production operator cannot approve the same evidence",
+        "approval identity is not the configured authorized approver",
+        "PLATFORM_PRODUCTION_APPROVAL_APPROVER",
         "Cosign rejected the detached production approval signature",
         '"verify-blob"',
         "PLATFORM_PRODUCTION_APPROVAL_COSIGN_TIMEOUT_SECONDS",
@@ -3168,7 +3170,9 @@ def main() -> None:
         "PLATFORM_PRODUCTION_APPROVAL_BUNDLE_FILE",
         "PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_FILE",
         "PLATFORM_PRODUCTION_APPROVAL_PUBLIC_KEY_SHA256",
+        "PLATFORM_PRODUCTION_APPROVAL_APPROVER",
         "production_approval.verify_signature(",
+        '"productionApprovalApprover"',
         '"productionApprovalPublicKeySha256"',
     ):
         require_text(
