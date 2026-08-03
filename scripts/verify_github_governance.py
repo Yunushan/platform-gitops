@@ -419,7 +419,7 @@ def validate_governance(
         "actionsPermissions": actions_permissions_document,
     }
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "repository": repository,
         "defaultBranch": default_branch,

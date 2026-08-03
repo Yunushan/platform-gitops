@@ -156,7 +156,7 @@ def main() -> int:
     evidence = validate(fixtures())
     if evidence["result"] != "passed" or evidence["controls"]["releaseTagRuleset"] != "passed":
         raise AssertionError("valid GitHub governance evidence was not accepted")
-    if evidence["schemaVersion"] != 3 or evidence["controls"]["activeCodeowners"] != "passed":
+    if evidence["schemaVersion"] != 4 or evidence["controls"]["activeCodeowners"] != "passed":
         raise AssertionError("valid governance evidence omitted ownership controls")
     if evidence["controls"]["independentReleaseReviewConfigured"] != "passed":
         raise AssertionError("valid governance evidence omitted the configured review boundary")

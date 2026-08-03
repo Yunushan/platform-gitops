@@ -172,7 +172,7 @@ bash scripts/bootstrap/run-platform-production-score.sh --fixture-arg "value wit
 
 def governance_evidence(now: datetime) -> dict[str, object]:
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "generatedAt": (now - timedelta(minutes=10)).isoformat().replace("+00:00", "Z"),
         "repository": REPOSITORY,
         "defaultBranch": "main",
