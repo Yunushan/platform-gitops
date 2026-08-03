@@ -39,8 +39,10 @@ Every private deployment should identify owners for:
 Keep owner names, escalation contacts, and internal on-call details in the
 private deployment repository or ticketing system, not in this public template.
 For Git review routing, copy `.github/CODEOWNERS.example` to
-`.github/CODEOWNERS` in the private deployment repository, replace the
-placeholder teams, and enable required reviewers through branch protection.
+`.github/CODEOWNERS` in the private deployment repository and replace the
+placeholder teams. Routine pull requests do not require an approval under the
+default branch protection policy; enable required reviewers on the `production-release`
+environment and keep that gate independent from the release authority.
 
 ## Routine Checks
 

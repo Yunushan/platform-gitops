@@ -11,11 +11,15 @@ target.
 The default branch must enforce:
 
 - Strict required checks for repository validation and CodeQL.
-- At least one approving review.
+- Pull requests are required for protected-branch changes, but routine PR
+  merging does not require an approving review, CODEOWNER approval, or a
+  second approval after the last push.
 - An active `.github/CODEOWNERS` file with a catch-all rule and at least two
-  distinct owners, plus required CODEOWNER review.
-- At least two review-capable collaborators, stale-review dismissal, and
-  approval after the last push.
+  distinct owners. CODEOWNERS routes ownership and release review; it does not
+  create a mandatory PR approval gate under this policy.
+- At least two review-capable collaborators and stale-review dismissal remain
+  configured for auditability; the independent `production-release`
+  environment reviewer is the mandatory release approval boundary.
 - GitHub-verified commits.
 - Administrator enforcement, linear history, and resolved conversations.
 - No force pushes or branch deletion.

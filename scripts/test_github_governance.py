@@ -75,10 +75,10 @@ def fixtures() -> dict[str, object]:
                 ],
             },
             "required_pull_request_reviews": {
-                "required_approving_review_count": 1,
+                "required_approving_review_count": 0,
                 "dismiss_stale_reviews": True,
-                "require_code_owner_reviews": True,
-                "require_last_push_approval": True,
+                "require_code_owner_reviews": False,
+                "require_last_push_approval": False,
             },
             "required_signatures": {"enabled": True},
             "enforce_admins": {"enabled": True},
@@ -172,6 +172,24 @@ def main() -> int:
     reject(
         lambda values: values.update(collaborators_document=values["collaborators_document"][:1]),
         "fewer than two review-capable collaborators",
+    )
+    reject(
+        lambda values: values["protection_document"]["required_pull_request_reviews"].update(
+            required_approving_review_count=1
+        ),
+        "pull request approvals are enabled",
+    )
+    reject(
+        lambda values: values["protection_document"]["required_pull_request_reviews"].update(
+            require_code_owner_reviews=True
+        ),
+        "CODEOWNER approval is enabled",
+    )
+    reject(
+        lambda values: values["protection_document"]["required_pull_request_reviews"].update(
+            require_last_push_approval=True
+        ),
+        "last-push approval is enabled",
     )
     reject(
         lambda values: values["rulesets_document"][0].update(

@@ -1,6 +1,8 @@
 # Copy this file to .github/CODEOWNERS in a private deployment repository.
 # Replace @org/... placeholders with real users or teams before enabling
-# branch protection and required reviews.
+# branch protection and optional review routing. Production promotion still
+# requires the independent release-environment reviewer gate.
+# This public default does not mandate required reviews for routine PR merges.
 # Keep real owner names, team names, and escalation details out of this public
 # template.
 
