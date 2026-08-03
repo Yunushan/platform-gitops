@@ -18,6 +18,11 @@ elif [[ -f private/first-deploy.env ]]; then
   env_file=private/first-deploy.env
 fi
 
+if [[ -n "${env_file}" && ! -f "${env_file}" ]]; then
+  printf 'Selected production environment file does not exist: %s\\n' "${env_file}" >&2
+  exit 1
+fi
+
 if [[ -n "${env_file}" ]]; then
   # shellcheck source=scripts/bootstrap/load-env-file.sh
   . scripts/bootstrap/load-env-file.sh
@@ -41,5 +46,6 @@ PLATFORM_IMAGE_INTEGRITY_REQUIRED=true \
 "${make_command}" platform-openbao-verify
 PLATFORM_ALERT_DELIVERY_TEST=true "${make_command}" platform-observability-verify
 "${make_command}" platform-capacity-verify
-PLATFORM_APP_HEALTH_MODE=production "${make_command}" platform-app-health
+# Keep the child health gate on the exact same selected private environment.
+PLATFORM_APP_HEALTH_ENV_FILE="${env_file}" PLATFORM_APP_HEALTH_MODE=production "${make_command}" platform-app-health
 "${make_command}" platform-data-protection
