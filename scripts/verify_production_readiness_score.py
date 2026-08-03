@@ -57,7 +57,7 @@ GOVERNANCE_CONTROLS = {
     "branchProtection",
     "activeCodeowners",
     "independentCollaborators",
-    "signedDefaultBranchTip",
+    "defaultBranchCommitIdentity",
     "releaseTagRuleset",
     "independentReleaseReviewConfigured",
     "releaseTagEnvironmentPolicy",

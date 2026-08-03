@@ -788,7 +788,7 @@ def main() -> int:
             "blockers": blockers,
             "applied": applied,
             "residualRequirements": [
-                "merge a reviewed GitHub-verified commit to the protected default branch",
+                "merge a pull-request commit after required status checks pass on the protected default branch",
                 "run make github-governance-verify with a read-only audit token",
             ],
         }
