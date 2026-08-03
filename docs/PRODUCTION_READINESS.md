@@ -262,6 +262,12 @@ The Make target delegates to
 `scripts/bootstrap/run-platform-production-score.sh`, which loads the same
 ignored private deployment configuration before evaluating the score.
 
+The `platform-production-check` target loads the selected ignored private
+deployment configuration once in
+`scripts/bootstrap/run-platform-production-check.sh` and propagates it to
+every recursive live gate. This keeps private profile, capacity, Longhorn,
+policy, TLS, and application settings consistent across the full check.
+
 The evidence and score targets load the same ignored `private/seed-git.env` or
 `private/first-deploy.env` configuration. Use
 `PLATFORM_PRODUCTION_EVIDENCE_ENV_FILE` or

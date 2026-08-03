@@ -19,6 +19,7 @@ RENDERER_TEST = ROOT / "scripts/test_private_values_renderer.py"
 SYNTHETIC_FIXTURE = ROOT / "scripts/synthetic_private_profile.py"
 READINESS = ROOT / "ansible/playbooks/verify-platform-policy-readiness.yml"
 MAKEFILE = ROOT / "Makefile"
+PRODUCTION_CHECK = ROOT / "scripts/bootstrap/run-platform-production-check.sh"
 ENV_EXAMPLE = ROOT / "config/seed-git.env.example"
 SUPPLY_CHAIN_DOC = ROOT / "docs/SUPPLY_CHAIN.md"
 READINESS_DOC = ROOT / "docs/PRODUCTION_READINESS.md"
@@ -160,10 +161,21 @@ def main() -> int:
         require(readiness, needle, "live policy readiness gate")
 
     makefile = read(MAKEFILE)
+    production_check = read(PRODUCTION_CHECK)
     require(
         makefile,
-        "PLATFORM_IMAGE_INTEGRITY_MODE=Enforce PLATFORM_IMAGE_INTEGRITY_REQUIRED=true",
-        "production gate",
+        "platform-production-check: validate",
+        "production gate target",
+    )
+    require(
+        production_check,
+        "PLATFORM_IMAGE_INTEGRITY_MODE=Enforce \\",
+        "production gate image integrity enforcement",
+    )
+    require(
+        production_check,
+        "PLATFORM_IMAGE_INTEGRITY_REQUIRED=true",
+        "production gate image integrity enforcement",
     )
     env_example = read(ENV_EXAMPLE)
     for needle in (

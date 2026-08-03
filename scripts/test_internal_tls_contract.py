@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PREMIUM = ROOT / "gitops/clusters/rke2-main/premium-3node/apps"
 MAKEFILE = ROOT / "Makefile"
+PRODUCTION_CHECK = ROOT / "scripts/bootstrap/run-platform-production-check.sh"
 VERIFY_PLAYBOOK = ROOT / "ansible/playbooks/verify-platform-internal-tls.yml"
 SECRET_PLAYBOOK = ROOT / "ansible/playbooks/configure-platform-app-secrets.yml"
 PKI_DOC = ROOT / "docs/INTERNAL_PKI.md"
@@ -251,8 +252,13 @@ def main() -> int:
     ):
         require(verifier, needle, "live internal TLS verifier")
 
+    production_check = read(PRODUCTION_CHECK)
     require(makefile, "platform-internal-tls-verify:", "Makefile")
-    require(makefile, "@$(MAKE) platform-internal-tls-verify", "production readiness gate")
+    require(
+        production_check,
+        '"${make_command}" platform-internal-tls-verify',
+        "production readiness gate",
+    )
     require(readiness, "make platform-internal-tls-verify", "production readiness documentation")
     require(pki_doc, "platform-internal-root-ca", "internal PKI documentation")
     require(pki_doc, "SIGHUP", "internal PKI rotation documentation")
