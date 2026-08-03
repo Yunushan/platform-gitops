@@ -24,6 +24,9 @@ if [[ -n "${env_file}" ]]; then
   load_env_file "${env_file}" preserve-existing
 fi
 
+python_bin="${PLATFORM_PRODUCTION_EVIDENCE_PYTHON:-${PYTHON:-python3}}"
+export PYTHON="${python_bin}"
+
 require_value() {
   local name="$1"
   local value="${!name:-}"
@@ -72,14 +75,14 @@ if [[ ! -f "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}" ]]; then
   exit 1
 fi
 openbao_configuration_sha256="$(
-  python3 scripts/verify_openbao_ceremony_evidence.py \
+  "${python_bin}" scripts/verify_openbao_ceremony_evidence.py \
     --print-configuration-sha256 \
     --expected-profile "${profile}"
 )"
 PLATFORM_PROFILE="${profile}" \
 PLATFORM_OPENBAO_SOURCE_COMMIT="${commit}" \
 PLATFORM_OPENBAO_CONFIGURATION_SHA256="${openbao_configuration_sha256}" \
-python3 scripts/verify_openbao_ceremony_evidence.py \
+"${python_bin}" scripts/verify_openbao_ceremony_evidence.py \
   "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}"
 
 branch="$(git symbolic-ref --quiet --short HEAD || true)"
@@ -168,7 +171,7 @@ PLATFORM_PROFILE="${profile}" \
 PLATFORM_OPENBAO_SOURCE_COMMIT="${commit}" \
 PLATFORM_OPENBAO_CONFIGURATION_SHA256="${openbao_configuration_sha256}" \
 PLATFORM_OPENBAO_CLUSTER_ID_SHA256="${openbao_cluster_id_sha256}" \
-python3 scripts/verify_openbao_ceremony_evidence.py \
+"${python_bin}" scripts/verify_openbao_ceremony_evidence.py \
   "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}"
 
 image_inventory_source="${PLATFORM_IMAGE_INVENTORY_EVIDENCE_OUTPUT:-rendered/supply-chain/image-inventory-evidence.json}"
@@ -182,7 +185,7 @@ image_inventory_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-image-
 restore_evidence_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-restore-evidence.json"
 forgejo_recovery_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-forgejo-recovery.json"
 
-python3 - \
+"${python_bin}" - \
   "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" "${openbao_ceremony_path}" \
   "${image_inventory_source}" "${image_inventory_path}" \
   "${PLATFORM_RESTORE_EVIDENCE_FILE}" "${restore_evidence_path}" \
@@ -227,7 +230,7 @@ PLATFORM_EVIDENCE_SOURCE_EXPECTED_REF="${expected_ref}" \
 PLATFORM_EVIDENCE_SOURCE_REMOTE="${remote_name}" \
 PLATFORM_EVIDENCE_SOURCE_REMOTE_URL_SHA256="${remote_url_sha256}" \
 PLATFORM_EVIDENCE_SOURCE_TREE="${tree}" \
-python3 - <<'PY'
+"${python_bin}" - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -298,5 +301,5 @@ PY
 
 PLATFORM_PROFILE="${profile}" \
 PLATFORM_EXPECTED_COMMIT="${commit}" \
-python3 scripts/verify_production_evidence.py "${evidence_path}"
+"${python_bin}" scripts/verify_production_evidence.py "${evidence_path}"
 printf 'Production evidence file: %s\n' "${evidence_path}"

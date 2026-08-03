@@ -3198,6 +3198,18 @@ def main() -> None:
             f"production score runner must load protected private configuration: {needle}",
         )
 
+    for needle in (
+        'python_bin="${PLATFORM_PRODUCTION_EVIDENCE_PYTHON:-${PYTHON:-python3}}"',
+        'export PYTHON="${python_bin}"',
+        '"${python_bin}" scripts/verify_openbao_ceremony_evidence.py',
+        '"${python_bin}" scripts/verify_production_evidence.py',
+    ):
+        require_text(
+            production_evidence_runner_text,
+            needle,
+            f"production evidence runner must honor its configured interpreter: {needle}",
+        )
+
     atomic_file_writer_text = read(atomic_file_writer)
     for needle in (
         "tempfile.mkstemp(",
