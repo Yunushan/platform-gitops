@@ -19,7 +19,7 @@ elif [[ -f private/first-deploy.env ]]; then
 fi
 
 if [[ -n "${env_file}" && ! -f "${env_file}" ]]; then
-  printf 'Selected production environment file does not exist: %s\\n' "${env_file}" >&2
+  printf 'Selected production environment file does not exist: %s\n' "${env_file}" >&2
   exit 1
 fi
 
