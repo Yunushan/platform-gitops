@@ -165,6 +165,7 @@ certify the current gate set:
 PLATFORM_RELEASE_ID=<APPROVED_CHANGE_ID> \
 PLATFORM_EVIDENCE_OPERATOR=<OPERATOR_ID> \
 PLATFORM_EVIDENCE_APPROVER=<INDEPENDENT_APPROVER_ID> \
+PLATFORM_PRODUCTION_APPROVAL_APPROVER=<INDEPENDENT_APPROVER_ID> \
 PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE=private/openbao-ceremony/<CEREMONY>.json \
 PLATFORM_RESTORE_EVIDENCE_FILE=private/restore-evidence.json \
 PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE=private/forgejo-recovery-evidence.json \
@@ -256,6 +257,15 @@ PLATFORM_PROFILE=<PROFILE> \
 PLATFORM_READINESS_SCORE_OUTPUT=private/production-evidence/<RELEASE>.score.json \
 make platform-production-score
 ```
+
+The Make target delegates to
+`scripts/bootstrap/run-platform-production-score.sh`, which loads the same
+ignored private deployment configuration before evaluating the score.
+
+The score target loads the same ignored `private/seed-git.env` or
+`private/first-deploy.env` configuration used by the evidence runner. Use
+`PLATFORM_PRODUCTION_SCORE_ENV_FILE` to select a dedicated score configuration;
+explicitly exported variables still take precedence.
 
 The gate first uses Cosign to verify the detached live-acceptance approval under
 the pinned approver public key and to verify the keyless `SHA256SUMS` signature

@@ -77,6 +77,7 @@ production_evidence_test = root / "scripts/test_production_evidence.py"
 production_approval_creator = root / "scripts/create_production_approval.py"
 production_approval_verifier = root / "scripts/verify_production_approval.py"
 production_readiness_score = root / "scripts/verify_production_readiness_score.py"
+production_score_runner = root / "scripts/bootstrap/run-platform-production-score.sh"
 atomic_file_writer = root / "scripts/atomic_file.py"
 atomic_file_test = root / "scripts/test_atomic_file.py"
 subprocess_timeout_helper = root / "scripts/subprocess_timeout.py"
@@ -3181,6 +3182,20 @@ def main() -> None:
             production_readiness_score_text,
             needle,
             f"production score must enforce detached live approval: {needle}",
+        )
+
+    production_score_runner_text = read(production_score_runner)
+    for needle in (
+        "PLATFORM_PRODUCTION_SCORE_ENV_FILE",
+        "PLATFORM_PRODUCTION_EVIDENCE_ENV_FILE",
+        "PLATFORM_SEED_DEPLOY_ENV_FILE",
+        "load_env_file \"${env_file}\" preserve-existing",
+        "verify_production_readiness_score.py",
+    ):
+        require_text(
+            production_score_runner_text,
+            needle,
+            f"production score runner must load protected private configuration: {needle}",
         )
 
     atomic_file_writer_text = read(atomic_file_writer)

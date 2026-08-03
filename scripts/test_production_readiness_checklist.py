@@ -65,6 +65,7 @@ def main() -> int:
         "PLATFORM_PROFILE=<PROFILE> make platform-profile-check",
         "PLATFORM_PROFILE=<PROFILE> make platform-production-check",
         "make platform-production-score",
+        "scripts/bootstrap/run-platform-production-score.sh",
         "Final production score passed",
         "python scripts/create_production_approval.py",
         "python scripts/verify_production_approval.py",

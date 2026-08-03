@@ -560,7 +560,7 @@ platform-production-evidence:
 	@bash scripts/bootstrap/run-platform-production-evidence.sh
 
 platform-production-score:
-	@$(PYTHON) scripts/verify_production_readiness_score.py
+	@PLATFORM_PRODUCTION_SCORE_PYTHON="$(PYTHON)" bash scripts/bootstrap/run-platform-production-score.sh
 
 platform-production-check: validate platform-profile-check rke2-verify platform-status platform-tls-verify
 	@$(MAKE) platform-image-inventory-verify
