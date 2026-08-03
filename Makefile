@@ -122,7 +122,13 @@ init-local:
 	@bash scripts/init-local-config.sh
 
 validate:
-	@$(PYTHON) scripts/run_validation.py
+	@env_file="$${PLATFORM_VALIDATION_ENV_FILE:-}"; \
+	if [[ -z "$${env_file}" && -n "$${PLATFORM_SEED_DEPLOY_ENV_FILE:-}" ]]; then env_file="$${PLATFORM_SEED_DEPLOY_ENV_FILE}"; fi; \
+	if [[ -z "$${env_file}" && -n "$${PLATFORM_FIRST_DEPLOY_ENV_FILE:-}" ]]; then env_file="$${PLATFORM_FIRST_DEPLOY_ENV_FILE}"; fi; \
+	if [[ -z "$${env_file}" && -f private/seed-git.env ]]; then env_file=private/seed-git.env; fi; \
+	if [[ -z "$${env_file}" && -f private/first-deploy.env ]]; then env_file=private/first-deploy.env; fi; \
+	if [[ -n "$${env_file}" ]]; then . scripts/bootstrap/load-env-file.sh; load_env_file "$${env_file}" preserve-existing; fi; \
+	exec "$(PYTHON)" scripts/run_validation.py
 
 github-governance-plan:
 	@$(PYTHON) scripts/configure_github_governance.py plan
