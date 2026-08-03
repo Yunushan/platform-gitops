@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PREMIUM = ROOT / "gitops/clusters/rke2-main/premium-3node/apps"
+PRODUCTION_CHECK = ROOT / "scripts/bootstrap/run-platform-production-check.sh"
 
 
 def read(path: Path) -> str:
@@ -37,6 +38,7 @@ def main() -> int:
     verifier = read(ROOT / "ansible/playbooks/verify-platform-observability.yml")
     renderer = read(ROOT / "scripts/render_private_platform_values.py")
     makefile = read(ROOT / "Makefile")
+    production_check = read(PRODUCTION_CHECK)
     readiness = read(ROOT / "docs/PRODUCTION_READINESS.md")
 
     for needle in (
@@ -134,8 +136,8 @@ def main() -> int:
 
     require(makefile, "platform-observability-verify:", "Makefile")
     require(
-        makefile,
-        "PLATFORM_ALERT_DELIVERY_TEST=true $(MAKE) platform-observability-verify",
+        production_check,
+        'PLATFORM_ALERT_DELIVERY_TEST=true "${make_command}" platform-observability-verify',
         "production readiness gate",
     )
     require(readiness, "make platform-observability-verify", "production readiness documentation")

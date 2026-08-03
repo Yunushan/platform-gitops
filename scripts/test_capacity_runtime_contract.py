@@ -29,6 +29,7 @@ def main() -> int:
     verifier = read(ROOT / "ansible/playbooks/verify-platform-capacity.yml")
     node_prepare = read(ROOT / "ansible/playbooks/prepare-nodes.yml")
     makefile = read(ROOT / "Makefile")
+    production_check = read(ROOT / "scripts/bootstrap/run-platform-production-check.sh")
     planning = read(ROOT / "docs/CAPACITY_PLANNING.md")
     readiness = read(ROOT / "docs/PRODUCTION_READINESS.md")
 
@@ -90,8 +91,8 @@ def main() -> int:
 
     require(makefile, "platform-capacity-verify:", "Makefile")
     require(
-        makefile,
-        "$(MAKE) platform-capacity-verify",
+        production_check,
+        '"${make_command}" platform-capacity-verify',
         "production readiness gate",
     )
     require(planning, "make platform-capacity-verify", "capacity planning runbook")

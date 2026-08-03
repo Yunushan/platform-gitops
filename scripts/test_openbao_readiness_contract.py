@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOK = ROOT / "ansible/playbooks/verify-openbao.yml"
 MAKEFILE = ROOT / "Makefile"
+PRODUCTION_CHECK = ROOT / "scripts/bootstrap/run-platform-production-check.sh"
 READINESS = ROOT / "docs/PRODUCTION_READINESS.md"
 PREMIUM = ROOT / "docs/PREMIUM_3NODE.md"
 EVIDENCE_RUNNER = ROOT / "scripts/bootstrap/run-platform-production-evidence.sh"
@@ -66,15 +67,20 @@ def main() -> int:
         forbid(playbook, forbidden, "OpenBao readiness playbook")
 
     makefile = read(MAKEFILE)
+    production_check = read(PRODUCTION_CHECK)
     for needle in (
         "platform-openbao-status:",
         "PLATFORM_OPENBAO_VERIFY_STRICT=false",
         "platform-openbao-verify:",
         "PLATFORM_OPENBAO_VERIFY_STRICT=true",
         "ansible/playbooks/verify-openbao.yml",
-        "$(MAKE) platform-openbao-verify",
     ):
         require(makefile, needle, "Makefile OpenBao readiness surface")
+    require(
+        production_check,
+        '"${make_command}" platform-openbao-verify',
+        "production-check OpenBao readiness surface",
+    )
 
     readiness = read(READINESS)
     require(readiness, "make platform-openbao-verify", str(READINESS.relative_to(ROOT)))

@@ -78,6 +78,7 @@ production_approval_creator = root / "scripts/create_production_approval.py"
 production_approval_verifier = root / "scripts/verify_production_approval.py"
 production_readiness_score = root / "scripts/verify_production_readiness_score.py"
 production_score_runner = root / "scripts/bootstrap/run-platform-production-score.sh"
+production_check_runner = root / "scripts/bootstrap/run-platform-production-check.sh"
 atomic_file_writer = root / "scripts/atomic_file.py"
 atomic_file_test = root / "scripts/test_atomic_file.py"
 subprocess_timeout_helper = root / "scripts/subprocess_timeout.py"
@@ -7520,19 +7521,36 @@ def main() -> None:
         fail("platform-bootstrap must run the initial pre-VIP rke2-verify with RKE2_VERIFY_API_VIP=false")
     if "@$(MAKE) rke2-api-vip" not in makefile_text or "@$(MAKE) rke2-verify" not in makefile_text:
         fail("platform-bootstrap must deploy the API VIP and then run the strict rke2-verify gate")
-    for target in (
-        "validate",
-        "platform-profile-check",
-        "rke2-verify",
-        "platform-status",
-        "platform-tls-verify",
+    production_target = re.search(r"(?m)^platform-production-check:.*$", makefile_text)
+    if not production_target or "validate" not in production_target.group(0):
+        fail("platform-production-check must depend on validate")
+    production_check_text = read(production_check_runner)
+    for needle in (
+        "PLATFORM_PRODUCTION_CHECK_ENV_FILE",
+        "PLATFORM_SEED_DEPLOY_ENV_FILE",
+        "PLATFORM_FIRST_DEPLOY_ENV_FILE",
+        "load_env_file",
+        '"${make_command}" platform-profile-check',
+        '"${make_command}" rke2-verify',
+        '"${make_command}" platform-status',
+        '"${make_command}" platform-tls-verify',
+        '"${make_command}" platform-image-inventory-verify',
+        '"${make_command}" policy-cel-verify',
+        '"${make_command}" platform-network-isolation-verify',
+        '"${make_command}" platform-internal-tls-verify',
+        '"${make_command}" platform-openbao-verify',
+        '"${make_command}" platform-capacity-verify',
+        'PLATFORM_APP_HEALTH_MODE=production "${make_command}" platform-app-health',
+        '"${make_command}" platform-data-protection',
     ):
-        production_target = re.search(r"(?m)^platform-production-check:.*$", makefile_text)
-        if not production_target or target not in production_target.group(0):
-            fail(f"platform-production-check must depend on {target}")
+        require_text(
+            production_check_text,
+            needle,
+            f"production-check wrapper must propagate private settings: {needle}",
+        )
     require_text(
-        makefile_text,
-        "PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh",
+        production_check_text,
+        'PLATFORM_ALERT_DELIVERY_TEST=true "${make_command}" platform-observability-verify',
         "platform-production-check must force strict production-mode app health",
     )
     require_text(
@@ -7542,22 +7560,17 @@ def main() -> None:
     )
     require_text(
         makefile_text,
-        "\t@$(MAKE) policy-cel-verify",
-        "platform-production-check must compile and behavior-test active Kyverno CEL policies",
-    )
-    require_text(
-        makefile_text,
         "platform-image-inventory-verify: rendered-schema-verify rendered-private-schema-verify supply-chain-verify",
         "image inventory gate must depend on exact rendering and signature evidence",
     )
     require_text(
-        makefile_text,
-        "\t@$(MAKE) platform-image-inventory-verify",
+        production_check_text,
+        '"${make_command}" platform-image-inventory-verify',
         "platform production check must reconcile rendered and live runtime images",
     )
     require_text(
-        makefile_text,
-        "PLATFORM_POLICY_ENFORCEMENT=Enforce PLATFORM_IMAGE_INTEGRITY_MODE=Enforce PLATFORM_IMAGE_INTEGRITY_REQUIRED=true $(MAKE) platform-policy-readiness",
+        production_check_text,
+        'PLATFORM_POLICY_ENFORCEMENT=Enforce \\\nPLATFORM_IMAGE_INTEGRITY_MODE=Enforce \\\nPLATFORM_IMAGE_INTEGRITY_REQUIRED=true \\\n  "${make_command}" platform-policy-readiness',
         "platform production check must require live Kyverno and image-integrity Enforce mode",
     )
     for needle in (

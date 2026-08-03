@@ -571,17 +571,8 @@ platform-production-evidence:
 platform-production-score:
 	@bash scripts/bootstrap/run-platform-production-score.sh
 
-platform-production-check: validate platform-profile-check rke2-verify platform-status platform-tls-verify
-	@$(MAKE) platform-image-inventory-verify
-	@$(MAKE) policy-cel-verify
-	@PLATFORM_POLICY_ENFORCEMENT=Enforce PLATFORM_IMAGE_INTEGRITY_MODE=Enforce PLATFORM_IMAGE_INTEGRITY_REQUIRED=true $(MAKE) platform-policy-readiness
-	@$(MAKE) platform-network-isolation-verify
-	@$(MAKE) platform-internal-tls-verify
-	@$(MAKE) platform-openbao-verify
-	@PLATFORM_ALERT_DELIVERY_TEST=true $(MAKE) platform-observability-verify
-	@$(MAKE) platform-capacity-verify
-	@PLATFORM_APP_HEALTH_MODE=production bash scripts/bootstrap/run-platform-app-health.sh
-	@bash scripts/bootstrap/run-platform-data-protection.sh
+platform-production-check: validate
+	@bash scripts/bootstrap/run-platform-production-check.sh
 
 platform-longhorn-bootstrap:
 	@bash scripts/bootstrap/run-longhorn-bootstrap.sh

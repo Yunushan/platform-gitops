@@ -12,6 +12,7 @@ PREMIUM = ROOT / "gitops/clusters/rke2-main/premium-3node"
 COMPONENT = PREMIUM / "components/network-isolation"
 VERIFY_PLAYBOOK = ROOT / "ansible/playbooks/verify-platform-network-isolation.yml"
 MAKEFILE = ROOT / "Makefile"
+PRODUCTION_CHECK = ROOT / "scripts/bootstrap/run-platform-production-check.sh"
 PRODUCTION_READINESS = ROOT / "docs/PRODUCTION_READINESS.md"
 TARGET_APPS = {
     "argocd-ha": "argocd",
@@ -227,10 +228,11 @@ def main() -> int:
         assert isinstance(role_apps, set)
         if role_apps:
             require(verifier, f"platform-allow-{role}", "live network verifier")
+    production_check = read(PRODUCTION_CHECK)
     require(makefile, "platform-network-isolation-verify:", "Makefile")
     require(
-        makefile,
-        "@$(MAKE) platform-network-isolation-verify",
+        production_check,
+        '"${make_command}" platform-network-isolation-verify',
         "production readiness gate",
     )
     require(

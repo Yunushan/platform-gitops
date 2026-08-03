@@ -47,6 +47,7 @@ VENDORED_CHART_PROVENANCE_WORKFLOW = (
     ROOT / ".github/workflows/vendored-chart-provenance.yml"
 )
 MAKEFILE = ROOT / "Makefile"
+PRODUCTION_CHECK = ROOT / "scripts/bootstrap/run-platform-production-check.sh"
 GITHUB_WORKFLOWS = ROOT / ".github/workflows"
 GITLEAKS_CONFIG = ROOT / ".gitleaks.toml"
 SEMGREP_CONFIG = ROOT / ".semgrep.yml"
@@ -1498,7 +1499,6 @@ def main() -> int:
                 "supply-chain-verify: security-scan",
                 "SUPPLY_CHAIN_STRICT=true bash scripts/supply-chain-posture.sh",
                 "platform-image-inventory-verify: rendered-schema-verify rendered-private-schema-verify supply-chain-verify",
-                "@$(MAKE) platform-image-inventory-verify",
             ),
         ),
     ):
@@ -1506,6 +1506,14 @@ def main() -> int:
             assert_contains(read(path), *required, label=str(path.relative_to(ROOT)))
         except AssertionError as exc:
             problems.append(str(exc))
+    try:
+        assert_contains(
+            read(PRODUCTION_CHECK),
+            '"${make_command}" platform-image-inventory-verify',
+            label=str(PRODUCTION_CHECK.relative_to(ROOT)),
+        )
+    except AssertionError as exc:
+        problems.append(str(exc))
 
     if "gitleaks_args=(\n  detect" in read(SECURITY_SCAN_SCRIPT):
         problems.append("security-scan.sh must use the supported gitleaks dir command")
