@@ -1,0 +1,52 @@
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
+metadata:
+  name: verify-platform-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify platform image signatures
+    policies.kyverno.io/category: Software Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/minversion: 1.18.0
+spec:
+  evaluation:
+    admission:
+      enabled: true
+    background:
+      enabled: true
+  validationActions:
+    - Audit
+  failurePolicy: Fail
+  webhookConfiguration:
+    timeoutSeconds: 15
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  matchImageReferences:
+    - expression: "image.registry == '<PLATFORM_IMAGE_REGISTRY>'"
+  attestors:
+    - name: platformCosign
+      cosign:
+        key:
+          data: |
+            <PLATFORM_COSIGN_PUBLIC_KEY>
+        ctlog:
+          url: "<PLATFORM_COSIGN_REKOR_URL>"
+          insecureIgnoreTlog: false
+          insecureIgnoreSCT: false
+  validationConfigurations:
+    mutateDigest: true
+    required: true
+    verifyDigest: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.platformCosign])).all(result, result > 0)
+      message: Platform registry images must carry a valid Cosign signature from the approved release key.

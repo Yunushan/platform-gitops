@@ -1,0 +1,22 @@
+.git
+.cache
+.pytest_cache
+.venv
+**/__pycache__
+
+# Never send ignored deployment state or generated evidence to Docker builds.
+private
+rendered
+secrets
+config/*.local.yaml
+config/*.local.yml
+inventory/*.local.*
+profiles/*.local.*
+
+# Keep locally supplied credentials and certificates outside every build context.
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.kubeconfig

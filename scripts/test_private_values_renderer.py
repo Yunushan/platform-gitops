@@ -9,9 +9,16 @@ import io
 import os
 from pathlib import Path
 import re
-import shutil
 import sys
 import tempfile
+
+from synthetic_private_profile import (
+    RENDERER_ENV_PREFIXES,
+    TEST_COSIGN_PUBLIC_KEY,
+    TEST_INVENTORY,
+    prepare_synthetic_private_profile,
+    synthetic_environment,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,27 +27,6 @@ CHECKER_PATH = ROOT / "scripts/check_gitops_profile.py"
 CONTRACT_VALIDATOR_PATH = ROOT / "scripts/validate_platform_contract.py"
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
 sys.dont_write_bytecode = True
-RENDERER_ENV_PREFIXES = (
-    "PLATFORM_",
-    "RKE2_",
-    "FORGEJO_",
-    "LONGHORN_",
-    "WOODPECKER_",
-    "HARBOR_",
-    "MONITORING_",
-    "PROMETHEUS_",
-    "ALERTMANAGER_",
-    "GRAFANA_",
-    "OBJECT_STORAGE_",
-    "LOKI_",
-    "BACKUP_",
-    "VELERO_",
-    "CNPG_",
-    "POSTGRES_",
-    "MINIO_",
-    "KEYCLOAK_",
-    "STEP_CA_",
-)
 
 
 def load_renderer():
@@ -124,50 +110,12 @@ def assert_not_contains(path: Path, *needles: str) -> None:
 
 def render_real_premium_profile(renderer, checker, env: dict[str, str]) -> None:
     with tempfile.TemporaryDirectory(prefix="platform-real-premium-render-") as tmp:
-        repo = Path(tmp)
-        shutil.copytree(
-            ROOT / "gitops/clusters/rke2-main",
-            repo / "gitops/clusters/rke2-main",
+        repo = Path(tmp) / "repo"
+        prepare_synthetic_private_profile(
+            repo,
+            source_root=ROOT,
+            environment_overrides=env,
         )
-        inventory_path = write(
-            repo / "inventory/hosts.local.ini",
-            """[rke2_servers:vars]
-platform_argocd_host=argocd.example.test
-platform_git_host=git.example.test
-platform_ci_host=ci.example.test
-platform_registry_host=registry.example.test
-platform_keycloak_host=sso.example.test
-platform_grafana_host=grafana.example.test
-platform_prometheus_host=prometheus.example.test
-platform_loki_host=loki.example.test
-platform_step_ca_host=ca.example.test
-""",
-        )
-        inventory = renderer.read_inventory_vars(inventory_path)
-        premium = repo / "gitops/clusters/rke2-main/premium-3node/apps"
-
-        with patched_env(env):
-            renderer.render_argocd(premium / "argocd-ha/values.yaml", inventory)
-            renderer.render_forgejo(premium / "forgejo/values.yaml", inventory)
-            renderer.render_longhorn(premium / "longhorn/values.yaml", os.environ["LONGHORN_BACKUP_TARGET"])
-            renderer.render_woodpecker(premium / "woodpecker/values.yaml", inventory)
-            renderer.render_harbor(premium / "harbor/values.yaml", inventory)
-            renderer.render_monitoring(premium / "monitoring/values.yaml", inventory)
-            renderer.render_loki(premium / "loki/values.yaml", inventory)
-            renderer.render_velero(premium / "velero/values.yaml")
-            renderer.render_cnpg_postgres_cluster(
-                premium / "platform-postgres/postgres-cluster.yaml"
-            )
-            renderer.render_platform_valkey(premium / "platform-valkey/values.yaml")
-            renderer.render_minio(premium / "minio/values.yaml")
-            renderer.render_keycloak(premium / "keycloak/values.yaml", inventory)
-            renderer.render_step_ca(premium / "step-ca/values.yaml", inventory)
-            renderer.render_platform_policy_enforcement(
-                [
-                    premium / "platform-policies/no-plaintext-secrets.yaml",
-                    premium / "platform-policies/require-workload-baseline.yaml",
-                ]
-            )
 
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -190,17 +138,7 @@ def main() -> int:
         repo = Path(tmp)
         inventory_path = write(
             repo / "inventory/hosts.local.ini",
-            """[rke2_servers:vars]
-platform_argocd_host=argocd.example.test
-platform_git_host=git.example.test
-platform_ci_host=ci.example.test
-platform_registry_host=registry.example.test
-platform_keycloak_host=sso.example.test
-platform_grafana_host=grafana.example.test
-platform_prometheus_host=prometheus.example.test
-platform_loki_host=loki.example.test
-platform_step_ca_host=ca.example.test
-""",
+            TEST_INVENTORY,
         )
         inventory = renderer.read_inventory_vars(inventory_path)
 
@@ -231,100 +169,28 @@ platform_step_ca_host=ca.example.test
             "step_ca": write(repo / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"),
             "secret_policy": write(
                 repo / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/no-plaintext-secrets.yaml",
-                "spec:\n  validationFailureAction: Audit\n",
+                "spec:\n  validationActions:\n    - Audit\n",
             ),
             "workload_policy": write(
                 repo / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-workload-baseline.yaml",
-                "spec:\n  validationFailureAction: Audit\n",
+                "spec:\n  validationActions:\n    - Audit\n",
+            ),
+            "pod_security_policy": write(
+                repo / "gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-pod-security-baseline.yaml",
+                "spec:\n  validationActions:\n    - Audit\n",
+            ),
+            "image_integrity_policy": write(
+                repo
+                / "gitops/clusters/rke2-main/premium-3node/apps/platform-image-integrity/verify-platform-images.yaml",
+                (
+                    ROOT
+                    / "gitops/clusters/rke2-main/premium-3node/apps/platform-image-integrity/verify-platform-images.yaml"
+                ).read_text(encoding="utf-8"),
             ),
         }
+        cosign_public_key = write(repo / "private/cosign.pub", TEST_COSIGN_PUBLIC_KEY)
 
-        env = {
-            "FORGEJO_DATA_SIZE": "21Gi",
-            "FORGEJO_STORAGE_CLASS": "longhorn-critical",
-            "FORGEJO_IMAGE_TAG": "15.0.3-rootless",
-            "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn@eu-test-1/",
-            "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME": "longhorn-backup-test",
-            "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE": "275",
-            "WOODPECKER_DATA_SIZE": "11Gi",
-            "WOODPECKER_STORAGE_CLASS": "longhorn-standard",
-            "WOODPECKER_ADMIN_USERS": "platform-admin",
-            "WOODPECKER_FORGEJO_OAUTH_SECRET_NAME": "woodpecker-oauth-test",
-            "WOODPECKER_AGENT_SECRET_NAME": "woodpecker-agent-test",
-            "WOODPECKER_IMAGE_TAG": "3.16.0",
-            "WOODPECKER_DATABASE_MODE": "postgres",
-            "WOODPECKER_DATABASE_SECRET_NAME": "woodpecker-db-test",
-            "WOODPECKER_SERVER_REPLICAS": "3",
-            "WOODPECKER_AGENT_REPLICAS": "3",
-            "HARBOR_STORAGE_CLASS": "longhorn-critical",
-            "HARBOR_REGISTRY_SIZE": "55Gi",
-            "HARBOR_JOBLOG_SIZE": "6Gi",
-            "HARBOR_DATABASE_SIZE": "12Gi",
-            "HARBOR_REDIS_SIZE": "7Gi",
-            "HARBOR_TRIVY_SIZE": "13Gi",
-            "HARBOR_ADMIN_SECRET_NAME": "harbor-admin-test",
-            "HARBOR_SECRET_KEY_SECRET_NAME": "harbor-secret-key-test",
-            "HARBOR_REPLICAS": "2",
-            "HARBOR_DATABASE_SECRET_NAME": "harbor-db-test",
-            "HARBOR_S3_SECRET_NAME": "harbor-s3-test",
-            "MONITORING_STORAGE_CLASS": "longhorn-standard",
-            "PROMETHEUS_RETENTION_SIZE": "22GB",
-            "PROMETHEUS_DATA_SIZE": "60Gi",
-            "ALERTMANAGER_DATA_SIZE": "12Gi",
-            "GRAFANA_DATA_SIZE": "14Gi",
-            "GRAFANA_ADMIN_SECRET_NAME": "grafana-admin-test",
-            "GRAFANA_REPLICAS": "2",
-            "GRAFANA_DATABASE_SECRET_NAME": "grafana-db-test",
-            "OBJECT_STORAGE_ENDPOINT": "https://object.example.test",
-            "OBJECT_STORAGE_REGION": "eu-test-1",
-            "OBJECT_STORAGE_BUCKET_PREFIX": "platform-test",
-            "OBJECT_STORAGE_FORCE_PATH_STYLE": "true",
-            "OBJECT_STORAGE_INSECURE": "false",
-            "LOKI_OBJECT_STORAGE_SECRET_NAME": "loki-object-test",
-            "LOKI_CHUNKS_BUCKET": "platform-test-loki-chunks",
-            "LOKI_RULER_BUCKET": "platform-test-loki-ruler",
-            "LOKI_ADMIN_BUCKET": "platform-test-loki-admin",
-            "LOKI_WRITE_CACHE_SIZE": "24Gi",
-            "LOKI_BACKEND_CACHE_SIZE": "26Gi",
-            "LOKI_STORAGE_CLASS": "longhorn-standard",
-            "BACKUP_PROVIDER": "aws",
-            "BACKUP_BUCKET": "platform-test-velero",
-            "VELERO_CREDENTIALS_SECRET_NAME": "velero-cloud-test",
-            "VELERO_DAILY_BACKUP_CRON": "15 2 * * *",
-            "CNPG_OBJECT_STORE_SECRET_NAME": "cnpg-object-test",
-            "CNPG_BACKUP_DESTINATION": "s3://platform-test-cnpg/platform-postgres",
-            "CNPG_BACKUP_SCHEDULE": "20 2 * * *",
-            "CNPG_BACKUP_ENABLED": "true",
-            "CNPG_STORAGE_CLASS": "longhorn-critical",
-            "POSTGRES_DATA_SIZE": "80Gi",
-            "PLATFORM_VALKEY_AUTH_SECRET_NAME": "platform-valkey-test",
-            "PLATFORM_VALKEY_PASSWORD_KEY": "valkey-password-test",
-            "PLATFORM_VALKEY_REPLICA_COUNT": "3",
-            "PLATFORM_VALKEY_DATA_SIZE": "9Gi",
-            "PLATFORM_VALKEY_STORAGE_CLASS": "longhorn-critical",
-            "MINIO_ROOT_SECRET_NAME": "minio-root-test",
-            "MINIO_ROOT_USER_SECRET_KEY": "root-user-test",
-            "MINIO_ROOT_PASSWORD_SECRET_KEY": "root-password-test",
-            "MINIO_REPLICA_COUNT": "4",
-            "MINIO_ZONES": "1",
-            "MINIO_DRIVES_PER_NODE": "1",
-            "MINIO_DATA_SIZE": "64Gi",
-            "MINIO_STORAGE_CLASS": "longhorn-critical",
-            "KEYCLOAK_ADMIN_SECRET_NAME": "keycloak-admin-test",
-            "KEYCLOAK_DATABASE_SECRET_NAME": "keycloak-db-test",
-            "KEYCLOAK_DATABASE_HOST": "platform-postgres-rw.platform-databases.svc.cluster.local",
-            "KEYCLOAK_DATABASE_NAME": "keycloak",
-            "KEYCLOAK_DATABASE_USER": "keycloak",
-            "KEYCLOAK_REPLICAS": "2",
-            "KEYCLOAK_STORAGE_CLASS": "longhorn-critical",
-            "PLATFORM_SSO_BOOTSTRAP_ADMIN_USERNAME": "platform-bootstrap-test",
-            "STEP_CA_MODE": "bootstrap",
-            "STEP_CA_NAME": "Platform Test CA",
-            "STEP_CA_DNS_NAMES": "ca.example.test,step-ca.step-ca.svc.cluster.local",
-            "STEP_CA_URL": "https://ca.example.test",
-            "STEP_CA_STORAGE_CLASS": "longhorn-critical",
-            "STEP_CA_DB_SIZE": "9Gi",
-        }
+        env = synthetic_environment(cosign_public_key)
 
         with patched_env(env):
             if contract_validator.configured_longhorn_storage_over_provisioning_percentage() != 275:
@@ -345,7 +211,14 @@ platform_step_ca_host=ca.example.test
             renderer.render_keycloak(paths["keycloak"], inventory)
             renderer.render_step_ca(paths["step_ca"], inventory)
             renderer.render_platform_policy_enforcement(
-                [paths["secret_policy"], paths["workload_policy"]]
+                [
+                    paths["secret_policy"],
+                    paths["workload_policy"],
+                    paths["pod_security_policy"],
+                ]
+            )
+            renderer.render_platform_image_integrity(
+                paths["image_integrity_policy"], inventory
             )
 
         rendered_paths = list(paths.values())
@@ -359,14 +232,63 @@ platform_step_ca_host=ca.example.test
             "clientSecret: $" + "platform-sso-argocd:client-secret",
             "requestedScopes: [\"openid\", \"profile\", \"email\", \"groups\"]",
         )
-        assert_contains(paths["secret_policy"], "validationFailureAction: Audit")
-        assert_contains(paths["workload_policy"], "validationFailureAction: Audit")
+        assert_contains(paths["secret_policy"], "validationActions:\n    - Audit")
+        assert_contains(paths["workload_policy"], "validationActions:\n    - Audit")
+        assert_contains(paths["pod_security_policy"], "validationActions:\n    - Audit")
+        assert_contains(
+            paths["image_integrity_policy"],
+            "apiVersion: policies.kyverno.io/v1",
+            "kind: ImageValidatingPolicy",
+            "image.registry == 'registry.example.test'",
+            "validationActions:\n    - Audit",
+            "https://rekor.example.test",
+            "-----BEGIN PUBLIC KEY-----",
+            "insecureIgnoreTlog: false",
+            "mutateDigest: true",
+            "required: true",
+            "verifyDigest: true",
+        )
         with patched_env(dict(env, PLATFORM_POLICY_ENFORCEMENT="Enforce")):
             renderer.render_platform_policy_enforcement(
-                [paths["secret_policy"], paths["workload_policy"]]
+                [
+                    paths["secret_policy"],
+                    paths["workload_policy"],
+                    paths["pod_security_policy"],
+                ]
             )
-        assert_contains(paths["secret_policy"], "validationFailureAction: Enforce")
-        assert_contains(paths["workload_policy"], "validationFailureAction: Enforce")
+        assert_contains(paths["secret_policy"], "validationActions:\n    - Deny")
+        assert_contains(paths["workload_policy"], "validationActions:\n    - Deny")
+        assert_contains(paths["pod_security_policy"], "validationActions:\n    - Deny")
+        with patched_env(dict(env, PLATFORM_IMAGE_INTEGRITY_MODE="Enforce")):
+            renderer.render_platform_image_integrity(
+                paths["image_integrity_policy"], inventory
+            )
+        assert_contains(
+            paths["image_integrity_policy"], "validationActions:\n    - Deny"
+        )
+        with patched_env(dict(env, PLATFORM_IMAGE_INTEGRITY_MODE="disabled")):
+            renderer.render_platform_image_integrity(
+                paths["image_integrity_policy"], inventory
+            )
+        assert_contains(
+            paths["image_integrity_policy"],
+            "<PLATFORM_IMAGE_REGISTRY>",
+            "<PLATFORM_COSIGN_PUBLIC_KEY>",
+            "<PLATFORM_COSIGN_REKOR_URL>",
+            "validationActions:\n    - Audit",
+        )
+        with patched_env(dict(env, PLATFORM_IMAGE_INTEGRITY_MODE="invalid")):
+            try:
+                renderer.render_platform_image_integrity(
+                    paths["image_integrity_policy"], inventory
+                )
+            except SystemExit as exc:
+                if "must be disabled, Audit, or Enforce" not in str(exc):
+                    raise AssertionError(
+                        f"unexpected image-integrity mode validation error: {exc}"
+                    ) from exc
+            else:
+                raise AssertionError("image-integrity renderer accepted an unsupported mode")
         with patched_env(dict(env, PLATFORM_POLICY_ENFORCEMENT="invalid")):
             try:
                 renderer.render_platform_policy_enforcement([paths["secret_policy"]])
@@ -400,8 +322,14 @@ platform_step_ca_host=ca.example.test
             "git.example.test",
             "21Gi",
             'tag: "15.0.3-rootless"',
+            "strategy:\n  type: Recreate",
+            "podDisruptionBudget:\n  minAvailable: 1",
             "DB_TYPE: postgres",
             'HOST: "platform-postgres-rw.platform-databases.svc.cluster.local:5432"',
+            'SSL_MODE: "verify-full"',
+            "name: platform-postgres-ca",
+            "name: platform-internal-roots",
+            "mountPath: /data/gitea/git/.postgresql",
             "GITEA__cache__HOST",
             'name: "forgejo-redis"',
             "ADAPTER: redis",
@@ -413,7 +341,14 @@ platform_step_ca_host=ca.example.test
         sqlite_forgejo_env["FORGEJO_DATABASE_MODE"] = "sqlite"
         with patched_env(sqlite_forgejo_env):
             renderer.render_forgejo(sqlite_forgejo_path, inventory)
-        assert_contains(sqlite_forgejo_path, "git.example.test", "sqlite3", 'tag: "15.0.3-rootless"')
+        assert_contains(
+            sqlite_forgejo_path,
+            "git.example.test",
+            "sqlite3",
+            'tag: "15.0.3-rootless"',
+            "strategy:\n  type: Recreate",
+            "podDisruptionBudget:\n  minAvailable: 1",
+        )
         assert_not_contains(sqlite_forgejo_path, "additionalConfigFromEnvs:", "DB_TYPE: postgres")
 
         external_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/external-values.yaml")
@@ -425,7 +360,7 @@ platform_step_ca_host=ca.example.test
                 "FORGEJO_DATABASE_NAME": "forgejo",
                 "FORGEJO_DATABASE_USER": "forgejo",
                 "FORGEJO_DATABASE_SECRET_NAME": "forgejo-db-test",
-                "FORGEJO_DATABASE_SSL_MODE": "require",
+                "FORGEJO_DATABASE_SSL_MODE": "verify-full",
                 "FORGEJO_REDIS_MODE": "redis",
                 "FORGEJO_REDIS_SECRET_NAME": "forgejo-redis-test",
             }
@@ -444,7 +379,11 @@ platform_step_ca_host=ca.example.test
             "key: uri",
             "DB_TYPE: postgres",
             'HOST: "forgejo-postgres.example.test:5432"',
-            'SSL_MODE: "require"',
+            'SSL_MODE: "verify-full"',
+            "mountPath: /data/gitea/git/.postgresql",
+            "name: SSL_CERT_FILE",
+            "value: /etc/ssl/platform/ca-certificates.crt",
+            "mountPath: /etc/ssl/platform",
         )
         assert_not_contains(external_forgejo_path, "FORGEJO_REDIS_URL", "redis://")
 
@@ -485,9 +424,14 @@ platform_step_ca_host=ca.example.test
         assert_contains(
             paths["cnpg"],
             'namespace: "platform-databases"',
+            "kind: Certificate",
+            'name: "platform-postgres-server"',
+            'secretName: "platform-postgres-server-tls"',
+            'serverCASecret: "platform-postgres-server-tls"',
+            'serverTLSSecret: "platform-postgres-server-tls"',
             'imageName: "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie"',
             'size: "80Gi"',
-            'storageClass: "longhorn-critical"',
+            'storageClass: "longhorn-critical-encrypted"',
             'database: "forgejo"',
             'owner: "forgejo"',
             'name: "forgejo-database"',
@@ -509,7 +453,7 @@ platform_step_ca_host=ca.example.test
             'usersExistingSecret: "platform-valkey-test"',
             'passwordKey: "valkey-password-test"',
             'tag: "9.1.0"',
-            'storageClass: "longhorn-critical"',
+            'storageClass: "longhorn-critical-encrypted"',
             'size: "9Gi"',
             "replicas: 3",
             "podDisruptionBudget:\n  enabled: true",
@@ -518,17 +462,42 @@ platform_step_ca_host=ca.example.test
             'password="$(cat /auth/valkey-password-test)"',
             "sentinel monitor platform-valkey",
             "sentinel down-after-milliseconds platform-valkey 5000",
+            "tls:\n  enabled: true",
+            "existingSecret: platform-valkey-tls",
+            "tls-auto-reload-interval 300",
+            "tls-port 26379",
+            "tls-replication yes",
             "name: sentinel",
             'image: "valkey/valkey:9.1.0"',
             "name: primary-proxy",
             'image: "haproxy:3.4.2-alpine"',
             "tcp-check expect string role:master",
+            "check-ssl",
+            "verify required",
+            "ca-file /trust/ca-certificates.crt",
             "server valkey-3 platform-valkey-3.platform-valkey-headless.platform-cache.svc.cluster.local:6379",
+            "REDIS_ADDR: rediss://localhost:6379",
+            'REDIS_EXPORTER_SKIP_TLS_VERIFICATION: "false"',
             "serviceMonitor:\n    enabled: true",
         )
         assert_contains(
             paths["keycloak"],
+            'registry: "quay.io"',
+            'repository: "keycloak/keycloak"',
+            'tag: "26.7.0"',
+            "allowInsecureImages: true",
+            "- /opt/keycloak/bin/kc.sh",
+            "- start",
+            "runAsUser: 1000",
+            "readOnlyRootFilesystem: false",
+            "prepareWriteDirs:\n    enabled: false",
+            "name: KC_DB",
+            "value: postgres",
             "keycloakConfigCli:",
+            'repository: "adorsys/keycloak-config-cli"',
+            'tag: "6.5.1"',
+            "- /app/keycloak-config-cli.jar",
+            "runAsUser: 65534",
             "enabled: true",
             "IMPORT_VARSUBSTITUTION_ENABLED",
             'extraEnvVarsSecret: "platform-sso-clients"',
@@ -551,7 +520,7 @@ platform_step_ca_host=ca.example.test
             "replicaCount: 4",
             "zones: 1",
             "drivesPerNode: 1",
-            'storageClass: "longhorn-critical"',
+            'storageClass: "longhorn-critical-encrypted"',
             'size: "64Gi"',
             "prometheusAuthType: public",
             "serviceMonitor:\n    enabled: true",
@@ -567,7 +536,10 @@ platform_step_ca_host=ca.example.test
             'user: "keycloak"',
             'database: "keycloak"',
             'existingSecret: "keycloak-db-test"',
-            'defaultStorageClass: "longhorn-critical"',
+            "extraParams: sslmode=verify-full&sslrootcert=/etc/ssl/platform-postgres/ca-certificates.crt",
+            "name: platform-internal-roots",
+            "mountPath: /etc/ssl/platform-postgres",
+            'defaultStorageClass: "longhorn-critical-encrypted"',
             "serviceMonitor:\n    enabled: true",
         )
         invalid_keycloak_env = dict(env, KEYCLOAK_REPLICAS="1")
@@ -579,6 +551,15 @@ platform_step_ca_host=ca.example.test
                     raise AssertionError(f"unexpected Keycloak replica validation error: {exc}") from exc
             else:
                 raise AssertionError("Keycloak renderer accepted a single premium replica")
+        unstable_keycloak_env = dict(env, KEYCLOAK_IMAGE_TAG="latest")
+        with patched_env(unstable_keycloak_env):
+            try:
+                renderer.render_keycloak(paths["keycloak"], inventory)
+            except SystemExit as exc:
+                if "KEYCLOAK_IMAGE_TAG must be a stable release tag" not in str(exc):
+                    raise AssertionError(f"unexpected Keycloak image validation error: {exc}") from exc
+            else:
+                raise AssertionError("Keycloak renderer accepted an unstable image tag")
         legacy_sso_username_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/keycloak/legacy-sso-values.yaml",
             paths["keycloak"].read_text(encoding="utf-8"),
@@ -613,7 +594,7 @@ platform_step_ca_host=ca.example.test
             'WOODPECKER_DATABASE_DRIVER: "postgres"',
             'WOODPECKER_SERVER_ADDR: ":8000"',
             'WOODPECKER_GRPC_ADDR: ":9000"',
-            'WOODPECKER_LOG_LEVEL: "debug"',
+            'WOODPECKER_LOG_LEVEL: "info"',
             "failureThreshold: 30",
             '"woodpecker-db-test"',
             "createAgentSecret: false",
@@ -622,12 +603,24 @@ platform_step_ca_host=ca.example.test
             "repository: woodpeckerci/woodpecker-server",
             "repository: woodpeckerci/woodpecker-agent",
             'tag: "v3.16.0"',
-            'WOODPECKER_BACKEND_K8S_STORAGE_CLASS: "longhorn-standard"',
+            'WOODPECKER_BACKEND_K8S_STORAGE_CLASS: "longhorn-standard-encrypted"',
             "app.kubernetes.io/name: server",
             "app.kubernetes.io/name: agent",
             "topologySpreadConstraints:\n    - maxSkew: 1",
             "whenUnsatisfiable: DoNotSchedule",
+            "name: platform-postgres-ca",
+            "name: platform-internal-roots",
+            "mountPath: /etc/ssl/platform-postgres",
         )
+        invalid_woodpecker_log_env = dict(env, WOODPECKER_LOG_LEVEL="verbose")
+        with patched_env(invalid_woodpecker_log_env):
+            try:
+                renderer.render_woodpecker(paths["woodpecker"], inventory)
+            except SystemExit as exc:
+                if "WOODPECKER_LOG_LEVEL must be" not in str(exc):
+                    raise AssertionError(f"unexpected Woodpecker log-level validation error: {exc}") from exc
+            else:
+                raise AssertionError("Woodpecker renderer accepted an unsupported log level")
         rendered_woodpecker_text = paths["woodpecker"].read_text(encoding="utf-8")
         if contract_validator.count_yaml_list_scalar(rendered_woodpecker_text, "woodpecker-agent-test") != 2:
             raise AssertionError("rendered Woodpecker values did not map the managed agent Secret into both roles")
@@ -642,6 +635,7 @@ platform_step_ca_host=ca.example.test
         assert_contains(
             paths["harbor"],
             'externalURL: "https://registry.example.test"',
+            "caBundleSecretName: platform-internal-roots",
             "portal:\n  replicas: 2\n  podDisruptionBudget:",
             "core:\n  replicas: 2\n  podDisruptionBudget:",
             "jobservice:\n  replicas: 2\n  podDisruptionBudget:",
@@ -657,9 +651,11 @@ platform_step_ca_host=ca.example.test
             "database:\n  type: external",
             'host: "platform-postgres-rw.platform-databases.svc.cluster.local"',
             'existingSecret: "harbor-db-test"',
+            'sslmode: "verify-full"',
             "redis:\n  type: external",
             'addr: "platform-valkey-primary.platform-cache.svc.cluster.local:6379"',
             'existingSecret: "harbor-redis"',
+            "tlsOptions:\n      enable: true",
             "extraEnvVars:\n    - name: _REDIS_URL_CORE",
             'name: "harbor-redis-url"',
         )
@@ -703,6 +699,7 @@ platform_step_ca_host=ca.example.test
             'addr: "harbor-redis.example.test:6379"',
             'username: "harbor"',
             'existingSecret: "harbor-redis-test"',
+            "tlsOptions:\n      enable: true",
         )
         assert_not_contains(
             external_harbor_path,
@@ -710,6 +707,16 @@ platform_step_ca_host=ca.example.test
             "redis:\n  type: internal",
             "type: filesystem",
         )
+
+        insecure_harbor_env = dict(external_harbor_env, HARBOR_REDIS_TLS="false")
+        with patched_env(insecure_harbor_env):
+            try:
+                renderer.render_harbor(external_harbor_path, inventory)
+            except SystemExit as exc:
+                if "HARBOR_REDIS_TLS must be true" not in str(exc):
+                    raise AssertionError(f"unexpected Harbor Redis TLS validation error: {exc}") from exc
+            else:
+                raise AssertionError("Harbor renderer accepted plaintext external Redis in strict mode")
 
         internal_harbor_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/harbor/internal-values.yaml")
         internal_harbor_env = {
@@ -741,19 +748,25 @@ platform_step_ca_host=ca.example.test
         )
         assert_contains(
             paths["monitoring"],
-            'storageClassName: "longhorn-standard"',
+            'storageClassName: "longhorn-standard-encrypted"',
             'storage: "60Gi"',
             "alertmanager:\n  enabled: true\n  podDisruptionBudget:\n    enabled: true\n    minAvailable: 2",
-            "alertmanagerSpec:\n    replicas: 3\n    podAntiAffinity: hard\n    podAntiAffinityTopologyKey: kubernetes.io/hostname\n    resources:",
+            "alertmanagerSpec:\n    useExistingSecret: true\n    configSecret: alertmanager-platform-config\n    replicas: 3\n    podAntiAffinity: hard\n    podAntiAffinityTopologyKey: kubernetes.io/hostname\n    resources:",
             "grafana:\n  replicas: 2\n  deploymentStrategy:\n    type: RollingUpdate",
             "podDisruptionBudget:\n    minAvailable: 1",
             "whenUnsatisfiable: DoNotSchedule",
             'existingSecret: "grafana-admin-test"',
             "userKey: admin-user",
             "passwordKey: admin-password",
-            "envValueFrom:\n    GF_DATABASE_PASSWORD:",
+            "GF_DATABASE_PASSWORD:",
+            "LOKI_GATEWAY_USERNAME:",
+            "name: platform-loki-client",
             'name: "grafana-db-test"',
             "grafana.ini:\n    database:\n      type: postgres",
+            'ssl_mode: "verify-full"',
+            "ca_cert_path: /etc/ssl/platform-postgres/ca-certificates.crt",
+            "extraConfigmapMounts:",
+            "configMap: platform-internal-roots",
             "persistence:\n    enabled: false",
             'envFromSecret: "platform-sso-grafana"',
             "disable_login_form: true",
@@ -777,7 +790,7 @@ platform_step_ca_host=ca.example.test
             "GRAFANA_DATABASE_NAME": "grafana",
             "GRAFANA_DATABASE_USER": "grafana",
             "GRAFANA_DATABASE_SECRET_NAME": "grafana-db-test",
-            "GRAFANA_DATABASE_SSL_MODE": "require",
+            "GRAFANA_DATABASE_SSL_MODE": "verify-full",
             "GRAFANA_REPLICAS": "2",
         }
         with patched_env(external_monitoring_env):
@@ -785,14 +798,16 @@ platform_step_ca_host=ca.example.test
         assert_contains(
             external_monitoring_path,
             "Uses external PostgreSQL for Grafana state",
-            "envValueFrom:\n    GF_DATABASE_PASSWORD:",
+            "GF_DATABASE_PASSWORD:",
             'name: "grafana-db-test"',
             "grafana.ini:\n    database:\n      type: postgres",
             'host: "grafana-postgres.example.test:5432"',
             'name: "grafana"',
             'user: "grafana"',
             'password: "$__env{GF_DATABASE_PASSWORD}"',
-            'ssl_mode: "require"',
+            'ssl_mode: "verify-full"',
+            "ca_cert_path: /etc/ssl/platform-postgres/ca-certificates.crt",
+            "configMap: platform-internal-roots",
             "persistence:\n    enabled: false",
         )
 
@@ -826,11 +841,14 @@ platform_step_ca_host=ca.example.test
             paths["loki"],
             'endpoint: "https://object.example.test"',
             'chunks: "platform-test-loki-chunks"',
-            'storageClass: "longhorn-standard"',
+            'storageClass: "longhorn-standard-encrypted"',
             "write:\n  replicas: 3\n  resources:",
             "read:\n  replicas: 3\n  resources:",
             "backend:\n  replicas: 3\n  resources:",
-            "gateway:\n  enabled: true\n  resources:",
+            "gateway:\n  enabled: true\n  replicas: 3\n  basicAuth:\n    enabled: true\n    existingSecret: loki-gateway-basic-auth",
+            "retention_period: \"720h\"",
+            "retention_enabled: true",
+            "locationSnippet: \"proxy_set_header X-Scope-OrgID platform;\"",
             "      cpu: 250m\n      memory: 1Gi",
         )
         loki_text = paths["loki"].read_text(encoding="utf-8")

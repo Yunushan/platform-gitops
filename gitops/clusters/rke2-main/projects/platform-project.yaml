@@ -18,16 +18,6 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: external-secrets
       server: https://kubernetes.default.svc
-    - namespace: platform-databases
-      server: https://kubernetes.default.svc
-    - namespace: platform-cache
-      server: https://kubernetes.default.svc
-    - namespace: forgejo
-      server: https://kubernetes.default.svc
-    - namespace: harbor
-      server: https://kubernetes.default.svc
-    - namespace: keycloak
-      server: https://kubernetes.default.svc
     - namespace: logging
       server: https://kubernetes.default.svc
     - namespace: longhorn-system
@@ -38,19 +28,13 @@ spec:
       server: https://kubernetes.default.svc
     - namespace: kyverno
       server: https://kubernetes.default.svc
-    - namespace: object-storage
-      server: https://kubernetes.default.svc
     - namespace: openbao
-      server: https://kubernetes.default.svc
-    - namespace: step-ca
       server: https://kubernetes.default.svc
     - namespace: tetragon
       server: https://kubernetes.default.svc
     - namespace: traefik
       server: https://kubernetes.default.svc
     - namespace: velero
-      server: https://kubernetes.default.svc
-    - namespace: woodpecker
       server: https://kubernetes.default.svc
   clusterResourceWhitelist:
     - group: ""
@@ -75,6 +59,10 @@ spec:
       kind: ClusterSecretStore
     - group: kyverno.io
       kind: ClusterPolicy
+    - group: policies.kyverno.io
+      kind: ValidatingPolicy
+    - group: policies.kyverno.io
+      kind: ImageValidatingPolicy
     - group: networking.k8s.io
       kind: IngressClass
     - group: rbac.authorization.k8s.io
@@ -91,6 +79,45 @@ spec:
       kind: StorageClass
     - group: trust.cert-manager.io
       kind: Bundle
+  namespaceResourceBlacklist:
+    - group: argoproj.io
+      kind: Application
+    - group: argoproj.io
+      kind: ApplicationSet
+    - group: argoproj.io
+      kind: AppProject
+  orphanedResources:
+    warn: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform-services
+  namespace: argocd
+spec:
+  description: Namespace-scoped platform data and application services
+  sourceRepos:
+    - <THIS_REPO_URL>
+  destinations:
+    - namespace: forgejo
+      server: https://kubernetes.default.svc
+    - namespace: harbor
+      server: https://kubernetes.default.svc
+    - namespace: keycloak
+      server: https://kubernetes.default.svc
+    - namespace: object-storage
+      server: https://kubernetes.default.svc
+    - namespace: platform-cache
+      server: https://kubernetes.default.svc
+    - namespace: platform-databases
+      server: https://kubernetes.default.svc
+    - namespace: step-ca
+      server: https://kubernetes.default.svc
+    - namespace: woodpecker
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
   namespaceResourceBlacklist:
     - group: argoproj.io
       kind: Application

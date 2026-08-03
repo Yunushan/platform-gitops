@@ -29,7 +29,9 @@ server:
     WOODPECKER_DATABASE_DRIVER: "postgres"
     WOODPECKER_SERVER_ADDR: ":8000"
     WOODPECKER_GRPC_ADDR: ":9000"
-    WOODPECKER_LOG_LEVEL: "debug"
+    WOODPECKER_LOG_LEVEL: "info"
+    WOODPECKER_DEFAULT_PIPELINE_TIMEOUT: "60"
+    WOODPECKER_MAX_PIPELINE_TIMEOUT: "120"
   probes:
     liveness:
       timeoutSeconds: 10
@@ -45,6 +47,14 @@ server:
     - woodpecker-agent-secret
     - woodpecker-forgejo-oauth
     - woodpecker-database
+  extraVolumes:
+    - name: platform-postgres-ca
+      configMap:
+        name: platform-internal-roots
+  extraVolumeMounts:
+    - name: platform-postgres-ca
+      mountPath: /etc/ssl/platform-postgres
+      readOnly: true
   createAgentSecret: false
   ingress:
     enabled: true
@@ -63,7 +73,7 @@ server:
   persistentVolume:
     enabled: true
     size: 10Gi
-    storageClass: longhorn-standard
+    storageClass: longhorn-standard-encrypted
   resources:
     requests:
       cpu: 100m
@@ -100,7 +110,7 @@ agent:
   env:
     WOODPECKER_BACKEND: kubernetes
     WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker
-    WOODPECKER_BACKEND_K8S_STORAGE_CLASS: longhorn-standard
+    WOODPECKER_BACKEND_K8S_STORAGE_CLASS: longhorn-standard-encrypted
     WOODPECKER_BACKEND_K8S_VOLUME_SIZE: 10G
     WOODPECKER_BACKEND_K8S_STORAGE_RWX: "false"
     WOODPECKER_MAX_WORKFLOWS: "2"

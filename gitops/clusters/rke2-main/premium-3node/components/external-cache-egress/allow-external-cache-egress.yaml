@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-allow-external-cache-egress
+  labels:
+    app.kubernetes.io/part-of: platform-network-isolation
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 6380
+        - protocol: TCP
+          port: 26379

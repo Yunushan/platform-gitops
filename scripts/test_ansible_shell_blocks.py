@@ -3,8 +3,8 @@
 
 The standalone shell validator catches scripts under scripts/, but a lot of the
 production repair logic lives in ansible.builtin.shell blocks. This test extracts
-literal/folded shell blocks, normalizes common Jinja expressions to shell-safe
-tokens, and runs bash -n over each block.
+literal/folded free-form and structured cmd blocks, normalizes common Jinja
+expressions to shell-safe tokens, and runs bash -n over each block.
 """
 
 from __future__ import annotations
@@ -23,8 +23,15 @@ PLAYBOOK_DIR = ROOT / "ansible" / "playbooks"
 ARGOCD_REPAIR_PLAYBOOK = PLAYBOOK_DIR / "repair-argocd-service-path.yml"
 COREDNS_REPAIR_PLAYBOOK = PLAYBOOK_DIR / "repair-cluster-dns.yml"
 LONGHORN_BOOTSTRAP_PLAYBOOK = PLAYBOOK_DIR / "bootstrap-longhorn.yml"
+OPENBAO_READINESS_PLAYBOOK = PLAYBOOK_DIR / "verify-openbao.yml"
 SHELL_BLOCK_RE = re.compile(
     r"^(?P<indent>\s*)(?:ansible\.builtin\.)?(?:shell|command):\s*(?P<style>[|>])(?:[-+])?\s*(?:#.*)?$"
+)
+SHELL_MAPPING_RE = re.compile(
+    r"^(?P<indent>\s*)(?:ansible\.builtin\.)?(?:shell|command):\s*(?:#.*)?$"
+)
+SHELL_CMD_BLOCK_RE = re.compile(
+    r"^(?P<indent>\s*)cmd:\s*(?P<style>[|>])(?:[-+])?\s*(?:#.*)?$"
 )
 EXCLUDE_DIRS = {
     ".git",
@@ -70,6 +77,19 @@ def shell_blocks(path: Path) -> list[tuple[int, str]]:
     blocks: list[tuple[int, str]] = []
     for index, line in enumerate(lines):
         match = SHELL_BLOCK_RE.match(line)
+        if not match:
+            cmd_match = SHELL_CMD_BLOCK_RE.match(line)
+            if cmd_match:
+                cmd_indent = len(cmd_match.group("indent"))
+                for previous in reversed(lines[:index]):
+                    if not previous.strip():
+                        continue
+                    previous_indent = len(previous) - len(previous.lstrip())
+                    if previous_indent >= cmd_indent:
+                        continue
+                    if SHELL_MAPPING_RE.match(previous):
+                        match = cmd_match
+                    break
         if not match:
             continue
         parent_indent = len(match.group("indent"))
@@ -252,6 +272,10 @@ def main() -> int:
     )
     for path in playbooks():
         playbook_contract_errors.extend(validate_free_form_comment_quotes(path))
+    if len(shell_blocks(OPENBAO_READINESS_PLAYBOOK)) != 1:
+        playbook_contract_errors.append(
+            "OpenBao readiness playbook shell cmd block is not covered by syntax validation"
+        )
     if playbook_contract_errors:
         print("Ansible repair contract validation failed:")
         for error in playbook_contract_errors:

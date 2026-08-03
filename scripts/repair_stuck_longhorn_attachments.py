@@ -12,8 +12,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from bounded_subprocess import BoundedSubprocessError, run_bounded
+from strict_json import loads_strict_json
+from subprocess_timeout import bounded_timeout_seconds
+
 
 JsonObject = dict[str, Any]
+KUBECTL_TIMEOUT_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -304,14 +309,33 @@ class Kubectl:
         self.base = [executable, "--kubeconfig", kubeconfig]
 
     def run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        result = subprocess.run(self.base + list(args), text=True, capture_output=True)
+        try:
+            timeout = bounded_timeout_seconds(
+                KUBECTL_TIMEOUT_SECONDS,
+                "PLATFORM_KUBECTL_COMMAND_TIMEOUT_SECONDS",
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from None
+        try:
+            result = run_bounded(
+                self.base + list(args),
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"kubectl timed out after {timeout:g} seconds: {' '.join(args)}"
+            ) from None
+        except (BoundedSubprocessError, ValueError) as exc:
+            raise RuntimeError(f"kubectl output rejected: {exc}") from None
         if check and result.returncode != 0:
             sys.stderr.write((result.stderr or "") + (result.stdout or ""))
             raise RuntimeError(f"kubectl failed: {' '.join(args)}")
         return result
 
     def get_json(self, *args: str) -> JsonObject:
-        return json.loads(self.run(*args, "-o", "json").stdout)
+        return loads_strict_json(self.run(*args, "-o", "json").stdout)
 
 
 def items(kube: Kubectl, *args: str) -> list[JsonObject]:

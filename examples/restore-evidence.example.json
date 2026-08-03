@@ -1,24 +1,85 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "drillId": "drill-example-2026-q1",
-  "completedAt": "2026-01-15T12:30:00Z",
+  "backupCompletedAt": "2026-01-15T06:30:00Z",
+  "recoveryStartedAt": "2026-01-15T08:30:00Z",
+  "completedAt": "2026-01-15T10:03:00Z",
   "operator": "platform-operator@example.test",
   "approver": "service-owner@example.test",
   "profile": "premium-3node",
+  "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "result": "passed",
   "rpoHours": 24,
   "rtoMinutes": 240,
   "elapsedMinutes": 93,
+  "recoveryTarget": {
+    "type": "isolated-cluster",
+    "identifier": "recovery-environment-example",
+    "isProduction": false,
+    "failureDomainSeparated": true
+  },
   "checks": {
-    "etcd": {"status": "passed", "evidence": "ticket://DR-1001/etcd"},
-    "velero": {"status": "passed", "evidence": "ticket://DR-1001/velero"},
-    "cloudnativepg": {"status": "passed", "evidence": "ticket://DR-1001/postgres"},
-    "longhorn": {"status": "passed", "evidence": "ticket://DR-1001/longhorn"},
-    "forgejo": {"status": "passed", "evidence": "ticket://DR-1001/forgejo"},
-    "harbor": {"status": "passed", "evidence": "ticket://DR-1001/harbor"},
-    "secrets": {"status": "passed", "evidence": "ticket://DR-1001/secrets"},
-    "argocd": {"status": "passed", "evidence": "ticket://DR-1001/argocd"},
-    "ingress": {"status": "passed", "evidence": "ticket://DR-1001/ingress"},
-    "certificates": {"status": "passed", "evidence": "ticket://DR-1001/certificates"}
+    "etcd": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/etcd", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "verifiedAt": "2026-01-15T09:00:00Z"}
+    },
+    "velero": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/velero", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "verifiedAt": "2026-01-15T09:05:00Z"}
+    },
+    "cloudnativepg": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/postgres", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "verifiedAt": "2026-01-15T09:10:00Z"}
+    },
+    "longhorn": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/longhorn", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "verifiedAt": "2026-01-15T09:15:00Z"}
+    },
+    "longhornEncryptionKey": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/longhorn-encryption-key-recovery", "sha256": "8888888888888888888888888888888888888888888888888888888888888888", "verifiedAt": "2026-01-15T09:18:00Z"}
+    },
+    "objectStorage": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/object-storage", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "verifiedAt": "2026-01-15T09:20:00Z"}
+    },
+    "forgejo": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/forgejo", "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "verifiedAt": "2026-01-15T09:25:00Z"}
+    },
+    "harbor": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/harbor", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "verifiedAt": "2026-01-15T09:30:00Z"}
+    },
+    "secrets": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/secrets", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "verifiedAt": "2026-01-15T09:35:00Z"}
+    },
+    "argocd": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/argocd", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "verifiedAt": "2026-01-15T09:40:00Z"}
+    },
+    "ingress": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/ingress", "sha256": "4444444444444444444444444444444444444444444444444444444444444444", "verifiedAt": "2026-01-15T09:45:00Z"}
+    },
+    "certificates": {
+      "status": "passed",
+      "evidence": {"uri": "ticket://DR-1001/certificates", "sha256": "5555555555555555555555555555555555555555555555555555555555555555", "verifiedAt": "2026-01-15T09:50:00Z"}
+    }
+  },
+  "continuity": {
+    "failover": {
+      "status": "passed",
+      "dnsVipTlsValidated": true,
+      "dataConsistencyValidated": true,
+      "evidence": {"uri": "ticket://DR-1001/failover", "sha256": "6666666666666666666666666666666666666666666666666666666666666666", "verifiedAt": "2026-01-15T09:55:00Z"}
+    },
+    "failback": {
+      "status": "passed",
+      "currentBackupValidated": true,
+      "dataReconciled": true,
+      "evidence": {"uri": "ticket://DR-1001/failback", "sha256": "7777777777777777777777777777777777777777777777777777777777777777", "verifiedAt": "2026-01-15T10:00:00Z"}
+    }
   }
 }

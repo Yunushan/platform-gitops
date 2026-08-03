@@ -77,7 +77,7 @@ def main() -> int:
         "branch protection",
         "required reviews",
         "Renovate dashboard approval",
-        "optional Cosign/Kyverno verification",
+        "staged Cosign/Kyverno verification",
         "Argo CD projects",
         "restore drills",
         "credential rotation",

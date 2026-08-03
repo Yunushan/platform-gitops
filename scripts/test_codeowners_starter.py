@@ -48,6 +48,7 @@ def main() -> int:
         "/ansible/",
         "/scripts/",
         "/config/",
+        "/config/vendored-charts.json",
         "/inventory/",
         "/profiles/",
         "/gitops/",
@@ -79,6 +80,13 @@ def main() -> int:
         "@org/supply-chain-maintainers",
     ):
         require(codeowners, owner, "CODEOWNERS starter")
+
+    require(
+        codeowners,
+        "/config/vendored-charts.json @org/supply-chain-maintainers "
+        "@org/security-maintainers",
+        "CODEOWNERS starter",
+    )
 
     for forbidden in (
         "172.",

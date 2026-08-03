@@ -68,6 +68,16 @@ For production acceptance or post-upgrade proof, run:
 PLATFORM_PROFILE=premium-3node make platform-production-check
 ```
 
+The command includes `platform-image-inventory-verify`. Supply the exact
+rendered-manifest summary and Cosign verification report produced for the
+release through `PLATFORM_RENDERED_MANIFEST_SUMMARY` and
+`COSIGN_VERIFICATION_REPORT`. When an upstream image is outside the private
+registry, also supply the reviewed private exception file through
+`PLATFORM_IMAGE_INVENTORY_EXCEPTIONS_FILE`. The image gate fails when a
+rendered image cannot be resolved to an observed or explicitly reviewed
+digest, a live image has no digest, a private-registry image is unsigned, or
+an external image lacks a current admission exception.
+
 Before approving launch, use `docs/PRODUCTION_READINESS.md` to collect the
 go/no-go evidence package, open exceptions, launch decision, and post-launch
 validation plan.
@@ -90,6 +100,165 @@ Use `make platform-app-health` for broad platform changes and
 `make platform-ci-health` for Argo CD or Woodpecker-only changes.
 Use `docs/RELEASE_PROMOTION.md` for dev, staging, production promotion gates,
 rollback or roll-forward planning, hotfixes, freezes, and release evidence.
+
+## Operator Command Bounds
+
+First-party Python text outputs use a same-directory temporary file, durable
+flush, atomic replacement, and owner-only mode `0600`. This includes private
+deployment values, rendered manifests, validation reports, migration fixtures,
+and retained evidence. A failed or interrupted write leaves the prior complete
+file in place. The firewalld XML updater preserves its source metadata through
+its own atomic replacement, and the forge transition lock remains an exclusive
+create/delete primitive.
+
+First-party Python tools bound every child process. The defaults are sized for
+their workload: short `kubectl`, GitHub CLI, Kyverno, and Cosign calls receive
+short deadlines, render and validation children receive longer deadlines, and
+Git/LFS migration receives two hours. Expiration fails the command and names
+the stalled operation; Forge migration diagnostics redact credential-bearing
+URLs.
+
+Use a specific override only for a measured slow operation:
+
+- `PLATFORM_KUBECTL_COMMAND_TIMEOUT_SECONDS`
+- `FORGE_MIGRATION_COMMAND_TIMEOUT_SECONDS`
+- `PLATFORM_VALIDATION_SCRIPT_TIMEOUT_SECONDS`
+- `PLATFORM_RENDER_COMMAND_TIMEOUT_SECONDS`
+- `PLATFORM_KYVERNO_COMMAND_TIMEOUT_SECONDS`
+- `GITHUB_API_COMMAND_TIMEOUT_SECONDS`
+- `PLATFORM_COSIGN_COMMAND_TIMEOUT_SECONDS`
+
+`PLATFORM_SUBPROCESS_TIMEOUT_SECONDS` is the global fallback when no specific
+override is set. Every value must be finite, positive, and no greater than
+`86400` seconds. Treat a timeout as a failed operation and investigate the
+child process; increasing a bound is not proof that the underlying operation
+is healthy.
+
+Captured child output is bounded independently of command duration. The shared
+runner drains stdout and stderr concurrently, retains at most 32 MiB combined
+by default, and terminates a child that crosses that ceiling. Set
+`PLATFORM_SUBPROCESS_OUTPUT_MAX_BYTES` only for a measured command that needs a
+larger diagnostic payload; the hard maximum is 256 MiB (`268435456` bytes).
+Values must be whole, positive byte counts within that ceiling. Exceeding the
+limit fails the operation while preserving only bounded output; it must not be
+worked around by disabling capture controls.
+
+First-party local file inputs are bounded before decoding, JSON/YAML parsing,
+or hashing. The default maximum is 64 MiB. Set
+`PLATFORM_FILE_INPUT_MAX_BYTES` only for a measured input that must be larger;
+the hard maximum is 512 MiB (`536870912` bytes). Values must be whole, positive
+byte counts within that ceiling. An oversized evidence file, migration plan,
+inventory, configuration file, or rendered manifest fails the operation. Do
+not bypass the bound; confirm the expected producer and payload size first.
+Only regular files are accepted. FIFOs, sockets, directories, and devices are
+rejected after a nonblocking descriptor open so they cannot stall an operator
+or CI process before the byte limit applies.
+
+First-party JSON is decoded through one strict parser after its transport or
+file bound is enforced. Duplicate object keys, `NaN`, positive or negative
+`Infinity`, and numeric literals that overflow to non-finite values are
+rejected. Decoded structures are also limited to 128 nested containers and
+1,000,000 total keys/values/containers; decoder recursion is classified as a
+normal input rejection. Do not normalize and retry an ambiguous or excessive
+document; correct the producer and regenerate the evidence, plan, inventory,
+or API response.
+
+Direct first-party HTTP clients use `PLATFORM_HTTP_TIMEOUT_SECONDS`, defaulting
+to `30` seconds with a hard maximum of `300` seconds. API request and response
+bodies default to 16 MiB; `PLATFORM_HTTP_REQUEST_MAX_BYTES` and
+`PLATFORM_HTTP_RESPONSE_MAX_BYTES` may independently raise a measured payload
+to at most 64 MiB. URLs are limited to 16 KiB, queries to 256 fields, and
+request headers to 128 fields and 64 KiB. Non-numeric, non-positive,
+non-finite, fractional byte, or over-ceiling values fail closed. GitHub CLI
+fallback output is checked against the response byte limit before JSON parsing.
+An oversized request or response is an operation failure, not a reason to
+disable the bound; confirm pagination and expected API payload size before
+changing it.
+
+Request URLs cannot contain userinfo or credential-shaped query parameters.
+Authorization, cookie, private-token, and API-key headers require HTTPS. The
+unauthenticated direct Forgejo cluster health probe may continue to use HTTP.
+Direct API clients also reject every HTTP 3xx response before issuing a second
+request, so credentials cannot be forwarded to a redirected origin. Configure
+canonical TLS API endpoints instead of relying on redirects; there is no
+redirect-policy override.
+
+## Controlled Pruning
+
+Argo CD automatically reconciles creates and updates, but every Application
+uses `Prune=confirm`. A resource removed from Git is therefore held for an
+explicit, time-stamped deletion approval. `PruneLast=true` applies approved
+deletions only after the other sync phases succeed,
+`PrunePropagationPolicy=foreground` waits for dependants, and
+`allowEmpty=false` prevents an empty render from deleting an entire
+Application.
+
+Run `make platform-app-health` after registration or a policy change. Its live
+Application probe verifies that pruning, self-healing, empty-target protection,
+confirmation, final-wave ordering, and foreground propagation are present on
+the objects Argo CD is actually reconciling. Do not treat a static manifest
+check alone as production proof.
+
+The same health gate verifies that the singleton Forgejo deployment still uses
+the non-overlapping `Recreate` strategy and a `minAvailable: 1`
+PodDisruptionBudget. This protects its RWO volume during voluntary disruption;
+it does not make Forgejo highly available during node loss or upgrades.
+
+Prove the active-passive recovery path before production and at least
+quarterly. This command intentionally cordons the current Forgejo node and
+deletes only the managed singleton pod after checking that another Ready,
+schedulable node exists and that the Deployment, PDB, service endpoint,
+immutable image, PVC, encrypted PV, CSI key references, and Longhorn volume are
+healthy:
+
+```bash
+PLATFORM_FORGEJO_RECOVERY_OPERATOR="${OPERATOR_ID:?set OPERATOR_ID}" \
+PLATFORM_FORGEJO_RECOVERY_APPROVER="${INDEPENDENT_APPROVER_ID:?set INDEPENDENT_APPROVER_ID}" \
+PLATFORM_FORGEJO_RECOVERY_CONFIRMATION=FAILOVER_FORGEJO_SINGLETON \
+make platform-forgejo-recovery-drill
+```
+
+The drill waits for a different pod UID on a different node, requires
+`/api/healthz` to return HTTP 200 through the same ClusterIP, verifies the same
+persistent and runtime image identities, and fails if recovery exceeds
+`PLATFORM_FORGEJO_RECOVERY_MAX_RTO_SECONDS`. A `finally` cleanup path uncordons
+the source node; failed cleanup prevents passing evidence. It writes ignored
+private evidence to `PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE`. Routine health
+checks never run this disruptive drill.
+
+Before approving a prune:
+
+1. Review the exact resources marked for deletion in the Argo CD diff.
+2. Confirm the deletion is present in the approved pull request and change
+   ticket.
+3. Confirm current backups and restore evidence for every stateful resource.
+4. Record a named approver who is different from the change author where the
+   production control policy requires separation of duties.
+
+Approve one Application at a time from an RKE2 server:
+
+```bash
+K=/var/lib/rancher/rke2/bin/kubectl
+C=/etc/rancher/rke2/rke2.yaml
+APP="${APP:?export APP with the Argo CD Application name}"
+APPROVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+"$K" --kubeconfig "$C" -n argocd annotate application "$APP" \
+  argocd.argoproj.io/deletion-approved="$APPROVED_AT" --overwrite
+```
+
+Wait for that Application to become `Synced` and `Healthy`, verify the
+remaining resources, then remove the approval marker:
+
+```bash
+"$K" --kubeconfig "$C" -n argocd annotate application "$APP" \
+  argocd.argoproj.io/deletion-approved-
+```
+
+Never pre-approve every Application, reuse an old approval as a standing
+authorization, or approve pruning while the rendered profile is incomplete.
+Record the diff, approval time, sync result, and post-change health in private
+release evidence.
 
 ## Maintenance Windows
 
@@ -259,6 +428,12 @@ deployment reviews.
 Keep private evidence for:
 
 - Latest `make platform-production-check`.
+- Hash-bound rendered/live image inventory, OpenBao ceremony, restore-drill,
+  and Forgejo recovery reports retained by the schema-v7 production evidence
+  packet.
+- Detached live-acceptance approval, Sigstore bundle, approver public key,
+  separately pinned public-key SHA-256, and configured approver identity retained
+  with the final 100-point score.
 - Latest `make platform-app-health`.
 - Latest production readiness go/no-go record from `docs/PRODUCTION_READINESS.md`.
 - Latest service catalog ownership and dependency review from `docs/SERVICE_CATALOG.md`.
@@ -269,6 +444,8 @@ Keep private evidence for:
 - Latest capacity planning review from `docs/CAPACITY_PLANNING.md`.
 - Latest compliance and audit evidence review from `docs/COMPLIANCE_AUDIT.md`.
 - Latest release and environment promotion evidence from `docs/RELEASE_PROMOTION.md`.
+- Latest sanitized GitHub governance evidence from
+  `docs/REPOSITORY_GOVERNANCE.md` when GitHub publishes the release.
 - Latest Alertmanager receiver and routing test from `docs/ALERTING.md`.
 - Latest credential rotation.
 - Latest maintenance window.

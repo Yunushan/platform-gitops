@@ -1,12 +1,55 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-postgres-server
+  namespace: platform-databases
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  secretName: platform-postgres-server-tls
+  secretTemplate:
+    labels:
+      cnpg.io/reload: ""
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  usages:
+    - server auth
+  dnsNames:
+    - platform-postgres-rw
+    - platform-postgres-rw.platform-databases
+    - platform-postgres-rw.platform-databases.svc
+    - platform-postgres-rw.platform-databases.svc.cluster.local
+    - platform-postgres-r
+    - platform-postgres-r.platform-databases
+    - platform-postgres-r.platform-databases.svc
+    - platform-postgres-r.platform-databases.svc.cluster.local
+    - platform-postgres-ro
+    - platform-postgres-ro.platform-databases
+    - platform-postgres-ro.platform-databases.svc
+    - platform-postgres-ro.platform-databases.svc.cluster.local
+  issuerRef:
+    name: platform-internal-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: platform-postgres
   namespace: platform-databases
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
   primaryUpdateStrategy: unsupervised
+  certificates:
+    serverCASecret: platform-postgres-server-tls
+    serverTLSSecret: platform-postgres-server-tls
   bootstrap:
     initdb:
       database: forgejo
@@ -15,7 +58,7 @@ spec:
         name: forgejo-database
   storage:
     size: 50Gi
-    storageClass: longhorn-critical
+    storageClass: longhorn-critical-encrypted
   monitoring:
     enablePodMonitor: true
   backup:

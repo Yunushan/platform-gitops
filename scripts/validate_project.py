@@ -3,6 +3,8 @@ from pathlib import Path
 import re
 import sys
 
+from bounded_file import read_bounded_text
+
 root = Path(__file__).resolve().parents[1]
 conflict_marker_re = re.compile(r'^(<<<<<<< .+|=======|>>>>>>> .+)$', re.MULTILINE)
 exclude_dirs = {
@@ -14,14 +16,29 @@ required = [
     'SECURITY.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'NOTICE',
     '.github/pull_request_template.md',
     '.github/CODEOWNERS.example',
+    '.github/workflows/dependency-review.yml',
+    '.github/workflows/fuzz.yml',
+    '.github/workflows/release.yml',
+    '.github/workflows/scorecard.yml',
+    '.github/workflows/vendored-chart-provenance.yml',
     '.github/ISSUE_TEMPLATE/config.yml',
     '.github/ISSUE_TEMPLATE/bug_report.yml',
     '.github/ISSUE_TEMPLATE/feature_request.yml',
     'renovate.json',
     '.gitleaks.toml',
     '.semgrep.yml',
+    '.semgrepignore',
+    '.dockerignore',
+    '.coveragerc',
+    'requirements/ci-yaml.txt',
+    'requirements/ci-coverage.txt',
+    '.clusterfuzzlite/project.yaml',
+    '.clusterfuzzlite/Dockerfile',
+    '.clusterfuzzlite/build.sh',
+    '.clusterfuzzlite/fuzzers/forge_plan_fuzzer.py',
     'trivy.yaml',
     'config/cluster.example.yaml',
+    'config/vendored-charts.json',
     'inventory/hosts.example.ini',
     'docs/QUICK_START.md',
     'docs/ARCHITECTURE.md',
@@ -43,6 +60,7 @@ required = [
     'docs/DATA_CLASSIFICATION.md',
     'docs/THREAT_MODEL.md',
     'docs/SECRETS_AND_PRIVACY.md',
+    'docs/FORGE_TRANSITION.md',
     'config/sops.age.example.yaml',
     'gitops/bootstrap/root-app.yaml',
     'ansible/playbooks/verify-platform-app-health.yml',
@@ -52,13 +70,21 @@ required = [
     'ansible/playbooks/repair-woodpecker.yml',
     'ansible/playbooks/repair-woodpecker-service-path-nodes.yml',
     'scripts/forge_migration_live.py',
+    'scripts/forge_transition.py',
+    'scripts/fuzz_forge_plans.py',
+    'scripts/forge-coverage.sh',
+    'scripts/test_forge_transition.py',
+    'scripts/test_forge_fuzz_contract.py',
+    'scripts/test_forge_coverage_contract.py',
     'scripts/test_forge_migration_live.py',
     'scripts/test_forge_migration_live_workflow.py',
     'scripts/check_gitops_profile.py',
     'scripts/render_deployable_gitops_apps.py',
     'scripts/run_validation.py',
     'scripts/bootstrap/validate-gitops-selection.sh',
+    'scripts/bootstrap/install-ci-tools.sh',
     'scripts/supply-chain-posture.sh',
+    'scripts/vendored_chart_inventory.py',
     'scripts/test_python_syntax.py',
     'scripts/test_validation_runner.py',
     'scripts/test_line_endings.py',
@@ -69,9 +95,27 @@ required = [
     'scripts/test_private_values_renderer.py',
     'scripts/test_platform_secret_contract.py',
     'scripts/test_policy_examples.py',
+    'scripts/test_image_integrity_contract.py',
+    'scripts/test_pod_security_contract.py',
     'scripts/test_sops_age_policy.py',
     'scripts/test_supply_chain_helpers.py',
+    'scripts/test_supply_chain_evidence.py',
+    'scripts/test_image_inventory_evidence.py',
+    'scripts/verify_github_release_ref.py',
+    'scripts/test_github_release_ref.py',
+    'scripts/verify_github_release_approval.py',
+    'scripts/test_github_release_approval.py',
+    'scripts/verify_github_governance.py',
+    'scripts/test_github_governance.py',
+    'scripts/configure_github_governance.py',
+    'scripts/test_github_governance_configuration.py',
+    'scripts/test_dependency_review_workflow.py',
     'scripts/test_production_evidence.py',
+    'scripts/create_production_approval.py',
+    'scripts/verify_production_approval.py',
+    'scripts/verify_production_readiness_score.py',
+    'scripts/bootstrap/run-platform-production-score.sh',
+    'scripts/test_production_readiness_score.py',
     'scripts/test_backup_restore_runbook.py',
     'scripts/test_business_continuity.py',
     'scripts/test_service_catalog.py',
@@ -105,12 +149,18 @@ required = [
     'scripts/test_example_templates.py',
     'scripts/test_ansible_playbook_references.py',
     'scripts/test_gitops_application_contract.py',
+    'scripts/test_argocd_project_isolation.py',
     'scripts/test_kustomization_references.py',
     'scripts/test_gitops_helm_chart_pinning.py',
     'scripts/test_gitops_image_pinning.py',
     'scripts/test_makefile_help.py',
     'scripts/test_validation_surface_parity.py',
+    'scripts/test_observability_contract.py',
+    'scripts/test_capacity_runtime_contract.py',
+    'scripts/test_rendered_schema_contract.py',
     'scripts/validate_platform_contract.py',
+    'examples/migrations/gitlab-to-forgejo.transition.example.json',
+    'examples/migrations/github-to-forgejo.transition.example.json',
 ]
 missing = [p for p in required if not (root / p).exists()]
 if missing:
@@ -121,7 +171,7 @@ if missing:
 
 gitattributes_lines = {
     line.strip()
-    for line in (root / '.gitattributes').read_text(encoding='utf-8').splitlines()
+    for line in read_bounded_text(root / '.gitattributes').splitlines()
     if line.strip() and not line.lstrip().startswith('#')
 }
 for required_attr in (
@@ -168,7 +218,7 @@ for path in root.rglob('*'):
     if should_skip(path):
         continue
     try:
-        text = path.read_text(encoding='utf-8')
+        text = read_bounded_text(path)
     except UnicodeDecodeError:
         continue
     except OSError:

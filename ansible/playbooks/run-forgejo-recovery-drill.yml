@@ -1,0 +1,101 @@
+---
+- name: Run opt-in Forgejo singleton recovery drill
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_forgejo_recovery_confirmation_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RECOVERY_CONFIRMATION') }}"
+    platform_forgejo_recovery_drill_id_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RECOVERY_DRILL_ID') }}"
+    platform_forgejo_recovery_operator_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RECOVERY_OPERATOR') }}"
+    platform_forgejo_recovery_approver_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RECOVERY_APPROVER') }}"
+    platform_forgejo_recovery_profile_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
+    platform_forgejo_recovery_source_commit_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RECOVERY_SOURCE_COMMIT') }}"
+    platform_forgejo_recovery_evidence_file_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE') }}"
+    platform_forgejo_recovery_max_rto_seconds_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RECOVERY_MAX_RTO_SECONDS') }}"
+    platform_forgejo_recovery_http_timeout_seconds_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_RECOVERY_HTTP_TIMEOUT_SECONDS') }}"
+    platform_longhorn_encryption_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'LONGHORN_ENCRYPTION_SECRET_NAME') }}"
+    platform_forgejo_recovery_confirmation_effective: "{{ platform_forgejo_recovery_confirmation | default(platform_forgejo_recovery_confirmation_from_env, true) }}"
+    platform_forgejo_recovery_drill_id_effective: "{{ platform_forgejo_recovery_drill_id | default(platform_forgejo_recovery_drill_id_from_env, true) }}"
+    platform_forgejo_recovery_operator_effective: "{{ platform_forgejo_recovery_operator | default(platform_forgejo_recovery_operator_from_env, true) }}"
+    platform_forgejo_recovery_approver_effective: "{{ platform_forgejo_recovery_approver | default(platform_forgejo_recovery_approver_from_env, true) }}"
+    platform_forgejo_recovery_profile_effective: "{{ platform_forgejo_recovery_profile | default(platform_forgejo_recovery_profile_from_env, true) | default('premium-3node', true) }}"
+    platform_forgejo_recovery_source_commit_effective: "{{ platform_forgejo_recovery_source_commit | default(platform_forgejo_recovery_source_commit_from_env, true) }}"
+    platform_forgejo_recovery_evidence_file_effective: "{{ platform_forgejo_recovery_evidence_file | default(platform_forgejo_recovery_evidence_file_from_env, true) | default('private/forgejo-recovery-evidence.json', true) }}"
+    platform_forgejo_recovery_max_rto_seconds_effective: "{{ platform_forgejo_recovery_max_rto_seconds | default(platform_forgejo_recovery_max_rto_seconds_from_env, true) | default(300, true) | int }}"
+    platform_forgejo_recovery_http_timeout_seconds_effective: "{{ platform_forgejo_recovery_http_timeout_seconds | default(platform_forgejo_recovery_http_timeout_seconds_from_env, true) | default(10, true) | int }}"
+    platform_longhorn_encryption_secret_name_effective: "{{ platform_longhorn_encryption_secret_name | default(platform_longhorn_encryption_secret_name_from_env, true) | default('longhorn-crypto', true) }}"
+    platform_forgejo_recovery_evidence_absolute_path: "{{ playbook_dir }}/../../{{ platform_forgejo_recovery_evidence_file_effective }}"
+  tasks:
+    - name: Require explicit Forgejo recovery drill approval
+      ansible.builtin.assert:
+        that:
+          - platform_forgejo_recovery_confirmation_effective == 'FAILOVER_FORGEJO_SINGLETON'
+          - platform_forgejo_recovery_drill_id_effective is match('^[A-Za-z0-9._-]+$')
+          - platform_forgejo_recovery_operator_effective | length > 0
+          - platform_forgejo_recovery_approver_effective | length > 0
+          - platform_forgejo_recovery_operator_effective | lower != platform_forgejo_recovery_approver_effective | lower
+          - platform_forgejo_recovery_profile_effective is match('^[A-Za-z0-9._-]+$')
+          - platform_forgejo_recovery_source_commit_effective is match('^[a-f0-9]{40}$')
+          - platform_forgejo_recovery_evidence_file_effective is match('^private/[A-Za-z0-9._/-]+[.]json$')
+          - "'..' not in platform_forgejo_recovery_evidence_file_effective"
+          - platform_forgejo_recovery_max_rto_seconds_effective | int >= 30
+          - platform_forgejo_recovery_max_rto_seconds_effective | int <= 3600
+          - platform_forgejo_recovery_http_timeout_seconds_effective | int >= 1
+          - platform_forgejo_recovery_http_timeout_seconds_effective | int <= 60
+          - platform_longhorn_encryption_secret_name_effective is match('^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$')
+        fail_msg: >-
+          This drill intentionally cordons the active Forgejo node and deletes
+          the one Forgejo pod, then restores the node to schedulable. Set distinct
+          PLATFORM_FORGEJO_RECOVERY_OPERATOR and PLATFORM_FORGEJO_RECOVERY_APPROVER
+          values, a valid drill ID, a private evidence path, and
+          PLATFORM_FORGEJO_RECOVERY_CONFIRMATION=FAILOVER_FORGEJO_SINGLETON.
+      run_once: true
+
+    - name: Run measured Forgejo singleton recovery drill
+      ansible.builtin.script:
+        cmd: >-
+          {{ playbook_dir }}/../../scripts/run_forgejo_recovery_drill.py
+          --confirmation {{ platform_forgejo_recovery_confirmation_effective | quote }}
+          --drill-id {{ platform_forgejo_recovery_drill_id_effective | quote }}
+          --operator {{ platform_forgejo_recovery_operator_effective | quote }}
+          --approver {{ platform_forgejo_recovery_approver_effective | quote }}
+          --profile {{ platform_forgejo_recovery_profile_effective | quote }}
+          --source-commit {{ platform_forgejo_recovery_source_commit_effective | quote }}
+          --encryption-secret-name {{ platform_longhorn_encryption_secret_name_effective | quote }}
+          --max-rto-seconds {{ platform_forgejo_recovery_max_rto_seconds_effective }}
+          --http-timeout-seconds {{ platform_forgejo_recovery_http_timeout_seconds_effective }}
+        executable: /usr/bin/python3
+      register: platform_forgejo_recovery_drill_result
+      changed_when: true
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Create private Forgejo recovery evidence directory
+      ansible.builtin.file:
+        path: "{{ platform_forgejo_recovery_evidence_absolute_path | dirname }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Retain private Forgejo recovery evidence
+      ansible.builtin.copy:
+        content: "{{ (platform_forgejo_recovery_drill_result.stdout | from_json) | to_nice_json }}\n"
+        dest: "{{ platform_forgejo_recovery_evidence_absolute_path }}"
+        mode: "0600"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Show successful Forgejo recovery drill
+      ansible.builtin.debug:
+        msg: >-
+          Forgejo recovered on another Ready node with a new pod UID, the same
+          Deployment, Service, PVC, PV, encryption, and immutable runtime image
+          identities, healthy Longhorn storage, HTTP 200 from /api/healthz within
+          the accepted RTO, and the source node restored to schedulable.
+          Evidence: {{ platform_forgejo_recovery_evidence_file_effective }}
+      run_once: true

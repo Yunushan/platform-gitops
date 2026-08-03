@@ -30,9 +30,17 @@ import time
 from typing import Any, Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 import forge_migration as migration
+from atomic_file import atomic_write_text
+from strict_json import loads_strict_json
+from http_transport import (
+    HttpTransportPolicyError,
+    http_timeout_seconds,
+    open_http_request,
+    read_bounded_response,
+)
 
 
 TOOL = "scripts/forge_cutover.py"
@@ -70,16 +78,6 @@ DEFAULT_DESTINATION_PIPELINE_GLOBS = (
     ".woodpecker/*.yml",
     ".woodpecker/*.yaml",
 )
-SENSITIVE_LITERAL_KEYS = {
-    "access_token",
-    "authorization",
-    "client_secret",
-    "password",
-    "private_token",
-    "secret",
-    "token",
-    "value",
-}
 SENSITIVE_PROOF_KEYS = {
     "access_token",
     "authorization",
@@ -188,23 +186,10 @@ def env_name(parent: dict[str, Any], key: str, label: str, required: bool = True
 
 
 def require_credential_free_plan(value: Any, path: str = "plan") -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            normalized = str(key).strip().lower()
-            if normalized in SENSITIVE_LITERAL_KEYS and child not in (None, "", False):
-                raise CutoverError(
-                    f"{path}.{key} must not contain credential or secret data; reference an *_env variable"
-                )
-            require_credential_free_plan(child, f"{path}.{key}")
-        return
-    if isinstance(value, list):
-        for index, child in enumerate(value):
-            require_credential_free_plan(child, f"{path}[{index}]")
-        return
-    if isinstance(value, str) and "://" in value:
-        parts = urlsplit(value)
-        if parts.password:
-            raise CutoverError(f"{path} must not embed credentials in a URL")
+    try:
+        migration.require_credential_free_plan(value, path)
+    except migration.MigrationError as exc:
+        raise CutoverError(str(exc)) from exc
 
 
 def validate_accounted_entry(entry: Any, label: str, managed_fields: Iterable[str] = ()) -> dict[str, Any]:
@@ -575,17 +560,30 @@ def service_request(
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = Request(url, data=data, headers=service_headers(target), method=method)
     try:
-        with urlopen(request, timeout=30) as response:
+        timeout = http_timeout_seconds()
+    except HttpTransportPolicyError as exc:
+        raise CutoverError(str(exc)) from None
+    try:
+        with open_http_request(request, timeout=timeout) as response:
             status = response.status
-            payload = response.read().decode("utf-8")
+            payload = read_bounded_response(response).decode("utf-8")
     except HTTPError as exc:
-        payload = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = read_bounded_response(exc).decode("utf-8", errors="replace")
+        except HttpTransportPolicyError as policy_error:
+            raise CutoverError(
+                f"{method} {migration.redact_url(url)} response rejected: {policy_error}"
+            ) from policy_error
         if exc.code not in expected:
             raise CutoverError(
                 f"{method} {migration.redact_url(url)} failed with HTTP {exc.code}: "
                 f"{redact_text(payload[:500])}"
             ) from exc
         status = exc.code
+    except (HttpTransportPolicyError, UnicodeDecodeError) as exc:
+        raise CutoverError(
+            f"{method} {migration.redact_url(url)} response rejected: {exc}"
+        ) from exc
     except URLError as exc:
         raise CutoverError(f"{method} {migration.redact_url(url)} failed: {exc}") from exc
     if status not in expected:
@@ -593,7 +591,7 @@ def service_request(
             f"{method} {migration.redact_url(url)} returned HTTP {status}: {redact_text(payload[:500])}"
         )
     try:
-        decoded: Any = json.loads(payload) if payload else {}
+        decoded: Any = loads_strict_json(payload) if payload else {}
     except json.JSONDecodeError as exc:
         raise CutoverError(f"{method} {migration.redact_url(url)} returned invalid JSON") from exc
     return (status, decoded) if return_status else decoded
@@ -1235,10 +1233,7 @@ def write_proof(path: Path | None, proof: dict[str, Any]) -> dict[str, Any]:
     text = json.dumps(safe_proof, indent=2, sort_keys=True) + "\n"
     if path:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = path.with_name(f".{path.name}.tmp")
-            temporary.write_text(text, encoding="utf-8")
-            temporary.replace(path)
+            atomic_write_text(path, text)
         except OSError as exc:
             raise CutoverError(f"could not write proof {path}: {exc}") from exc
     else:

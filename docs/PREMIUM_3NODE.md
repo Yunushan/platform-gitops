@@ -18,10 +18,10 @@ The premium profile keeps the compact 3-node RKE2 footprint, but uses stricter d
 | CD / GitOps | Argo CD HA | Argo CD HA with multi-replica server, repo server, ApplicationSet, and Redis HA |
 | Identity | Local app credentials | Keycloak SSO on `sso.<PLATFORM_DOMAIN>` backed by CloudNativePG |
 | Backups | Velero placeholders | Velero schedule, CSI snapshot, and off-cluster object storage placeholders |
-| Observability | Minimal values | HA Prometheus, Alertmanager, Grafana, Loki, and service monitors |
-| Object storage | External S3 placeholders | Optional in-cluster MinIO plus external/off-cluster S3 targets |
+| Observability | Minimal values | HA Prometheus, routed Alertmanager, Grafana SSO, authenticated retained Loki, clustered Alloy collection, and delivery proof |
+| Object storage | External S3 placeholders | Maintained external/off-cluster S3 required; archived MinIO is excluded |
 | Secrets | SOPS + age examples | External Secrets Operator plus OpenBao HA Raft backend for private secret workflows |
-| Security | Optional policy examples | Kyverno audit baseline, Tetragon runtime observability, plus additional NetworkPolicy and signed-image examples |
+| Security | Optional policy examples | Kyverno stable CEL baseline, staged signed-image admission, Tetragon runtime observability, and managed NetworkPolicy |
 
 ## Activation
 
@@ -59,7 +59,7 @@ Required private inputs include:
 - Forgejo database, Redis, and repository backup settings.
 - Keycloak SSO host, admin secret, and CloudNativePG database secret settings.
 - Woodpecker OAuth and agent settings.
-- Grafana, Prometheus, and Loki storage sizes, plus Grafana external PostgreSQL settings for production monitoring.
+- Grafana, Prometheus, and Loki storage sizes, Loki retention and gateway credentials, an Alertmanager receiver, plus Grafana external PostgreSQL settings for production monitoring. See `docs/OBSERVABILITY.md`.
 
 `make platform-render-private-values` can render first-deploy private values
 for Forgejo, Argo CD, Woodpecker, Keycloak, Harbor, Grafana, Prometheus, Loki, Velero,
@@ -124,7 +124,7 @@ FORGEJO_DATABASE_HOST=<POSTGRES_HOST>:5432 \
 FORGEJO_DATABASE_NAME=forgejo \
 FORGEJO_DATABASE_USER=forgejo \
 FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
-FORGEJO_DATABASE_SSL_MODE=disable \
+FORGEJO_DATABASE_SSL_MODE=verify-full \
 make platform-render-private-values
 ```
 
@@ -134,11 +134,12 @@ For Redis-backed cache and queue, the premium default is
 derives the `forgejo/forgejo-redis` URI secret. To use another cache, provide
 `FORGEJO_REDIS_URL`, or provide `FORGEJO_REDIS_HOST` plus
 `FORGEJO_REDIS_PASSWORD` and optional `FORGEJO_REDIS_PORT`, `FORGEJO_REDIS_DB`,
-and `FORGEJO_REDIS_TLS`.
+and `FORGEJO_REDIS_TLS`. Managed Valkey transport is TLS-only; production-strict
+rendering rejects `FORGEJO_REDIS_TLS=false`.
 
 ## CI/CD high availability
 
-The premium profile keeps Forgejo as the Git forge and uses Woodpecker plus Argo CD for CI/CD. Forgejo may remain single-replica until repository storage, SSH access, and restore procedures are proven, but that does not mean CI/CD is single-node.
+The premium profile keeps Forgejo as the Git forge and uses Woodpecker plus Argo CD for CI/CD. Forgejo remains single-replica until repository storage, SSH access, and restore procedures are proven. It uses a `Recreate` update strategy to prevent concurrent access to its RWO volume and a `minAvailable: 1` PodDisruptionBudget to block unapproved voluntary eviction, but node loss or an intentional upgrade still causes a service interruption. This does not mean CI/CD is single-node.
 
 Woodpecker is configured for the 3-node cluster with:
 
@@ -146,6 +147,7 @@ Woodpecker is configured for the 3-node cluster with:
 - `agent.replicas: 3` for Kubernetes-backed build agents.
 - Explicit server and agent image repositories plus `WOODPECKER_IMAGE_TAG`, defaulting to `v3.16.0`.
 - PostgreSQL-backed state through `WOODPECKER_DATABASE_DRIVER=postgres`.
+- A 60-minute default and 120-minute maximum pipeline timeout, enforced by the Woodpecker server.
 - Traefik ingress at the effective CI hostname, defaulting to `woodpecker.<PLATFORM_DOMAIN>` unless `platform_ci_host` or `platform_woodpecker_host` is set.
 
 The first-deploy renderer defaults Woodpecker to PostgreSQL HA against the
@@ -165,7 +167,8 @@ WOODPECKER_AGENT_SECRET_NAME=woodpecker-agent-secret \
 WOODPECKER_DATABASE_HOST=platform-postgres-rw.platform-databases.svc.cluster.local:5432 \
 WOODPECKER_DATABASE_NAME=woodpecker \
 WOODPECKER_DATABASE_USER=woodpecker \
-WOODPECKER_DATABASE_SSLMODE=disable \
+WOODPECKER_DATABASE_SSLMODE=verify-full \
+WOODPECKER_DATABASE_SSLROOTCERT=/etc/ssl/platform-postgres/ca-certificates.crt \
 PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true \
 make platform-app-secrets
 
@@ -188,7 +191,8 @@ render values that reference only Secret names and non-secret endpoints. If
 you keep the shared Valkey default, `platform-app-secrets` derives
 `harbor/harbor-redis` from `platform-cache/platform-valkey-auth`; override
 `HARBOR_REDIS_ADDR` and `HARBOR_REDIS_PASSWORD` only for a separate Redis or
-Valkey endpoint:
+Valkey endpoint. `HARBOR_REDIS_TLS` defaults to `true` and cannot be disabled in
+production-strict rendering:
 
 ```bash
 HARBOR_DATABASE_PASSWORD='<PASSWORD>' \
@@ -203,6 +207,7 @@ make platform-app-secrets
 HARBOR_DATABASE_MODE=external \
 HARBOR_DATABASE_HOST=<POSTGRES_HOST> \
 HARBOR_DATABASE_SECRET_NAME=harbor-database \
+HARBOR_DATABASE_SSLMODE=verify-full \
 HARBOR_REDIS_MODE=external \
 HARBOR_REDIS_ADDR=platform-valkey-primary.platform-cache.svc.cluster.local:6379 \
 HARBOR_REDIS_SECRET_NAME=harbor-redis \
@@ -228,7 +233,7 @@ GRAFANA_DATABASE_HOST=<POSTGRES_HOST> \
 GRAFANA_DATABASE_NAME=grafana \
 GRAFANA_DATABASE_USER=grafana \
 GRAFANA_DATABASE_SECRET_NAME=grafana-database \
-GRAFANA_DATABASE_SSL_MODE=disable \
+GRAFANA_DATABASE_SSL_MODE=verify-full \
 make platform-render-private-values
 ```
 
@@ -248,8 +253,44 @@ With the 3 RKE2 server nodes healthy, these services are scheduled across the cl
 
 The premium profile installs Kyverno with audit-first defaults, then registers
 `platform-policies` for baseline workload and private Secret workflow checks.
-These policies intentionally start with `validationFailureAction: Audit`; switch
-individual policies to `Enforce` only after the policy reports are clean.
+The three managed policies use Kyverno 1.18's stable
+`policies.kyverno.io/v1` CEL API and intentionally start with
+`validationActions: [Audit]`. Set `PLATFORM_POLICY_ENFORCEMENT=Enforce` only
+after reports are clean; private rendering maps that value to the stable `Deny`
+action.
+
+An upgrade from the former `kyverno.io/v1` ClusterPolicies is deliberately a
+reviewed migration. Confirm all three replacement ValidatingPolicies are Ready,
+then approve the guarded Argo CD prune for the two superseded ClusterPolicies.
+`make platform-policy-readiness` rejects a partially migrated state.
+
+The separate `platform-image-integrity` Application uses Kyverno 1.18's stable
+`ImageValidatingPolicy` API. It remains absent while
+`PLATFORM_IMAGE_INTEGRITY_MODE=disabled`, starts in `Audit` after a private
+registry and approved Cosign PEM public key are rendered, and moves to `Deny`
+only for production. The production readiness gate requires
+`PLATFORM_IMAGE_INTEGRITY_CANARY_IMAGE` as a genuinely signed digest, admits it
+with server-side dry-run, derives an invalid digest, and proves that Kyverno
+rejects the invalid form. Configuration and key-rotation steps are in
+`docs/SUPPLY_CHAIN.md`.
+
+Managed application namespaces declare Pod Security Admission intent instead
+of inheriting an implicit cluster default. External Secrets and OpenBao enforce
+`restricted`; ordinary controllers and stateful platform namespaces enforce
+`baseline` while auditing and warning on `restricted`.
+
+Explicit privileged namespaces are limited to `longhorn-system`,
+`metallb-system`, `monitoring`, `tetragon`, and `velero`. These stacks need host
+storage, host networking, node metrics, eBPF, or filesystem-backup access that
+the baseline profile intentionally rejects. `kube-system` is the corresponding
+RKE2-managed exception. The Pod-security ValidatingPolicy excludes exactly those
+namespaces while the workload resource-request policy still applies to their
+controllers. Every other AppProject destination must have a namespace manifest
+with a baseline or restricted enforcement level, and validation fails when a
+new destination is left unclassified. Semgrep's privileged-container exceptions
+are limited to the three exact Longhorn 1.12.0 host-storage templates and the
+exact Tetragon 1.6.0 values file that enables required eBPF host access; changing
+either vendored chart version therefore requires an explicit exception review.
 
 The profile also installs Tetragon in a dedicated privileged namespace for
 Cilium/eBPF runtime observability. Tetragon exports process and policy events,
@@ -258,11 +299,16 @@ arguments from exported events, and keeps runtime hooks disabled by default.
 Promote runtime enforcement deliberately after observing normal workload
 behavior and documenting allowed processes in the private deployment repo.
 
-The `minio` app provides an in-cluster S3-compatible target for lab, staging,
-and controlled internal integrations. Do not rely on the same cluster as the
-only disaster-recovery target: Velero, CloudNativePG WAL archives, Harbor
-registry backups, and Loki chunks should also replicate to external/off-cluster
-object storage for production.
+The production `premium-3node` application set does not register MinIO because
+the upstream MinIO server project is archived and no longer receives normal
+maintenance. Use maintained external/off-cluster S3-compatible storage for
+Velero, CloudNativePG WAL archives, Harbor registry objects, and Loki chunks.
+
+`PLATFORM_PROFILE=premium-3node-lab` adds the retained in-cluster MinIO chart
+for isolated labs and migration testing only. It is not a production or
+disaster-recovery profile. When moving an existing installation to the
+production profile, migrate all objects first, verify restores from the new
+target, and only then approve Argo CD's protected `Prune=confirm` removal.
 
 ## Secret management
 
@@ -273,6 +319,17 @@ secret-management path. External Secrets installs CRDs and reconciles
 Kubernetes Secrets. OpenBao is deployed internally in HA Raft mode with
 retained Longhorn data and audit PVCs, but it is not exposed through public
 ingress by default.
+
+The Raft configuration declares TLS-verified `retry_join` targets for all three
+StatefulSet ordinals. After the first server is initialized and unsealed, later
+ordinals join the same Raft cluster automatically; with the default Shamir seal,
+each joined server must still be unsealed by the approved key custodians.
+
+Use `make platform-openbao-status` for a sanitized diagnostic that does not
+require a token and does not expose the cluster identifier. Production
+acceptance uses `make platform-openbao-verify` and fails unless at least three
+current and Ready replicas are initialized, unsealed, HA-enabled, and report one
+shared cluster identity. The verifier hashes that identity before printing it.
 
 OpenBao agent injection is fail-closed and namespace opt-in. Enable it only
 after the injector has ready endpoints by labeling an application namespace:
@@ -294,6 +351,9 @@ offline/HSM/KMS process, enable Kubernetes auth, create least-privilege
 policies, and migrate generated bootstrap secrets into ExternalSecret
 definitions. Keep OpenBao policies, tokens, unseal material, and backend
 credentials in the private deployment repository or a controlled secret system.
+Follow `docs/OPENBAO_CEREMONY.md`; production evidence rejects missing, stale,
+self-approved, plaintext, weak-quorum, configuration-mismatched, or
+cluster-mismatched ceremony records.
 
 Run deeper repository security checks with:
 
@@ -317,13 +377,39 @@ That target writes an SPDX SBOM with Syft under `rendered/supply-chain`, capture
 OpenSSF Scorecard output when `scorecard` is installed, and can verify a signed
 image with Cosign when `COSIGN_IMAGE` and `COSIGN_PUBLIC_KEY` are set.
 
+Production promotion uses the strict form:
+
+```bash
+COSIGN_IMAGES_FILE=private/supply-chain/cosign-images.txt \
+make supply-chain-verify
+```
+
+It blocks on scanner findings, malformed or empty SPDX evidence, a Scorecard
+below the configured threshold, tag-only image references, and failed Cosign
+verification. See `docs/SUPPLY_CHAIN.md` for the inventory format and limits.
+
 ## Storage stance
 
-The premium profile keeps Longhorn instead of switching to Rook/Ceph. For only three nodes, Longhorn is the more practical default. The profile creates:
+The premium profile keeps Longhorn instead of switching to Rook/Ceph. For only
+three nodes, Longhorn is the more practical default. The profile creates:
 
-- `longhorn-standard` with 2 replicas for ordinary stateful workloads.
-- `longhorn-critical` with 3 replicas for critical platform state.
-- `longhorn-cache` with 1 replica for rebuildable cache data.
+- `longhorn-standard-encrypted` with 2 replicas for ordinary stateful workloads.
+- `longhorn-critical-encrypted` with 3 replicas for critical platform state.
+- `longhorn-cache-encrypted` with 1 replica for rebuildable cache data.
+- Legacy unencrypted class names remain non-default only so existing PVCs keep
+  their immutable identity during a controlled migration.
+
+`make platform-app-secrets` creates and preserves the
+`longhorn-system/longhorn-crypto` LUKS key before PVC provisioning. Keep an
+encrypted recovery copy outside the cluster. The general app-secret rotation
+switch intentionally never replaces this key. Every RKE2 node must have
+`cryptsetup` and `dm_crypt`; node preparation installs and verifies both.
+
+Kubernetes cannot encrypt an existing PVC in place. Upgrade by restoring each
+workload into a new PVC that selects an encrypted class, validate application
+data, then retire the old PVC only after rollback and retention windows expire.
+The production capacity gate fails while any bound Longhorn PVC still uses a
+legacy class or lacks encrypted CSI attributes and Secret references.
 
 Use dedicated disks for Longhorn and configure node or disk labels before production.
 
@@ -353,8 +439,10 @@ Do not call the platform production-ready until these checks pass:
     image or chart tags such as `latest`, `next`, `nightly`, `dev`, or branch
     style tags in curated GitOps app manifests. `renovate.json` enables
     Renovate dependency dashboards, Helm grouping, and Docker `pinDigests`;
-    `policies/kyverno/verify-signed-images.example.yaml` provides an opt-in
-    Cosign verification baseline once CI signs platform images.
+    `policies/kyverno/verify-signed-images.example.yaml` provides a stable
+    copyable baseline, while the premium `platform-image-integrity` Application
+    enforces Cosign verification after CI signs platform images and the live
+    admission canary passes.
 
 Use `docs/PRODUCTION_READINESS.md` as the final go/no-go checklist for live
 gates, private evidence, exceptions, launch decision, and post-launch
@@ -411,8 +499,9 @@ For the full read-only production readiness gate, run:
 make platform-production-check
 ```
 
-That command chains repository validation, the selected GitOps profile
-placeholder check, RKE2 verification, platform status, and a production-mode
+That command chains repository and supply-chain validation, the selected
+GitOps profile placeholder check, RKE2 verification, platform status, live
+capacity, network-isolation, internal-TLS, observability, and a production-mode
 platform app health gate. Production mode remains strict even when the normal
 health runner loads `private/seed-git.env` in bootstrap mode. Bootstrap mode
 accepts temporary seed Git and only a verified uninitialized/sealed OpenBao

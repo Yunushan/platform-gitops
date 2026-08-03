@@ -1,0 +1,11 @@
+profile: premium-3node-lab
+summary: Non-production premium profile with archived in-cluster MinIO enabled for labs and migration testing.
+inherits: premium-3node
+components:
+  object_storage: archived-minio-lab-only
+includes:
+  - gitops/clusters/rke2-main/premium-3node/apps/minio
+operational_requirements:
+  - not_for_production
+  - no_disaster_recovery_claims
+  - migrate_to_maintained_external_s3_before_production

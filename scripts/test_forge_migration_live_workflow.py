@@ -19,7 +19,10 @@ def main() -> int:
     text = WORKFLOW.read_text(encoding="utf-8")
     for expected in (
         "workflow_dispatch:",
+        "concurrency:\n  group: live-forge-migration-acceptance\n  cancel-in-progress: false",
         "environment: forge-migration-live-acceptance",
+        "timeout-minutes: 120",
+        "persist-credentials: false",
         "FORGE_MIGRATION_LIVE: '1'",
         "FORGE_MIGRATION_LIVE_GITHUB_NAMESPACE: ${{ secrets.FORGE_MIGRATION_LIVE_GITHUB_NAMESPACE }}",
         "FORGE_MIGRATION_LIVE_GITLAB_NAMESPACE: ${{ secrets.FORGE_MIGRATION_LIVE_GITLAB_NAMESPACE }}",

@@ -24,10 +24,23 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any
+import time
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from atomic_file import atomic_write_text
+from bounded_file import read_bounded_text
+from bounded_subprocess import BoundedSubprocessError, run_bounded
+from http_transport import (
+    HttpTransportPolicyError,
+    http_timeout_seconds,
+    open_http_request,
+    read_bounded_response,
+)
+from strict_json import loads_strict_json
+from subprocess_timeout import bounded_timeout_seconds
 
 
 SUPPORTED_DIRECTIONS = {
@@ -36,6 +49,8 @@ SUPPORTED_DIRECTIONS = {
     "forgejo-to-github",
     "forgejo-to-gitlab",
 }
+METADATA_VERIFICATION_ATTEMPTS = 6
+METADATA_VERIFICATION_INITIAL_DELAY_SECONDS = 0.25
 OPTIONAL_DIRECTIONS = {
     "forgejo-to-forgejo",
     "github-to-gitlab",
@@ -61,6 +76,17 @@ UNSUPPORTED_METADATA_SURFACES = {
     "branch_protection",
     "webhooks",
 }
+SENSITIVE_LITERAL_KEYS = {
+    "access_token",
+    "authorization",
+    "client_secret",
+    "password",
+    "private_token",
+    "secret",
+    "token",
+    "value",
+}
+MIGRATION_COMMAND_TIMEOUT_SECONDS = 7_200
 
 
 class MigrationError(RuntimeError):
@@ -100,14 +126,29 @@ class ApiTarget:
 
 
 def run_command(args: list[str], cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        args,
-        cwd=str(cwd) if cwd else None,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        timeout = bounded_timeout_seconds(
+            MIGRATION_COMMAND_TIMEOUT_SECONDS,
+            "FORGE_MIGRATION_COMMAND_TIMEOUT_SECONDS",
+        )
+    except ValueError as exc:
+        raise MigrationError(str(exc)) from None
+    try:
+        result = run_bounded(
+            args,
+            cwd=str(cwd) if cwd else None,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        command = " ".join(redact_url(arg) for arg in args)
+        raise MigrationError(
+            f"command timed out after {timeout:g} seconds: {command}"
+        ) from None
+    except (BoundedSubprocessError, ValueError) as exc:
+        command = " ".join(redact_url(arg) for arg in args)
+        raise MigrationError(f"command output rejected: {command}: {exc}") from None
     if check and result.returncode != 0:
         command = " ".join(redact_url(arg) for arg in args)
         stdout = result.stdout
@@ -238,12 +279,36 @@ def normalize_bool(value: Any, default: bool) -> bool:
 
 def load_plan(path: Path) -> dict[str, Any]:
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = loads_strict_json(read_bounded_text(path, encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise MigrationError(f"{path}: invalid JSON: {exc}") from exc
     if not isinstance(loaded, dict):
         raise MigrationError(f"{path}: JSON root must be an object")
     return loaded
+
+
+def require_credential_free_plan(value: Any, path: str = "plan") -> None:
+    """Reject literal credentials while allowing references to environment variables."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).strip().lower()
+            if normalized in SENSITIVE_LITERAL_KEYS and child not in (None, "", False):
+                raise MigrationError(
+                    f"{path}.{key} must not contain credential or secret data; reference an *_env variable"
+                )
+            require_credential_free_plan(child, f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            require_credential_free_plan(child, f"{path}[{index}]")
+        return
+    if isinstance(value, str) and "://" in value:
+        try:
+            parts = urlsplit(value)
+        except ValueError as exc:
+            raise MigrationError(f"{path} must contain a valid URL") from exc
+        if parts.password or (parts.scheme in {"http", "https"} and parts.username):
+            raise MigrationError(f"{path} must not embed credentials in a URL")
 
 
 def get_url(raw: dict[str, Any], flat_key: str, nested_key: str) -> str:
@@ -363,6 +428,7 @@ def parse_repo(raw: dict[str, Any], index: int, direction: str) -> RepoPlan:
 
 
 def parse_plan(data: dict[str, Any]) -> tuple[str, list[RepoPlan]]:
+    require_credential_free_plan(data)
     direction = str(data.get("direction") or "").strip().lower()
     allowed = SUPPORTED_DIRECTIONS | OPTIONAL_DIRECTIONS
     if direction not in allowed:
@@ -506,6 +572,14 @@ def api_headers(target: ApiTarget) -> dict[str, str]:
     return headers
 
 
+def redact_api_text(target: ApiTarget, value: str) -> str:
+    """Remove the configured API credential from remote diagnostics."""
+    credential_value = os.environ.get(target.token_env, "") if target.token_env else ""
+    if credential_value:
+        value = value.replace(credential_value, "<redacted>")
+    return value
+
+
 def api_request(
     target: ApiTarget,
     method: str,
@@ -520,32 +594,55 @@ def api_request(
         url = f"{url}?{urlencode(query)}"
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = Request(url, data=data, headers=api_headers(target), method=method)
+    attempts = 3 if method.upper() == "GET" else 1
     try:
-        with urlopen(request, timeout=30) as response:
-            status = response.status
-            payload = response.read().decode("utf-8")
-    except HTTPError as exc:
-        payload = exc.read().decode("utf-8", errors="replace")
-        if exc.code in expected:
+        timeout = http_timeout_seconds()
+    except HttpTransportPolicyError as exc:
+        raise MigrationError(str(exc)) from None
+    for attempt in range(1, attempts + 1):
+        try:
+            with open_http_request(request, timeout=timeout) as response:
+                status = response.status
+                payload = read_bounded_response(response).decode("utf-8")
+            break
+        except HTTPError as exc:
             try:
-                decoded = json.loads(payload) if payload else {}
-            except json.JSONDecodeError as decode_error:
+                payload = read_bounded_response(exc).decode("utf-8", errors="replace")
+            except HttpTransportPolicyError as policy_error:
                 raise MigrationError(
-                    f"{method} {redact_url(url)} returned invalid JSON: {decode_error}"
-                ) from decode_error
-            return (exc.code, decoded) if return_status else decoded
-        raise MigrationError(
-            f"{method} {redact_url(url)} failed with HTTP {exc.code}: {payload[:500]}"
-        ) from exc
-    except URLError as exc:
-        raise MigrationError(f"{method} {redact_url(url)} failed: {exc}") from exc
+                    f"{method} {redact_url(url)} response rejected: {policy_error}"
+                ) from policy_error
+            if exc.code in expected:
+                try:
+                    decoded = loads_strict_json(payload) if payload else {}
+                except json.JSONDecodeError as decode_error:
+                    raise MigrationError(
+                        f"{method} {redact_url(url)} returned invalid JSON: {decode_error}"
+                    ) from decode_error
+                return (exc.code, decoded) if return_status else decoded
+            raise MigrationError(
+                f"{method} {redact_url(url)} failed with HTTP {exc.code}: "
+                f"{redact_api_text(target, payload[:500])}"
+            ) from exc
+        except (HttpTransportPolicyError, UnicodeDecodeError) as exc:
+            raise MigrationError(
+                f"{method} {redact_url(url)} response rejected: {exc}"
+            ) from exc
+        except (URLError, ConnectionError, TimeoutError) as exc:
+            if attempt < attempts:
+                time.sleep(0.1 * (2 ** (attempt - 1)))
+                continue
+            raise MigrationError(f"{method} {redact_url(url)} failed after {attempt} attempt(s): {exc}") from exc
     if status not in expected:
-        raise MigrationError(f"{method} {redact_url(url)} returned HTTP {status}: {payload[:500]}")
+        raise MigrationError(
+            f"{method} {redact_url(url)} returned HTTP {status}: "
+            f"{redact_api_text(target, payload[:500])}"
+        )
     if not payload:
         decoded = {}
         return (status, decoded) if return_status else decoded
     try:
-        decoded = json.loads(payload)
+        decoded = loads_strict_json(payload)
     except json.JSONDecodeError as exc:
         raise MigrationError(f"{method} {redact_url(url)} returned invalid JSON: {exc}") from exc
     return (status, decoded) if return_status else decoded
@@ -905,6 +1002,26 @@ def compare_label_sets(source_labels: list[dict[str, str]], destination_labels: 
     }
 
 
+def poll_verified_comparison(
+    loader: Callable[[], dict[str, Any]],
+    *,
+    attempts: int = METADATA_VERIFICATION_ATTEMPTS,
+    initial_delay_seconds: float = METADATA_VERIFICATION_INITIAL_DELAY_SECONDS,
+) -> dict[str, Any]:
+    """Retry a post-write comparison while forge APIs converge."""
+
+    if attempts <= 0:
+        raise ValueError("comparison attempts must be greater than zero")
+    comparison: dict[str, Any] = {}
+    for attempt in range(attempts):
+        comparison = loader()
+        if comparison.get("verified") is True:
+            return comparison
+        if attempt + 1 < attempts:
+            time.sleep(initial_delay_seconds * (2**attempt))
+    return comparison
+
+
 def migrate_labels(repo: RepoPlan) -> dict[str, Any]:
     mode = metadata_mode(repo, "labels")
     if mode == "skip":
@@ -926,8 +1043,9 @@ def migrate_labels(repo: RepoPlan) -> dict[str, Any]:
         elif existing != label:
             update_label(destination, raw_by_name[label["name"]], label)
             updated += 1
-    destination_after = normalized_labels(list_labels(destination))
-    comparison = compare_label_sets(source_labels, destination_after)
+    comparison = poll_verified_comparison(
+        lambda: compare_label_sets(source_labels, normalized_labels(list_labels(destination)))
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -1157,8 +1275,11 @@ def migrate_milestones(repo: RepoPlan) -> dict[str, Any]:
         elif existing != milestone:
             update_milestone(destination, raw_by_title[milestone["title"]], milestone)
             updated += 1
-    destination_after = normalized_milestones(list_milestones(destination))
-    comparison = compare_milestone_sets(source_milestones, destination_after)
+    comparison = poll_verified_comparison(
+        lambda: compare_milestone_sets(
+            source_milestones, normalized_milestones(list_milestones(destination))
+        )
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -1342,8 +1463,11 @@ def migrate_releases(repo: RepoPlan) -> dict[str, Any]:
         elif existing != release:
             update_release(destination, raw_by_tag[release["tag_name"]], release)
             updated += 1
-    destination_after = normalized_releases(list_releases(destination))
-    comparison = compare_release_sets(source_releases, destination_after)
+    comparison = poll_verified_comparison(
+        lambda: compare_release_sets(
+            source_releases, normalized_releases(list_releases(destination))
+        )
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -1780,8 +1904,9 @@ def migrate_issues(repo: RepoPlan) -> dict[str, Any]:
             create_issue_comment(destination, existing_raw, comment_body)
             comments_created += 1
 
-    destination_after = normalized_issues(destination)
-    comparison = compare_issue_sets(source_issues, destination_after)
+    comparison = poll_verified_comparison(
+        lambda: compare_issue_sets(source_issues, normalized_issues(destination))
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -2188,7 +2313,11 @@ def migrate_change_requests(repo: RepoPlan) -> dict[str, Any]:
         for comment_body in missing_comment_bodies(request["comments"], destination_comments):
             create_change_request_comment(destination, existing_raw, comment_body)
             comments_created += 1
-    comparison = compare_change_request_sets(source_requests, normalized_change_requests(destination))
+    comparison = poll_verified_comparison(
+        lambda: compare_change_request_sets(
+            source_requests, normalized_change_requests(destination)
+        )
+    )
     return {
         "mode": mode,
         "status": "verified" if comparison["verified"] else "failed",
@@ -2625,10 +2754,42 @@ def write_proof(path: Path | None, proof: dict[str, Any]) -> None:
     proof["proof_sha256"] = proof_digest(proof)
     text = json.dumps(proof, indent=2, sort_keys=True) + "\n"
     if path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        atomic_write_text(path, text)
     else:
         print(text, end="")
+
+
+def report_unverified_proof(proof: dict[str, Any]) -> None:
+    """Emit a compact, credential-safe reason for a rejected proof."""
+
+    print("forge migration verification failed:", file=sys.stderr)
+    repositories = proof.get("repositories")
+    if not isinstance(repositories, list):
+        print(" - proof contains no repository results", file=sys.stderr)
+        return
+    for repository in repositories:
+        if not isinstance(repository, dict) or repository.get("verified") is True:
+            continue
+        name = str(repository.get("name") or "unnamed")
+        reasons: list[str] = []
+        error = str(repository.get("error") or "").strip()
+        if error:
+            reasons.append(error)
+        for surface in ("destination_repository", "git", "wiki", "lfs"):
+            result = repository.get(surface)
+            if isinstance(result, dict) and result.get("verified") is False:
+                reasons.append(surface)
+        metadata = repository.get("metadata")
+        if isinstance(metadata, dict) and metadata.get("verified") is False:
+            failed_metadata = sorted(
+                key
+                for key, value in metadata.items()
+                if isinstance(value, dict) and value.get("verified") is False
+            )
+            reasons.extend(f"metadata.{surface}" for surface in failed_metadata)
+        if not reasons:
+            reasons.append("unverified result")
+        print(f" - {name}: {', '.join(reasons)}", file=sys.stderr)
 
 
 def command_validate_plan(args: argparse.Namespace) -> int:
@@ -2667,7 +2828,10 @@ def command_verify(args: argparse.Namespace) -> int:
             results.append(failed_repository_result(repo, exc))
     proof = build_proof(direction, "verify", results)
     write_proof(args.proof, proof)
-    return 0 if proof["verified"] else 1
+    if not proof["verified"]:
+        report_unverified_proof(proof)
+        return 1
+    return 0
 
 
 def command_migrate(args: argparse.Namespace) -> int:
@@ -2690,7 +2854,10 @@ def command_migrate(args: argparse.Namespace) -> int:
             temporary.cleanup()
     proof = build_proof(direction, "migrate", results)
     write_proof(args.proof, proof)
-    return 0 if proof["verified"] else 1
+    if not proof["verified"]:
+        report_unverified_proof(proof)
+        return 1
+    return 0
 
 
 def command_verify_proof(args: argparse.Namespace) -> int:

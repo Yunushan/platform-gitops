@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: privilege-escalation
+  namespace: default
+spec:
+  securityContext:
+    runAsNonRoot: true
+  containers:
+    - name: app
+      image: registry.example.test/app@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee

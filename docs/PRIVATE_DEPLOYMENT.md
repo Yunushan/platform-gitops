@@ -185,6 +185,9 @@ as `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
 Woodpecker HA default so a missing datasource secret fails before rollout. Set
 `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` for production so missing
 Loki, Velero, or CloudNativePG object-storage credential secrets fail before app sync.
+Production strict mode also requires `ALERTMANAGER_WEBHOOK_URL` or a complete
+`ALERTMANAGER_CONFIG`; it generates synchronized Loki gateway/Grafana client
+credentials automatically. See `docs/OBSERVABILITY.md`.
 Set `PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=true` when only the
 CloudNativePG backup credential secret should be mandatory.
 Set `PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true`,
@@ -202,6 +205,30 @@ Set `PLATFORM_APP_SECRET_REQUIRE_KEYCLOAK_DATABASE=true` when you want a
 predefined Keycloak database password instead of generated first-deploy
 credentials.
 
+Premium first-deploy rendering defaults persistent workloads to
+`longhorn-standard-encrypted` or `longhorn-critical-encrypted`.
+Run `make platform-app-secrets` before any encrypted PVC is provisioned so
+`longhorn-system/longhorn-crypto` exists. The task preserves an existing key,
+uses `LONGHORN_ENCRYPTION_KEY` when supplied, or generates a high-entropy key
+when `LONGHORN_ENCRYPTION_AUTO_GENERATE=true`. It also writes the authoritative
+cluster key to the Git-ignored, mode-`0600`
+`LONGHORN_ENCRYPTION_RECOVERY_FILE` (default
+`private/longhorn-encryption.key`). Point that setting at an encrypted mounted
+recovery system or copy the resulting file into a separate failure domain. The
+global application secret rotation switch deliberately does not rotate this
+key because replacing it would make existing encrypted volumes unreadable. If
+the live Secret and an existing recovery file differ, automation fails closed
+instead of overwriting either copy.
+
+StorageClass changes do not encrypt an existing PVC in place. The Argo CD
+Applications preserve immutable storage-class fields on existing PVCs and
+StatefulSet claim templates while using encrypted classes for newly created
+objects. Migrate existing data in a maintenance window by restoring or copying
+it into a new encrypted PVC, validating the application, and retiring the old
+PVC only after retained backup and rollback evidence exist. Production capacity
+verification reports every remaining bound Longhorn PVC that still uses a
+legacy plaintext class.
+
 For production Woodpecker HA, use the shared `platform-postgres` CloudNativePG
 cluster by default. `platform-app-secrets` generates the datasource and the
 matching `platform-databases/woodpecker-database` role password secret unless
@@ -218,7 +245,8 @@ WOODPECKER_AGENT_SECRET_NAME=woodpecker-agent-secret \
 WOODPECKER_DATABASE_HOST=platform-postgres-rw.platform-databases.svc.cluster.local:5432 \
 WOODPECKER_DATABASE_NAME=woodpecker \
 WOODPECKER_DATABASE_USER=woodpecker \
-WOODPECKER_DATABASE_SSLMODE=disable \
+WOODPECKER_DATABASE_SSLMODE=verify-full \
+WOODPECKER_DATABASE_SSLROOTCERT=/etc/ssl/platform-postgres/ca-certificates.crt \
 PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true \
 make platform-app-secrets
 ```
@@ -241,7 +269,7 @@ GRAFANA_DATABASE_HOST=<POSTGRES_HOST> \
 GRAFANA_DATABASE_NAME=grafana \
 GRAFANA_DATABASE_USER=grafana \
 GRAFANA_DATABASE_SECRET_NAME=grafana-database \
-GRAFANA_DATABASE_SSL_MODE=disable \
+GRAFANA_DATABASE_SSL_MODE=verify-full \
 make platform-render-private-values
 ```
 
@@ -271,6 +299,7 @@ HARBOR_DATABASE_HOST=<POSTGRES_HOST> \
 HARBOR_DATABASE_NAME=registry \
 HARBOR_DATABASE_USER=harbor \
 HARBOR_DATABASE_SECRET_NAME=harbor-database \
+HARBOR_DATABASE_SSLMODE=verify-full \
 HARBOR_REDIS_MODE=external \
 HARBOR_REDIS_ADDR=platform-valkey-primary.platform-cache.svc.cluster.local:6379 \
 HARBOR_REDIS_SECRET_NAME=harbor-redis \
@@ -300,7 +329,7 @@ FORGEJO_DATABASE_HOST=<POSTGRES_HOST>:5432 \
 FORGEJO_DATABASE_NAME=forgejo \
 FORGEJO_DATABASE_USER=forgejo \
 FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
-FORGEJO_DATABASE_SSL_MODE=disable \
+FORGEJO_DATABASE_SSL_MODE=verify-full \
 make platform-render-private-values
 ```
 
@@ -309,7 +338,15 @@ For Redis-backed cache and queue, the premium default is
 `FORGEJO_REDIS_URL`, or provide `FORGEJO_REDIS_HOST`,
 `FORGEJO_REDIS_PASSWORD`, and optional `FORGEJO_REDIS_PORT`,
 `FORGEJO_REDIS_DB`, and `FORGEJO_REDIS_TLS` before
-`make platform-app-secrets` only when overriding the shared cache.
+`make platform-app-secrets` only when overriding the shared cache. TLS defaults
+to enabled and production-strict rendering rejects a plaintext override.
+
+For an existing installation created before managed Valkey TLS, run
+`make platform-app-secrets` before synchronizing `platform-valkey`, `forgejo`,
+and `harbor`. The command idempotently reconciles existing Forgejo and Harbor
+cache URI Secrets from `redis://` to `rediss://`; it does not print the URI or
+password. Then synchronize the three applications and run
+`make platform-internal-tls-verify`.
 
 ## Optional Internal PKI
 
@@ -425,6 +462,10 @@ Documentation
 Default profiles without real organization values
 ```
 
+Public examples may describe supply-chain evidence schemas, but they must not
+contain an organization's registry inventory, vulnerability findings, ticket
+identifiers, approver identities, or accepted-risk records.
+
 ## What Stays Private
 
 The private deployment repo should contain:
@@ -448,6 +489,8 @@ capacity planning evidence from docs/CAPACITY_PLANNING.md
 compliance and audit evidence from docs/COMPLIANCE_AUDIT.md
 release and environment promotion evidence from docs/RELEASE_PROMOTION.md
 alert routing and SLO evidence from docs/ALERTING.md
+exact rendered and live image inventory evidence from docs/SUPPLY_CHAIN.md
+reviewed external-image exceptions and their hash-bound Trivy reports
 ```
 
 Plaintext secrets should still not be committed, even to a private repository.

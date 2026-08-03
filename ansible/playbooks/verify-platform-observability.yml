@@ -1,0 +1,234 @@
+---
+- name: Verify production observability delivery paths
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: false
+  vars:
+    platform_alert_delivery_test: "{{ lookup('ansible.builtin.env', 'PLATFORM_ALERT_DELIVERY_TEST') | default(false, true) | bool }}"
+  tasks:
+    - name: Prove authenticated logging, collection, retention, and alert routing
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        WORKDIR="$(mktemp -d /tmp/platform-observability.XXXXXX)"
+        chmod 0700 "$WORKDIR"
+        trap 'rm -rf "$WORKDIR"' EXIT
+
+        "$K" --kubeconfig "$C" -n logging rollout status deployment/loki-gateway --timeout=300s
+        "$K" --kubeconfig "$C" -n logging rollout status deployment/alloy --timeout=300s
+        alloy_ready="$($K --kubeconfig "$C" -n logging get deployment/alloy \
+          -o jsonpath='{.status.readyReplicas}')"
+        alloy_desired="$($K --kubeconfig "$C" -n logging get deployment/alloy \
+          -o jsonpath='{.spec.replicas}')"
+        test "$alloy_desired" -ge 2
+        test "$alloy_ready" = "$alloy_desired"
+
+        gateway_ready="$($K --kubeconfig "$C" -n logging get deployment/loki-gateway \
+          -o jsonpath='{.status.readyReplicas}')"
+        gateway_desired="$($K --kubeconfig "$C" -n logging get deployment/loki-gateway \
+          -o jsonpath='{.spec.replicas}')"
+        test "$gateway_desired" -ge 2
+        test "$gateway_ready" = "$gateway_desired"
+
+        "$K" --kubeconfig "$C" -n logging get configmap -o json >"$WORKDIR/configmaps.json"
+        python3 - "$WORKDIR/configmaps.json" "$WORKDIR/loki.yaml" <<'PY'
+        import json
+        import sys
+
+        payload = json.load(open(sys.argv[1], encoding="utf-8"))
+        for item in payload.get("items", []):
+            for value in item.get("data", {}).values():
+                if "auth_enabled:" in value and "schema_config:" in value:
+                    open(sys.argv[2], "w", encoding="utf-8").write(value)
+                    raise SystemExit(0)
+        raise SystemExit("active Loki configuration ConfigMap was not found")
+        PY
+        grep -Eq '^auth_enabled:[[:space:]]+true$' "$WORKDIR/loki.yaml"
+        grep -Eq '^[[:space:]]+retention_enabled:[[:space:]]+true$' "$WORKDIR/loki.yaml"
+        grep -Eq '^[[:space:]]+retention_period:[[:space:]]+720h$' "$WORKDIR/loki.yaml"
+        grep -Eq '^[[:space:]]+delete_request_store:[[:space:]]+s3$' "$WORKDIR/loki.yaml"
+
+        username="$($K --kubeconfig "$C" -n logging get secret loki-gateway-basic-auth \
+          -o 'go-template={{ "{{" }} index .data "username" {{ "}}" }}' | base64 -d)"
+        password="$($K --kubeconfig "$C" -n logging get secret loki-gateway-basic-auth \
+          -o 'go-template={{ "{{" }} index .data "password" {{ "}}" }}' | base64 -d)"
+        client_username="$($K --kubeconfig "$C" -n monitoring get secret platform-loki-client \
+          -o 'go-template={{ "{{" }} index .data "username" {{ "}}" }}' | base64 -d)"
+        client_password="$($K --kubeconfig "$C" -n monitoring get secret platform-loki-client \
+          -o 'go-template={{ "{{" }} index .data "password" {{ "}}" }}' | base64 -d)"
+        test -n "$username"
+        test -n "$password"
+        test "$username" = "$client_username"
+        test "$password" = "$client_password"
+
+        gateway_ip="$($K --kubeconfig "$C" -n logging get service/loki-gateway \
+          -o jsonpath='{.spec.clusterIP}')"
+        test -n "$gateway_ip"
+        test "$gateway_ip" != "None"
+        unauth_code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+          --connect-timeout 5 --max-time 15 \
+          "http://${gateway_ip}/loki/api/v1/labels" || true)"
+        auth_code="$(curl --silent --output "$WORKDIR/labels.json" --write-out '%{http_code}' \
+          --user "${username}:${password}" --connect-timeout 5 --max-time 15 \
+          "http://${gateway_ip}/loki/api/v1/labels" || true)"
+        test "$unauth_code" = "401"
+        test "$auth_code" = "200"
+
+        marker="platform-observability-proof-$(date +%s)-$$"
+        timestamp="$(date +%s%N)"
+        MARKER="$marker" TIMESTAMP="$timestamp" python3 - >"$WORKDIR/push.json" <<'PY'
+        import json
+        import os
+        print(json.dumps({"streams": [{
+            "stream": {"job": "platform-observability-proof", "cluster": "rke2-main"},
+            "values": [[os.environ["TIMESTAMP"], os.environ["MARKER"]]],
+        }]}))
+        PY
+        push_code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+          --user "${username}:${password}" --header 'Content-Type: application/json' \
+          --data-binary @"$WORKDIR/push.json" --connect-timeout 5 --max-time 20 \
+          "http://${gateway_ip}/loki/api/v1/push" || true)"
+        test "$push_code" = "204"
+
+        query_found=false
+        for attempt in $(seq 1 24); do
+          curl --silent --show-error --user "${username}:${password}" \
+            --get --data-urlencode 'query={job="platform-observability-proof"}' \
+            --data-urlencode 'limit=20' --connect-timeout 5 --max-time 20 \
+            "http://${gateway_ip}/loki/api/v1/query_range" >"$WORKDIR/query.json" || true
+          if MARKER="$marker" python3 - "$WORKDIR/query.json" <<'PY'
+        import json
+        import os
+        import sys
+        try:
+            payload = json.load(open(sys.argv[1], encoding="utf-8"))
+        except Exception:
+            raise SystemExit(1)
+        values = payload.get("data", {}).get("result", [])
+        text = "\n".join(value for stream in values for _, value in stream.get("values", []))
+        raise SystemExit(0 if os.environ["MARKER"] in text else 1)
+        PY
+          then
+            query_found=true
+            break
+          fi
+          sleep 5
+        done
+        test "$query_found" = "true"
+
+        alloy_logs_found=false
+        for attempt in $(seq 1 24); do
+          curl --silent --show-error --user "${username}:${password}" \
+            --get --data-urlencode 'query={namespace="logging",app="alloy"}' \
+            --data-urlencode 'limit=1' --connect-timeout 5 --max-time 20 \
+            "http://${gateway_ip}/loki/api/v1/query_range" >"$WORKDIR/alloy-query.json" || true
+          if python3 - "$WORKDIR/alloy-query.json" <<'PY'
+        import json
+        import sys
+        try:
+            payload = json.load(open(sys.argv[1], encoding="utf-8"))
+        except Exception:
+            raise SystemExit(1)
+        raise SystemExit(0 if payload.get("data", {}).get("result") else 1)
+        PY
+          then
+            alloy_logs_found=true
+            break
+          fi
+          sleep 5
+        done
+        test "$alloy_logs_found" = "true"
+
+        alertmanager_pod="$($K --kubeconfig "$C" -n monitoring get pod \
+          -l app.kubernetes.io/name=alertmanager \
+          -o jsonpath='{.items[0].metadata.name}')"
+        test -n "$alertmanager_pod"
+        "$K" --kubeconfig "$C" -n monitoring exec "$alertmanager_pod" -c alertmanager -- \
+          amtool check-config /etc/alertmanager/config/alertmanager.yaml >/dev/null
+        "$K" --kubeconfig "$C" -n monitoring get secret alertmanager-platform-config \
+          -o 'go-template={{ "{{" }} index .data "alertmanager.yaml" {{ "}}" }}' | \
+          base64 -d >"$WORKDIR/alertmanager.yaml"
+        test -s "$WORKDIR/alertmanager.yaml"
+        if grep -Eiq 'receiver:[[:space:]]*["'"'"']?null["'"'"']?([[:space:]]|$)' \
+          "$WORKDIR/alertmanager.yaml"; then
+          echo "result=fail reason=alertmanager-null-receiver" >&2
+          exit 1
+        fi
+
+        if [ "${PLATFORM_ALERT_DELIVERY_TEST}" = "true" ]; then
+          prometheus_ip="$($K --kubeconfig "$C" -n monitoring \
+            get service/kube-prometheus-stack-prometheus -o jsonpath='{.spec.clusterIP}')"
+          alertmanager_ip="$($K --kubeconfig "$C" -n monitoring \
+            get service/kube-prometheus-stack-alertmanager -o jsonpath='{.spec.clusterIP}')"
+          test -n "$prometheus_ip"
+          test -n "$alertmanager_ip"
+
+          metric_value() {
+            local expression="$1"
+            curl --silent --show-error --get --data-urlencode "query=${expression}" \
+              --connect-timeout 5 --max-time 20 \
+              "http://${prometheus_ip}:9090/api/v1/query" | python3 -c \
+              'import json,sys; p=json.load(sys.stdin); r=p.get("data",{}).get("result",[]); print(float(r[0]["value"][1]) if r else 0.0)'
+          }
+
+          before_success="$(metric_value 'sum(alertmanager_notifications_total)')"
+          before_failed="$(metric_value 'sum(alertmanager_notifications_failed_total)')"
+          starts_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ends_at="$(date -u -d '+2 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+          STARTS_AT="$starts_at" ENDS_AT="$ends_at" python3 - >"$WORKDIR/alert.json" <<'PY'
+        import json
+        import os
+        print(json.dumps([{
+            "labels": {
+                "alertname": "PlatformAlertDeliveryTest",
+                "namespace": "monitoring",
+                "severity": "info",
+            },
+            "annotations": {"summary": "Automated platform alert delivery proof"},
+            "startsAt": os.environ["STARTS_AT"],
+            "endsAt": os.environ["ENDS_AT"],
+        }]))
+        PY
+          delivery_code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' --data-binary @"$WORKDIR/alert.json" \
+            --connect-timeout 5 --max-time 20 \
+            "http://${alertmanager_ip}:9093/api/v2/alerts" || true)"
+          test "$delivery_code" = "200"
+
+          delivered=false
+          for attempt in $(seq 1 24); do
+            after_success="$(metric_value 'sum(alertmanager_notifications_total)')"
+            after_failed="$(metric_value 'sum(alertmanager_notifications_failed_total)')"
+            if BEFORE_SUCCESS="$before_success" AFTER_SUCCESS="$after_success" \
+              BEFORE_FAILED="$before_failed" AFTER_FAILED="$after_failed" python3 - <<'PY'
+        import os
+        success = float(os.environ["AFTER_SUCCESS"]) > float(os.environ["BEFORE_SUCCESS"])
+        failed = float(os.environ["AFTER_FAILED"]) > float(os.environ["BEFORE_FAILED"])
+        raise SystemExit(0 if success and not failed else 1)
+        PY
+            then
+              delivered=true
+              break
+            fi
+            sleep 5
+          done
+          test "$delivered" = "true"
+          alert_delivery=verified
+        else
+          alert_delivery=config-verified
+        fi
+
+        echo "platform_observability=verified loki_auth=required tenant=platform retention=720h"
+        echo "log_collection=verified collector=alloy replicas=${alloy_ready}/${alloy_desired}"
+        echo "alertmanager=${alert_delivery} config=alertmanager-platform-config"
+      args:
+        executable: /bin/bash
+      environment:
+        PLATFORM_ALERT_DELIVERY_TEST: "{{ 'true' if platform_alert_delivery_test else 'false' }}"
+      register: platform_observability_probe
+      changed_when: false
+
+    - name: Print production observability proof
+      ansible.builtin.debug:
+        var: platform_observability_probe.stdout_lines

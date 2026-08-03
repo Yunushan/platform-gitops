@@ -1,0 +1,275 @@
+---
+- name: Verify platform internal transport security
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Prove managed trust and verified internal TLS service paths
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        OPENBAO_DNS=openbao.openbao.svc.cluster.local
+        POSTGRES_DNS=platform-postgres-rw.platform-databases.svc.cluster.local
+        VALKEY_DNS=platform-valkey-primary.platform-cache.svc.cluster.local
+        WORKDIR="$(mktemp -d /tmp/platform-internal-tls.XXXXXX)"
+        chmod 0700 "$WORKDIR"
+        trap 'rm -rf "$WORKDIR"' EXIT
+
+        "$K" --kubeconfig "$C" -n cert-manager wait \
+          --for=condition=Ready certificate/platform-internal-root-ca --timeout=180s
+        "$K" --kubeconfig "$C" wait \
+          --for=condition=Ready clusterissuer/platform-internal-ca --timeout=180s
+        "$K" --kubeconfig "$C" wait \
+          --for=condition=Synced bundle/platform-internal-roots --timeout=180s
+        "$K" --kubeconfig "$C" -n openbao wait \
+          --for=condition=Ready certificate/openbao-server --timeout=180s
+        "$K" --kubeconfig "$C" -n platform-databases wait \
+          --for=condition=Ready certificate/platform-postgres-server --timeout=180s
+        "$K" --kubeconfig "$C" -n platform-cache wait \
+          --for=condition=Ready certificate/platform-valkey-server --timeout=180s
+
+        "$K" --kubeconfig "$C" -n cert-manager get secret platform-internal-root-ca \
+          -o jsonpath='{.data.tls\.crt}' | base64 --decode >"$WORKDIR/internal-root.pem"
+        "$K" --kubeconfig "$C" -n openbao get configmap platform-internal-roots \
+          -o jsonpath='{.data.ca-certificates\.crt}' >"$WORKDIR/internal-bundle.pem"
+        test -s "$WORKDIR/internal-root.pem"
+        test -s "$WORKDIR/internal-bundle.pem"
+        if grep -q 'BEGIN .*PRIVATE KEY' "$WORKDIR/internal-bundle.pem"; then
+          echo "result=fail reason=private-key-present-in-trust-bundle" >&2
+          exit 1
+        fi
+        openssl verify -CAfile "$WORKDIR/internal-bundle.pem" "$WORKDIR/internal-root.pem" >/dev/null
+
+        share_process="$($K --kubeconfig "$C" -n openbao get statefulset/openbao \
+          -o jsonpath='{.spec.template.spec.shareProcessNamespace}')"
+        tls_secret="$($K --kubeconfig "$C" -n openbao get statefulset/openbao \
+          -o jsonpath='{.spec.template.spec.volumes[?(@.name=="openbao-server-tls")].secret.secretName}')"
+        reload_image="$($K --kubeconfig "$C" -n openbao get statefulset/openbao \
+          -o jsonpath='{.spec.template.spec.containers[?(@.name=="certificate-reloader")].image}')"
+        test "$share_process" = "true"
+        test "$tls_secret" = "openbao-server-tls"
+        test -n "$reload_image"
+
+        injector_ca="$($K --kubeconfig "$C" -n openbao get deployment/openbao-agent-injector \
+          -o jsonpath='{.spec.template.spec.containers[?(@.name=="sidecar-injector")].env[?(@.name=="AGENT_INJECT_VAULT_CACERT_BYTES")].valueFrom.configMapKeyRef.name}')"
+        test "$injector_ca" = "platform-internal-roots"
+
+        monitor_server_name="$($K --kubeconfig "$C" -n openbao get servicemonitor/openbao \
+          -o jsonpath='{.spec.endpoints[0].tlsConfig.serverName}')"
+        monitor_skip_verify="$($K --kubeconfig "$C" -n openbao get servicemonitor/openbao \
+          -o jsonpath='{.spec.endpoints[0].tlsConfig.insecureSkipVerify}')"
+        test "$monitor_server_name" = "$OPENBAO_DNS"
+        test "${monitor_skip_verify:-false}" != "true"
+
+        "$K" --kubeconfig "$C" -n openbao get secret openbao-server-tls \
+          -o jsonpath='{.data.ca\.crt}' | base64 --decode >"$WORKDIR/openbao-ca.pem"
+        openssl x509 -in "$WORKDIR/openbao-ca.pem" -noout -checkend 1209600
+        openbao_ip="$($K --kubeconfig "$C" -n openbao get service/openbao \
+          -o jsonpath='{.spec.clusterIP}')"
+        test -n "$openbao_ip"
+        test "$openbao_ip" != "None"
+        timeout 20 openssl s_client \
+          -connect "${openbao_ip}:8200" \
+          -servername "$OPENBAO_DNS" \
+          -verify_hostname "$OPENBAO_DNS" \
+          -verify_return_error \
+          -CAfile "$WORKDIR/openbao-ca.pem" \
+          </dev/null >"$WORKDIR/openbao-handshake.log" 2>&1
+
+        openbao_pod="$($K --kubeconfig "$C" -n openbao get pod \
+          -l app.kubernetes.io/name=openbao,component=server \
+          -o jsonpath='{.items[0].metadata.name}')"
+        test -n "$openbao_pod"
+        set +e
+        openbao_status="$($K --kubeconfig "$C" -n openbao exec "$openbao_pod" \
+          -c openbao -- bao status -format=json 2>&1)"
+        openbao_rc=$?
+        set -e
+        if [ "$openbao_rc" -ne 0 ] && [ "$openbao_rc" -ne 2 ]; then
+          echo "$openbao_status" >&2
+          echo "result=fail reason=openbao-verified-cli-status-failed rc=$openbao_rc" >&2
+          exit 1
+        fi
+        if grep -Eqi 'x509|unknown authority|certificate verification|server gave HTTP response' \
+          <<<"$openbao_status"; then
+          echo "$openbao_status" >&2
+          echo "result=fail reason=openbao-cli-did-not-verify-tls" >&2
+          exit 1
+        fi
+
+        postgres_ready="$($K --kubeconfig "$C" -n platform-databases get cluster/platform-postgres \
+          -o jsonpath='{.status.readyInstances}')"
+        postgres_desired="$($K --kubeconfig "$C" -n platform-databases get cluster/platform-postgres \
+          -o jsonpath='{.spec.instances}')"
+        test "$postgres_ready" = "$postgres_desired"
+        postgres_server_ca="$($K --kubeconfig "$C" -n platform-databases \
+          get cluster/platform-postgres -o jsonpath='{.spec.certificates.serverCASecret}')"
+        postgres_server_tls="$($K --kubeconfig "$C" -n platform-databases \
+          get cluster/platform-postgres -o jsonpath='{.spec.certificates.serverTLSSecret}')"
+        test "$postgres_server_ca" = "platform-postgres-server-tls"
+        test "$postgres_server_tls" = "platform-postgres-server-tls"
+
+        "$K" --kubeconfig "$C" -n platform-databases get configmap platform-internal-roots \
+          -o jsonpath='{.data.ca-certificates\.crt}' >"$WORKDIR/postgres-bundle.pem"
+        "$K" --kubeconfig "$C" -n platform-databases get secret platform-postgres-server-tls \
+          -o jsonpath='{.data.ca\.crt}' | base64 --decode >"$WORKDIR/postgres-ca.pem"
+        "$K" --kubeconfig "$C" -n platform-databases get secret platform-postgres-server-tls \
+          -o jsonpath='{.data.tls\.crt}' | base64 --decode >"$WORKDIR/postgres-server.pem"
+        test -s "$WORKDIR/postgres-bundle.pem"
+        test -s "$WORKDIR/postgres-ca.pem"
+        test -s "$WORKDIR/postgres-server.pem"
+        openssl x509 -in "$WORKDIR/postgres-ca.pem" -noout -checkend 1209600
+        openssl x509 -in "$WORKDIR/postgres-server.pem" -noout -checkend 1209600
+        openssl verify -CAfile "$WORKDIR/postgres-bundle.pem" "$WORKDIR/postgres-server.pem" >/dev/null
+        postgres_ip="$($K --kubeconfig "$C" -n platform-databases get service/platform-postgres-rw \
+          -o jsonpath='{.spec.clusterIP}')"
+        test -n "$postgres_ip"
+        test "$postgres_ip" != "None"
+        timeout 20 openssl s_client \
+          -starttls postgres \
+          -connect "${postgres_ip}:5432" \
+          -servername "$POSTGRES_DNS" \
+          -verify_hostname "$POSTGRES_DNS" \
+          -verify_return_error \
+          -CAfile "$WORKDIR/postgres-bundle.pem" \
+          </dev/null >"$WORKDIR/postgres-handshake.log" 2>&1
+
+        "$K" --kubeconfig "$C" -n platform-cache get configmap platform-internal-roots \
+          -o jsonpath='{.data.ca-certificates\.crt}' >"$WORKDIR/valkey-bundle.pem"
+        "$K" --kubeconfig "$C" -n platform-cache get secret platform-valkey-tls \
+          -o jsonpath='{.data.tls\.crt}' | base64 --decode >"$WORKDIR/valkey-server.pem"
+        test -s "$WORKDIR/valkey-bundle.pem"
+        test -s "$WORKDIR/valkey-server.pem"
+        openssl x509 -in "$WORKDIR/valkey-server.pem" -noout -checkend 1209600
+        openssl verify -CAfile "$WORKDIR/valkey-bundle.pem" "$WORKDIR/valkey-server.pem" >/dev/null
+        valkey_ip="$($K --kubeconfig "$C" -n platform-cache get service/platform-valkey-primary \
+          -o jsonpath='{.spec.clusterIP}')"
+        test -n "$valkey_ip"
+        test "$valkey_ip" != "None"
+        timeout 20 openssl s_client \
+          -connect "${valkey_ip}:6379" \
+          -servername "$VALKEY_DNS" \
+          -verify_hostname "$VALKEY_DNS" \
+          -verify_return_error \
+          -CAfile "$WORKDIR/valkey-bundle.pem" \
+          </dev/null >"$WORKDIR/valkey-handshake.log" 2>&1
+
+        set +e
+        plaintext_reply="$(timeout 5 bash -c \
+          'exec 3<>/dev/tcp/$1/6379; printf "\0521\r\n\0444\r\nPING\r\n" >&3; head -c 64 <&3' \
+          _ "$valkey_ip" 2>/dev/null)"
+        plaintext_rc=$?
+        set -e
+        if grep -q 'PONG' <<<"$plaintext_reply"; then
+          echo "result=fail reason=valkey-plaintext-listener-accepted-command" >&2
+          exit 1
+        fi
+        unset plaintext_reply
+
+        "$K" --kubeconfig "$C" -n platform-cache rollout status \
+          statefulset/platform-valkey --timeout=300s
+        valkey_pod="$($K --kubeconfig "$C" -n platform-cache get pod \
+          -l app.kubernetes.io/instance=platform-valkey,app.kubernetes.io/name=valkey \
+          -o jsonpath='{.items[0].metadata.name}')"
+        test -n "$valkey_pod"
+        "$K" --kubeconfig "$C" -n platform-cache exec "$valkey_pod" -c sentinel -- \
+          /bin/sh -ec 'valkey-cli --tls --cacert /tls/ca.crt -h platform-valkey-primary.platform-cache.svc.cluster.local -p 6379 --user default --no-auth-warning -a "$(cat /auth/valkey-password)" PING' \
+          | grep -qx PONG
+        "$K" --kubeconfig "$C" -n platform-cache exec "$valkey_pod" -c sentinel -- \
+          /bin/sh -ec 'valkey-cli --tls --cacert /tls/ca.crt -h localhost -p 26379 --user default --no-auth-warning -a "$(cat /auth/valkey-password)" PING' \
+          | grep -qx PONG
+        "$K" --kubeconfig "$C" -n platform-cache exec "$valkey_pod" -c primary-proxy -- \
+          /bin/sh -ec 'grep -q "check-ssl" /ha/haproxy.cfg && grep -q "verify required" /ha/haproxy.cfg && grep -q "ca-file /trust/ca-certificates.crt" /ha/haproxy.cfg'
+
+        forgejo_redis_uri="$($K --kubeconfig "$C" -n forgejo get secret forgejo-redis \
+          -o jsonpath='{.data.uri}' | base64 --decode)"
+        FORGEJO_REDIS_URI="$forgejo_redis_uri" python3 - <<'PY'
+        import os
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(os.environ["FORGEJO_REDIS_URI"])
+        if parsed.scheme != "rediss":
+            raise SystemExit("Forgejo runtime cache URI does not use rediss")
+        if parsed.hostname != "platform-valkey-primary.platform-cache.svc.cluster.local":
+            raise SystemExit("Forgejo runtime cache URI does not target managed Valkey")
+        PY
+        unset forgejo_redis_uri FORGEJO_REDIS_URI
+
+        for key in REDIS_URL_CORE REDIS_URL_JOBSERVICE; do
+          harbor_redis_uri="$($K --kubeconfig "$C" -n harbor get secret harbor-redis-url \
+            -o "go-template={{ '{{' }} index .data \"${key}\" {{ '}}' }}" | base64 --decode)"
+          HARBOR_REDIS_URI="$harbor_redis_uri" python3 - <<'PY'
+        import os
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(os.environ["HARBOR_REDIS_URI"])
+        if parsed.scheme != "rediss":
+            raise SystemExit("Harbor runtime cache URI does not use rediss")
+        if parsed.hostname != "platform-valkey-primary.platform-cache.svc.cluster.local":
+            raise SystemExit("Harbor runtime cache URI does not target managed Valkey")
+        PY
+          unset harbor_redis_uri HARBOR_REDIS_URI
+        done
+
+        woodpecker_dsn="$($K --kubeconfig "$C" -n woodpecker get secret woodpecker-database \
+          -o jsonpath='{.data.WOODPECKER_DATABASE_DATASOURCE}' | base64 --decode)"
+        WOODPECKER_DSN="$woodpecker_dsn" python3 - <<'PY'
+        import os
+        from urllib.parse import parse_qs, urlsplit
+
+        parsed = urlsplit(os.environ["WOODPECKER_DSN"])
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if query.get("sslmode", [""])[-1] != "verify-full":
+            raise SystemExit("Woodpecker runtime datasource does not use sslmode=verify-full")
+        if query.get("sslrootcert", [""])[-1] != "/etc/ssl/platform-postgres/ca-certificates.crt":
+            raise SystemExit("Woodpecker runtime datasource does not use the managed PostgreSQL trust path")
+        PY
+        unset woodpecker_dsn WOODPECKER_DSN
+
+        postgres_primary="$($K --kubeconfig "$C" -n platform-databases \
+          get cluster/platform-postgres -o jsonpath='{.status.currentPrimary}')"
+        test -n "$postgres_primary"
+        database_clients_verified=false
+        for attempt in $(seq 1 24); do
+          ssl_rows="$($K --kubeconfig "$C" -n platform-databases exec "$postgres_primary" \
+            -c postgres -- psql -U postgres -d postgres -Atc \
+            "SELECT a.usename || '|' || count(*) || '|' || count(*) FILTER (WHERE COALESCE(s.ssl, false)) FROM pg_stat_activity a LEFT JOIN pg_stat_ssl s ON s.pid = a.pid WHERE a.usename IN ('forgejo', 'woodpecker', 'harbor', 'keycloak', 'grafana') GROUP BY a.usename ORDER BY a.usename;")"
+          all_verified=true
+          client_status=""
+          for role in forgejo woodpecker harbor keycloak grafana; do
+            row="$(awk -F '|' -v role="$role" '$1 == role { print $0 }' <<<"$ssl_rows")"
+            total="$(cut -d '|' -f 2 <<<"$row")"
+            tls="$(cut -d '|' -f 3 <<<"$row")"
+            total="${total:-0}"
+            tls="${tls:-0}"
+            client_status="${client_status}${role}:${tls}/${total} "
+            if [ "$total" -lt 1 ] || [ "$tls" -ne "$total" ]; then
+              all_verified=false
+            fi
+          done
+          echo "postgres_tls_clients_attempt=${attempt} ${client_status}"
+          if [ "$all_verified" = "true" ]; then
+            database_clients_verified=true
+            break
+          fi
+          sleep 5
+        done
+        if [ "$database_clients_verified" != "true" ]; then
+          echo "result=fail reason=postgres-client-tls-sessions-not-verified ${client_status}" >&2
+          exit 1
+        fi
+
+        echo "platform_internal_tls=verified openbao=${OPENBAO_DNS}:8200 postgres=${POSTGRES_DNS}:5432 valkey=${VALKEY_DNS}:6379"
+        echo "database_clients=verified roles=forgejo,woodpecker,harbor,keycloak,grafana"
+        echo "valkey_tls=verified sentinel_tls=verified plaintext_disabled=true plaintext_probe_rc=${plaintext_rc} clients=forgejo,harbor"
+        echo "openbao_certificate_reload=automatic image=${reload_image}"
+        echo "trust_bundle=platform-internal-roots private_key_material=absent"
+      args:
+        executable: /bin/bash
+      register: platform_internal_tls_probe
+      changed_when: false
+
+    - name: Print platform internal transport security proof
+      ansible.builtin.debug:
+        var: platform_internal_tls_probe.stdout_lines

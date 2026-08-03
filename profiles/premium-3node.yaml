@@ -18,10 +18,10 @@ components:
   storage: longhorn-production
   monitoring: kube-prometheus-stack
   logging: loki
-  object_storage: minio-optional-in-cluster-s3
+  object_storage: external-s3-required
   backups: velero-plus-cnpg-longhorn-harbor-forgejo
   secrets: sops-age-plus-external-secrets-openbao
-  policy: kyverno-audit-baseline
+  policy: kyverno-stable-cel-and-image-signature-baseline
   runtime_security: tetragon-ebpf-observability
   supply_chain: trivy-gitleaks-semgrep-cosign-renovate
 remove:
@@ -33,6 +33,7 @@ includes:
   - gitops/clusters/rke2-main/premium-3node/apps/step-ca
   - gitops/clusters/rke2-main/premium-3node/apps/kyverno
   - gitops/clusters/rke2-main/premium-3node/apps/platform-policies
+  - gitops/clusters/rke2-main/premium-3node/apps/platform-image-integrity
   - gitops/clusters/rke2-main/premium-3node/apps/tetragon
   - gitops/clusters/rke2-main/premium-3node/apps/external-secrets
   - gitops/clusters/rke2-main/premium-3node/apps/openbao
@@ -46,7 +47,6 @@ includes:
   - gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg
   - gitops/clusters/rke2-main/premium-3node/apps/platform-postgres
   - gitops/clusters/rke2-main/premium-3node/apps/platform-valkey
-  - gitops/clusters/rke2-main/premium-3node/apps/minio
   - gitops/clusters/rke2-main/premium-3node/apps/keycloak
   - gitops/clusters/rke2-main/premium-3node/apps/monitoring
   - gitops/clusters/rke2-main/premium-3node/apps/loki

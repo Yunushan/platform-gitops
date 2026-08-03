@@ -9,11 +9,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+from subprocess_timeout import bounded_timeout_seconds
+
 
 ROOT = Path(__file__).resolve().parents[1]
+VALIDATION_SCRIPT_TIMEOUT_SECONDS = 900
 VALIDATION_SCRIPTS = (
     "scripts/validate_project.py",
     "scripts/test_python_syntax.py",
+    "scripts/test_atomic_file.py",
+    "scripts/test_subprocess_timeout_contract.py",
+    "scripts/test_subprocess_output_contract.py",
+    "scripts/test_bounded_file_contract.py",
+    "scripts/test_strict_json_contract.py",
+    "scripts/test_strict_yaml_contract.py",
+    "scripts/test_http_transport_contract.py",
     "scripts/test_validation_runner.py",
     "scripts/test_line_endings.py",
     "scripts/test_profile_checker.py",
@@ -22,16 +32,37 @@ VALIDATION_SCRIPTS = (
     "scripts/test_bootstrap_env_loader.py",
     "scripts/test_forge_migration.py",
     "scripts/test_forge_cutover.py",
+    "scripts/test_forge_transition.py",
+    "scripts/test_forge_fuzz_contract.py",
+    "scripts/test_forge_coverage_contract.py",
     "scripts/test_forge_migration_live.py",
     "scripts/test_forge_migration_live_workflow.py",
     "scripts/test_private_values_renderer.py",
     "scripts/test_platform_secret_contract.py",
     "scripts/test_policy_examples.py",
+    "scripts/test_image_integrity_contract.py",
+    "scripts/test_pod_security_contract.py",
+    "scripts/test_network_policy_contract.py",
+    "scripts/test_internal_tls_contract.py",
+    "scripts/test_openbao_readiness_contract.py",
+    "scripts/test_openbao_ceremony_evidence.py",
+    "scripts/test_observability_contract.py",
+    "scripts/test_capacity_runtime_contract.py",
+    "scripts/test_rendered_schema_contract.py",
     "scripts/test_sops_age_policy.py",
     "scripts/test_supply_chain_helpers.py",
+    "scripts/test_supply_chain_evidence.py",
+    "scripts/test_image_inventory_evidence.py",
+    "scripts/test_release_workflow.py",
+    "scripts/test_github_release_ref.py",
+    "scripts/test_github_release_approval.py",
+    "scripts/test_github_governance.py",
+    "scripts/test_github_governance_configuration.py",
+    "scripts/test_dependency_review_workflow.py",
     "scripts/test_backup_restore_runbook.py",
     "scripts/test_data_protection_contract.py",
     "scripts/test_production_evidence.py",
+    "scripts/test_production_readiness_score.py",
     "scripts/test_business_continuity.py",
     "scripts/test_service_catalog.py",
     "scripts/test_architecture_decisions.py",
@@ -66,6 +97,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_example_templates.py",
     "scripts/test_ansible_playbook_references.py",
     "scripts/test_gitops_application_contract.py",
+    "scripts/test_argocd_project_isolation.py",
     "scripts/test_kustomization_references.py",
     "scripts/test_gitops_helm_chart_pinning.py",
     "scripts/test_gitops_image_pinning.py",
@@ -94,7 +126,27 @@ def run_script(script: str) -> int:
     env = os.environ.copy()
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     print(f"== {script} ==", flush=True)
-    return subprocess.run([sys.executable, str(ROOT / script)], cwd=ROOT, env=env).returncode
+    try:
+        timeout = bounded_timeout_seconds(
+            VALIDATION_SCRIPT_TIMEOUT_SECONDS,
+            "PLATFORM_VALIDATION_SCRIPT_TIMEOUT_SECONDS",
+        )
+    except ValueError as exc:
+        print(f"Validation subprocess timeout configuration failed: {exc}", file=sys.stderr)
+        return 2
+    try:
+        return subprocess.run(
+            [sys.executable, str(ROOT / script)],
+            cwd=ROOT,
+            env=env,
+            timeout=timeout,
+        ).returncode
+    except subprocess.TimeoutExpired:
+        print(
+            f"Validation script timed out after {timeout:g} seconds: {script}",
+            file=sys.stderr,
+        )
+        return 124
 
 
 def parse_args() -> argparse.Namespace:

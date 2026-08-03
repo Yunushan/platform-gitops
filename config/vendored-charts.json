@@ -1,0 +1,317 @@
+{
+  "schemaVersion": 2,
+  "charts": [
+    {
+      "path": "gitops/clusters/rke2-main/apps/cloudnativepg/charts/cloudnative-pg",
+      "repository": "https://cloudnative-pg.github.io/charts",
+      "name": "cloudnative-pg",
+      "version": "0.29.0",
+      "packageSha256": "668e065ff53508d58238788fd35b355a925060843629a951df0e6a9362e6d32f",
+      "upstreamTreeSha256": "f5ddd9c35194991c168ce25fa85eafac42c687d843bbf8fa166951ee80e33a3b",
+      "treeSha256": "f5ddd9c35194991c168ce25fa85eafac42c687d843bbf8fa166951ee80e33a3b",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/apps/forgejo/charts/forgejo-15.0.3/forgejo",
+      "repository": "oci://code.forgejo.org/forgejo-helm",
+      "name": "forgejo",
+      "version": "15.0.3",
+      "packageSha256": "79270965ece26676391b1167040242b2096b1b026d9241fcda73fbad833adc83",
+      "upstreamTreeSha256": "3bb05300429744a3ec42530de8611b8daec5a7ec8d31010941ca20c0b20bbc6d",
+      "treeSha256": "3bb05300429744a3ec42530de8611b8daec5a7ec8d31010941ca20c0b20bbc6d",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/apps/harbor/charts/harbor-1.19.1/harbor",
+      "repository": "https://helm.goharbor.io",
+      "name": "harbor",
+      "version": "1.19.1",
+      "packageSha256": "593f47e1ff6cdb58bd571708535ccef436f44ccf842c5f7925cd7b03e827edc1",
+      "upstreamTreeSha256": "e34820d2303786ded37219dd87da32c3dadec5c3e10571e1b7f8aca0c371690b",
+      "treeSha256": "e34820d2303786ded37219dd87da32c3dadec5c3e10571e1b7f8aca0c371690b",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/apps/metallb/charts/metallb-0.16.1/metallb",
+      "repository": "https://metallb.github.io/metallb",
+      "name": "metallb",
+      "version": "0.16.1",
+      "packageSha256": "fb06bb584fcb7856f15733b2a6a2aff5b61b5c350687e341c163ae24a5938adc",
+      "upstreamTreeSha256": "0c57c4d8752c1326bb636cec9208a580505c4dd596e711c999f3f096f05055a2",
+      "treeSha256": "0c57c4d8752c1326bb636cec9208a580505c4dd596e711c999f3f096f05055a2",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/apps/step-ca/charts/step-certificates-1.30.1/step-certificates",
+      "repository": "https://smallstep.github.io/helm-charts/",
+      "name": "step-certificates",
+      "version": "1.30.1",
+      "packageSha256": "1a211cfa59eab3bea4712a7b344e8c8e8714ee784655b6ba36d9689870044c03",
+      "upstreamTreeSha256": "2c72277f545029e07167dff916b178d9db888a0d5ee8b489de0747600245ca41",
+      "treeSha256": "a256e849f2bcc149d9035f5b88947aa2fa56c38508c5ebd9d70a4e062a35a5f1",
+      "patches": [
+        {
+          "path": "templates/tests/test-connection.yaml",
+          "reason": "Pin the chart test curl image to a reviewed immutable digest."
+        }
+      ]
+    },
+    {
+      "path": "gitops/clusters/rke2-main/apps/woodpecker/charts/woodpecker-3.6.5/woodpecker",
+      "repository": "https://woodpecker-ci.org/",
+      "name": "woodpecker",
+      "version": "3.6.5",
+      "packageSha256": "9a527325de4f9d2945f2a15db42e72a221f2577245fff3059a78aba0e6571025",
+      "upstreamTreeSha256": "976f2b06d3e54392c6f85348e1925fa757c3fb3ca4528ea142aa522d17b52790",
+      "treeSha256": "976f2b06d3e54392c6f85348e1925fa757c3fb3ca4528ea142aa522d17b52790",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10.0.0/argo-cd",
+      "repository": "https://argoproj.github.io/argo-helm",
+      "name": "argo-cd",
+      "version": "10.0.0",
+      "packageSha256": "3acd39c464ef933cdf65072bf589baf1a8e8867a1a0753b6ff72c48e4363aa2f",
+      "upstreamTreeSha256": "22aa7115699216f620e553d062640b57140a77780e55c40a1d257342bdef66e4",
+      "treeSha256": "ff8e9333e57aca8950449b67185a48586605188e10bb6999f5b53c9ee0a61fba",
+      "patches": [
+        {
+          "path": "charts/redis-ha/templates/redis-ha-statefulset.yaml",
+          "reason": "Pin optional Redis HA utility images to reviewed immutable digests."
+        }
+      ]
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/cert-manager/charts/cert-manager-v1.20.3/cert-manager",
+      "repository": "https://charts.jetstack.io",
+      "name": "cert-manager",
+      "version": "v1.20.3",
+      "packageSha256": "ef5d707f5afbb2c3ce9892f5ff3fca0dec6864db8830a1c454b3d4822c485843",
+      "upstreamTreeSha256": "e63c0235fa7f2c91c563b3adfccff3b7e1671a68445d590795d04040ebc60469",
+      "treeSha256": "e63c0235fa7f2c91c563b3adfccff3b7e1671a68445d590795d04040ebc60469",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/charts/cloudnative-pg",
+      "repository": "https://cloudnative-pg.github.io/charts",
+      "name": "cloudnative-pg",
+      "version": "0.29.0",
+      "packageSha256": "668e065ff53508d58238788fd35b355a925060843629a951df0e6a9362e6d32f",
+      "upstreamTreeSha256": "f5ddd9c35194991c168ce25fa85eafac42c687d843bbf8fa166951ee80e33a3b",
+      "treeSha256": "f5ddd9c35194991c168ce25fa85eafac42c687d843bbf8fa166951ee80e33a3b",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/external-secrets/charts/external-secrets-2.6.0/external-secrets",
+      "repository": "https://charts.external-secrets.io",
+      "name": "external-secrets",
+      "version": "2.6.0",
+      "packageSha256": "f3659c0085a41e1be5c016cf186b80aac262ef249a91b1b770b941f18296ef3f",
+      "upstreamTreeSha256": "9df677c8c64ea1fc022208e3e9c58eca0a565b28a70e1a749bcd84ae6df3aab6",
+      "treeSha256": "9df677c8c64ea1fc022208e3e9c58eca0a565b28a70e1a749bcd84ae6df3aab6",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/forgejo/charts/forgejo-15.0.3/forgejo",
+      "repository": "oci://code.forgejo.org/forgejo-helm",
+      "name": "forgejo",
+      "version": "15.0.3",
+      "packageSha256": "79270965ece26676391b1167040242b2096b1b026d9241fcda73fbad833adc83",
+      "upstreamTreeSha256": "3bb05300429744a3ec42530de8611b8daec5a7ec8d31010941ca20c0b20bbc6d",
+      "treeSha256": "3bb05300429744a3ec42530de8611b8daec5a7ec8d31010941ca20c0b20bbc6d",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/harbor/charts/harbor-1.19.1/harbor",
+      "repository": "https://helm.goharbor.io",
+      "name": "harbor",
+      "version": "1.19.1",
+      "packageSha256": "593f47e1ff6cdb58bd571708535ccef436f44ccf842c5f7925cd7b03e827edc1",
+      "upstreamTreeSha256": "e34820d2303786ded37219dd87da32c3dadec5c3e10571e1b7f8aca0c371690b",
+      "treeSha256": "e34820d2303786ded37219dd87da32c3dadec5c3e10571e1b7f8aca0c371690b",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/keycloak/charts/keycloak-25.2.0/keycloak",
+      "repository": "https://charts.bitnami.com/bitnami",
+      "name": "keycloak",
+      "version": "25.2.0",
+      "packageSha256": "572b6173dcad490f7b7d2f463eaa186e512d0afbd3a24629d150156a9438d89c",
+      "upstreamTreeSha256": "cbfab8aece1d120553f3d4c349ceb564062e08768c59eb7c2994e4a7a90135d1",
+      "treeSha256": "cbfab8aece1d120553f3d4c349ceb564062e08768c59eb7c2994e4a7a90135d1",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/kyverno/charts/kyverno-3.8.1/kyverno",
+      "repository": "https://kyverno.github.io/kyverno",
+      "name": "kyverno",
+      "version": "3.8.1",
+      "packageSha256": "a33f35b83b6991daf6a1b1cf995becbe369747fcd84411d5089d55a40ee4ae0d",
+      "upstreamTreeSha256": "df8d7b425ba2c1c42f9b97bffe34c7cecf1bf3649f87228320321e6984b3b64b",
+      "treeSha256": "df8d7b425ba2c1c42f9b97bffe34c7cecf1bf3649f87228320321e6984b3b64b",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/loki/charts/alloy",
+      "repository": "https://grafana.github.io/helm-charts",
+      "name": "alloy",
+      "version": "1.11.0",
+      "packageSha256": "11d253b62e47beeacd89eb4283fc056962ecbf143984863c1998be13da0772dd",
+      "upstreamTreeSha256": "3b8dcfc1033a2b30dc9cb11d6d2236c5a539b64b0bb5df1690d7daf71ff4b84d",
+      "treeSha256": "3b8dcfc1033a2b30dc9cb11d6d2236c5a539b64b0bb5df1690d7daf71ff4b84d",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/loki/charts/loki",
+      "repository": "https://grafana.github.io/helm-charts",
+      "name": "loki",
+      "version": "7.0.0",
+      "packageSha256": "5eaa28e3535069de2a7ac1f7087ff558e5b4b4a24f0e158072a97e2391132f81",
+      "upstreamTreeSha256": "2c504ea11b4d363d28b4d5ecd3fcb99573ae82b91397775f5e8e5caa4e43a03e",
+      "treeSha256": "b68d20602a0779c46a2cfb5201e0dfb8f9aeaed5e51593fc66c42083caad7632",
+      "patches": [
+        {
+          "path": "docs/examples/enterprise/batchjob.yaml",
+          "reason": "Pin the example enterprise logs image to a reviewed immutable digest."
+        },
+        {
+          "path": "scenarios/simple-scalable-aws-kube-irsa-values.yaml",
+          "reason": "Normalize upstream CRLF line endings to the repository LF policy."
+        },
+        {
+          "path": "src/helm-test/Dockerfile",
+          "reason": "Pin Helm test build and runtime base images to reviewed immutable digests."
+        }
+      ]
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn",
+      "repository": "https://charts.longhorn.io",
+      "name": "longhorn",
+      "version": "1.12.0",
+      "packageSha256": "869bb20701b154473606f1e8967b27f34f2448a2dfe6eb8970f1cae6957384f5",
+      "upstreamTreeSha256": "07cf0e0fea3112738f1ee486888b5b25cd9cd2fa4589a87ff0f4e1ac0e7bd19a",
+      "treeSha256": "07cf0e0fea3112738f1ee486888b5b25cd9cd2fa4589a87ff0f4e1ac0e7bd19a",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/minio/charts/minio-17.0.21/minio",
+      "repository": "https://charts.bitnami.com/bitnami",
+      "name": "minio",
+      "version": "17.0.21",
+      "packageSha256": "0a82daf088c8971cc5c727abbc68798d64283fef702ccd58f7bd499ceeda6a09",
+      "upstreamTreeSha256": "6a71b3316e3382c3499e1fef2db1baf9b92b71ae3bc747025e02736fa6554592",
+      "treeSha256": "6a71b3316e3382c3499e1fef2db1baf9b92b71ae3bc747025e02736fa6554592",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/monitoring/charts/kube-prometheus-stack-87.4.0/kube-prometheus-stack",
+      "repository": "https://prometheus-community.github.io/helm-charts",
+      "name": "kube-prometheus-stack",
+      "version": "87.4.0",
+      "packageSha256": "8c6870c77b30758b85aeed9899dfafc208b14ce295f76a31dcebe0139fb0a6d2",
+      "upstreamTreeSha256": "5c12b1f4615791ea04b0b1672f1c53aecc584cacb9b3b31ca5463da2f3c319d0",
+      "treeSha256": "dbbb65311468b6394ca5e59ce8ac5a59ea17d7d14c7d8d07d1add06f15d9606c",
+      "patches": [
+        {
+          "path": "charts/kube-state-metrics/templates/kubeconfig-secret.yaml",
+          "reason": "Remove the unused kubeconfig Secret template to prevent accidental credential materialization."
+        }
+      ]
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/openbao/charts/openbao-0.28.3/openbao",
+      "repository": "https://openbao.github.io/openbao-helm",
+      "name": "openbao",
+      "version": "0.28.3",
+      "packageSha256": "8612ab52ca1383b61dbf54c0a40691aaeba2bb9f4e542134c9ad06fce15a907c",
+      "upstreamTreeSha256": "b472be70bf8b57c9c288ebeadc7be92d39be941b7d48e0ef13e9d5595f9ae21f",
+      "treeSha256": "b472be70bf8b57c9c288ebeadc7be92d39be941b7d48e0ef13e9d5595f9ae21f",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/charts/valkey-0.10.0/valkey",
+      "repository": "https://valkey.io/valkey-helm",
+      "name": "valkey",
+      "version": "0.10.0",
+      "packageSha256": "6497e784e1b707c303e358f6f9d6f82f931618f4b1e5a7aeb0946df51a081fe6",
+      "upstreamTreeSha256": "5f9f562a999d979fd99cd99bb5903b562f2c5a219bf76531a525badc46f77113",
+      "treeSha256": "f729c2a83680869f3f3acc864afb497fd0fe0a1a9a26f941e33fd8e878f3d208",
+      "patches": [
+        {
+          "path": "templates/deploy_valkey.yaml",
+          "reason": "Authenticate startup and liveness probes with the managed default-user Secret."
+        },
+        {
+          "path": "templates/statefulset.yaml",
+          "reason": "Authenticate startup and liveness probes with the managed default-user Secret."
+        }
+      ]
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/step-ca/charts/step-certificates-1.30.1/step-certificates",
+      "repository": "https://smallstep.github.io/helm-charts/",
+      "name": "step-certificates",
+      "version": "1.30.1",
+      "packageSha256": "1a211cfa59eab3bea4712a7b344e8c8e8714ee784655b6ba36d9689870044c03",
+      "upstreamTreeSha256": "2c72277f545029e07167dff916b178d9db888a0d5ee8b489de0747600245ca41",
+      "treeSha256": "a256e849f2bcc149d9035f5b88947aa2fa56c38508c5ebd9d70a4e062a35a5f1",
+      "patches": [
+        {
+          "path": "templates/tests/test-connection.yaml",
+          "reason": "Pin the chart test curl image to a reviewed immutable digest."
+        }
+      ]
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/tetragon/charts/tetragon-1.6.0/tetragon",
+      "repository": "https://helm.cilium.io",
+      "name": "tetragon",
+      "version": "1.6.0",
+      "packageSha256": "70fc9b2476dc9d3710b54a5eaa86590dfdf1908ec11f00649b4de4733b5f24bc",
+      "upstreamTreeSha256": "5700065f583bbd20c886f91679aa5674b07e03aefb905520103327e81b639e77",
+      "treeSha256": "5700065f583bbd20c886f91679aa5674b07e03aefb905520103327e81b639e77",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik",
+      "repository": "https://traefik.github.io/charts",
+      "name": "traefik",
+      "version": "41.0.1",
+      "packageSha256": "150f5c608f2d25eaa292d306470cbfd1b0681d67d88da5985433354f716c5a7f",
+      "upstreamTreeSha256": "2f4566977b27df25b0373dac7d1ae62cdb84fe35db9e7469f67924da36754124",
+      "treeSha256": "2f4566977b27df25b0373dac7d1ae62cdb84fe35db9e7469f67924da36754124",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/trust-manager/charts/trust-manager-v0.23.0/trust-manager",
+      "repository": "https://charts.jetstack.io",
+      "name": "trust-manager",
+      "version": "v0.23.0",
+      "packageSha256": "5faeb8fc29ddd958e86ecece947f974b400b408340e18e9c521b2167cac21c8e",
+      "upstreamTreeSha256": "7b07cbcd458a07978d071dd3bb69410cc51332ded4518b159967307094c492fb",
+      "treeSha256": "7b07cbcd458a07978d071dd3bb69410cc51332ded4518b159967307094c492fb",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/velero/charts/velero-12.1.0/velero",
+      "repository": "https://vmware-tanzu.github.io/helm-charts",
+      "name": "velero",
+      "version": "12.1.0",
+      "packageSha256": "cd23589ad1b2d25cdd3220f6866b3f6f4c5683c4c09494e76a14700b33f81f83",
+      "upstreamTreeSha256": "f153355e8e50fabccd167f50fb621942cd4c8d25c55358eed4618fb8d4feb5e5",
+      "treeSha256": "f153355e8e50fabccd167f50fb621942cd4c8d25c55358eed4618fb8d4feb5e5",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/charts/woodpecker-3.6.5/woodpecker",
+      "repository": "https://woodpecker-ci.org/",
+      "name": "woodpecker",
+      "version": "3.6.5",
+      "packageSha256": "9a527325de4f9d2945f2a15db42e72a221f2577245fff3059a78aba0e6571025",
+      "upstreamTreeSha256": "976f2b06d3e54392c6f85348e1925fa757c3fb3ca4528ea142aa522d17b52790",
+      "treeSha256": "976f2b06d3e54392c6f85348e1925fa757c3fb3ca4528ea142aa522d17b52790",
+      "patches": []
+    }
+  ]
+}

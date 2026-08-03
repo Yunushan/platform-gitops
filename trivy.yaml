@@ -1,15 +1,29 @@
 severity:
   - HIGH
   - CRITICAL
-ignore-unfixed: true
-scanners:
-  - vuln
-  - secret
-  - misconfig
-skip-dirs:
-  - .git
-  - .pytest_cache
-  - private
-  - rendered
-  - secrets
-
+scan:
+  scanners:
+    - vuln
+    - secret
+    - misconfig
+  skip-dirs:
+    - .git
+    - .pytest_cache
+    - "**/__pycache__"
+    - private
+    - rendered
+    - secrets
+    # Vendored Helm templates are reviewed at pin/upgrade time. The rendered
+    # profile is validated separately by Kubeconform and the policy contracts.
+    - "**/charts"
+    # Examples and negative test fixtures are not deployable platform inputs.
+    - examples
+    - scripts/fixtures
+  skip-files:
+    # Kustomize patch fragments are incomplete Kubernetes objects; scanning the
+    # assembled profile avoids false findings caused by their missing base fields.
+    - "**/*-patch.yaml"
+    # This is a short-lived build environment, not a shipped runtime image.
+    - .clusterfuzzlite/Dockerfile
+vulnerability:
+  ignore-unfixed: true

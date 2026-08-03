@@ -6,14 +6,12 @@
   any_errors_fatal: true
   vars:
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
-    platform_longhorn_chart_repo_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CHART_REPO') }}"
     platform_longhorn_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CHART_VERSION') }}"
     platform_longhorn_backup_target_from_env: "{{ lookup('ansible.builtin.env', 'LONGHORN_BACKUP_TARGET') }}"
     platform_longhorn_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_WAIT_TIMEOUT') }}"
     platform_longhorn_cleanup_helm_jobs_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CLEANUP_HELM_JOBS') }}"
     platform_longhorn_failed_release_repair_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_FAILED_RELEASE_REPAIR') }}"
     platform_longhorn_crd_repair_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CRD_REPAIR_ENABLED') }}"
-    platform_longhorn_crd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CRD_MANIFEST_URL') }}"
     platform_longhorn_prepull_images_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_PREPULL_IMAGES') }}"
     platform_longhorn_image_pull_retries_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_RETRIES') }}"
     platform_longhorn_image_pull_retry_delay_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_RETRY_DELAY') }}"
@@ -24,17 +22,20 @@
     platform_longhorn_auto_extra_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_PATH') }}"
     platform_longhorn_auto_extra_disk_min_available_gib_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_MIN_AVAILABLE_GIB') }}"
     platform_longhorn_storage_over_provisioning_percentage_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE') }}"
-    platform_longhorn_chart_repo_effective: "{{ platform_longhorn_chart_repo | default(platform_longhorn_chart_repo_from_env, true) | default('https://charts.longhorn.io', true) }}"
-    platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) }}"
+    platform_longhorn_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn"
+    platform_longhorn_vendored_chart_metadata: "{{ lookup('ansible.builtin.file', platform_longhorn_vendored_chart_path ~ '/Chart.yaml') | from_yaml }}"
+    platform_longhorn_vendored_chart_version: "{{ platform_longhorn_vendored_chart_metadata.version }}"
+    platform_longhorn_vendored_chart_archive_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn-1.12.0.tgz"
+    platform_longhorn_vendored_chart_archive_sha256: "388f4106c7f4e70d00a3d6b6b1f5062e952df59ee5ca75d61ec83bd2bdb3e1a3"
+    platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) | default(platform_longhorn_vendored_chart_version, true) }}"
+    platform_longhorn_render_kube_version: "1.35.0"
+    platform_longhorn_chart_archive_max_bytes: 1048576
+    platform_longhorn_crd_render_max_bytes: 4194304
     platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"
     platform_longhorn_wait_timeout_effective: "{{ platform_longhorn_wait_timeout | default(platform_longhorn_wait_timeout_from_env, true) | default(900, true) | int }}"
     platform_longhorn_cleanup_helm_jobs_effective: "{{ platform_longhorn_cleanup_helm_jobs | default(platform_longhorn_cleanup_helm_jobs_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_failed_release_repair_effective: "{{ platform_longhorn_failed_release_repair | default(platform_longhorn_failed_release_repair_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_crd_repair_enabled_effective: "{{ platform_longhorn_crd_repair_enabled | default(platform_longhorn_crd_repair_enabled_from_env, true) | default(true, true) | bool }}"
-    platform_longhorn_crd_manifest_url_effective: >-
-      {{ platform_longhorn_crd_manifest_url
-         | default(platform_longhorn_crd_manifest_url_from_env, true)
-         | default('https://raw.githubusercontent.com/longhorn/longhorn/v' ~ (platform_longhorn_chart_version_effective | default('1.12.0', true)) ~ '/deploy/longhorn.yaml', true) }}
     platform_longhorn_prepull_images_effective: "{{ platform_longhorn_prepull_images | default(platform_longhorn_prepull_images_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_image_pull_retries_effective: "{{ platform_longhorn_image_pull_retries | default(platform_longhorn_image_pull_retries_from_env, true) | default(4, true) | int }}"
     platform_longhorn_image_pull_retry_delay_effective: "{{ platform_longhorn_image_pull_retry_delay | default(platform_longhorn_image_pull_retry_delay_from_env, true) | default(20, true) | int }}"
@@ -54,6 +55,74 @@
       - instancemanagers.longhorn.io
       - settings.longhorn.io
   tasks:
+    - name: Validate vendored Longhorn chart selection
+      ansible.builtin.assert:
+        that:
+          - platform_longhorn_vendored_chart_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+          - platform_longhorn_chart_version_effective == platform_longhorn_vendored_chart_version
+        fail_msg: >-
+          Direct Longhorn bootstrap only accepts the Git-tracked vendored chart
+          version {{ platform_longhorn_vendored_chart_version }}. Update and
+          review the vendored chart before selecting another version; runtime
+          chart repository downloads are intentionally disabled.
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Load trusted Longhorn chart and CRD payloads on controller
+      block:
+        - name: Inspect vendored Longhorn chart archive
+          ansible.builtin.stat:
+            path: "{{ platform_longhorn_vendored_chart_archive_path }}"
+            checksum_algorithm: sha256
+          register: platform_longhorn_chart_archive_stat
+
+        - name: Verify vendored Longhorn chart archive
+          ansible.builtin.assert:
+            that:
+              - platform_longhorn_chart_archive_stat.stat.isreg | default(false)
+              - platform_longhorn_chart_archive_stat.stat.size | int > 0
+              - platform_longhorn_chart_archive_stat.stat.size | int <= platform_longhorn_chart_archive_max_bytes
+              - platform_longhorn_chart_archive_stat.stat.checksum == platform_longhorn_vendored_chart_archive_sha256
+            fail_msg: >-
+              The vendored Longhorn chart archive is missing, empty, oversized,
+              or does not match its reviewed SHA-256. Regenerate and review the
+              archive with the chart source before updating the checksum.
+
+        - name: Read vendored Longhorn chart archive
+          ansible.builtin.slurp:
+            src: "{{ platform_longhorn_vendored_chart_archive_path }}"
+          register: platform_longhorn_chart_archive
+
+        - name: Render vendored Longhorn CRDs
+          ansible.builtin.command:
+            argv:
+              - helm
+              - template
+              - platform-longhorn
+              - "{{ platform_longhorn_vendored_chart_path }}"
+              - --namespace
+              - longhorn-system
+              - --kube-version
+              - "{{ platform_longhorn_render_kube_version }}"
+              - --show-only
+              - templates/crds.yaml
+          register: platform_longhorn_vendored_crds
+          changed_when: false
+
+        - name: Bound rendered Longhorn CRDs
+          ansible.builtin.assert:
+            that:
+              - platform_longhorn_vendored_crds.stdout | length > 0
+              - platform_longhorn_vendored_crds.stdout | length <= platform_longhorn_crd_render_max_bytes
+              - "'kind: CustomResourceDefinition' in platform_longhorn_vendored_crds.stdout"
+            fail_msg: >-
+              The vendored Longhorn CRD render is empty, oversized, or does not
+              contain CustomResourceDefinition objects.
+      delegate_to: localhost
+      become: false
+      run_once: true
+
     - block:
         - name: Validate Longhorn storage overprovisioning percentage
           ansible.builtin.assert:
@@ -213,13 +282,12 @@
               metadata:
                 name: platform-longhorn
                 namespace: kube-system
+                annotations:
+                  platform.gitops.local/chart-sha256: {{ platform_longhorn_chart_archive_stat.stat.checksum | to_json }}
+                  platform.gitops.local/chart-version: {{ platform_longhorn_vendored_chart_version | to_json }}
               spec:
-                repo: {{ platform_longhorn_chart_repo_effective }}
-                chart: longhorn
+                chartContent: {{ platform_longhorn_chart_archive.content | to_json }}
                 failurePolicy: abort
-              {% if platform_longhorn_chart_version_effective | length > 0 %}
-                version: {{ platform_longhorn_chart_version_effective }}
-              {% endif %}
                 targetNamespace: longhorn-system
                 createNamespace: true
                 valuesContent: |-
@@ -265,6 +333,8 @@
             controller_job=helm-install-platform-longhorn
             repair_job=helm-repair-platform-longhorn
             repair_config=helm-repair-platform-longhorn-values
+            repair_chart=helm-repair-platform-longhorn-chart
+            expected_chart_sha256={{ platform_longhorn_vendored_chart_archive_sha256 | quote }}
             wait_timeout={{ platform_longhorn_wait_timeout_effective | int }}
 
             release_state="$(${K} --kubeconfig "${C}" -n "${release_namespace}" get secret \
@@ -327,12 +397,22 @@
               "job/${repair_job}" --ignore-not-found=true --wait=true >/dev/null
 
             values_file="$(mktemp)"
-            trap 'rm -f "${values_file}"' EXIT
+            chart_file="$(mktemp)"
+            trap 'rm -f "${values_file}" "${chart_file}"' EXIT
             ${K} --kubeconfig "${C}" -n "${controller_namespace}" get \
               "helmchart/${release}" -o jsonpath='{.spec.valuesContent}' >"${values_file}"
             test -s "${values_file}"
+            ${K} --kubeconfig "${C}" -n "${controller_namespace}" get \
+              "helmchart/${release}" -o jsonpath='{.spec.chartContent}' |
+              base64 --decode >"${chart_file}"
+            test -s "${chart_file}"
+            printf '%s  %s\n' "${expected_chart_sha256}" "${chart_file}" |
+              sha256sum --check --strict
             ${K} --kubeconfig "${C}" -n "${controller_namespace}" create configmap \
               "${repair_config}" --from-file=values.yaml="${values_file}" \
+              --dry-run=client -o yaml | ${K} --kubeconfig "${C}" apply -f - >/dev/null
+            ${K} --kubeconfig "${C}" -n "${controller_namespace}" create configmap \
+              "${repair_chart}" --from-file=longhorn.tgz="${chart_file}" \
               --dry-run=client -o yaml | ${K} --kubeconfig "${C}" apply -f - >/dev/null
 
             cat <<EOF | ${K} --kubeconfig "${C}" apply -f - >/dev/null
@@ -362,28 +442,27 @@
                       command: ["/bin/bash", "-ec"]
                       args:
                         - |
-                          helm repo add platform-longhorn {{ platform_longhorn_chart_repo_effective | quote }} --force-update
-                          helm repo update
-                          version_args=()
-                          if [ -n {{ platform_longhorn_chart_version_effective | quote }} ]; then
-                            version_args=(--version {{ platform_longhorn_chart_version_effective | quote }})
-                          fi
-                          helm upgrade --install platform-longhorn platform-longhorn/longhorn \
+                          helm upgrade --install platform-longhorn /chart/longhorn.tgz \
                             --namespace longhorn-system \
                             --create-namespace \
                             --values /config/values.yaml \
                             --wait \
                             --timeout ${wait_timeout}s \
-                            --history-max 10 \
-                            "\${version_args[@]}"
+                            --history-max 10
                       volumeMounts:
                         - name: values
                           mountPath: /config
+                          readOnly: true
+                        - name: chart
+                          mountPath: /chart
                           readOnly: true
                   volumes:
                     - name: values
                       configMap:
                         name: ${repair_config}
+                    - name: chart
+                      configMap:
+                        name: ${repair_chart}
             EOF
 
             deadline=$((SECONDS + wait_timeout + 120))
@@ -397,7 +476,8 @@
                   "job/${repair_job}" --all-containers --tail=160 || true
                 echo "action=repair-failed-longhorn-release result=ok previousRevision=${release_revision}"
                 ${K} --kubeconfig "${C}" -n "${controller_namespace}" delete \
-                  "job/${repair_job}" "configmap/${repair_config}" --ignore-not-found=true --wait=false >/dev/null
+                  "job/${repair_job}" "configmap/${repair_config}" "configmap/${repair_chart}" \
+                  --ignore-not-found=true --wait=false >/dev/null
                 ${K} --kubeconfig "${C}" -n "${controller_namespace}" delete \
                   "job/${controller_job}" --ignore-not-found=true --wait=false >/dev/null
                 exit 0
@@ -444,44 +524,18 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
-        - name: Restore missing Longhorn CRDs from upstream manifest
-          ansible.builtin.shell: |
-            set -o pipefail
-            K=/var/lib/rancher/rke2/bin/kubectl
-            C=/etc/rancher/rke2/rke2.yaml
-            url={{ platform_longhorn_crd_manifest_url_effective | quote }}
-            tmp="$(mktemp)"
-            crds="$(mktemp)"
-            cleanup() {
-              rm -f "${tmp}" "${crds}"
-            }
-            trap cleanup EXIT
-
-            curl -fsSL --connect-timeout 20 --max-time 120 "${url}" -o "${tmp}"
-            awk '
-              /^---[[:space:]]*$/ {
-                if (doc ~ /kind:[[:space:]]*CustomResourceDefinition/) {
-                  printf "%s", doc
-                }
-                doc = $0 "\n"
-                next
-              }
-              { doc = doc $0 "\n" }
-              END {
-                if (doc ~ /kind:[[:space:]]*CustomResourceDefinition/) {
-                  printf "%s", doc
-                }
-              }
-            ' "${tmp}" > "${crds}"
-
-            if [ ! -s "${crds}" ]; then
-              echo "No CRD documents were extracted from ${url}" >&2
-              exit 1
-            fi
-
-            "$K" --kubeconfig "$C" apply -f "${crds}"
+        - name: Restore missing Longhorn CRDs from vendored chart
+          ansible.builtin.command:
+            argv:
+              - /var/lib/rancher/rke2/bin/kubectl
+              - --kubeconfig
+              - /etc/rancher/rke2/rke2.yaml
+              - apply
+              - -f
+              - -
+            stdin: "{{ platform_longhorn_vendored_crds.stdout }}"
           args:
-            executable: /bin/bash
+            stdin_add_newline: true
           register: platform_longhorn_crd_restore
           changed_when: >-
             'created' in platform_longhorn_crd_restore.stdout or
@@ -2078,7 +2132,7 @@
               {{ hostvars[node].platform_longhorn_auto_extra_disk_config.stdout | default('automatic extra disk check did not run') }}
               {% endfor %}
 
-              Common causes are blocked chart/image pulls, missing Longhorn host
+              Common causes are blocked image pulls, missing Longhorn host
               prerequisites, insufficient disk space, CNI pod networking problems,
               or Longhorn manager/CSI pods waiting on scheduling.
           run_once: true

@@ -1,0 +1,63 @@
+---
+- name: Capture sanitized live platform image inventory
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: false
+  vars:
+    platform_image_inventory_controller_output: "{{ lookup('ansible.builtin.env', 'PLATFORM_IMAGE_INVENTORY_CONTROLLER_OUTPUT') }}"
+  tasks:
+    - name: Require absolute controller image inventory output path
+      ansible.builtin.assert:
+        that:
+          - platform_image_inventory_controller_output | length > 1
+          - platform_image_inventory_controller_output[0] == '/'
+        fail_msg: >-
+          PLATFORM_IMAGE_INVENTORY_CONTROLLER_OUTPUT must be an absolute path
+          below the controller repository's ignored rendered directory.
+
+    - name: Create temporary live image inventory workspace
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: platform-image-inventory-
+      register: platform_image_inventory_workspace
+
+    - name: Capture and fetch sanitized live image inventory
+      block:
+        - name: Install live image inventory collector temporarily
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../scripts/capture_live_image_inventory.py"
+            dest: "{{ platform_image_inventory_workspace.path }}/capture_live_image_inventory.py"
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Capture digest-bound Pod image identities
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ platform_image_inventory_workspace.path }}/capture_live_image_inventory.py"
+              - --kubectl
+              - /var/lib/rancher/rke2/bin/kubectl
+              - --kubeconfig
+              - /etc/rancher/rke2/rke2.yaml
+              - --output
+              - "{{ platform_image_inventory_workspace.path }}/live-image-inventory.json"
+          register: platform_image_inventory_capture
+          changed_when: false
+
+        - name: Print sanitized live image inventory summary
+          ansible.builtin.debug:
+            var: platform_image_inventory_capture.stdout_lines
+
+        - name: Fetch sanitized live image inventory to controller
+          ansible.builtin.fetch:
+            src: "{{ platform_image_inventory_workspace.path }}/live-image-inventory.json"
+            dest: "{{ platform_image_inventory_controller_output }}"
+            flat: true
+            fail_on_missing: true
+      always:
+        - name: Remove temporary live image inventory workspace
+          ansible.builtin.file:
+            path: "{{ platform_image_inventory_workspace.path }}"
+            state: absent
+          when: platform_image_inventory_workspace.path is defined

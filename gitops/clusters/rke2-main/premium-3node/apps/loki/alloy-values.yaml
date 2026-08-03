@@ -1,0 +1,127 @@
+crds:
+  create: false
+
+alloy:
+  enableReporting: false
+  clustering:
+    enabled: true
+    name: platform-logs
+  configMap:
+    create: true
+    content: |-
+      logging {
+        level = "info"
+      }
+
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          target_label  = "node"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "app"
+        }
+      }
+
+      loki.source.kubernetes "pod_logs" {
+        targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.process.pod_logs.receiver]
+
+        clustering {
+          enabled = true
+        }
+      }
+
+      loki.process "pod_logs" {
+        stage.static_labels {
+          values = {
+            cluster = "rke2-main",
+          }
+        }
+
+        forward_to = [loki.write.platform.receiver]
+      }
+
+      loki.write "platform" {
+        endpoint {
+          url       = "http://loki-gateway.logging.svc.cluster.local/loki/api/v1/push"
+          tenant_id = "platform"
+
+          basic_auth {
+            username = sys.env("LOKI_GATEWAY_USERNAME")
+            password = sys.env("LOKI_GATEWAY_PASSWORD")
+          }
+        }
+      }
+  extraEnv:
+    - name: LOKI_GATEWAY_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: loki-gateway-basic-auth
+          key: username
+    - name: LOKI_GATEWAY_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: loki-gateway-basic-auth
+          key: password
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+controller:
+  type: deployment
+  replicas: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: alloy
+          topologyKey: kubernetes.io/hostname
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: alloy
+
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: monitoring

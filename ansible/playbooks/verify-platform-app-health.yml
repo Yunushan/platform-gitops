@@ -33,9 +33,11 @@
     platform_app_health_grafana_database_secret_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET') }}"
     platform_app_health_cnpg_object_storage_secret_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_CNPG_OBJECT_STORAGE_SECRET') }}"
     platform_app_health_sso_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SSO') }}"
+    platform_app_health_argocd_guarded_prune_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_ARGOCD_GUARDED_PRUNE') }}"
     platform_app_health_argocd_runtime_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_ARGOCD_RUNTIME') }}"
     platform_app_health_longhorn_runtime_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_LONGHORN_RUNTIME') }}"
     platform_app_health_ha_replicas_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HA_REPLICAS') }}"
+    platform_app_health_forgejo_singleton_safety_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_FORGEJO_SINGLETON_SAFETY') }}"
     platform_app_health_http_redirect_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HTTP_REDIRECT') }}"
     platform_app_health_node_ingress_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT') }}"
     platform_app_health_service_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE') }}"
@@ -72,13 +74,13 @@
     platform_minio_root_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'MINIO_ROOT_SECRET_NAME') }}"
     platform_app_health_connect_timeout_effective: "{{ platform_app_health_connect_timeout | default(platform_app_health_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_max_time_effective: "{{ platform_app_health_max_time | default(platform_app_health_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
-    platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca kyverno platform-policies tetragon external-secrets openbao metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak forgejo woodpecker harbor monitoring loki velero', true) }}"
+    platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca kyverno platform-policies platform-image-integrity tetragon external-secrets openbao metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak forgejo woodpecker harbor monitoring loki velero', true) }}"
     platform_app_health_include_existing_apps_effective: "{{ platform_app_health_include_existing_apps | default(platform_app_health_include_existing_apps_from_env, true) | default(true, true) | bool }}"
     platform_app_health_forbid_temporary_repo_effective: "{{ platform_app_health_forbid_temporary_repo | default(platform_app_health_forbid_temporary_repo_from_env, true) | default(true, true) | bool }}"
     platform_app_health_openbao_ready_effective: "{{ platform_app_health_openbao_ready | default(platform_app_health_openbao_ready_from_env, true) | default(true, true) | bool }}"
     platform_app_health_expected_repo_url_effective: "{{ platform_app_health_expected_repo_url | default(platform_app_health_expected_repo_url_from_env, true) | default(platform_repo_url_from_env, true) | default('', true) }}"
     platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default('argocd cert-manager step-ca kyverno tetragon external-secrets openbao cnpg-system platform-databases platform-cache object-storage keycloak forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
-    platform_app_health_storage_classes_effective: "{{ platform_app_health_storage_classes | default(platform_app_health_storage_classes_from_env, true) | default('longhorn-standard longhorn-critical longhorn-cache', true) }}"
+    platform_app_health_storage_classes_effective: "{{ platform_app_health_storage_classes | default(platform_app_health_storage_classes_from_env, true) | default('longhorn-standard longhorn-critical longhorn-cache longhorn-standard-encrypted longhorn-critical-encrypted longhorn-cache-encrypted', true) }}"
     platform_app_health_certificates_effective: "{{ platform_app_health_certificates | default(platform_app_health_certificates_from_env, true) | default('auto', true) }}"
     platform_app_health_trust_bundles_effective: "{{ platform_app_health_trust_bundles | default(platform_app_health_trust_bundles_from_env, true) | default('auto', true) }}"
     platform_app_health_cnpg_clusters_effective: "{{ platform_app_health_cnpg_clusters | default(platform_app_health_cnpg_clusters_from_env, true) | default('auto', true) }}"
@@ -95,9 +97,11 @@
     platform_app_health_grafana_database_secret_effective: "{{ platform_app_health_grafana_database_secret | default(platform_app_health_grafana_database_secret_from_env, true) | default(false, true) | bool }}"
     platform_app_health_cnpg_object_storage_secret_effective: "{{ platform_app_health_cnpg_object_storage_secret | default(platform_app_health_cnpg_object_storage_secret_from_env, true) | default(false, true) | bool }}"
     platform_app_health_sso_effective: "{{ platform_app_health_sso | default(platform_app_health_sso_from_env, true) | default(platform_sso_enabled_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_argocd_guarded_prune_effective: "{{ platform_app_health_argocd_guarded_prune | default(platform_app_health_argocd_guarded_prune_from_env, true) | default(true, true) | bool }}"
     platform_app_health_argocd_runtime_effective: "{{ platform_app_health_argocd_runtime | default(platform_app_health_argocd_runtime_from_env, true) | default(true, true) | bool }}"
     platform_app_health_longhorn_runtime_effective: "{{ platform_app_health_longhorn_runtime | default(platform_app_health_longhorn_runtime_from_env, true) | default(true, true) | bool }}"
     platform_app_health_ha_replicas_effective: "{{ platform_app_health_ha_replicas | default(platform_app_health_ha_replicas_from_env, true) | default(true, true) | bool }}"
+    platform_app_health_forgejo_singleton_safety_effective: "{{ platform_app_health_forgejo_singleton_safety | default(platform_app_health_forgejo_singleton_safety_from_env, true) | default(true, true) | bool }}"
     platform_app_health_http_redirect_effective: "{{ platform_app_health_http_redirect | default(platform_app_health_http_redirect_from_env, true) | default(true, true) | bool }}"
     platform_app_health_node_ingress_strict_effective: "{{ platform_app_health_node_ingress_strict | default(platform_app_health_node_ingress_strict_from_env, true) | default(false, true) | bool }}"
     platform_app_health_service_check_image_effective: "{{ platform_app_health_service_check_image | default(platform_app_health_service_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
@@ -279,6 +283,89 @@
     - name: Print Argo CD application health results
       ansible.builtin.debug:
         var: platform_app_health_argocd_app_probe.stdout_lines
+      run_once: true
+
+    - name: Verify live Argo CD Applications use guarded pruning
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps="{{ platform_app_health_required_apps_effective }}"
+        include_existing_apps="{{ platform_app_health_include_existing_apps_effective | ternary('true', 'false') }}"
+        enforce_guarded_prune="{{ platform_app_health_argocd_guarded_prune_effective | ternary('true', 'false') }}"
+        existing_apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null || true)"
+        failed=0
+        seen=" "
+
+        echo "===== Argo CD guarded pruning policy ====="
+        if [ "${enforce_guarded_prune}" != "true" ]; then
+          echo "result=skip reason=platform-app-health-argocd-guarded-prune-disabled"
+          exit 0
+        fi
+
+        if [ "${include_existing_apps}" = "true" ]; then
+          app_check_list="${existing_apps} ${required_apps}"
+        else
+          app_check_list="${required_apps}"
+        fi
+
+        if [ -z "${app_check_list}" ]; then
+          echo "result=fail reason=no-applications"
+          exit 1
+        fi
+
+        for app in ${app_check_list}; do
+          case "${seen}" in
+            *" ${app} "*) continue ;;
+          esac
+          seen="${seen}${app} "
+          if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+            echo "app=${app} result=fail reason=missing-application"
+            failed=1
+            continue
+          fi
+
+          policy="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.spec.syncPolicy.automated.prune}{"|"}{.spec.syncPolicy.automated.selfHeal}{"|"}{.spec.syncPolicy.automated.allowEmpty}{"\n"}' 2>/dev/null || true)"
+          prune="$(printf '%s' "${policy}" | cut -d'|' -f1)"
+          self_heal="$(printf '%s' "${policy}" | cut -d'|' -f2)"
+          allow_empty="$(printf '%s' "${policy}" | cut -d'|' -f3)"
+          sync_options="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{range .spec.syncPolicy.syncOptions[*]}{.}{"\n"}{end}' 2>/dev/null || true)"
+          missing=""
+
+          [ "${prune}" = "true" ] || missing="${missing} automated.prune=true"
+          [ "${self_heal}" = "true" ] || missing="${missing} automated.selfHeal=true"
+          [ "${allow_empty}" = "false" ] || missing="${missing} automated.allowEmpty=false"
+          for option in \
+            "Prune=confirm" \
+            "PruneLast=true" \
+            "PrunePropagationPolicy=foreground"; do
+            if ! printf '%s\n' "${sync_options}" | grep -Fqx -- "${option}"; then
+              missing="${missing} syncOption:${option}"
+            fi
+          done
+
+          if [ -n "${missing}" ]; then
+            echo "app=${app} result=fail reason=unguarded-pruning-policy missing=${missing# }"
+            failed=1
+          else
+            echo "app=${app} result=ok prune=${prune} self_heal=${self_heal} allow_empty=${allow_empty} approval=confirm order=last propagation=foreground"
+          fi
+        done
+
+        exit "${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_argocd_guarded_prune_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print live Argo CD guarded pruning results
+      ansible.builtin.debug:
+        var: platform_app_health_argocd_guarded_prune_probe.stdout_lines
       run_once: true
 
     - name: Verify Argo CD application source repositories are production-safe
@@ -837,6 +924,84 @@
     - name: Print HA workload replica coverage results
       ansible.builtin.debug:
         var: platform_app_health_ha_replica_probe.stdout_lines
+      run_once: true
+
+    - name: Verify Forgejo singleton disruption safeguards
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        required_apps=" {{ platform_app_health_required_apps_effective }} "
+
+        if [ "{{ platform_app_health_forgejo_singleton_safety_effective | ternary('true', 'false') }}" != "true" ]; then
+          echo "result=skip reason=forgejo-singleton-safety-disabled"
+          exit 0
+        fi
+
+        case "${required_apps}" in
+          *" forgejo "*) ;;
+          *)
+            echo "result=skip reason=forgejo-not-required-by-platform-app-health-required-apps"
+            exit 0
+            ;;
+        esac
+
+        if ! "$K" --kubeconfig "$C" -n forgejo get deployment/forgejo >/dev/null 2>&1; then
+          echo "result=fail reason=missing-forgejo-deployment"
+          exit 1
+        fi
+
+        deployment_state="$("$K" --kubeconfig "$C" -n forgejo get deployment/forgejo \
+          -o jsonpath='{.spec.replicas}{"|"}{.spec.strategy.type}{"\n"}' 2>/dev/null || true)"
+        IFS='|' read -r replicas strategy <<< "${deployment_state}"
+        echo "forgejo_replicas=${replicas:-unknown} rollout_strategy=${strategy:-unknown}"
+
+        if [ "${replicas:-}" != "1" ]; then
+          echo "result=fail reason=forgejo-singleton-replica-contract-mismatch"
+          exit 1
+        fi
+        if [ "${strategy:-}" != "Recreate" ]; then
+          echo "result=fail reason=forgejo-singleton-overlapping-rollout-risk"
+          exit 1
+        fi
+
+        pdb_names="$("$K" --kubeconfig "$C" -n forgejo get poddisruptionbudgets.policy \
+          -l app.kubernetes.io/name=forgejo,app.kubernetes.io/instance=forgejo \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)"
+        if [ -z "${pdb_names}" ]; then
+          echo "result=fail reason=missing-forgejo-singleton-pdb"
+          exit 1
+        fi
+
+        protected=false
+        while IFS= read -r pdb; do
+          [ -n "${pdb}" ] || continue
+          pdb_state="$("$K" --kubeconfig "$C" -n forgejo get "poddisruptionbudget.policy/${pdb}" \
+            -o jsonpath='{.spec.minAvailable}{"|"}{.spec.maxUnavailable}{"\n"}' 2>/dev/null || true)"
+          IFS='|' read -r min_available max_unavailable <<< "${pdb_state}"
+          echo "pdb=${pdb} min_available=${min_available:-unset} max_unavailable=${max_unavailable:-unset}"
+          if [ "${min_available:-}" = "1" ] && [ -z "${max_unavailable:-}" ]; then
+            protected=true
+          fi
+        done <<< "${pdb_names}"
+
+        if [ "${protected}" != "true" ]; then
+          echo "result=fail reason=forgejo-singleton-pdb-does-not-preserve-one-replica"
+          exit 1
+        fi
+
+        echo "result=ok"
+      args:
+        executable: /bin/bash
+      register: platform_app_health_forgejo_singleton_safety_probe
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Forgejo singleton disruption safeguard results
+      ansible.builtin.debug:
+        var: platform_app_health_forgejo_singleton_safety_probe.stdout_lines
       run_once: true
 
     - name: Verify Woodpecker runtime image tags
@@ -3119,10 +3284,12 @@
         platform_app_health_failed: >-
           {{
             (((hostvars[rke2_first_server].platform_app_health_argocd_app_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_argocd_guarded_prune_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_argocd_source_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_pod_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_argocd_runtime_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_ha_replica_probe | default({'rc': 1})).rc | int) != 0)
+            or (((hostvars[rke2_first_server].platform_app_health_forgejo_singleton_safety_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_woodpecker_image_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_certificate_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_trust_bundle_probe | default({'rc': 1})).rc | int) != 0)
@@ -3227,10 +3394,12 @@
         platform_app_health_failure_summary: |-
           {% set probes = [
             ('Argo CD applications', hostvars[rke2_first_server].platform_app_health_argocd_app_probe | default(none)),
+            ('Argo CD guarded pruning policy', hostvars[rke2_first_server].platform_app_health_argocd_guarded_prune_probe | default(none)),
             ('Argo CD source repositories', hostvars[rke2_first_server].platform_app_health_argocd_source_probe | default(none)),
             ('platform pod readiness', hostvars[rke2_first_server].platform_app_health_pod_probe | default(none)),
             ('Argo CD runtime', hostvars[rke2_first_server].platform_app_health_argocd_runtime_probe | default(none)),
             ('HA replica coverage', hostvars[rke2_first_server].platform_app_health_ha_replica_probe | default(none)),
+            ('Forgejo singleton disruption safeguards', hostvars[rke2_first_server].platform_app_health_forgejo_singleton_safety_probe | default(none)),
             ('Woodpecker image tags', hostvars[rke2_first_server].platform_app_health_woodpecker_image_probe | default(none)),
             ('cert-manager Certificates', hostvars[rke2_first_server].platform_app_health_certificate_probe | default(none)),
             ('trust-manager Bundles', hostvars[rke2_first_server].platform_app_health_trust_bundle_probe | default(none)),
@@ -3274,9 +3443,9 @@
           Failed probe summary:
           {{ platform_app_health_failure_summary | default('not collected') }}
 
-          At least one required Argo CD Application, platform namespace,
+          At least one required Argo CD Application, live Argo CD guarded pruning policy, platform namespace,
           Argo CD source repository, Argo CD runtime component/service endpoint, critical HA workload replica contract,
-          Woodpecker runtime image tag, cert-manager Certificate,
+          Forgejo singleton disruption safeguard, Woodpecker runtime image tag, cert-manager Certificate,
           trust-manager Bundle, step-ca API,
           CloudNativePG cluster, Loki API, Velero backup storage, Velero backup
           schedule, generated app secret contract, StorageClass, PVC, Longhorn
@@ -3290,6 +3459,8 @@
           routing, host firewall forwarding, or node-to-pod networking drift.
           The report above also fails when required Argo CD Applications are
           OutOfSync/Progressing/Degraded, have active Argo CD operations,
+          do not enable self-healing and approval-gated foreground pruning in
+          the final sync wave with empty-target protection,
           still use temporary seed Git or insecure git:// sources,
           differ from PLATFORM_APP_HEALTH_EXPECTED_REPO_URL / PLATFORM_REPO_URL
           when one is set,
@@ -3297,7 +3468,9 @@
           CrashLoopBackOff, otherwise not Ready, when the Argo CD server,
           repo-server, application-controller, configured repo-server service,
           or configured Redis service is missing or has no ready endpoint, when critical HA workloads do
-          not have the expected minimum desired and ready replicas, when
+          not have the expected minimum desired and ready replicas, when the
+          singleton Forgejo deployment is not protected by a Recreate strategy
+          and minAvailable=1 PodDisruptionBudget, when
           Woodpecker server or agent pods are not running the expected pinned
           image tag, cert-manager
           Certificates are missing or not Ready, trust-manager Bundles are missing or not synced,
@@ -3344,8 +3517,14 @@
           To skip Argo CD runtime component/service enforcement temporarily:
           PLATFORM_APP_HEALTH_ARGOCD_RUNTIME=false make platform-app-health
 
+          To skip live Argo CD guarded pruning policy enforcement temporarily:
+          PLATFORM_APP_HEALTH_ARGOCD_GUARDED_PRUNE=false make platform-app-health
+
           To skip critical HA replica enforcement temporarily:
           PLATFORM_APP_HEALTH_HA_REPLICAS=false make platform-app-health
+
+          To skip Forgejo singleton disruption-safety enforcement temporarily:
+          PLATFORM_APP_HEALTH_FORGEJO_SINGLETON_SAFETY=false make platform-app-health
 
           To set the expected Woodpecker image tag after an intentional upgrade:
           PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG=v3.16.0 make platform-app-health
@@ -3419,5 +3598,5 @@
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey and SSO secrets exist with required keys; Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana and Prometheus deny or redirect unauthenticated public access when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); live Argo CD Applications enable self-healing and approval-gated foreground pruning in the final sync wave with empty-target protection; when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; singleton Forgejo uses a Recreate rollout and a minAvailable=1 PodDisruptionBudget; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey and SSO secrets exist with required keys; Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana and Prometheus deny or redirect unauthenticated public access when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
       run_once: true

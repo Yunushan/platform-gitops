@@ -1,9 +1,16 @@
 deploymentMode: SimpleScalable
 
 loki:
-  auth_enabled: false
+  auth_enabled: true
   commonConfig:
     replication_factor: 3
+  limits_config:
+    retention_period: 720h
+  compactor:
+    retention_enabled: true
+    delete_request_store: s3
+    delete_request_cancel_period: 24h
+    retention_delete_delay: 2h
   storage:
     type: s3
     bucketNames:
@@ -39,7 +46,7 @@ write:
     # StatefulSet scale-down is also used by guarded storage repair. Retain
     # every claim so healthy higher ordinals cannot be discarded with it.
     enableStatefulSetAutoDeletePVC: false
-    storageClass: longhorn-standard
+    storageClass: longhorn-standard-encrypted
     size: <LOKI_WRITE_CACHE_SIZE>
 
 read:
@@ -61,11 +68,19 @@ backend:
       memory: 2Gi
   persistence:
     enableStatefulSetAutoDeletePVC: false
-    storageClass: longhorn-standard
+    storageClass: longhorn-standard-encrypted
     size: <LOKI_BACKEND_CACHE_SIZE>
 
 gateway:
   enabled: true
+  replicas: 3
+  basicAuth:
+    enabled: true
+    existingSecret: loki-gateway-basic-auth
+  nginxConfig:
+    # The gateway owns tenant selection. Authenticated callers cannot select
+    # another tenant by supplying their own X-Scope-OrgID header.
+    locationSnippet: "proxy_set_header X-Scope-OrgID platform;"
   resources:
     requests:
       cpu: 100m
@@ -88,3 +103,22 @@ gateway:
 monitoring:
   serviceMonitor:
     enabled: true
+
+lokiCanary:
+  enabled: true
+  push: true
+  extraArgs:
+    - -tenant-id=platform
+    - -user=$(LOKI_GATEWAY_USERNAME)
+    - -pass=$(LOKI_GATEWAY_PASSWORD)
+  extraEnv:
+    - name: LOKI_GATEWAY_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: loki-gateway-basic-auth
+          key: username
+    - name: LOKI_GATEWAY_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: loki-gateway-basic-auth
+          key: password

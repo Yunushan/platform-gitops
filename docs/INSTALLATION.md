@@ -125,12 +125,30 @@ servers. Leave `RKE2_VERIFY_SECRETS_ENCRYPTION=true` in production. Set it to
 gate immediately afterwards. Plan any encryption-key rotation with a current
 etcd snapshot and the RKE2 rotation procedure.
 
+Supply-chain promotion is also deliberate. Install Trivy, Gitleaks, Semgrep,
+Syft, OpenSSF Scorecard, Cosign, Kustomize `v5.8.1`, Helm `v3.21.0`, and
+Kubeconform `v0.7.0` on the promotion runner. Run
+`scripts/bootstrap/install-kyverno-cli.sh <PRIVATE_TOOL_DIRECTORY>` to install
+the checksum-pinned Kyverno CLI `v1.18.1` through its bounded, safely extracted,
+atomic installer, or set `KYVERNO_BIN` to an equivalently verified binary.
+Configure the digest-only private image inventory described in
+`docs/SUPPLY_CHAIN.md`, then confirm both `make rendered-schema-verify` and
+`make policy-cel-verify` pass before running `platform-production-check`.
+
 Kyverno policy promotion is deliberate. Keep `PLATFORM_POLICY_ENFORCEMENT=Audit`
 while remediating report findings. Run `make platform-policy-readiness` to show
-violations from the two managed baseline policies. Only after it reports zero
+violations from the three managed stable CEL policies. Only after it reports zero
 violations should you set `PLATFORM_POLICY_ENFORCEMENT=Enforce`, rerender private
 values, sync GitOps, and rerun the same target. In Enforce mode the readiness
 target fails rather than allowing a policy mode change with known violations.
+The renderer maps that operator-facing `Enforce` value to Kyverno's stable
+`validationActions: [Deny]`; `Audit` remains `Audit`.
+
+When upgrading an existing deployment, the `platform-policies` Application will
+show the superseded `kyverno.io/v1` ClusterPolicies as resources to prune. Review
+the diff and approve that guarded prune after the replacement
+`policies.kyverno.io/v1` ValidatingPolicies are Ready. The readiness gate fails
+while either legacy object remains, preventing duplicate admission behavior.
 
 If bootstrap is interrupted or nodes fail to join after the first server starts, use the safe recovery flow:
 
@@ -204,11 +222,21 @@ ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml
 Manual scripts remain available for debugging:
 
 ```bash
-sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> scripts/bootstrap/install-rke2-first-server.sh
-sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> scripts/bootstrap/install-rke2-server.sh
+sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> RKE2_INSTALL_SCRIPT_SHA256=<REVIEWED_INSTALLER_SHA256> scripts/bootstrap/install-rke2-first-server.sh
+sudo RKE2_TOKEN=<TOKEN> RKE2_API_ENDPOINT=<VIP_DNS_NAME> RKE2_VERSION=<RKE2_VERSION> RKE2_INSTALL_SCRIPT_SHA256=<REVIEWED_INSTALLER_SHA256> scripts/bootstrap/install-rke2-server.sh
 ```
 
-Never store the real token in git.
+Manual bootstrap scripts always require an exact RKE2 release and a reviewed
+SHA-256 for the installer returned by `https://get.rke2.io`, including outside
+strict production mode. They permit only TLS 1.2 HTTPS redirects, cap the
+installer at 2 MiB, verify its regular-file shape, byte count, and digest before
+changing the node configuration or executing it, and require a bounded
+`timeout` implementation rather than falling back to unbounded execution. They
+also reject conflicting installer channel/type overrides and write
+`/etc/rancher/rke2/config.yaml` atomically with mode `0600`. Never store the
+real token in git. The installer digest is not secret, but treat it as a
+reviewed release input and obtain it through your approved release or internal
+mirror process rather than trusting the download being verified.
 
 ## Step 5: Bootstrap the platform control plane
 
@@ -259,6 +287,13 @@ To install only Argo CD and expose it through a temporary bootstrap NodePort:
 make platform-argocd
 ```
 
+The bootstrap release is derived from the vendored `argo-cd` chart. Its core
+and HA install manifests use exact release URLs and reviewed SHA-256 values;
+the playbook rejects redirects, bounds each download, verifies it before
+server-side apply, and does not accept a runtime manifest URL override. An
+Argo CD upgrade therefore requires the vendored chart and both reviewed
+bootstrap-manifest digests to move together.
+
 The default bootstrap Argo CD URL is:
 
 ```text
@@ -297,6 +332,13 @@ For the premium profile:
 ```bash
 export PLATFORM_PROFILE=premium-3node
 ```
+
+This production profile requires maintained external S3-compatible object
+storage and does not register the archived MinIO server. For isolated lab or
+migration testing only, use `PLATFORM_PROFILE=premium-3node-lab`. Before
+changing an existing MinIO-backed deployment to the production profile,
+migrate and restore-test its objects; Argo CD requires explicit prune approval
+before removing the old application.
 
 For first private deployments, `platform-first-deploy` performs the Argo CD
 bootstrap, optional private repository credential registration, application
@@ -345,7 +387,7 @@ FORGEJO_DATABASE_HOST=<POSTGRES_HOST>:5432 \
 FORGEJO_DATABASE_NAME=forgejo \
 FORGEJO_DATABASE_USER=forgejo \
 FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
-FORGEJO_DATABASE_SSL_MODE=disable \
+FORGEJO_DATABASE_SSL_MODE=verify-full \
 make platform-render-private-values
 ```
 
@@ -366,6 +408,11 @@ default. `platform-app-secrets` generates `keycloak/keycloak-admin`,
 `keycloak/keycloak-database`, and the matching
 `platform-databases/keycloak-database` CloudNativePG role password secret unless
 you provide `KEYCLOAK_ADMIN_PASSWORD` or `KEYCLOAK_DATABASE_PASSWORD`.
+The renderer defaults to the maintained upstream
+`quay.io/keycloak/keycloak:26.7.0` image and
+`quay.io/adorsys/keycloak-config-cli:6.5.1` for declarative realm import. Pin
+intentional upgrades with `KEYCLOAK_IMAGE_TAG` and
+`KEYCLOAK_CONFIG_CLI_IMAGE_TAG`; floating development tags are rejected.
 
 ### Central SSO and monitoring access
 
@@ -409,7 +456,8 @@ WOODPECKER_AGENT_SECRET_NAME=woodpecker-agent-secret \
 WOODPECKER_DATABASE_HOST=platform-postgres-rw.platform-databases.svc.cluster.local:5432 \
 WOODPECKER_DATABASE_NAME=woodpecker \
 WOODPECKER_DATABASE_USER=woodpecker \
-WOODPECKER_DATABASE_SSLMODE=disable \
+WOODPECKER_DATABASE_SSLMODE=verify-full \
+WOODPECKER_DATABASE_SSLROOTCERT=/etc/ssl/platform-postgres/ca-certificates.crt \
 PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true \
 make platform-app-secrets
 
@@ -450,6 +498,7 @@ HARBOR_DATABASE_HOST=<POSTGRES_HOST> \
 HARBOR_DATABASE_NAME=registry \
 HARBOR_DATABASE_USER=harbor \
 HARBOR_DATABASE_SECRET_NAME=harbor-database \
+HARBOR_DATABASE_SSLMODE=verify-full \
 HARBOR_REDIS_MODE=external \
 HARBOR_REDIS_ADDR=platform-valkey-primary.platform-cache.svc.cluster.local:6379 \
 HARBOR_REDIS_SECRET_NAME=harbor-redis \
@@ -475,7 +524,7 @@ GRAFANA_DATABASE_HOST=<POSTGRES_HOST> \
 GRAFANA_DATABASE_NAME=grafana \
 GRAFANA_DATABASE_USER=grafana \
 GRAFANA_DATABASE_SECRET_NAME=grafana-database \
-GRAFANA_DATABASE_SSL_MODE=disable \
+GRAFANA_DATABASE_SSL_MODE=verify-full \
 make platform-render-private-values
 ```
 
@@ -515,6 +564,10 @@ bucket names, endpoints, regions, cache sizes, and secret names.
 For production runs, set `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` so
 the secret automation fails immediately if Loki, Velero, or CloudNativePG object-storage
 credential secrets are still missing.
+Also set `ALERTMANAGER_WEBHOOK_URL` or provide `ALERTMANAGER_CONFIG`. Production
+strict mode rejects a null alert route, while Loki gateway and Grafana client
+credentials are generated and preserved automatically. See
+`docs/OBSERVABILITY.md` for retention, collection, and delivery proof.
 Set `PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=true` when you only want to
 enforce the CloudNativePG backup credential secret without enforcing the rest of
 the object-storage stack.
@@ -658,24 +711,28 @@ If the webhook path is unhealthy, the ingress playbook automatically restarts Me
 PLATFORM_METALLB_WEBHOOK_REPAIR=false make platform-ingress
 ```
 
-If your enterprise network requires internal Helm mirrors:
+`make platform-ingress` verifies the reviewed MetalLB `0.16.1` and Traefik
+`41.0.1` archives committed beside their vendored chart source, then embeds the
+base64 payloads in RKE2 HelmChart `chartContent`. It does not download a chart
+index or accept a runtime chart-repository override. A chart update requires a
+reviewed source/archive change and matching SHA-256 contract update.
+
+External DNS repair is therefore not a prerequisite for chart installation.
+Run it explicitly when image pulls or another in-cluster external request shows
+resolver or service-path failures. For IPv4-only environments it suppresses
+external AAAA answers by default; disable that only if the cluster has working
+IPv6 egress:
 
 ```bash
-PLATFORM_METALLB_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/metallb" \
-PLATFORM_TRAEFIK_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/traefik" \
-make platform-ingress
+PLATFORM_DNS_IPV4_ONLY=false make platform-dns-repair
 ```
 
-`make platform-ingress` first verifies pod DNS and repairs CoreDNS upstreams when Helm jobs cannot resolve external chart repositories. It checks the MetalLB chart repository, then the Traefik chart repository, then verifies the Traefik chart repository from a pod pinned to every Kubernetes node before installing either controller. The per-node Traefik check prints Kubernetes DNS service IP and CoreDNS endpoint probes, retries Helm repository add/update inside each pinned pod, and waits for all node checks before printing diagnostics. If a single node still cannot use the Kubernetes DNS service path, the playbook repairs CNI sysctls, active-interface reverse-path filtering, firewalld service-path and node-peer trust, direct pod/CNI ACCEPT rules on every RKE2 node, refreshes kube-proxy/Cilium, and retries. For IPv4-only environments it also suppresses external AAAA answers by default so in-cluster Helm jobs do not select unreachable public IPv6 addresses. Disable that only if the cluster has working IPv6 egress:
+The older per-node Traefik repository probe remains available as an explicit
+network diagnostic, but it is disabled during normal ingress installation:
 
 ```bash
-PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
-```
-
-If your network has short DNS or chart-repository flaps, increase only the per-node Helm check tolerance:
-
-```bash
-PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
+make platform-dns-repair-traefik
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true make platform-ingress
 ```
 
 It then installs MetalLB and Traefik through the RKE2 Helm controller, assigns `rke2_ingress_vip`, publishes Argo CD at the effective Argo CD hostname, verifies the route, and removes the temporary Argo CD NodePort exposure.
@@ -788,12 +845,17 @@ For a final read-only readiness proof, run the combined production gate:
 make platform-production-check
 ```
 
-It runs repository validation, RKE2 verification, the platform status report,
-the selected GitOps profile placeholder check, the platform app health gate,
-live off-cluster backup freshness checks, and restore-evidence validation in
-one command. Set `PLATFORM_RESTORE_EVIDENCE_FILE` to a completed private record
-based on `examples/restore-evidence.example.json`; the production gate refuses
-to pass without recent, independently approved restore proof. Repository validation also rejects mutable explicit image or
+It runs repository validation, supply-chain evidence, RKE2 verification, the
+platform status report, the selected GitOps profile placeholder check, live
+capacity, network-isolation, internal-TLS, observability, and platform app
+health checks, plus off-cluster backup freshness and restore-evidence
+validation in one command. Set `PLATFORM_RESTORE_EVIDENCE_FILE` to a completed
+schema-v2 private record based on `examples/restore-evidence.example.json` and
+set `PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE` to the record created by the
+approved `make platform-forgejo-recovery-drill`. The production gate refuses
+to pass without recent, independently approved, hash-bound restore/failover/
+failback proof from a separate failure domain or without Forgejo recovery
+proof for the exact tested commit. Repository validation also rejects mutable explicit image or
 chart tags such as `latest`, `next`, `nightly`, `dev`, or branch-style tags in
 curated GitOps app manifests.
 Use `docs/PRODUCTION_READINESS.md` as the final go/no-go checklist that ties

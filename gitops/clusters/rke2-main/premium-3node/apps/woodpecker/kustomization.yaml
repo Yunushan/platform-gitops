@@ -1,13 +1,21 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: woodpecker
+components:
+  - ../../components/network-isolation
+  - ../../components/postgres-client
+  - ../../components/external-web-egress
+  - ../../components/external-git-egress
+  - ../../components/external-database-egress
+  - ../../components/kubernetes-api-egress
 resources:
+  - namespace.yaml
   - server-pdb.yaml
   - agent-pdb.yaml
+helmGlobals:
+  chartHome: charts/woodpecker-3.6.5
 helmCharts:
   - name: woodpecker
-    version: 3.6.5
-    repo: https://woodpecker-ci.org/
     releaseName: woodpecker
     namespace: woodpecker
     valuesFile: values.yaml

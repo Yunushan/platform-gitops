@@ -13,6 +13,8 @@ APPLICATION_FILES = [
     ROOT / "gitops" / "clusters" / "rke2-main" / "platform-apps.yaml",
     ROOT / "gitops" / "clusters" / "rke2-main" / "premium-3node" / "platform-apps.yaml",
 ]
+ROOT_APPLICATION_FILE = ROOT / "gitops" / "bootstrap" / "root-app.yaml"
+OPERATIONS_DOC = ROOT / "docs" / "OPERATIONS.md"
 PROJECT_FILE = ROOT / "gitops" / "clusters" / "rke2-main" / "projects" / "platform-project.yaml"
 APPLICATION_KIND_RE = re.compile(r"(?m)^kind:\s*Application\s*$")
 PROJECT_KIND_RE = re.compile(r"(?m)^kind:\s*AppProject\s*$")
@@ -90,6 +92,22 @@ RUNTIME_IGNORE_CONTRACT = {
         '"checksum/secret-jobservice"',
     ),
 }
+STORAGE_CLASS_MIGRATION_APPS = {
+    "forgejo",
+    "harbor",
+    "keycloak",
+    "loki",
+    "monitoring",
+    "openbao",
+    "platform-valkey",
+    "woodpecker",
+}
+STORAGE_CLASS_IGNORE_CONTRACT = (
+    "kind: StatefulSet",
+    ".spec.volumeClaimTemplates[]?.spec.storageClassName",
+    "kind: PersistentVolumeClaim",
+    "- /spec/storageClassName",
+)
 REQUIRED_CLUSTER_RESOURCE_WHITELIST = {
     ("", "Namespace"),
     ("admissionregistration.k8s.io", "MutatingWebhookConfiguration"),
@@ -102,6 +120,8 @@ REQUIRED_CLUSTER_RESOURCE_WHITELIST = {
     ("external-secrets.io", "ClusterPushSecret"),
     ("external-secrets.io", "ClusterSecretStore"),
     ("kyverno.io", "ClusterPolicy"),
+    ("policies.kyverno.io", "ImageValidatingPolicy"),
+    ("policies.kyverno.io", "ValidatingPolicy"),
     ("networking.k8s.io", "IngressClass"),
     ("rbac.authorization.k8s.io", "ClusterRole"),
     ("rbac.authorization.k8s.io", "ClusterRoleBinding"),
@@ -117,15 +137,36 @@ REQUIRED_NAMESPACE_RESOURCE_BLACKLIST = {
     ("argoproj.io", "AppProject"),
 }
 REQUIRED_ADDITIONAL_DESTINATION_NAMESPACES = {"kube-system"}
+NAMESPACE_ONLY_APPS = {
+    "forgejo",
+    "gitea",
+    "harbor",
+    "keycloak",
+    "minio",
+    "platform-postgres",
+    "platform-valkey",
+    "step-ca",
+    "woodpecker",
+}
 KUSTOMIZE_NAMESPACE_RE = re.compile(r"(?m)^namespace:\s*(?P<value>[^\s#]+)")
 HELM_NAMESPACE_RE = re.compile(r"(?m)^\s+namespace:\s*(?P<value>[^\s#]+)")
 HELM_VALUES_FILE_RE = re.compile(r"(?m)^\s+valuesFile:\s*(?P<value>[^\s#]+)")
 SYNC_OPTION_RE = re.compile(r"(?m)^\s+-\s*(?P<value>[A-Za-z][A-Za-z0-9]+=[^\s#]+)")
 AUTOMATED_SYNC_RE = re.compile(r"(?m)^\s+automated:\s*$")
-PRUNE_FALSE_RE = re.compile(r"(?m)^\s+prune:\s*false\s*$")
+PRUNE_TRUE_RE = re.compile(r"(?m)^\s+prune:\s*true\s*$")
 SELF_HEAL_TRUE_RE = re.compile(r"(?m)^\s+selfHeal:\s*true\s*$")
+ALLOW_EMPTY_FALSE_RE = re.compile(r"(?m)^\s+allowEmpty:\s*false\s*$")
+REQUIRED_PRUNE_SYNC_OPTIONS = {
+    "Prune=confirm",
+    "PruneLast=true",
+    "PrunePropagationPolicy=foreground",
+}
 SKIP_SOURCE_PARTS = {"charts", "crds"}
 EXAMPLE_SUFFIXES = (".example.yaml", ".example.yml")
+CLUSTER_SCOPED_SOURCE_GVKS = {
+    ("policies.kyverno.io/v1", "ImageValidatingPolicy"),
+    ("policies.kyverno.io/v1", "ValidatingPolicy"),
+}
 
 
 def strip_scalar(value: str) -> str:
@@ -188,6 +229,22 @@ def app_label(app_file: Path, app_name: str) -> str:
     return f"{app_file.relative_to(ROOT)}::{app_name or '<missing-name>'}"
 
 
+def check_sync_policy(label: str, doc: str, sync_options: set[str]) -> list[str]:
+    problems: list[str] = []
+    if not AUTOMATED_SYNC_RE.search(doc):
+        problems.append(f"{label} is missing automated sync policy")
+    if not PRUNE_TRUE_RE.search(doc):
+        problems.append(f"{label} must enable automated prune behind explicit confirmation")
+    if not SELF_HEAL_TRUE_RE.search(doc):
+        problems.append(f"{label} must keep automated selfHeal enabled")
+    if not ALLOW_EMPTY_FALSE_RE.search(doc):
+        problems.append(f"{label} must keep automated allowEmpty disabled")
+    for option in sorted(REQUIRED_PRUNE_SYNC_OPTIONS):
+        if option not in sync_options:
+            problems.append(f"{label} is missing guarded prune sync option {option}")
+    return problems
+
+
 def strip_inline_comment(value: str) -> str:
     return value.split("#", 1)[0].strip()
 
@@ -203,6 +260,27 @@ def source_yaml_files(source_path: Path) -> list[Path]:
             continue
         files.append(path)
     return files
+
+
+def source_contains_only_known_cluster_resources(source_path: Path) -> bool:
+    documents_seen = 0
+    for path in source_yaml_files(source_path):
+        if path.name == "kustomization.yaml":
+            continue
+        for document in re.split(r"(?m)^---\s*$", path.read_text(encoding="utf-8")):
+            if not document.strip():
+                continue
+            api_version = re.search(r"(?m)^apiVersion:\s*([^\s#]+)", document)
+            kind = re.search(r"(?m)^kind:\s*([^\s#]+)", document)
+            if not api_version or not kind:
+                return False
+            gvk = (strip_scalar(api_version.group(1)), strip_scalar(kind.group(1)))
+            if gvk not in CLUSTER_SCOPED_SOURCE_GVKS:
+                return False
+            if re.search(r"(?m)^  namespace:\s*", document):
+                return False
+            documents_seen += 1
+    return documents_seen > 0
 
 
 def file_enables_monitoring_crd(path: Path) -> bool:
@@ -247,9 +325,10 @@ def check_application_doc(app_file: Path, doc: str) -> list[str]:
     destination_namespace = field(doc, "destination_namespace")
     sync_options = set(SYNC_OPTION_RE.findall(doc))
 
+    expected_project = "platform-services" if app_name in NAMESPACE_ONLY_APPS else "platform"
     expected_values = {
         "metadata namespace": (metadata_namespace, "argocd"),
-        "project": (project, "platform"),
+        "project": (project, expected_project),
         "repoURL": (repo_url, "<THIS_REPO_URL>"),
         "targetRevision": (target_revision, "main"),
         "destination server": (destination_server, "https://kubernetes.default.svc"),
@@ -272,12 +351,17 @@ def check_application_doc(app_file: Path, doc: str) -> list[str]:
         for needle in RUNTIME_IGNORE_CONTRACT.get(app_name, ()):
             if needle not in doc:
                 problems.append(f"{label} is missing runtime-managed ignore contract {needle!r}")
-    if not AUTOMATED_SYNC_RE.search(doc):
-        problems.append(f"{label} is missing automated sync policy")
-    if not PRUNE_FALSE_RE.search(doc):
-        problems.append(f"{label} must keep automated prune disabled")
-    if not SELF_HEAL_TRUE_RE.search(doc):
-        problems.append(f"{label} must keep automated selfHeal enabled")
+        if app_name in STORAGE_CLASS_MIGRATION_APPS:
+            for needle in STORAGE_CLASS_IGNORE_CONTRACT:
+                if needle not in doc:
+                    problems.append(
+                        f"{label} is missing encrypted-storage migration ignore contract {needle!r}"
+                    )
+            if "RespectIgnoreDifferences=true" not in sync_options:
+                problems.append(
+                    f"{label} must respect immutable storage-class differences during sync"
+                )
+    problems.extend(check_sync_policy(label, doc, sync_options))
 
     if not source_path:
         problems.append(f"{label} is missing source path")
@@ -296,10 +380,15 @@ def check_application_doc(app_file: Path, doc: str) -> list[str]:
     helm_namespace_match = HELM_NAMESPACE_RE.search(kustomization_text)
     kustomize_namespace = strip_scalar(kustomize_namespace_match.group("value")) if kustomize_namespace_match else ""
     helm_namespace = strip_scalar(helm_namespace_match.group("value")) if helm_namespace_match else ""
-    if kustomize_namespace != destination_namespace:
+    if kustomize_namespace and kustomize_namespace != destination_namespace:
         problems.append(
             f"{label} destination namespace {destination_namespace or '<missing>'} "
             f"does not match kustomization namespace {kustomize_namespace or '<missing>'}"
+        )
+    if not kustomize_namespace and not source_contains_only_known_cluster_resources(app_path):
+        problems.append(
+            f"{label} is missing a kustomization namespace but does not contain only "
+            "explicitly recognized cluster-scoped resources"
         )
     if helm_namespace and helm_namespace != destination_namespace:
         problems.append(
@@ -381,12 +470,14 @@ def check_inferred_monitoring_dependencies(app_file: Path, docs_by_name: dict[st
     return problems
 
 
-def application_destination_namespaces() -> set[str]:
+def application_destination_namespaces(project: str | None = None) -> set[str]:
     namespaces: set[str] = set()
     for app_file in APPLICATION_FILES:
         if not app_file.exists():
             continue
         for doc in application_documents(app_file):
+            if project is not None and field(doc, "project") != project:
+                continue
             namespace = field(doc, "destination_namespace")
             if namespace:
                 namespaces.add(namespace)
@@ -398,7 +489,19 @@ def check_project_contract() -> list[str]:
     if not PROJECT_FILE.exists():
         return [f"missing AppProject file: {PROJECT_FILE.relative_to(ROOT)}"]
 
-    text = PROJECT_FILE.read_text(encoding="utf-8")
+    project_documents = [
+        document
+        for document in re.split(r"(?m)^---\s*$", PROJECT_FILE.read_text(encoding="utf-8"))
+        if PROJECT_KIND_RE.search(document)
+    ]
+    platform_documents = [
+        document
+        for document in project_documents
+        if re.search(r"(?m)^  name:\s*platform\s*$", document)
+    ]
+    if len(platform_documents) != 1:
+        return [f"{PROJECT_FILE.relative_to(ROOT)} must define exactly one platform AppProject"]
+    text = platform_documents[0]
     label = PROJECT_FILE.relative_to(ROOT)
     if not PROJECT_KIND_RE.search(text):
         problems.append(f"{label} must define kind: AppProject")
@@ -413,7 +516,7 @@ def check_project_contract() -> list[str]:
     if "*" in source_repos:
         problems.append(f"{label} sourceRepos must not allow wildcard repositories")
 
-    expected_namespaces = application_destination_namespaces() | REQUIRED_ADDITIONAL_DESTINATION_NAMESPACES
+    expected_namespaces = application_destination_namespaces("platform") | REQUIRED_ADDITIONAL_DESTINATION_NAMESPACES
     destinations = project_list_items(text, "destinations")
     destination_namespaces = {item.get("namespace", "") for item in destinations if item.get("namespace")}
     wildcard_namespaces = sorted(namespace for namespace in destination_namespaces if "*" in namespace)
@@ -461,8 +564,45 @@ def check_project_contract() -> list[str]:
     return problems
 
 
+def check_root_application_contract() -> list[str]:
+    if not ROOT_APPLICATION_FILE.exists():
+        return [f"missing root Application file: {ROOT_APPLICATION_FILE.relative_to(ROOT)}"]
+    docs = application_documents(ROOT_APPLICATION_FILE)
+    if len(docs) != 1:
+        return [
+            f"{ROOT_APPLICATION_FILE.relative_to(ROOT)} must define exactly one root Application, got {len(docs)}"
+        ]
+    doc = docs[0]
+    app_name = field(doc, "metadata_name")
+    label = app_label(ROOT_APPLICATION_FILE, app_name)
+    sync_options = set(SYNC_OPTION_RE.findall(doc))
+    return check_sync_policy(label, doc, sync_options)
+
+
+def check_pruning_runbook() -> list[str]:
+    if not OPERATIONS_DOC.exists():
+        return [f"missing controlled-pruning runbook: {OPERATIONS_DOC.relative_to(ROOT)}"]
+    text = OPERATIONS_DOC.read_text(encoding="utf-8")
+    required = (
+        "## Controlled Pruning",
+        "argocd.argoproj.io/deletion-approved",
+        "Prune=confirm",
+        "PruneLast=true",
+        "PrunePropagationPolicy=foreground",
+        "allowEmpty=false",
+        "Never pre-approve every Application",
+    )
+    return [
+        f"{OPERATIONS_DOC.relative_to(ROOT)} is missing controlled-pruning guidance {needle!r}"
+        for needle in required
+        if needle not in text
+    ]
+
+
 def main() -> int:
     problems: list[str] = check_project_contract()
+    problems.extend(check_root_application_contract())
+    problems.extend(check_pruning_runbook())
     for app_file in APPLICATION_FILES:
         if not app_file.exists():
             problems.append(f"missing Application file: {app_file.relative_to(ROOT)}")

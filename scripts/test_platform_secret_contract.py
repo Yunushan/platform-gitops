@@ -81,6 +81,42 @@ CONTRACTS = [
         ],
     },
     {
+        "label": "Longhorn volume encryption key",
+        "env": "LONGHORN_ENCRYPTION_SECRET_NAME",
+        "default": "longhorn-crypto",
+        "namespace": "longhorn-system",
+        "keys": [
+            "CRYPTO_KEY_VALUE",
+            "CRYPTO_KEY_PROVIDER",
+            "CRYPTO_KEY_CIPHER",
+            "CRYPTO_KEY_HASH",
+            "CRYPTO_KEY_SIZE",
+            "CRYPTO_PBKDF",
+            "CRYPTO_PBKDF_FORCE_ITERATIONS",
+            "CRYPTO_PBKDF_MEMORY",
+        ],
+        "static_file": PREMIUM_APPS / "longhorn" / "storageclasses.yaml",
+        "static_needles": [
+            "name: longhorn-standard-encrypted",
+            'encrypted: "true"',
+            "csi.storage.k8s.io/node-stage-secret-name: longhorn-crypto",
+        ],
+        "rendered_app": "longhorn_storageclasses",
+        "custom_secret": "longhorn-crypto-custom",
+        "rendered_needles": [
+            "csi.storage.k8s.io/provisioner-secret-name: longhorn-crypto-custom",
+            "csi.storage.k8s.io/node-publish-secret-name: longhorn-crypto-custom",
+            "csi.storage.k8s.io/node-stage-secret-name: longhorn-crypto-custom",
+            "csi.storage.k8s.io/node-expand-secret-name: longhorn-crypto-custom",
+        ],
+        "playbook_extra_needles": [
+            "LONGHORN_ENCRYPTION_RECOVERY_FILE",
+            "private/longhorn-encryption.key",
+            "cmp --silent",
+            "install -m 0600",
+        ],
+    },
+    {
         "label": "Harbor admin password",
         "env": "HARBOR_ADMIN_SECRET_NAME",
         "default": "harbor-admin",
@@ -347,7 +383,7 @@ CONTRACTS = [
         "rendered_app": "monitoring",
         "custom_secret": "grafana-db-custom",
         "rendered_needles": [
-            "envValueFrom:\n    GF_DATABASE_PASSWORD:",
+            "GF_DATABASE_PASSWORD:",
             'name: "grafana-db-custom"',
             "grafana.ini:\n    database:\n      type: postgres",
             'password: "$__env{GF_DATABASE_PASSWORD}"',
@@ -530,6 +566,12 @@ def check_renderer_and_secret_playbook() -> None:
                     f"app-secret playbook literal key for {contract['label']} is missing one of: "
                     + ", ".join(key_needles)
                 )
+        for needle in contract.get("playbook_extra_needles", []):
+            require_contains(
+                playbook_text,
+                needle,
+                f"app-secret playbook recovery contract for {contract['label']}",
+            )
     require_contains(
         renderer_text,
         'INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"',
@@ -592,6 +634,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
         "CNPG_BACKUP_ENABLED": "true",
         "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn-backups@eu-test-1/",
         "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME": "longhorn-backup-custom",
+        "LONGHORN_ENCRYPTION_SECRET_NAME": "longhorn-crypto-custom",
         "PLATFORM_VALKEY_AUTH_SECRET_NAME": "platform-valkey-custom",
         "PLATFORM_VALKEY_PASSWORD_KEY": "valkey-password-custom",
         "FORGEJO_DATABASE_MODE": "external",
@@ -644,6 +687,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
             "keycloak": base / "keycloak-values.yaml",
             "argocd": base / "argocd-values.yaml",
             "longhorn": base / "longhorn-values.yaml",
+            "longhorn_storageclasses": base / "longhorn-storageclasses.yaml",
         }
         paths["longhorn"].write_text(
             "defaultSettings:\n"
@@ -654,6 +698,10 @@ def render_with_custom_secret_names() -> dict[str, str]:
         )
         paths["argocd"].write_text(
             (PREMIUM_APPS / "argocd-ha" / "values.yaml").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        paths["longhorn_storageclasses"].write_text(
+            (PREMIUM_APPS / "longhorn" / "storageclasses.yaml").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
         renderer.render_platform_valkey(paths["valkey"])
@@ -667,6 +715,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
         renderer.render_keycloak(paths["keycloak"], inventory)
         renderer.render_argocd(paths["argocd"], inventory)
         renderer.render_longhorn(paths["longhorn"], env["LONGHORN_BACKUP_TARGET"])
+        renderer.render_longhorn_storageclasses(paths["longhorn_storageclasses"])
         for app, path in paths.items():
             rendered[app] = path.read_text(encoding="utf-8")
     return rendered

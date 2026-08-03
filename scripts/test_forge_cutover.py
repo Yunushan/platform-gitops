@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -198,6 +199,16 @@ def expect_cutover_error(plan: dict[str, object], expected: str) -> None:
         fail(f"expected plan validation failure containing {expected!r}")
 
 
+def expect_action_error(action: object, expected: str) -> None:
+    try:
+        action()  # type: ignore[operator]
+    except cutover.CutoverError as exc:
+        if expected not in str(exc):
+            fail(f"expected {expected!r} in {exc!r}")
+    else:
+        fail(f"expected cutover failure containing {expected!r}")
+
+
 def test_plan_validation() -> None:
     plan = parsed_plan()
     if plan.sha256 != cutover.canonical_digest(plan.raw):
@@ -227,6 +238,739 @@ def test_plan_validation() -> None:
         }
     )
     cutover.parse_cutover_plan(accepted)
+
+
+def test_service_http_and_content_helpers() -> None:
+    plan = parsed_plan()
+    repo = plan.repositories[0]
+    saved = {
+        name: os.environ.get(name)
+        for name in ("SERVICE_TOKEN", "HARBOR_TEST_USER", "HARBOR_TEST_PASSWORD")
+    }
+    os.environ["SERVICE_TOKEN"] = "runtime-token"
+    os.environ["HARBOR_TEST_USER"] = "admin"
+    os.environ["HARBOR_TEST_PASSWORD"] = "secret"
+
+    class Response:
+        def __init__(self, status: int, payload: bytes) -> None:
+            self.status = status
+            self.payload = payload
+            self.offset = 0
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, size: int = -1) -> bytes:
+            if self.offset >= len(self.payload):
+                return b""
+            end = len(self.payload) if size < 0 else self.offset + size
+            chunk = self.payload[self.offset:end]
+            self.offset += len(chunk)
+            return chunk
+
+    try:
+        bearer = cutover.service_target(
+            "woodpecker",
+            {"api_url": "https://ci.example.invalid/", "token_env": "SERVICE_TOKEN"},
+        )
+        if cutover.service_headers(bearer)["Authorization"] != "Bearer runtime-token":
+            fail("bearer service authentication header is incorrect")
+        token = cutover.ServiceTarget(
+            "forgejo-service",
+            "https://forgejo.example.invalid",
+            token_env="SERVICE_TOKEN",
+            auth="token",
+        )
+        if cutover.service_headers(token)["Authorization"] != "token runtime-token":
+            fail("token service authentication header is incorrect")
+        basic = cutover.ServiceTarget(
+            "harbor",
+            "https://registry.example.invalid",
+            username_env="HARBOR_TEST_USER",
+            password_env="HARBOR_TEST_PASSWORD",
+            auth="basic",
+        )
+        if cutover.service_headers(basic)["Authorization"] != "Basic YWRtaW46c2VjcmV0":
+            fail("basic service authentication header is incorrect")
+        expect_action_error(
+            lambda: cutover.service_headers(
+                cutover.ServiceTarget("invalid", "https://invalid.example", auth="digest")
+            ),
+            "unsupported auth mode",
+        )
+
+        with mock.patch(
+            "forge_cutover.open_http_request",
+            return_value=Response(201, b'{"created": true}'),
+        ) as open_mock:
+            status, payload = cutover.service_request(
+                bearer,
+                "POST",
+                "/api/repos",
+                body={"name": "platform-app"},
+                query={"owner": ["platform", "team"]},
+                expected=(201,),
+                return_status=True,
+            )
+        if status != 201 or payload != {"created": True}:
+            fail("service request did not decode a successful response")
+        requested_url = open_mock.call_args.args[0].full_url
+        if "owner=platform" not in requested_url or "owner=team" not in requested_url:
+            fail(f"service request did not encode repeated query values: {requested_url}")
+
+        expected_error = cutover.HTTPError(
+            "https://ci.example.invalid/missing",
+            404,
+            "not found",
+            {},
+            io.BytesIO(b'{"message":"missing"}'),
+        )
+        with mock.patch("forge_cutover.open_http_request", side_effect=expected_error):
+            status, payload = cutover.service_request(
+                bearer,
+                "GET",
+                "missing",
+                expected=(200, 404),
+                return_status=True,
+            )
+        if status != 404 or payload.get("message") != "missing":
+            fail("expected HTTP status was not returned safely")
+
+        server_error = cutover.HTTPError(
+            "https://ci.example.invalid/fail",
+            500,
+            "failed",
+            {},
+            io.BytesIO(b'{"message":"failed"}'),
+        )
+        with mock.patch("forge_cutover.open_http_request", side_effect=server_error):
+            expect_action_error(
+                lambda: cutover.service_request(bearer, "GET", "fail"),
+                "HTTP 500",
+            )
+        with mock.patch(
+            "forge_cutover.open_http_request",
+            side_effect=cutover.URLError("offline"),
+        ):
+            expect_action_error(
+                lambda: cutover.service_request(bearer, "GET", "offline"),
+                "offline",
+            )
+        with mock.patch(
+            "forge_cutover.open_http_request",
+            return_value=Response(200, b"not-json"),
+        ):
+            expect_action_error(
+                lambda: cutover.service_request(bearer, "GET", "invalid-json"),
+                "invalid JSON",
+            )
+
+        pages = [[{"id": index} for index in range(100)], [{"id": 100}]]
+        with mock.patch("forge_cutover.migration.api_request", side_effect=pages) as api_mock:
+            items = cutover.gitlab_list(mock.sentinel.target, "projects/1/variables")
+        if len(items) != 101 or api_mock.call_count != 2:
+            fail("GitLab pagination did not consume every page")
+        with mock.patch("forge_cutover.migration.api_request", return_value={}):
+            expect_action_error(
+                lambda: cutover.gitlab_list(mock.sentinel.target, "projects/1/variables"),
+                "non-array",
+            )
+
+        encoded = cutover.base64.b64encode(b"stages: [test]\n").decode("ascii")
+        with (
+            mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "projects/1")),
+            mock.patch(
+                "forge_cutover.migration.api_request",
+                return_value={"encoding": "base64", "content": encoded},
+            ),
+        ):
+            if cutover.gitlab_file_text(repo, ".gitlab-ci.yml", "main") != "stages: [test]\n":
+                fail("GitLab file content was not decoded")
+            if cutover.forgejo_file_text(repo, ".woodpecker.yml", "main") != "stages: [test]\n":
+                fail("Forgejo file content was not decoded")
+        with (
+            mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "projects/1")),
+            mock.patch("forge_cutover.migration.api_request", return_value=[]),
+        ):
+            expect_action_error(
+                lambda: cutover.gitlab_file_text(repo, ".gitlab-ci.yml", "main"),
+                "invalid content",
+            )
+            expect_action_error(
+                lambda: cutover.forgejo_file_text(repo, ".woodpecker.yml", "main"),
+                "invalid content",
+            )
+        with (
+            mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "projects/1")),
+            mock.patch(
+                "forge_cutover.migration.api_request",
+                return_value={"encoding": "base64", "content": "////"},
+            ),
+        ):
+            expect_action_error(
+                lambda: cutover.gitlab_file_text(repo, ".gitlab-ci.yml", "main"),
+                "unreadable",
+            )
+            expect_action_error(
+                lambda: cutover.forgejo_file_text(repo, ".woodpecker.yml", "main"),
+                "unreadable",
+            )
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def test_destination_service_preparation_helpers() -> None:
+    plan = parsed_plan()
+    repo = plan.repositories[0]
+    woodpecker = cutover.service_target("woodpecker", plan.services["woodpecker"])
+
+    with mock.patch("forge_cutover.service_request", return_value=(404, {})):
+        if cutover.woodpecker_lookup(woodpecker, "platform/platform-app", required=False) is not None:
+            fail("optional absent Woodpecker repository was not reported as absent")
+        expect_action_error(
+            lambda: cutover.woodpecker_lookup(woodpecker, "platform/platform-app"),
+            "not active",
+        )
+    with mock.patch("forge_cutover.service_request", return_value=(200, [])):
+        expect_action_error(
+            lambda: cutover.woodpecker_lookup(woodpecker, "platform/platform-app"),
+            "invalid data",
+        )
+
+    with mock.patch(
+        "forge_cutover.service_request",
+        side_effect=[(404, {}), {}, (200, {})],
+    ):
+        created_secret = cutover.woodpecker_secret_upsert(
+            woodpecker,
+            30,
+            "DEPLOY_KEY",
+            "runtime-secret",
+        )
+    if created_secret != {"name": "DEPLOY_KEY", "action": "created", "verified": True}:
+        fail(f"Woodpecker secret create result is incorrect: {created_secret}")
+    with mock.patch(
+        "forge_cutover.service_request",
+        side_effect=[(200, {"name": "DEPLOY_KEY"}), {}, (200, {})],
+    ):
+        updated_secret = cutover.woodpecker_secret_upsert(
+            woodpecker,
+            30,
+            "DEPLOY_KEY",
+            "rotated-secret",
+        )
+    if updated_secret["action"] != "updated" or not updated_secret["verified"]:
+        fail("Woodpecker secret update did not verify")
+
+    with mock.patch(
+        "forge_cutover.service_request",
+        side_effect=[[], {"id": 41}],
+    ):
+        created_cron = cutover.woodpecker_cron_upsert(
+            woodpecker,
+            30,
+            "nightly",
+            "0 2 * * *",
+            "main",
+            False,
+        )
+    if created_cron["action"] != "created" or created_cron["id"] != 41:
+        fail("Woodpecker cron was not created")
+    with mock.patch(
+        "forge_cutover.service_request",
+        side_effect=[[{"id": 42, "name": "nightly"}], {"id": 42}],
+    ):
+        updated_cron = cutover.woodpecker_cron_upsert(
+            woodpecker,
+            30,
+            "nightly",
+            "0 3 * * *",
+            "main",
+            True,
+        )
+    if updated_cron["action"] != "updated" or not updated_cron["enabled"]:
+        fail("Woodpecker cron was not updated")
+    with mock.patch("forge_cutover.service_request", return_value={}):
+        expect_action_error(
+            lambda: cutover.woodpecker_cron_upsert(
+                woodpecker,
+                30,
+                "nightly",
+                "0 3 * * *",
+                "main",
+                True,
+            ),
+            "cron list returned invalid data",
+        )
+
+    saved = {
+        name: os.environ.get(name)
+        for name in ("HARBOR_USERNAME", "HARBOR_PASSWORD")
+    }
+    os.environ["HARBOR_USERNAME"] = "admin"
+    os.environ["HARBOR_PASSWORD"] = "runtime-password"
+
+    def harbor_create_request(target, method, path, **_kwargs):
+        if target.name == "harbor" and method == "GET" and path.endswith("projects/platform"):
+            if harbor_create_request.seen:
+                return {"project_id": 50}
+            harbor_create_request.seen = True
+            return 404, {}
+        if target.name == "woodpecker" and method == "GET" and "/registries/" in path:
+            return 404, {}
+        return {}
+
+    harbor_create_request.seen = False
+    try:
+        with mock.patch("forge_cutover.service_request", side_effect=harbor_create_request):
+            harbor = cutover.prepare_harbor(plan, woodpecker, 30)
+        if harbor["project_action"] != "created" or harbor["registry_action"] != "created":
+            fail(f"managed Harbor preparation did not create missing state: {harbor}")
+
+        def harbor_update_request(target, method, path, **_kwargs):
+            if target.name == "harbor" and method == "GET":
+                return (200, {"project_id": 50}) if _kwargs.get("return_status") else {"project_id": 50}
+            if target.name == "woodpecker" and method == "GET" and "/registries/" in path:
+                return 200, {"address": "registry.example.invalid"}
+            return {}
+
+        with mock.patch("forge_cutover.service_request", side_effect=harbor_update_request):
+            harbor = cutover.prepare_harbor(plan, woodpecker, 30)
+        if harbor["project_action"] != "existing" or harbor["registry_action"] != "updated":
+            fail(f"managed Harbor preparation did not update existing state: {harbor}")
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    manual = parsed_plan()
+    manual.services["harbor"]["mode"] = "manual"
+    if cutover.prepare_harbor(manual, woodpecker, 30) != {"mode": "manual", "verified": True}:
+        fail("manual Harbor preparation was not accepted without mutation")
+
+    healthy_app = {
+        "status": {"sync": {"status": "Synced"}, "health": {"status": "Healthy"}},
+        "spec": {
+            "source": {
+                "repoURL": "https://forgejo.example.invalid/platform/gitops.git",
+            }
+        },
+    }
+    with mock.patch("forge_cutover.service_request", return_value=healthy_app):
+        argocd = cutover.verify_argocd(plan)
+    if not argocd["verified"]:
+        fail(f"healthy Argo CD application did not verify: {argocd}")
+    mismatched_app = copy.deepcopy(healthy_app)
+    mismatched_app["spec"]["source"]["repoURL"] = "https://wrong.example.invalid/repo.git"
+    with mock.patch("forge_cutover.service_request", return_value=mismatched_app):
+        if cutover.verify_argocd(plan)["verified"]:
+            fail("Argo CD repository mismatch was accepted")
+    manual.services["argocd"]["mode"] = "skipped"
+    if not cutover.verify_argocd(manual)["verified"]:
+        fail("explicitly skipped Argo CD verification was not accepted")
+
+    protection_calls: list[tuple[str, str]] = []
+
+    def create_protection(_target, method, path, **_kwargs):
+        protection_calls.append((method, path))
+        if method == "GET":
+            return [] if len(protection_calls) == 1 else [{"rule_name": "main"}]
+        return {}
+
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch("forge_cutover.migration.api_request", side_effect=create_protection),
+    ):
+        protections = cutover.prepare_destination_protections(repo)
+    if protections["mappings"][0]["action"] != "created" or not protections["verified"]:
+        fail(f"Forgejo branch protection was not created and verified: {protections}")
+
+
+def test_operational_verification_helpers() -> None:
+    plan = parsed_plan()
+    repo = plan.repositories[0]
+    woodpecker = cutover.service_target("woodpecker", plan.services["woodpecker"])
+
+    runner = cutover.verify_runner_capabilities(
+        repo,
+        [
+            {"name": "disabled", "custom_labels": {"platform": "linux"}, "no_schedule": True},
+            {"name": "linux-1", "custom_labels": {"platform": "linux"}},
+        ],
+    )
+    if not runner["verified"] or runner["mappings"][0]["matching_agents"] != ["linux-1"]:
+        fail(f"matching Woodpecker runner was not verified: {runner}")
+    if cutover.verify_runner_capabilities(repo, [])["verified"]:
+        fail("missing Woodpecker runner capability was accepted")
+    expect_action_error(
+        lambda: cutover.expected_woodpecker_labels({"target_labels": ["linux"]}),
+        "target_labels must be an object",
+    )
+    manual_runner = parsed_plan()
+    manual_runner.repositories[0].cutover["runner_tags"]["mappings"][0] = {
+        "source": "linux",
+        "mode": "manual",
+        "accepted": True,
+        "reason": "Verified by the approved transition operator.",
+    }
+    if not cutover.verify_runner_capabilities(manual_runner.repositories[0], [])["verified"]:
+        fail("accepted manual runner mapping did not verify")
+
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch(
+            "forge_cutover.migration.api_request",
+            return_value=[{"rule_name": "main"}],
+        ),
+    ):
+        if not cutover.verify_destination_protections(repo)["verified"]:
+            fail("present Forgejo branch protection did not verify")
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch("forge_cutover.migration.api_request", return_value=[]),
+    ):
+        if cutover.verify_destination_protections(repo)["verified"]:
+            fail("missing Forgejo branch protection was accepted")
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch("forge_cutover.migration.api_request", return_value={}),
+    ):
+        expect_action_error(
+            lambda: cutover.verify_destination_protections(repo),
+            "branch protection list returned invalid data",
+        )
+
+    hooks = [{"config": {"url": "https://ci.example.invalid/hook"}}]
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch("forge_cutover.migration.api_request", return_value=hooks),
+    ):
+        integrations = cutover.verify_destination_integrations(repo, "https://ci.example.invalid")
+    if not integrations["verified"] or integrations["hook_hosts"] != ["ci.example.invalid"]:
+        fail(f"Woodpecker webhook integration did not verify: {integrations}")
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch("forge_cutover.migration.api_request", return_value=[]),
+    ):
+        if cutover.verify_destination_integrations(repo, "https://ci.example.invalid")["verified"]:
+            fail("missing Woodpecker webhook was accepted")
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch("forge_cutover.migration.api_request", return_value={}),
+    ):
+        expect_action_error(
+            lambda: cutover.verify_destination_integrations(repo, "https://ci.example.invalid"),
+            "hooks list returned invalid data",
+        )
+
+    shadow_inventory = [
+        {"name": "FORGE_CUTOVER_DEPLOYMENT_ENABLED"},
+        {"name": "DEPLOY_KEY"},
+    ]
+    with mock.patch(
+        "forge_cutover.service_request",
+        side_effect=[shadow_inventory, [{"name": "nightly", "enabled": False}]],
+    ):
+        shadow = cutover.verify_woodpecker_configuration(plan, repo, woodpecker, 30, "shadow")
+    if not shadow["verified"]:
+        fail(f"valid shadow Woodpecker configuration did not verify: {shadow}")
+    with mock.patch(
+        "forge_cutover.service_request",
+        side_effect=[shadow_inventory, [{"name": "nightly", "enabled": True}]],
+    ):
+        active = cutover.verify_woodpecker_configuration(
+            plan,
+            repo,
+            woodpecker,
+            30,
+            "post-cutover",
+        )
+    if not active["verified"]:
+        fail(f"valid active Woodpecker configuration did not verify: {active}")
+    with mock.patch(
+        "forge_cutover.service_request",
+        side_effect=[[{"name": "FORGE_CUTOVER_DEPLOYMENT_ENABLED"}], []],
+    ):
+        missing = cutover.verify_woodpecker_configuration(plan, repo, woodpecker, 30, "shadow")
+    if missing["verified"] or missing["missing_secret_names"] != ["DEPLOY_KEY"]:
+        fail(f"missing Woodpecker secret was accepted: {missing}")
+    with mock.patch("forge_cutover.service_request", side_effect=[{}, []]):
+        expect_action_error(
+            lambda: cutover.verify_woodpecker_configuration(plan, repo, woodpecker, 30, "shadow"),
+            "secret or cron inventory returned invalid data",
+        )
+
+    with (
+        mock.patch(
+            "forge_cutover.service_request",
+            side_effect=[
+                {"number": 91},
+                {"status": "running"},
+                {"status": "success", "commit": "abc123"},
+            ],
+        ),
+        mock.patch("forge_cutover.time.monotonic", side_effect=[0.0, 1.0, 2.0]),
+        mock.patch("forge_cutover.time.sleep"),
+    ):
+        canary = cutover.trigger_woodpecker_canary(woodpecker, 30, "main", 30, "shadow")
+    if not canary["verified"] or canary["commit"] != "abc123":
+        fail(f"successful Woodpecker canary did not verify: {canary}")
+    with (
+        mock.patch(
+            "forge_cutover.service_request",
+            side_effect=[{"id": 92}, {"status": "failure"}],
+        ),
+        mock.patch("forge_cutover.time.monotonic", side_effect=[0.0, 1.0]),
+    ):
+        failed_canary = cutover.trigger_woodpecker_canary(
+            woodpecker,
+            30,
+            "main",
+            30,
+            "post-cutover",
+        )
+    if failed_canary["verified"] or failed_canary["status"] != "failure":
+        fail("failed Woodpecker canary was accepted")
+    with mock.patch("forge_cutover.service_request", return_value={}):
+        expect_action_error(
+            lambda: cutover.trigger_woodpecker_canary(woodpecker, 30, "main", 30, "shadow"),
+            "did not return a pipeline number",
+        )
+    with (
+        mock.patch("forge_cutover.service_request", return_value={"number": 93}),
+        mock.patch("forge_cutover.time.monotonic", side_effect=[0.0, 31.0]),
+    ):
+        timed_out = cutover.trigger_woodpecker_canary(woodpecker, 30, "main", 30, "shadow")
+    if timed_out["status"] != "timeout" or timed_out["verified"]:
+        fail("Woodpecker canary timeout was not fail-closed")
+
+    with mock.patch(
+        "forge_cutover.service_request",
+        return_value={"digest": "sha256:" + ("a" * 64)},
+    ):
+        harbor = cutover.verify_harbor_canary(plan)
+    if not harbor["verified"] or not harbor["digest"].startswith("sha256:"):
+        fail(f"Harbor canary artifact did not verify: {harbor}")
+    with mock.patch("forge_cutover.service_request", return_value={}):
+        if cutover.verify_harbor_canary(plan)["verified"]:
+            fail("Harbor canary without a digest was accepted")
+    manual_harbor = parsed_plan()
+    manual_harbor.services["harbor"]["mode"] = "manual"
+    if not cutover.verify_harbor_canary(manual_harbor)["verified"]:
+        fail("manual Harbor canary was not treated as explicitly not configured")
+    invalid_harbor = parsed_plan()
+    invalid_harbor.services["harbor"]["canary"] = "invalid"  # type: ignore[assignment]
+    expect_action_error(
+        lambda: cutover.verify_harbor_canary(invalid_harbor),
+        "canary must be an object",
+    )
+
+    inventory = {
+        "verified": True,
+        "pipelines": {"verified": True},
+        "variables": {"verified": True},
+    }
+    with (
+        mock.patch("forge_cutover.discover_repository", return_value=inventory),
+        mock.patch("forge_cutover.migration.verify_repo", return_value={"verified": True}),
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch(
+            "forge_cutover.migration.api_request",
+            return_value={"full_name": "platform/platform-app", "default_branch": "main"},
+        ),
+        mock.patch("forge_cutover.woodpecker_lookup", return_value={"id": 30}),
+        mock.patch(
+            "forge_cutover.service_request",
+            return_value=[{"name": "linux-1", "custom_labels": {"platform": "linux"}}],
+        ),
+        mock.patch("forge_cutover.verify_runner_capabilities", return_value={"verified": True}),
+        mock.patch("forge_cutover.verify_woodpecker_configuration", return_value={"verified": True}),
+        mock.patch("forge_cutover.verify_destination_protections", return_value={"verified": True}),
+        mock.patch("forge_cutover.verify_destination_integrations", return_value={"verified": True}),
+        mock.patch("forge_cutover.trigger_woodpecker_canary", return_value={"verified": True}),
+        mock.patch("forge_cutover.verify_harbor_canary", return_value={"verified": True}),
+        mock.patch("forge_cutover.verify_argocd", return_value={"verified": True}),
+    ):
+        verified_repo = cutover.verify_repository(
+            plan,
+            repo,
+            {"name": "platform-app"},
+            "shadow",
+        )
+    if not verified_repo["verified"] or verified_repo["prepared_repository"] != "platform-app":
+        fail(f"complete repository verification did not pass: {verified_repo}")
+
+
+def test_gitlab_freeze_restore_and_authority_helpers() -> None:
+    plan = parsed_plan()
+    repo = plan.repositories[0]
+    project = {
+        "id": 10,
+        "archived": False,
+        "builds_access_level": "enabled",
+    }
+    current = {
+        "id": 10,
+        "archived": True,
+        "builds_access_level": "disabled",
+    }
+    snapshots: list[dict[str, object]] = []
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "projects/10")),
+        mock.patch(
+            "forge_cutover.gitlab_list",
+            return_value=[{"id": 31, "active": True}],
+        ),
+        mock.patch(
+            "forge_cutover.gitlab_active_pipelines",
+            side_effect=[[{"id": 41, "status": "running"}], []],
+        ),
+        mock.patch(
+            "forge_cutover.migration.api_request",
+            side_effect=[project, {}, {}, {}, {}, current],
+        ) as api_mock,
+    ):
+        snapshot = cutover.freeze_gitlab(
+            repo,
+            True,
+            lambda value: snapshots.append(copy.deepcopy(value)),
+        )
+    if snapshot["archived"] or snapshot["builds_access_level"] != "enabled":
+        fail(f"GitLab freeze snapshot lost rollback state: {snapshot}")
+    if snapshots != [snapshot]:
+        fail("GitLab rollback snapshot was not persisted before mutation")
+    paths = [call.args[2] for call in api_mock.call_args_list]
+    if not any(path.endswith("/cancel") for path in paths) or not any(path.endswith("/archive") for path in paths):
+        fail(f"GitLab freeze did not cancel pipelines and archive the source: {paths}")
+
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "projects/10")),
+        mock.patch("forge_cutover.gitlab_list", return_value=[]),
+        mock.patch(
+            "forge_cutover.gitlab_active_pipelines",
+            return_value=[{"id": 42, "status": "running"}],
+        ),
+        mock.patch("forge_cutover.migration.api_request", return_value=project),
+    ):
+        expect_action_error(
+            lambda: cutover.freeze_gitlab(repo, False),
+            "active GitLab pipelines block cutover",
+        )
+
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "projects/10")),
+        mock.patch("forge_cutover.gitlab_list", return_value=[]),
+        mock.patch("forge_cutover.gitlab_active_pipelines", return_value=[]),
+        mock.patch(
+            "forge_cutover.migration.api_request",
+            side_effect=[project, {}, {}, {**current, "archived": False}],
+        ),
+    ):
+        expect_action_error(
+            lambda: cutover.freeze_gitlab(repo, False),
+            "did not become archived",
+        )
+
+    rollback_snapshot = {
+        "archived": False,
+        "builds_access_level": "enabled",
+        "schedules": [{"id": 31, "active": True}],
+    }
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "projects/10")),
+        mock.patch(
+            "forge_cutover.migration.api_request",
+            side_effect=[current, {}, {}, {}, project],
+        ),
+    ):
+        restored = cutover.restore_gitlab(repo, rollback_snapshot)
+    if not restored["verified"] or restored["archived"]:
+        fail(f"GitLab source rollback did not restore authority: {restored}")
+
+    with mock.patch(
+        "forge_cutover.gitlab_list",
+        return_value=[
+            {"id": 1, "status": "success"},
+            {"id": 2, "status": "running"},
+            {"id": 3, "status": "pending"},
+        ],
+    ):
+        active = cutover.gitlab_active_pipelines(repo)
+    if [item["id"] for item in active] != [2, 3]:
+        fail(f"active GitLab pipeline filtering is incorrect: {active}")
+
+    authority_calls: list[tuple[str, object]] = []
+    with (
+        mock.patch("forge_cutover.repo_base", return_value=(mock.sentinel.target, "repos/platform/app")),
+        mock.patch(
+            "forge_cutover.migration.api_request",
+            return_value={"full_name": "platform/platform-app"},
+        ),
+        mock.patch("forge_cutover.woodpecker_lookup", return_value={"id": 30}),
+        mock.patch(
+            "forge_cutover.woodpecker_secret_upsert",
+            side_effect=lambda _target, _repo_id, _name, value, **_kwargs: authority_calls.append(
+                ("gate", value)
+            )
+            or {"verified": True},
+        ),
+        mock.patch(
+            "forge_cutover.woodpecker_cron_upsert",
+            side_effect=lambda _target, _repo_id, name, _schedule, _branch, enabled: authority_calls.append(
+                (name, enabled)
+            )
+            or {"verified": True},
+        ),
+    ):
+        authority = cutover.set_destination_authority(plan, repo, True)
+    if not authority["verified"] or authority_calls != [("gate", "true"), ("nightly", True)]:
+        fail(f"destination authority was not enabled atomically: {authority_calls}")
+
+    proof = {"proof_sha256": "rollback-proof"}
+    env_names = [
+        "FORGE_CUTOVER_LIVE",
+        "FORGE_CUTOVER_ROLLBACK_CONFIRM",
+        "FORGE_CUTOVER_CHANGE_TICKET",
+    ]
+    saved = {name: os.environ.get(name) for name in env_names}
+    try:
+        for name in env_names:
+            os.environ.pop(name, None)
+        expect_action_error(
+            lambda: cutover.require_rollback_confirmation(plan, proof),
+            "live rollback is disabled",
+        )
+        os.environ["FORGE_CUTOVER_LIVE"] = "1"
+        expect_action_error(
+            lambda: cutover.require_rollback_confirmation(plan, proof),
+            "rollback approval mismatch",
+        )
+        os.environ["FORGE_CUTOVER_ROLLBACK_CONFIRM"] = "rollback-proof"
+        expect_action_error(
+            lambda: cutover.require_rollback_confirmation(plan, proof),
+            "required for live rollback evidence",
+        )
+        os.environ["FORGE_CUTOVER_CHANGE_TICKET"] = "CHG-1234"
+        cutover.require_rollback_confirmation(plan, proof)
+        expect_action_error(
+            lambda: cutover.proof_age_seconds({"generated_at": "invalid"}),
+            "generated_at is invalid",
+        )
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def test_pipeline_accounting_and_gate() -> None:
@@ -579,6 +1323,19 @@ def test_activation_confirmation_is_fail_closed() -> None:
                 fail(f"unexpected digest-gate failure: {exc}")
         else:
             fail("activation ran with the wrong proof digest")
+        os.environ["FORGE_CUTOVER_CONFIRM"] = "verification-digest"
+        os.environ.pop("FORGE_CUTOVER_CHANGE_TICKET", None)
+        expect_action_error(
+            lambda: cutover.require_activation_confirmation(plan, proof),
+            "required for live cutover evidence",
+        )
+        os.environ["FORGE_CUTOVER_CHANGE_TICKET"] = "CHG-1234"
+        stale = {**proof, "generated_at": "2000-01-01T00:00:00Z"}
+        expect_action_error(
+            lambda: cutover.require_activation_confirmation(plan, stale),
+            "verification proof is stale",
+        )
+        cutover.require_activation_confirmation(plan, proof)
     finally:
         for name, value in saved.items():
             if value is None:
@@ -808,6 +1565,251 @@ def test_manual_rollback_from_checkpoint() -> None:
             fail("checkpoint rollback proof is not verified")
 
 
+def test_command_and_cli_surfaces() -> None:
+    plan = parsed_plan()
+    repo_name = plan.repositories[0].migration.name
+    inventory = {
+        "name": repo_name,
+        "source_state": {"archived": False, "builds_access_level": "enabled"},
+        "pipelines": {"verified": True},
+        "variables": {"verified": True},
+        "verified": True,
+    }
+    with tempfile.TemporaryDirectory(prefix="forge-cutover-command-") as temp:
+        root = Path(temp)
+        plan_path = root / "plan.json"
+
+        validate_args = argparse.Namespace(plan=plan_path, proof=root / "validate.json")
+        with mock.patch("forge_cutover.load_cutover_plan", return_value=plan):
+            if cutover.command_validate(validate_args) != 0:
+                fail("validate-plan command returned nonzero")
+        validated = json.loads(validate_args.proof.read_text(encoding="utf-8"))
+        if validated["command"] != "validate-plan" or not validated["verified"]:
+            fail("validate-plan command did not write verified evidence")
+
+        discover_args = argparse.Namespace(plan=plan_path, proof=root / "discover.json")
+        with (
+            mock.patch("forge_cutover.load_cutover_plan", return_value=plan),
+            mock.patch("forge_cutover.require_provider_credentials"),
+            mock.patch("forge_cutover.discover_repository", return_value=inventory),
+        ):
+            if cutover.command_discover(discover_args) != 0:
+                fail("discover command returned nonzero for verified inventory")
+        discovered = json.loads(discover_args.proof.read_text(encoding="utf-8"))
+        if discovered["command"] != "discover" or not discovered["verified"]:
+            fail("discover command did not write verified evidence")
+        with (
+            mock.patch("forge_cutover.load_cutover_plan", return_value=plan),
+            mock.patch("forge_cutover.require_provider_credentials"),
+            mock.patch(
+                "forge_cutover.discover_repository",
+                side_effect=cutover.migration.MigrationError("provider unavailable"),
+            ),
+        ):
+            if cutover.command_discover(discover_args) != 1:
+                fail("discover command accepted a provider failure")
+
+        discovery = cutover.proof_base(plan, "discover", [inventory])
+        discovery["proof_sha256"] = cutover.migration.proof_digest(discovery)
+        prepare_args = argparse.Namespace(
+            plan=plan_path,
+            discovery=root / "discover.json",
+            proof=root / "prepare.json",
+        )
+        prepare_env = str(plan.activation["prepare_confirmation_env"])
+        previous_prepare = os.environ.get(prepare_env)
+        os.environ[prepare_env] = str(discovery["proof_sha256"])
+        try:
+            with (
+                mock.patch("forge_cutover.load_cutover_plan", return_value=plan),
+                mock.patch("forge_cutover.require_provider_credentials"),
+                mock.patch("forge_cutover.load_verified_proof", return_value=discovery),
+                mock.patch("forge_cutover.discover_repository", return_value=inventory),
+                mock.patch(
+                    "forge_cutover.prepare_repository",
+                    return_value={"name": repo_name, "verified": True},
+                ),
+            ):
+                if cutover.command_prepare(prepare_args) != 0:
+                    fail("prepare command returned nonzero for stable approved inventory")
+            prepared_output = json.loads(prepare_args.proof.read_text(encoding="utf-8"))
+            if not prepared_output["verified"] or not prepared_output["repositories"][0].get(
+                "approved_inventory_sha256"
+            ):
+                fail("prepare command omitted approved inventory binding")
+
+            with (
+                mock.patch("forge_cutover.load_cutover_plan", return_value=plan),
+                mock.patch("forge_cutover.require_provider_credentials"),
+                mock.patch("forge_cutover.load_verified_proof", return_value=discovery),
+                mock.patch("forge_cutover.discover_repository", return_value=inventory),
+                mock.patch(
+                    "forge_cutover.prepare_repository",
+                    side_effect=cutover.migration.MigrationError("preparation failed"),
+                ),
+            ):
+                if cutover.command_prepare(prepare_args) != 1:
+                    fail("prepare command accepted a provider mutation failure")
+        finally:
+            if previous_prepare is None:
+                os.environ.pop(prepare_env, None)
+            else:
+                os.environ[prepare_env] = previous_prepare
+
+        prepared = cutover.proof_base(
+            plan,
+            "prepare",
+            [{"name": repo_name, "verified": True}],
+        )
+        prepared["proof_sha256"] = cutover.migration.proof_digest(prepared)
+        verify_args = argparse.Namespace(
+            plan=plan_path,
+            prepared=root / "prepare.json",
+            proof=root / "verify.json",
+        )
+        with (
+            mock.patch("forge_cutover.load_cutover_plan", return_value=plan),
+            mock.patch("forge_cutover.require_provider_credentials"),
+            mock.patch("forge_cutover.load_verified_proof", return_value=prepared),
+            mock.patch(
+                "forge_cutover.verify_repository",
+                return_value={"name": repo_name, "verified": True},
+            ),
+        ):
+            if cutover.command_verify(verify_args) != 0:
+                fail("verify command returned nonzero for a healthy shadow deployment")
+        verified_output = json.loads(verify_args.proof.read_text(encoding="utf-8"))
+        if not verified_output["verified"] or verified_output["prepare_proof_sha256"] != prepared[
+            "proof_sha256"
+        ]:
+            fail("verify command did not bind its preparation proof")
+        with (
+            mock.patch("forge_cutover.load_cutover_plan", return_value=plan),
+            mock.patch("forge_cutover.require_provider_credentials"),
+            mock.patch("forge_cutover.load_verified_proof", return_value=prepared),
+            mock.patch(
+                "forge_cutover.verify_repository",
+                side_effect=cutover.migration.MigrationError("verification failed"),
+            ),
+        ):
+            if cutover.command_verify(verify_args) != 1:
+                fail("verify command accepted a provider verification failure")
+
+        proof_path = root / "accepted-proof.json"
+        written = cutover.write_proof(
+            proof_path,
+            cutover.proof_base(plan, "verify", [{"name": repo_name, "verified": True}]),
+        )
+        if cutover.command_verify_proof(argparse.Namespace(proof_file=proof_path)) != 0:
+            fail("valid cutover proof was rejected")
+        tampered = json.loads(proof_path.read_text(encoding="utf-8"))
+        tampered["direction"] = "tampered"
+        proof_path.write_text(json.dumps(tampered), encoding="utf-8")
+        if cutover.command_verify_proof(argparse.Namespace(proof_file=proof_path)) != 1:
+            fail("tampered cutover proof was accepted")
+        if not written["proof_sha256"]:
+            fail("proof writer omitted its integrity digest")
+
+        failed_activation = cutover.proof_base(
+            plan,
+            "activate",
+            [{"name": repo_name, "verified": False}],
+        )
+        failed_activation["proof_sha256"] = cutover.migration.proof_digest(failed_activation)
+        rollback_args = argparse.Namespace(
+            plan=plan_path,
+            activation=root / "activation.json",
+            proof=root / "rollback.json",
+        )
+        with (
+            mock.patch("forge_cutover.load_cutover_plan", return_value=plan),
+            mock.patch("forge_cutover.require_provider_credentials"),
+            mock.patch("forge_cutover.load_integrity_proof", return_value=failed_activation),
+        ):
+            expect_action_error(
+                lambda: cutover.command_rollback(rollback_args),
+                "failed activation proof cannot drive manual rollback",
+            )
+
+        checkpoint = cutover.proof_base(
+            plan,
+            "activation-checkpoint",
+            [
+                {
+                    "name": repo_name,
+                    "source_before": None,
+                    "destination_authority_attempted": False,
+                    "verified": True,
+                }
+            ],
+        )
+        checkpoint["verified"] = False
+        checkpoint["proof_sha256"] = cutover.migration.proof_digest(checkpoint)
+        with (
+            mock.patch("forge_cutover.load_cutover_plan", return_value=plan),
+            mock.patch("forge_cutover.require_provider_credentials"),
+            mock.patch("forge_cutover.load_integrity_proof", return_value=checkpoint),
+            mock.patch("forge_cutover.require_rollback_confirmation"),
+        ):
+            if cutover.command_rollback(rollback_args) != 0:
+                fail("checkpoint rollback did not accept explicitly unattempted mutations")
+        skipped_rollback = json.loads(rollback_args.proof.read_text(encoding="utf-8"))
+        if not skipped_rollback["verified"]:
+            fail("safe no-op rollback did not verify")
+
+    cli_cases = (
+        (["validate-plan", "plan.json"], cutover.command_validate),
+        (["discover", "plan.json", "--proof", "discover.json"], cutover.command_discover),
+        (
+            ["prepare", "plan.json", "--discovery", "discover.json", "--proof", "prepare.json"],
+            cutover.command_prepare,
+        ),
+        (
+            ["verify", "plan.json", "--prepared", "prepare.json", "--proof", "verify.json"],
+            cutover.command_verify,
+        ),
+        (
+            [
+                "activate",
+                "plan.json",
+                "--verification",
+                "verify.json",
+                "--proof",
+                "activate.json",
+                "--checkpoint",
+                "checkpoint.json",
+            ],
+            cutover.command_activate,
+        ),
+        (
+            ["rollback", "plan.json", "--activation", "activate.json", "--proof", "rollback.json"],
+            cutover.command_rollback,
+        ),
+        (["verify-proof", "proof.json"], cutover.command_verify_proof),
+    )
+    for argv, expected_handler in cli_cases:
+        parsed = cutover.parse_args(argv)
+        if parsed.handler is not expected_handler:
+            fail(f"CLI command did not select {expected_handler.__name__}: {argv}")
+
+    with mock.patch(
+        "forge_cutover.parse_args",
+        return_value=argparse.Namespace(handler=lambda _args: 0),
+    ):
+        if cutover.main([]) != 0:
+            fail("top-level cutover dispatch changed a successful result")
+
+    def fail_handler(_args: argparse.Namespace) -> int:
+        raise cutover.migration.MigrationError("provider failed")
+
+    with mock.patch(
+        "forge_cutover.parse_args",
+        return_value=argparse.Namespace(handler=fail_handler),
+    ):
+        if cutover.main([]) != 1:
+            fail("top-level cutover dispatch did not fail closed on provider error")
+
+
 def test_example_and_dormant_contract() -> None:
     example = ROOT / "examples" / "migrations" / "gitlab-to-forgejo.cutover.example.json"
     if not example.exists():
@@ -824,6 +1826,10 @@ def test_example_and_dormant_contract() -> None:
 
 def main() -> int:
     test_plan_validation()
+    test_service_http_and_content_helpers()
+    test_destination_service_preparation_helpers()
+    test_operational_verification_helpers()
+    test_gitlab_freeze_restore_and_authority_helpers()
     test_pipeline_accounting_and_gate()
     test_external_include_detection()
     test_discovery_accounts_every_surface()
@@ -834,6 +1840,7 @@ def main() -> int:
     test_prepare_rejects_inventory_changed_after_approval()
     test_activation_sequence_and_automatic_rollback()
     test_manual_rollback_from_checkpoint()
+    test_command_and_cli_surfaces()
     test_example_and_dormant_contract()
     print("Forge cutover orchestrator self-test passed.")
     return 0

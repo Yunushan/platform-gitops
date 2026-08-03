@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from contextlib import redirect_stdout
 from io import StringIO
@@ -33,6 +34,13 @@ def test_validation_script_list() -> None:
     for required in (
         "scripts/validate_project.py",
         "scripts/test_python_syntax.py",
+        "scripts/test_atomic_file.py",
+        "scripts/test_subprocess_timeout_contract.py",
+        "scripts/test_subprocess_output_contract.py",
+        "scripts/test_bounded_file_contract.py",
+        "scripts/test_strict_json_contract.py",
+        "scripts/test_strict_yaml_contract.py",
+        "scripts/test_http_transport_contract.py",
         "scripts/test_validation_runner.py",
         "scripts/test_line_endings.py",
         "scripts/test_ci_reference_pinning.py",
@@ -45,9 +53,19 @@ def test_validation_script_list() -> None:
         "scripts/test_empty_faulted_longhorn_claim_repair.py",
         "scripts/test_stuck_longhorn_attachment_repair.py",
         "scripts/test_forge_cutover.py",
+        "scripts/test_forge_transition.py",
         "scripts/test_policy_examples.py",
+        "scripts/test_image_integrity_contract.py",
+        "scripts/test_pod_security_contract.py",
         "scripts/test_sops_age_policy.py",
         "scripts/test_supply_chain_helpers.py",
+        "scripts/test_supply_chain_evidence.py",
+        "scripts/test_image_inventory_evidence.py",
+        "scripts/test_release_workflow.py",
+        "scripts/test_github_release_ref.py",
+        "scripts/test_github_governance.py",
+        "scripts/test_github_governance_configuration.py",
+        "scripts/test_dependency_review_workflow.py",
         "scripts/test_backup_restore_runbook.py",
         "scripts/test_data_protection_contract.py",
         "scripts/test_production_evidence.py",
@@ -63,11 +81,15 @@ def test_validation_script_list() -> None:
         "scripts/test_compliance_audit_runbook.py",
         "scripts/test_release_promotion_runbook.py",
         "scripts/test_alerting_runbook.py",
+        "scripts/test_observability_contract.py",
+        "scripts/test_capacity_runtime_contract.py",
+        "scripts/test_rendered_schema_contract.py",
         "scripts/test_data_classification.py",
         "scripts/test_security_policy.py",
         "scripts/test_threat_model.py",
         "scripts/test_repository_governance.py",
         "scripts/test_codeowners_starter.py",
+        "scripts/test_argocd_project_isolation.py",
         "scripts/test_gitops_helm_chart_pinning.py",
         "scripts/test_validation_surface_parity.py",
         "scripts/validate_platform_contract.py",
@@ -136,6 +158,25 @@ def test_run_script_environment() -> None:
         fail("run_script must run from the repository root")
     if kwargs.get("env", {}).get("PYTHONDONTWRITEBYTECODE") != "1":
         fail("run_script must suppress Python bytecode generation")
+    timeout = kwargs.get("timeout")
+    if not isinstance(timeout, (int, float)) or timeout <= 0:
+        fail("run_script must apply a positive subprocess timeout")
+
+
+def test_run_script_timeout() -> None:
+    with (
+        mock.patch(
+            "run_validation.subprocess.run",
+            side_effect=subprocess.TimeoutExpired([sys.executable], 1),
+        ),
+        redirect_stdout(StringIO()),
+        mock.patch("sys.stderr", new_callable=StringIO) as stderr,
+    ):
+        result = run_validation.run_script("scripts/validate_project.py")
+    if result != 124:
+        fail("run_script must return 124 when a validation child process times out")
+    if "timed out" not in stderr.getvalue() or "validate_project.py" not in stderr.getvalue():
+        fail("run_script timeout diagnostics must identify the expired validation script")
 
 
 def test_main_list_mode() -> None:
@@ -175,6 +216,7 @@ def main() -> int:
     test_no_secrets_selection()
     test_env_flag()
     test_run_script_environment()
+    test_run_script_timeout()
     test_main_list_mode()
     test_main_stops_on_first_failure()
     print("Validation runner self-test passed.")

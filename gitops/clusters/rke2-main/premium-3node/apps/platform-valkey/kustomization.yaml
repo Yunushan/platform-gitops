@@ -1,13 +1,17 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: platform-cache
+components:
+  - ../../components/network-isolation
 resources:
   - namespace.yaml
+  - server-certificate.yaml
+  - allow-valkey-ingress.yaml
   - service-primary.yaml
+helmGlobals:
+  chartHome: charts/valkey-0.10.0
 helmCharts:
   - name: valkey
-    version: 0.10.0
-    repo: https://valkey.io/valkey-helm
     releaseName: platform-valkey
     namespace: platform-cache
     valuesFile: values.yaml

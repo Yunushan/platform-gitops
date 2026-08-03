@@ -8,6 +8,9 @@ import re
 import sys
 from pathlib import Path
 
+from atomic_file import atomic_write_text
+from bounded_file import read_bounded_text
+
 
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
 APPLICATION_NAME_RE = re.compile(
@@ -32,6 +35,7 @@ APP_SYNC_WAVES = {
     "step-ca": "2",
     "kyverno": "4",
     "platform-policies": "5",
+    "platform-image-integrity": "6",
     "tetragon": "4",
     "external-secrets": "4",
     "openbao": "5",
@@ -51,7 +55,18 @@ APP_SYNC_WAVES = {
     "loki": "4",
     "velero": "5",
 }
-SERVER_SIDE_APPLY_APPS = {"kyverno", "velero"}
+SERVER_SIDE_APPLY_APPS = {"kyverno", "platform-image-integrity", "velero"}
+NAMESPACE_ONLY_APPS = {
+    "forgejo",
+    "gitea",
+    "harbor",
+    "keycloak",
+    "minio",
+    "platform-postgres",
+    "platform-valkey",
+    "step-ca",
+    "woodpecker",
+}
 
 
 def unresolved_in_text(text: str) -> list[str]:
@@ -70,7 +85,7 @@ def parse_simple_profile(path: Path) -> tuple[dict[str, str], dict[str, list[str
     lists: dict[str, list[str]] = {}
     current_list = ""
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in read_bounded_text(path, encoding="utf-8").splitlines():
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -162,12 +177,12 @@ def is_application_source(path: Path) -> bool:
     kustomization = path / "kustomization.yaml"
     if not kustomization.exists():
         return False
-    text = kustomization.read_text(encoding="utf-8")
+    text = read_bounded_text(kustomization, encoding="utf-8")
     return "helmCharts:" in text
 
 
 def application_source_paths(applications_file: Path, repo_root: Path) -> list[Path]:
-    text = applications_file.read_text(encoding="utf-8")
+    text = read_bounded_text(applications_file, encoding="utf-8")
     paths: list[Path] = []
     for match in APPLICATION_PATH_RE.finditer(text):
         paths.append(repo_root / match.group("path"))
@@ -179,7 +194,7 @@ def source_path_string(path: Path, repo_root: Path) -> str:
 
 
 def application_documents_from_file(applications_file: Path) -> list[str]:
-    raw = applications_file.read_text(encoding="utf-8")
+    raw = read_bounded_text(applications_file, encoding="utf-8")
     return [doc.strip() for doc in re.split(r"(?m)^---\s*$", raw) if doc.strip()]
 
 
@@ -202,7 +217,7 @@ def known_application_docs(repo_root: Path) -> dict[str, str]:
 
 
 def kustomization_namespace(source_path: Path) -> str:
-    text = (source_path / "kustomization.yaml").read_text(encoding="utf-8")
+    text = read_bounded_text(source_path / "kustomization.yaml", encoding="utf-8")
     namespace_match = re.search(r"(?m)^namespace:\s*([A-Za-z0-9_.-]+)\s*$", text)
     if namespace_match:
         return namespace_match.group(1)
@@ -215,8 +230,14 @@ def kustomization_namespace(source_path: Path) -> str:
 def generated_application_doc(repo_url: str, source_path: str, source_dir: Path) -> str:
     name = source_dir.name
     namespace = kustomization_namespace(source_dir)
+    project = "platform-services" if name in NAMESPACE_ONLY_APPS else "platform"
     sync_wave = APP_SYNC_WAVES.get(name, "4")
-    sync_options = ["CreateNamespace=true"]
+    sync_options = [
+        "CreateNamespace=true",
+        "Prune=confirm",
+        "PruneLast=true",
+        "PrunePropagationPolicy=foreground",
+    ]
     if name in SERVER_SIDE_APPLY_APPS:
         sync_options.append("ServerSideApply=true")
     sync_options_yaml = "\n".join(f"      - {option}" for option in sync_options)
@@ -228,7 +249,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "{sync_wave}"
 spec:
-  project: platform
+  project: {project}
   source:
     repoURL: {repo_url}
     targetRevision: main
@@ -238,8 +259,9 @@ spec:
     namespace: {namespace}
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
 {sync_options_yaml}"""
 
@@ -280,7 +302,7 @@ def scan_path(path: Path, repo_root: Path) -> list[str]:
             continue
 
         try:
-            lines = file_path.read_text(encoding="utf-8").splitlines()
+            lines = read_bounded_text(file_path, encoding="utf-8").splitlines()
         except UnicodeDecodeError:
             continue
 
@@ -369,7 +391,7 @@ def render(args: argparse.Namespace) -> int:
                 print(f"  {finding}", file=sys.stderr)
         return 2
 
-    args.output.write_text("---\n" + "\n---\n".join(kept) + "\n", encoding="utf-8")
+    atomic_write_text(args.output, "---\n" + "\n---\n".join(kept) + "\n")
 
     print("Deployable GitOps applications:")
     for doc in kept:

@@ -148,10 +148,14 @@
               printf '    namespace: %s\n' "${namespace}"
               printf '%s\n' '  syncPolicy:'
               printf '%s\n' '    automated:'
-              printf '%s\n' '      prune: false'
+              printf '%s\n' '      prune: true'
               printf '%s\n' '      selfHeal: true'
+              printf '%s\n' '      allowEmpty: false'
               printf '%s\n' '    syncOptions:'
               printf '%s\n' '      - CreateNamespace=true'
+              printf '%s\n' '      - Prune=confirm'
+              printf '%s\n' '      - PruneLast=true'
+              printf '%s\n' '      - PrunePropagationPolicy=foreground'
               printf '%s\n' '      - ServerSideApply=true'
             } | "$K" --kubeconfig "$C" apply -f -
             echo "argocd_application_${safe_name}=auto-registered repo=${repo_url_yaml} revision=${target_revision_yaml} path=${path}"

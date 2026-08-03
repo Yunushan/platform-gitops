@@ -8,7 +8,18 @@ check, and secret safety scan. Locally, `make validate` and
 Actions-style workflows pin third-party actions to full commit SHAs, with the
 human-readable upstream tag kept as a comment. When updating an action, resolve
 the new upstream tag to its commit SHA first, update the comment, then rerun
-`make validate`.
+`make validate`. Actions-style Python jobs also pin the exact `3.12.13` patch
+release. Update every workflow consumer together; wildcard or minor-only
+selectors are rejected by the CI contract.
+
+CI Python tools use reviewed hash locks for CPython 3.12 Linux amd64 and arm64
+wheels. GitHub runs Semgrep from its exact OCI index digest with the network and
+filesystem write paths disabled; Renovate proposes explicit version/digest
+updates rather than silently following a tag.
+Actionlint, Kustomize, Helm, and Kubeconform likewise install through the
+repository's bounded release-artifact helper with exact Linux amd64 SHA-256
+proof. Renovate may propose their versions, but CI fails closed until the
+corresponding official digest is reviewed too; runtime `go install` is rejected.
 
 ## GitHub
 

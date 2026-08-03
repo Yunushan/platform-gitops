@@ -12,6 +12,12 @@ every discovered surface must be managed, mapped, or explicitly accepted as a
 manual/skip decision. An unsupported or newly discovered unmapped item blocks
 the cutover.
 
+If GitLab or GitHub must remain writable while its CI is disabled and commits
+continue to relay into Forgejo, use the optional
+[Forge Coexistence Transition Runbook](FORGE_TRANSITION.md) instead. This
+cutover workflow freezes GitLab during activation; it is intentionally not the
+long-lived coexistence workflow.
+
 ## Safety Model
 
 The workflow has five explicit phases:

@@ -1,0 +1,476 @@
+---
+- name: Verify host filesystem capacity on every RKE2 node
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  vars:
+    platform_capacity_root_free_percent_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_ROOT_FREE_PERCENT') }}"
+    platform_capacity_storage_free_percent_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_STORAGE_FREE_PERCENT') }}"
+    platform_capacity_storage_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_STORAGE_PATH') }}"
+    platform_storage_encryption_required_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_STORAGE_ENCRYPTION_REQUIRED') }}"
+    platform_capacity_root_free_percent_effective: "{{ platform_capacity_root_free_percent | default(platform_capacity_root_free_percent_from_env, true) | default('15', true) | int }}"
+    platform_capacity_storage_free_percent_effective: "{{ platform_capacity_storage_free_percent | default(platform_capacity_storage_free_percent_from_env, true) | default('20', true) | int }}"
+    platform_capacity_storage_path_effective: "{{ platform_capacity_storage_path | default(platform_capacity_storage_path_from_env, true) | default('/var/lib/longhorn', true) }}"
+    platform_storage_encryption_required_effective: "{{ platform_storage_encryption_required | default(platform_storage_encryption_required_from_env, true) | default(true, true) | bool }}"
+  tasks:
+    - name: Require valid host capacity thresholds
+      ansible.builtin.assert:
+        that:
+          - platform_capacity_root_free_percent_effective >= 5
+          - platform_capacity_root_free_percent_effective <= 95
+          - platform_capacity_storage_free_percent_effective >= 5
+          - platform_capacity_storage_free_percent_effective <= 95
+          - platform_capacity_storage_path_effective | length > 1
+          - platform_capacity_storage_path_effective[0] == '/'
+        fail_msg: >-
+          Host capacity thresholds must be percentages from 5 through 95 and
+          PLATFORM_CAPACITY_STORAGE_PATH must be absolute.
+
+    - name: Verify root and platform storage filesystem headroom
+      ansible.builtin.shell: |
+        set -euo pipefail
+        root_min={{ platform_capacity_root_free_percent_effective }}
+        storage_min={{ platform_capacity_storage_free_percent_effective }}
+        storage_path={{ platform_capacity_storage_path_effective | quote }}
+        encryption_required={{ 'true' if platform_storage_encryption_required_effective else 'false' }}
+
+        if [ "${encryption_required}" = "true" ]; then
+          command -v cryptsetup >/dev/null
+          test -d /sys/module/dm_crypt
+          printf 'node=%s longhorn_encryption_prerequisites=ok\n' {{ inventory_hostname | quote }}
+        fi
+
+        if [ ! -e "${storage_path}" ]; then
+          storage_path=/var/lib/rancher/rke2
+        fi
+
+        check_path() {
+          local label="$1"
+          local path="$2"
+          local minimum="$3"
+          local used
+          local free
+          local available_kib
+          read -r available_kib used < <(df -Pk "${path}" | awk 'NR == 2 {gsub(/%/, "", $5); print $4, $5}')
+          test -n "${available_kib}"
+          test -n "${used}"
+          free=$((100 - used))
+          printf 'node=%s filesystem=%s path=%s free_percent=%s available_kib=%s minimum_free_percent=%s\n' \
+            {{ inventory_hostname | quote }} "${label}" "${path}" "${free}" "${available_kib}" "${minimum}"
+          if [ "${free}" -lt "${minimum}" ]; then
+            printf 'result=fail reason=filesystem-headroom-below-threshold node=%s filesystem=%s\n' \
+              {{ inventory_hostname | quote }} "${label}" >&2
+            return 1
+          fi
+        }
+
+        check_path root / "${root_min}"
+        check_path platform-storage "${storage_path}" "${storage_min}"
+      args:
+        executable: /bin/bash
+      register: platform_capacity_host_filesystems
+      changed_when: false
+
+    - name: Print host filesystem capacity
+      ansible.builtin.debug:
+        var: platform_capacity_host_filesystems.stdout_lines
+
+- name: Verify Kubernetes and Longhorn scheduling headroom
+  hosts: rke2_servers[0]
+  become: true
+  gather_facts: false
+  vars:
+    platform_capacity_max_cpu_percent_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_MAX_CPU_PERCENT') }}"
+    platform_capacity_max_memory_percent_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_MAX_MEMORY_PERCENT') }}"
+    platform_capacity_max_pods_percent_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_MAX_PODS_PERCENT') }}"
+    platform_capacity_longhorn_free_percent_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_LONGHORN_FREE_PERCENT') }}"
+    platform_storage_encryption_required_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_STORAGE_ENCRYPTION_REQUIRED') }}"
+    platform_longhorn_encryption_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'LONGHORN_ENCRYPTION_SECRET_NAME') }}"
+    platform_capacity_max_cpu_percent_effective: "{{ platform_capacity_max_cpu_percent | default(platform_capacity_max_cpu_percent_from_env, true) | default('85', true) | int }}"
+    platform_capacity_max_memory_percent_effective: "{{ platform_capacity_max_memory_percent | default(platform_capacity_max_memory_percent_from_env, true) | default('85', true) | int }}"
+    platform_capacity_max_pods_percent_effective: "{{ platform_capacity_max_pods_percent | default(platform_capacity_max_pods_percent_from_env, true) | default('80', true) | int }}"
+    platform_capacity_longhorn_free_percent_effective: "{{ platform_capacity_longhorn_free_percent | default(platform_capacity_longhorn_free_percent_from_env, true) | default('20', true) | int }}"
+    platform_capacity_min_ready_nodes_effective: "{{ platform_capacity_min_ready_nodes | default(groups['rke2_servers'] | length) | int }}"
+    platform_storage_encryption_required_effective: "{{ platform_storage_encryption_required | default(platform_storage_encryption_required_from_env, true) | default(true, true) | bool }}"
+    platform_longhorn_encryption_secret_name_effective: "{{ platform_longhorn_encryption_secret_name | default(platform_longhorn_encryption_secret_name_from_env, true) | default('longhorn-crypto', true) }}"
+  tasks:
+    - name: Require valid Kubernetes capacity thresholds
+      ansible.builtin.assert:
+        that:
+          - platform_capacity_max_cpu_percent_effective >= 25
+          - platform_capacity_max_cpu_percent_effective <= 100
+          - platform_capacity_max_memory_percent_effective >= 25
+          - platform_capacity_max_memory_percent_effective <= 100
+          - platform_capacity_max_pods_percent_effective >= 25
+          - platform_capacity_max_pods_percent_effective <= 100
+          - platform_capacity_longhorn_free_percent_effective >= 5
+          - platform_capacity_longhorn_free_percent_effective <= 95
+          - platform_capacity_min_ready_nodes_effective >= 1
+        fail_msg: "Kubernetes capacity thresholds are outside their supported ranges."
+
+    - name: Classify Kubernetes scheduling and Longhorn headroom
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        work_dir="$(mktemp -d)"
+        trap 'rm -rf "${work_dir}"' EXIT
+
+        "$K" --kubeconfig "$C" get nodes -o json >"${work_dir}/nodes.json"
+        "$K" --kubeconfig "$C" get pods -A -o json >"${work_dir}/pods.json"
+        if "$K" --kubeconfig "$C" get crd nodes.longhorn.io >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io -o json >"${work_dir}/longhorn-nodes.json"
+        fi
+
+        python3 - "${work_dir}" \
+          {{ platform_capacity_max_cpu_percent_effective }} \
+          {{ platform_capacity_max_memory_percent_effective }} \
+          {{ platform_capacity_max_pods_percent_effective }} \
+          {{ platform_capacity_longhorn_free_percent_effective }} \
+          {{ platform_capacity_min_ready_nodes_effective }} <<'PY'
+        import json
+        from decimal import Decimal
+        from pathlib import Path
+        import re
+        import sys
+
+        root = Path(sys.argv[1])
+        max_cpu = Decimal(sys.argv[2])
+        max_memory = Decimal(sys.argv[3])
+        max_pods = Decimal(sys.argv[4])
+        min_longhorn_free = Decimal(sys.argv[5])
+        min_ready_nodes = int(sys.argv[6])
+
+        decimal_units = {
+            "": Decimal(1),
+            "n": Decimal("0.000000001"),
+            "u": Decimal("0.000001"),
+            "m": Decimal("0.001"),
+            "k": Decimal(1000),
+            "K": Decimal(1000),
+            "M": Decimal(1000) ** 2,
+            "G": Decimal(1000) ** 3,
+            "T": Decimal(1000) ** 4,
+            "P": Decimal(1000) ** 5,
+            "E": Decimal(1000) ** 6,
+        }
+        binary_units = {
+            "Ki": Decimal(1024),
+            "Mi": Decimal(1024) ** 2,
+            "Gi": Decimal(1024) ** 3,
+            "Ti": Decimal(1024) ** 4,
+            "Pi": Decimal(1024) ** 5,
+            "Ei": Decimal(1024) ** 6,
+        }
+        quantity_re = re.compile(r"^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))([A-Za-z]{0,2})$")
+
+        def quantity(value):
+            text = str(value or "0")
+            match = quantity_re.fullmatch(text)
+            if not match:
+                raise ValueError(f"unsupported Kubernetes quantity: {text}")
+            number = Decimal(match.group(1))
+            suffix = match.group(2)
+            if suffix in binary_units:
+                return number * binary_units[suffix]
+            if suffix in decimal_units:
+                return number * decimal_units[suffix]
+            raise ValueError(f"unsupported Kubernetes quantity suffix: {text}")
+
+        def requested(resources, key):
+            return quantity((resources or {}).get("requests", {}).get(key, "0"))
+
+        nodes_doc = json.loads((root / "nodes.json").read_text(encoding="utf-8"))
+        pods_doc = json.loads((root / "pods.json").read_text(encoding="utf-8"))
+        nodes = {}
+        failures = []
+        for item in nodes_doc.get("items", []):
+            name = item.get("metadata", {}).get("name", "")
+            allocatable = item.get("status", {}).get("allocatable", {})
+            conditions = {
+                condition.get("type"): condition.get("status")
+                for condition in item.get("status", {}).get("conditions", [])
+            }
+            ready = conditions.get("Ready") == "True"
+            pressure = [
+                key
+                for key in ("DiskPressure", "MemoryPressure", "PIDPressure")
+                if conditions.get(key) == "True"
+            ]
+            if not ready:
+                failures.append(f"node={name} reason=node-not-ready")
+            if pressure:
+                failures.append(f"node={name} reason=node-pressure conditions={','.join(pressure)}")
+            nodes[name] = {
+                "cpu": quantity(allocatable.get("cpu", "0")),
+                "memory": quantity(allocatable.get("memory", "0")),
+                "pods": quantity(allocatable.get("pods", "0")),
+                "requested_cpu": Decimal(0),
+                "requested_memory": Decimal(0),
+                "scheduled_pods": Decimal(0),
+                "ready": ready,
+            }
+
+        ready_nodes = sum(1 for node in nodes.values() if node["ready"])
+        if ready_nodes < min_ready_nodes:
+            failures.append(
+                f"reason=ready-node-count-below-threshold ready={ready_nodes} required={min_ready_nodes}"
+            )
+
+        for pod in pods_doc.get("items", []):
+            if pod.get("status", {}).get("phase") in {"Succeeded", "Failed"}:
+                continue
+            spec = pod.get("spec", {})
+            node_name = spec.get("nodeName")
+            if not node_name or node_name not in nodes:
+                continue
+            regular_cpu = sum(requested(c.get("resources"), "cpu") for c in spec.get("containers", []))
+            regular_memory = sum(requested(c.get("resources"), "memory") for c in spec.get("containers", []))
+            init_cpu = max(
+                (requested(c.get("resources"), "cpu") for c in spec.get("initContainers", [])),
+                default=Decimal(0),
+            )
+            init_memory = max(
+                (requested(c.get("resources"), "memory") for c in spec.get("initContainers", [])),
+                default=Decimal(0),
+            )
+            overhead = spec.get("overhead", {})
+            nodes[node_name]["requested_cpu"] += max(regular_cpu, init_cpu) + quantity(overhead.get("cpu", "0"))
+            nodes[node_name]["requested_memory"] += max(regular_memory, init_memory) + quantity(overhead.get("memory", "0"))
+            nodes[node_name]["scheduled_pods"] += 1
+
+        def percent(used, total):
+            if total <= 0:
+                return Decimal(100)
+            return used * 100 / total
+
+        for name in sorted(nodes):
+            node = nodes[name]
+            cpu_percent = percent(node["requested_cpu"], node["cpu"])
+            memory_percent = percent(node["requested_memory"], node["memory"])
+            pods_percent = percent(node["scheduled_pods"], node["pods"])
+            print(
+                f"node={name} requested_cpu_percent={cpu_percent:.2f} "
+                f"requested_memory_percent={memory_percent:.2f} pods_percent={pods_percent:.2f}"
+            )
+            if cpu_percent > max_cpu:
+                failures.append(f"node={name} reason=cpu-requests-above-threshold value={cpu_percent:.2f}")
+            if memory_percent > max_memory:
+                failures.append(f"node={name} reason=memory-requests-above-threshold value={memory_percent:.2f}")
+            if pods_percent > max_pods:
+                failures.append(f"node={name} reason=pod-capacity-above-threshold value={pods_percent:.2f}")
+
+        longhorn_path = root / "longhorn-nodes.json"
+        if not longhorn_path.exists():
+            failures.append("reason=longhorn-capacity-evidence-missing")
+        else:
+            longhorn = json.loads(longhorn_path.read_text(encoding="utf-8"))
+            schedulable_nodes = set()
+            maximum = Decimal(0)
+            available = Decimal(0)
+            for item in longhorn.get("items", []):
+                node_name = item.get("metadata", {}).get("name", "")
+                for disk in item.get("status", {}).get("diskStatus", {}).values():
+                    raw_conditions = disk.get("conditions") or []
+                    if isinstance(raw_conditions, dict):
+                        conditions = {
+                            condition_type: (
+                                condition.get("status")
+                                if isinstance(condition, dict)
+                                else condition
+                            )
+                            for condition_type, condition in raw_conditions.items()
+                        }
+                    else:
+                        conditions = {
+                            condition.get("type"): condition.get("status")
+                            for condition in raw_conditions
+                            if isinstance(condition, dict)
+                        }
+                    if conditions.get("Ready") == "True" and conditions.get("Schedulable") == "True":
+                        schedulable_nodes.add(node_name)
+                    maximum += Decimal(str(disk.get("storageMaximum", 0) or 0))
+                    available += Decimal(str(disk.get("storageAvailable", 0) or 0))
+            free_percent = percent(available, maximum)
+            print(
+                f"longhorn_schedulable_nodes={len(schedulable_nodes)} "
+                f"longhorn_free_percent={free_percent:.2f}"
+            )
+            if len(schedulable_nodes) < min_ready_nodes:
+                failures.append(
+                    "reason=longhorn-schedulable-node-count-below-threshold "
+                    f"ready={len(schedulable_nodes)} required={min_ready_nodes}"
+                )
+            if free_percent < min_longhorn_free:
+                failures.append(
+                    f"reason=longhorn-free-capacity-below-threshold value={free_percent:.2f}"
+                )
+
+        for failure in failures:
+            print(f"result=fail {failure}")
+        if failures:
+            raise SystemExit(1)
+        print("result=ok reason=platform-capacity-headroom-verified")
+        PY
+      args:
+        executable: /bin/bash
+      register: platform_capacity_cluster
+      changed_when: false
+
+    - name: Print Kubernetes and Longhorn capacity
+      ansible.builtin.debug:
+        var: platform_capacity_cluster.stdout_lines
+
+    - name: Verify encrypted Longhorn storage classes and bound volumes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        REQUIRED={{ 'true' if platform_storage_encryption_required_effective else 'false' }}
+        SECRET={{ platform_longhorn_encryption_secret_name_effective | quote }}
+
+        if [ "${REQUIRED}" != "true" ]; then
+          echo "result=skip reason=storage-encryption-not-required"
+          exit 0
+        fi
+
+        work_dir="$(mktemp -d)"
+        trap 'rm -rf "${work_dir}"' EXIT
+        "$K" --kubeconfig "$C" get storageclass -o json >"${work_dir}/storageclasses.json"
+        "$K" --kubeconfig "$C" -n longhorn-system get "secret/${SECRET}" -o json >"${work_dir}/secret.json"
+        "$K" --kubeconfig "$C" get pvc -A -o json >"${work_dir}/pvcs.json"
+        "$K" --kubeconfig "$C" get pv -o json >"${work_dir}/pvs.json"
+
+        python3 - "${work_dir}" "${SECRET}" <<'PY'
+        import json
+        from pathlib import Path
+        import sys
+
+        root = Path(sys.argv[1])
+        secret_name = sys.argv[2]
+        docs = {
+            name: json.loads((root / f"{name}.json").read_text(encoding="utf-8"))
+            for name in ("storageclasses", "secret", "pvcs", "pvs")
+        }
+        encrypted_classes = {
+            "longhorn-standard-encrypted": ("2", "Retain"),
+            "longhorn-critical-encrypted": ("3", "Retain"),
+            "longhorn-cache-encrypted": ("1", "Delete"),
+        }
+        secret_parameters = (
+            "provisioner",
+            "node-publish",
+            "node-stage",
+            "node-expand",
+        )
+        failures = []
+
+        classes = {
+            item.get("metadata", {}).get("name", ""): item
+            for item in docs["storageclasses"].get("items", [])
+        }
+        for class_name, (replicas, reclaim_policy) in encrypted_classes.items():
+            item = classes.get(class_name)
+            if item is None:
+                failures.append(f"reason=encrypted-storage-class-missing storage_class={class_name}")
+                continue
+            parameters = item.get("parameters", {})
+            if parameters.get("encrypted") != "true":
+                failures.append(f"reason=storage-class-encryption-disabled storage_class={class_name}")
+            if parameters.get("numberOfReplicas") != replicas:
+                failures.append(f"reason=storage-class-replica-mismatch storage_class={class_name}")
+            if item.get("reclaimPolicy") != reclaim_policy:
+                failures.append(f"reason=storage-class-reclaim-policy-mismatch storage_class={class_name}")
+            for parameter in secret_parameters:
+                prefix = f"csi.storage.k8s.io/{parameter}-secret"
+                if parameters.get(f"{prefix}-name") != secret_name:
+                    failures.append(
+                        f"reason=storage-class-secret-name-mismatch storage_class={class_name} parameter={parameter}"
+                    )
+                if parameters.get(f"{prefix}-namespace") != "longhorn-system":
+                    failures.append(
+                        f"reason=storage-class-secret-namespace-mismatch storage_class={class_name} parameter={parameter}"
+                    )
+
+        default_annotation = "storageclass.kubernetes.io/is-default-class"
+        if classes.get("longhorn-standard-encrypted", {}).get("metadata", {}).get(
+            "annotations", {}
+        ).get(default_annotation) != "true":
+            failures.append("reason=encrypted-standard-storage-class-not-default")
+        for legacy_class in ("longhorn-standard", "longhorn-critical", "longhorn-cache"):
+            if classes.get(legacy_class, {}).get("metadata", {}).get("annotations", {}).get(
+                default_annotation
+            ) == "true":
+                failures.append(f"reason=legacy-storage-class-still-default storage_class={legacy_class}")
+
+        required_secret_keys = {
+            "CRYPTO_KEY_VALUE",
+            "CRYPTO_KEY_PROVIDER",
+            "CRYPTO_KEY_CIPHER",
+            "CRYPTO_KEY_HASH",
+            "CRYPTO_KEY_SIZE",
+            "CRYPTO_PBKDF",
+            "CRYPTO_PBKDF_FORCE_ITERATIONS",
+            "CRYPTO_PBKDF_MEMORY",
+        }
+        secret_keys = set((docs["secret"].get("data") or {}).keys())
+        missing_secret_keys = sorted(required_secret_keys - secret_keys)
+        if missing_secret_keys:
+            failures.append(
+                "reason=longhorn-encryption-secret-incomplete keys=" + ",".join(missing_secret_keys)
+            )
+
+        pvs = {
+            item.get("metadata", {}).get("name", ""): item
+            for item in docs["pvs"].get("items", [])
+        }
+        encrypted_volume_count = 0
+        for pvc in docs["pvcs"].get("items", []):
+            if pvc.get("status", {}).get("phase") != "Bound":
+                continue
+            pv = pvs.get(pvc.get("spec", {}).get("volumeName", ""), {})
+            csi = pv.get("spec", {}).get("csi") or {}
+            if csi.get("driver") != "driver.longhorn.io":
+                continue
+            namespace = pvc.get("metadata", {}).get("namespace", "")
+            name = pvc.get("metadata", {}).get("name", "")
+            storage_class = pvc.get("spec", {}).get("storageClassName", "")
+            attributes = csi.get("volumeAttributes") or {}
+            encrypted_volume_count += 1
+            if storage_class not in encrypted_classes:
+                failures.append(
+                    f"reason=bound-longhorn-pvc-not-encrypted namespace={namespace} pvc={name} storage_class={storage_class}"
+                )
+                continue
+            if str(attributes.get("encrypted", "")).lower() != "true":
+                failures.append(
+                    f"reason=bound-longhorn-pv-encryption-attribute-missing namespace={namespace} pvc={name}"
+                )
+            for ref_name in ("nodePublishSecretRef", "nodeStageSecretRef", "nodeExpandSecretRef"):
+                ref = csi.get(ref_name) or {}
+                if ref.get("name") != secret_name or ref.get("namespace") != "longhorn-system":
+                    failures.append(
+                        f"reason=bound-longhorn-pv-secret-ref-mismatch namespace={namespace} pvc={name} ref={ref_name}"
+                    )
+            print(
+                f"longhorn_volume={namespace}/{name} storage_class={storage_class} encrypted=true"
+            )
+
+        if encrypted_volume_count == 0:
+            failures.append("reason=no-bound-longhorn-volumes-found")
+        for failure in failures:
+            print(f"result=fail {failure}")
+        if failures:
+            raise SystemExit(1)
+        print(
+            f"result=ok reason=longhorn-storage-encryption-verified volumes={encrypted_volume_count}"
+        )
+        PY
+      args:
+        executable: /bin/bash
+      register: platform_storage_encryption
+      changed_when: false
+
+    - name: Print Longhorn storage encryption verification
+      ansible.builtin.debug:
+        var: platform_storage_encryption.stdout_lines

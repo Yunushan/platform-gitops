@@ -31,10 +31,27 @@ if [[ -z "${evidence_file}" ]]; then
   exit 1
 fi
 
+forgejo_recovery_evidence_file="${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE:-}"
+if [[ -z "${forgejo_recovery_evidence_file}" ]]; then
+  printf '%s\n' \
+    'PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE is required for production readiness.' \
+    'Run the explicit platform-forgejo-recovery-drill after reconciling the tested commit, then reference its ignored private JSON record.' >&2
+  exit 1
+fi
+
+expected_commit="$(git rev-parse HEAD)"
+
 python3 scripts/verify_restore_evidence.py \
   "${evidence_file}" \
   --max-age-days "${PLATFORM_RESTORE_DRILL_MAX_AGE_DAYS:-92}" \
-  --expected-profile "${PLATFORM_PROFILE:-premium-3node}"
+  --expected-profile "${PLATFORM_PROFILE:-premium-3node}" \
+  --expected-commit "${expected_commit}"
+
+python3 scripts/verify_forgejo_recovery_evidence.py \
+  "${forgejo_recovery_evidence_file}" \
+  --max-age-days "${PLATFORM_FORGEJO_RECOVERY_MAX_AGE_DAYS:-92}" \
+  --expected-profile "${PLATFORM_PROFILE:-premium-3node}" \
+  --expected-commit "${expected_commit}"
 
 export ANSIBLE_TIMEOUT="${ANSIBLE_TIMEOUT:-20}"
 exec ansible-playbook \

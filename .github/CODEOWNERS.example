@@ -13,6 +13,7 @@
 /ansible/ @org/platform-automation-maintainers
 /scripts/ @org/platform-automation-maintainers @org/security-maintainers
 /config/ @org/platform-maintainers @org/security-maintainers
+/config/vendored-charts.json @org/supply-chain-maintainers @org/security-maintainers
 /inventory/ @org/platform-maintainers
 /profiles/ @org/platform-maintainers
 

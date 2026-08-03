@@ -14,9 +14,17 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlparse
 
+from bounded_file import read_bounded_text
+from bounded_subprocess import BoundedSubprocessError, run_bounded
+from strict_json import loads_strict_json
+from subprocess_timeout import bounded_timeout_seconds
+
 
 class ProtectionError(RuntimeError):
     """Raised for a failed production data-protection contract."""
+
+
+KUBECTL_TIMEOUT_SECONDS = 120
 
 
 def parse_timestamp(value: Any) -> datetime | None:
@@ -113,13 +121,26 @@ class Kubectl:
         self.prefix = [binary, "--kubeconfig", kubeconfig]
 
     def run(self, *args: str) -> str:
-        process = subprocess.run(
-            [*self.prefix, *args],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        try:
+            timeout = bounded_timeout_seconds(
+                KUBECTL_TIMEOUT_SECONDS,
+                "PLATFORM_KUBECTL_COMMAND_TIMEOUT_SECONDS",
+            )
+        except ValueError as exc:
+            raise ProtectionError(str(exc)) from None
+        try:
+            process = run_bounded(
+                [*self.prefix, *args],
+                check=False,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise ProtectionError(
+                f"kubectl timed out after {timeout:g} seconds: {' '.join(args)}"
+            ) from None
+        except (BoundedSubprocessError, ValueError) as exc:
+            raise ProtectionError(f"kubectl output rejected: {exc}") from None
         if process.returncode != 0:
             detail = process.stderr.strip().splitlines()
             message = detail[-1] if detail else "kubectl returned no error detail"
@@ -128,7 +149,7 @@ class Kubectl:
 
     def json(self, *args: str) -> dict[str, Any]:
         try:
-            document = json.loads(self.run(*args, "-o", "json"))
+            document = loads_strict_json(self.run(*args, "-o", "json"))
         except json.JSONDecodeError as exc:
             raise ProtectionError(f"kubectl {' '.join(args)} returned invalid JSON") from exc
         if not isinstance(document, dict):
@@ -138,7 +159,7 @@ class Kubectl:
 
 def top_level_config(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in read_bounded_text(path).splitlines():
         if not raw_line or raw_line[0].isspace() or raw_line.lstrip().startswith("#"):
             continue
         key, separator, value = raw_line.partition(":")

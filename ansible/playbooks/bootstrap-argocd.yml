@@ -16,7 +16,6 @@
     platform_python_from_env: "{{ lookup('ansible.builtin.env', 'PYTHON') }}"
     platform_argocd_bootstrap_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_MODE') }}"
     platform_argocd_auto_core_fallback_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_AUTO_CORE_FALLBACK') }}"
-    platform_argocd_manifest_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_URL') }}"
     platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
     platform_argocd_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_POLL_INTERVAL') }}"
     platform_argocd_service_path_fast_fail_after_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_PATH_FAST_FAIL_AFTER') }}"
@@ -32,15 +31,18 @@
     platform_python_effective: "{{ platform_python | default(platform_python_from_env, true) | default('', true) }}"
     platform_argocd_bootstrap_mode_effective: "{{ platform_argocd_bootstrap_mode | default(platform_argocd_bootstrap_mode_from_env, true) | default('ha', true) }}"
     platform_argocd_auto_core_fallback_effective: "{{ platform_argocd_auto_core_fallback | default(platform_argocd_auto_core_fallback_from_env, true) | default(true, true) | bool }}"
-    platform_argocd_default_manifest_url: >-
-      {{
-        (platform_argocd_bootstrap_mode_effective == 'core')
-        | ternary(
-            'https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml',
-            'https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/ha/install.yaml'
-          )
-      }}
-    platform_argocd_manifest_url_effective: "{{ platform_argocd_manifest_url | default(platform_argocd_manifest_url_from_env, true) | default(platform_argocd_default_manifest_url, true) }}"
+    platform_argocd_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10.0.0/argo-cd"
+    platform_argocd_vendored_chart_metadata: "{{ lookup('ansible.builtin.file', platform_argocd_vendored_chart_path ~ '/Chart.yaml') | from_yaml }}"
+    platform_argocd_release_version: "{{ platform_argocd_vendored_chart_metadata.appVersion }}"
+    platform_argocd_core_manifest_url: "https://raw.githubusercontent.com/argoproj/argo-cd/{{ platform_argocd_release_version }}/manifests/install.yaml"
+    platform_argocd_core_manifest_sha256: "b0f9119821f2e19b852c842b9cb235eb9c3ef1549554fbda6aa5904e8d440eae"
+    platform_argocd_ha_manifest_url: "https://raw.githubusercontent.com/argoproj/argo-cd/{{ platform_argocd_release_version }}/manifests/ha/install.yaml"
+    platform_argocd_ha_manifest_sha256: "278787c5f36b790ab0338d5b30d4a3fec3fddb532bf0d12f78a8977c06ecea80"
+    platform_argocd_manifest_url_effective: "{{ (platform_argocd_bootstrap_mode_effective == 'core') | ternary(platform_argocd_core_manifest_url, platform_argocd_ha_manifest_url) }}"
+    platform_argocd_manifest_sha256_effective: "{{ (platform_argocd_bootstrap_mode_effective == 'core') | ternary(platform_argocd_core_manifest_sha256, platform_argocd_ha_manifest_sha256) }}"
+    platform_argocd_manifest_max_bytes: 3145728
+    platform_argocd_manifest_connect_timeout: 10
+    platform_argocd_manifest_max_time: 120
     platform_argocd_rollout_timeout_effective: "{{ platform_argocd_rollout_timeout | default(platform_argocd_rollout_timeout_from_env, true) | default('600', true) | string | regex_replace('s$', '') | int }}"
     platform_argocd_poll_interval_effective: "{{ platform_argocd_poll_interval | default(platform_argocd_poll_interval_from_env, true) | default(10, true) | int }}"
     platform_argocd_service_path_fast_fail_after_effective: "{{ platform_argocd_service_path_fast_fail_after | default(platform_argocd_service_path_fast_fail_after_from_env, true) | default(90, true) | int }}"
@@ -71,7 +73,6 @@
       - argocd-server
     platform_argocd_core_statefulsets:
       - argocd-application-controller
-    platform_argocd_core_manifest_url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
     platform_project_file: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects/platform-project.yaml"
     platform_rendered_applications_file: "/tmp/platform-gitops-{{ platform_profile_effective }}-applications.rendered.yaml"
   tasks:
@@ -97,6 +98,29 @@
         fail_msg: "PLATFORM_ARGOCD_BOOTSTRAP_MODE must be ha or core."
       run_once: true
 
+    - name: Validate pinned Argo CD bootstrap artifacts
+      ansible.builtin.assert:
+        that:
+          - platform_argocd_release_version is match('^v[0-9]+[.][0-9]+[.][0-9]+$')
+          - platform_argocd_core_manifest_url is match('^https://raw[.]githubusercontent[.]com/argoproj/argo-cd/v[0-9]+[.][0-9]+[.][0-9]+/manifests/install[.]yaml$')
+          - platform_argocd_ha_manifest_url is match('^https://raw[.]githubusercontent[.]com/argoproj/argo-cd/v[0-9]+[.][0-9]+[.][0-9]+/manifests/ha/install[.]yaml$')
+          - platform_argocd_core_manifest_sha256 is match('^[0-9a-f]{64}$')
+          - platform_argocd_ha_manifest_sha256 is match('^[0-9a-f]{64}$')
+          - platform_argocd_manifest_max_bytes | int >= 2097152
+          - platform_argocd_manifest_max_bytes | int <= 4194304
+          - platform_argocd_manifest_connect_timeout | int >= 1
+          - platform_argocd_manifest_connect_timeout | int <= 30
+          - (platform_argocd_manifest_max_time | int) >= (platform_argocd_manifest_connect_timeout | int)
+          - platform_argocd_manifest_max_time | int <= 300
+        fail_msg: >-
+          Argo CD bootstrap artifacts must use the exact release recorded by the
+          vendored chart, fixed official HTTPS paths, reviewed SHA-256 values,
+          and bounded download limits. Runtime manifest URL overrides are
+          intentionally disabled.
+      delegate_to: localhost
+      become: false
+      run_once: true
+
     - name: Require a supported GitOps placeholder mode
       ansible.builtin.assert:
         that:
@@ -107,8 +131,9 @@
     - name: Show Argo CD bootstrap mode
       ansible.builtin.debug:
         msg: >-
-          Bootstrapping Argo CD in {{ platform_argocd_bootstrap_mode_effective }} mode from
-          {{ platform_argocd_manifest_url_effective }}. Rollout timeout is
+          Bootstrapping Argo CD {{ platform_argocd_release_version }} in
+          {{ platform_argocd_bootstrap_mode_effective }} mode from the verified
+          manifest {{ platform_argocd_manifest_sha256_effective }}. Rollout timeout is
           {{ platform_argocd_rollout_timeout_effective }}s. Automatic core fallback is
           {{ 'enabled' if platform_argocd_auto_core_fallback_effective else 'disabled' }}.
       run_once: true
@@ -158,11 +183,42 @@
 
     - name: Apply Argo CD bootstrap manifest
       block:
-        - name: Apply Argo CD bootstrap manifest with server-side apply
-          ansible.builtin.command: >-
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-            apply --server-side --force-conflicts --field-manager=platform-gitops-bootstrap
-            -n argocd -f {{ platform_argocd_manifest_url_effective }}
+        - name: Download, verify, and apply Argo CD bootstrap manifest
+          ansible.builtin.shell: |
+            set -euo pipefail
+            umask 077
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            url={{ platform_argocd_manifest_url_effective | quote }}
+            expected_sha256={{ platform_argocd_manifest_sha256_effective | quote }}
+            max_bytes={{ platform_argocd_manifest_max_bytes | int }}
+            manifest="$(mktemp)"
+            cleanup() {
+              rm -f "${manifest}"
+            }
+            trap cleanup EXIT
+
+            command -v curl >/dev/null 2>&1
+            curl --fail --show-error --silent \
+              --proto '=https' \
+              --connect-timeout {{ platform_argocd_manifest_connect_timeout | int }} \
+              --max-time {{ platform_argocd_manifest_max_time | int }} \
+              --max-filesize "${max_bytes}" \
+              --output "${manifest}" \
+              "${url}"
+            test -s "${manifest}"
+            test "$(wc -c <"${manifest}")" -le "${max_bytes}"
+            printf '%s  %s\n' "${expected_sha256}" "${manifest}" |
+              sha256sum --check --strict
+
+            "${K}" --kubeconfig "${C}" apply \
+              --server-side \
+              --force-conflicts \
+              --field-manager=platform-gitops-bootstrap \
+              -n argocd \
+              -f "${manifest}"
+          args:
+            executable: /bin/bash
           register: platform_argocd_apply
           changed_when: >-
             'created' in platform_argocd_apply.stdout or
@@ -486,11 +542,42 @@
               delegate_to: "{{ rke2_first_server }}"
               run_once: true
 
-            - name: Apply standard Argo CD manifest after HA Redis fallback
-              ansible.builtin.command: >-
-                /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-                apply --server-side --force-conflicts --field-manager=platform-gitops-bootstrap
-                -n argocd -f {{ platform_argocd_core_manifest_url }}
+            - name: Download, verify, and apply core Argo CD fallback manifest
+              ansible.builtin.shell: |
+                set -euo pipefail
+                umask 077
+                K=/var/lib/rancher/rke2/bin/kubectl
+                C=/etc/rancher/rke2/rke2.yaml
+                url={{ platform_argocd_core_manifest_url | quote }}
+                expected_sha256={{ platform_argocd_core_manifest_sha256 | quote }}
+                max_bytes={{ platform_argocd_manifest_max_bytes | int }}
+                manifest="$(mktemp)"
+                cleanup() {
+                  rm -f "${manifest}"
+                }
+                trap cleanup EXIT
+
+                command -v curl >/dev/null 2>&1
+                curl --fail --show-error --silent \
+                  --proto '=https' \
+                  --connect-timeout {{ platform_argocd_manifest_connect_timeout | int }} \
+                  --max-time {{ platform_argocd_manifest_max_time | int }} \
+                  --max-filesize "${max_bytes}" \
+                  --output "${manifest}" \
+                  "${url}"
+                test -s "${manifest}"
+                test "$(wc -c <"${manifest}")" -le "${max_bytes}"
+                printf '%s  %s\n' "${expected_sha256}" "${manifest}" |
+                  sha256sum --check --strict
+
+                "${K}" --kubeconfig "${C}" apply \
+                  --server-side \
+                  --force-conflicts \
+                  --field-manager=platform-gitops-bootstrap \
+                  -n argocd \
+                  -f "${manifest}"
+              args:
+                executable: /bin/bash
               register: platform_argocd_fallback_apply
               changed_when: >-
                 'created' in platform_argocd_fallback_apply.stdout or

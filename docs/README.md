@@ -5,6 +5,7 @@
 - [Architecture Decision Records](ARCHITECTURE_DECISIONS.md)
 - [Installation](INSTALLATION.md)
 - [Premium 3-Node Profile](PREMIUM_3NODE.md)
+- [OpenBao Initialization and Recovery Ceremony](OPENBAO_CEREMONY.md)
 - [Component Switching](COMPONENT_SWITCHING.md)
 - [Secrets and Privacy](SECRETS_AND_PRIVACY.md)
 - [Data Classification and Retention](DATA_CLASSIFICATION.md)

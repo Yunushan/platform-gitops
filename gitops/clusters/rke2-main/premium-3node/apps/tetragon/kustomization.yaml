@@ -3,10 +3,11 @@ kind: Kustomization
 namespace: tetragon
 resources:
   - namespace.yaml
+helmGlobals:
+  chartHome: charts/tetragon-1.6.0
 helmCharts:
   - name: tetragon
     version: 1.6.0
-    repo: https://helm.cilium.io
     releaseName: tetragon
     namespace: tetragon
     valuesFile: values.yaml

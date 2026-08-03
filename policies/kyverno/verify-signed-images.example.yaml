@@ -1,29 +1,46 @@
-apiVersion: kyverno.io/v1
-kind: ClusterPolicy
+apiVersion: policies.kyverno.io/v1
+kind: ImageValidatingPolicy
 metadata:
   name: verify-signed-platform-images
 spec:
-  background: false
+  evaluation:
+    admission:
+      enabled: true
+    background:
+      enabled: true
+  validationActions:
+    - Audit
+  failurePolicy: Fail
   webhookConfiguration:
-    failurePolicy: Fail
-    timeoutSeconds: 30
-  rules:
-    - name: verify-platform-image-signatures
-      match:
-        any:
-          - resources:
-              kinds:
-                - Pod
-      verifyImages:
-        - imageReferences:
-            - "<REGISTRY>/<PROJECT>/*"
-          failureAction: Audit
-          mutateDigest: true
-          verifyDigest: true
-          attestors:
-            - count: 1
-              entries:
-                - keys:
-                    publicKeys: k8s://<NAMESPACE>/<COSIGN_PUBLIC_KEY_SECRET>
-                    rekor:
-                      url: https://rekor.sigstore.dev
+    timeoutSeconds: 15
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+  matchImageReferences:
+    - expression: "image.registry == '<REGISTRY>'"
+  attestors:
+    - name: approvedCosignKey
+      cosign:
+        key:
+          data: |
+            <COSIGN_PUBLIC_KEY>
+        ctlog:
+          url: "https://rekor.sigstore.dev"
+          insecureIgnoreTlog: false
+          insecureIgnoreSCT: false
+  validationConfigurations:
+    mutateDigest: true
+    required: true
+    verifyDigest: true
+  validations:
+    - expression: >-
+        images.containers.map(image, verifyImageSignatures(image, [attestors.approvedCosignKey])).all(result, result > 0)
+      message: Images from the selected registry must carry a valid Cosign signature.

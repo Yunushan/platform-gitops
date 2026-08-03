@@ -13,19 +13,52 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from bounded_file import read_bounded_bytes, read_bounded_text
+from strict_json import loads_strict_json
+from verify_image_inventory_evidence import (
+    EvidenceError as ImageInventoryEvidenceError,
+    validate_evidence as validate_image_inventory,
+)
+from verify_openbao_ceremony_evidence import (
+    EvidenceError as OpenBaoCeremonyEvidenceError,
+    validate_evidence as validate_openbao_ceremony,
+)
+from verify_restore_evidence import (
+    EvidenceError as RestoreEvidenceError,
+    validate_evidence as validate_restore_evidence,
+)
+from verify_forgejo_recovery_evidence import (
+    EvidenceError as ForgejoRecoveryEvidenceError,
+    validate_evidence as validate_forgejo_recovery,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_GATES = (
+    "sourceProvenance",
     "repository",
+    "profile",
+    "renderedSchema",
+    "supplyChain",
+    "runtimeImageInventory",
     "rke2",
     "platformStatus",
     "tls",
     "policyReadiness",
+    "networkIsolation",
+    "internalTls",
+    "openbaoReadiness",
+    "openbaoCeremony",
+    "observability",
+    "capacity",
     "applicationHealth",
     "dataProtection",
 )
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
+REF_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$")
+REMOTE_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+OPENBAO_CLUSTER_ID_RE = re.compile(r"cluster_id_sha256=([a-f0-9]{64})")
 
 
 class EvidenceError(ValueError):
@@ -54,21 +87,17 @@ def parse_timestamp(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def log_path(value: str, root: Path) -> Path:
+def retained_path(value: str, root: Path, label: str) -> Path:
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts:
-        raise EvidenceError("logPath must be a relative path below private/production-evidence")
+        raise EvidenceError(f"{label} must be a relative path below private/production-evidence")
     if relative.parts[:2] != ("private", "production-evidence"):
-        raise EvidenceError("logPath must be below private/production-evidence")
+        raise EvidenceError(f"{label} must be below private/production-evidence")
     return root / relative
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return hashlib.sha256(read_bounded_bytes(path)).hexdigest()
 
 
 def validate_evidence(
@@ -77,13 +106,16 @@ def validate_evidence(
     root: Path,
     now: datetime,
     max_age_days: int,
+    openbao_recovery_max_age_days: int = 180,
+    restore_max_age_days: int = 92,
+    forgejo_recovery_max_age_days: int = 92,
     expected_profile: str = "",
     expected_commit: str = "",
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise EvidenceError("production evidence must be a JSON object")
-    if document.get("schemaVersion") != 1:
-        raise EvidenceError("schemaVersion must be 1")
+    if document.get("schemaVersion") != 7:
+        raise EvidenceError("schemaVersion must be 7")
 
     release_id = nonempty(document, "releaseId")
     profile = nonempty(document, "profile")
@@ -101,6 +133,32 @@ def validate_evidence(
         raise EvidenceError("operator and approver must be different people")
     if nonempty(document, "result").lower() != "passed":
         raise EvidenceError("result must be passed")
+
+    source = document.get("source")
+    if not isinstance(source, dict):
+        raise EvidenceError("source must be an object")
+    branch = nonempty(source, "branch")
+    expected_ref = nonempty(source, "expectedRef")
+    remote = nonempty(source, "remote")
+    tree = nonempty(source, "tree").lower()
+    remote_url_sha256 = nonempty(source, "remoteUrlSha256").lower()
+    if source.get("clean") is not True:
+        raise EvidenceError("source.clean must be true")
+    if not REMOTE_RE.fullmatch(remote):
+        raise EvidenceError("source.remote is invalid")
+    if (
+        not REF_RE.fullmatch(expected_ref)
+        or ".." in expected_ref
+        or "//" in expected_ref
+        or expected_ref.endswith("/")
+    ):
+        raise EvidenceError("source.expectedRef is invalid")
+    if not expected_ref.startswith(f"{remote}/"):
+        raise EvidenceError("source.expectedRef must belong to source.remote")
+    if not COMMIT_RE.fullmatch(tree):
+        raise EvidenceError("source.tree must be a 40-character lowercase Git tree SHA")
+    if not SHA256_RE.fullmatch(remote_url_sha256):
+        raise EvidenceError("source.remoteUrlSha256 must be a lowercase SHA-256")
 
     completed_at = parse_timestamp(document.get("completedAt"))
     age = now.astimezone(timezone.utc) - completed_at
@@ -121,7 +179,7 @@ def validate_evidence(
         if str(gates.get(name, "")).strip().lower() != "passed":
             raise EvidenceError(f"gates.{name} must be passed")
 
-    path = log_path(nonempty(document, "logPath"), root)
+    path = retained_path(nonempty(document, "logPath"), root, "logPath")
     expected_hash = nonempty(document, "logSha256").lower()
     if not SHA256_RE.fullmatch(expected_hash):
         raise EvidenceError("logSha256 must be a 64-character lowercase SHA-256")
@@ -129,22 +187,158 @@ def validate_evidence(
         raise EvidenceError(f"retained production log is missing: {path}")
     if sha256_file(path) != expected_hash:
         raise EvidenceError("retained production log hash does not match logSha256")
-    text = path.read_text(encoding="utf-8", errors="replace")
+    text = read_bounded_text(path, errors="replace")
     for marker in (
         "== platform production evidence ==",
         "== platform-production-check ==",
         "platform-production-check",
+        "== rendered-live-image-reconciliation ==",
+        "Image inventory evidence accepted:",
+        f"source_branch={branch}",
+        f"source_expected_ref={expected_ref}",
+        f"source_tree={tree}",
     ):
         if marker not in text:
             raise EvidenceError(f"retained production log is missing marker: {marker}")
+    openbao_cluster_ids = sorted(set(OPENBAO_CLUSTER_ID_RE.findall(text)))
+    if len(openbao_cluster_ids) != 1:
+        raise EvidenceError(
+            "retained production log must contain exactly one sanitized OpenBao cluster identity"
+        )
+
+    inventory_reference = document.get("imageInventory")
+    if not isinstance(inventory_reference, dict):
+        raise EvidenceError("imageInventory must be an object")
+    inventory_path_value = inventory_reference.get("path")
+    inventory_hash = str(inventory_reference.get("sha256", "")).lower()
+    if not isinstance(inventory_path_value, str) or not inventory_path_value.strip():
+        raise EvidenceError("imageInventory.path must be a non-empty string")
+    if not SHA256_RE.fullmatch(inventory_hash):
+        raise EvidenceError("imageInventory.sha256 must be a lowercase SHA-256")
+    inventory_path = retained_path(inventory_path_value.strip(), root, "imageInventory.path")
+    if not inventory_path.is_file():
+        raise EvidenceError(f"retained image inventory evidence is missing: {inventory_path}")
+    if sha256_file(inventory_path) != inventory_hash:
+        raise EvidenceError("retained image inventory hash does not match imageInventory.sha256")
+    try:
+        inventory_document = loads_strict_json(read_bounded_text(inventory_path))
+        inventory_summary = validate_image_inventory(
+            inventory_document,
+            now=now,
+            max_age_hours=max_age_days * 24,
+            expected_profile=profile,
+            expected_commit=commit,
+        )
+    except (OSError, json.JSONDecodeError, ImageInventoryEvidenceError) as exc:
+        raise EvidenceError(f"retained image inventory evidence is invalid: {exc}") from exc
+
+    ceremony_reference = document.get("openbaoCeremony")
+    if not isinstance(ceremony_reference, dict):
+        raise EvidenceError("openbaoCeremony must be an object")
+    ceremony_path_value = ceremony_reference.get("path")
+    ceremony_hash = str(ceremony_reference.get("sha256", "")).lower()
+    if not isinstance(ceremony_path_value, str) or not ceremony_path_value.strip():
+        raise EvidenceError("openbaoCeremony.path must be a non-empty string")
+    if not SHA256_RE.fullmatch(ceremony_hash):
+        raise EvidenceError("openbaoCeremony.sha256 must be a lowercase SHA-256")
+    ceremony_path = retained_path(
+        ceremony_path_value.strip(), root, "openbaoCeremony.path"
+    )
+    if not ceremony_path.is_file():
+        raise EvidenceError(f"retained OpenBao ceremony evidence is missing: {ceremony_path}")
+    if sha256_file(ceremony_path) != ceremony_hash:
+        raise EvidenceError("retained OpenBao ceremony hash does not match openbaoCeremony.sha256")
+    try:
+        ceremony_document = loads_strict_json(read_bounded_text(ceremony_path))
+        ceremony_summary = validate_openbao_ceremony(
+            ceremony_document,
+            root=root,
+            now=now,
+            max_recovery_age_days=openbao_recovery_max_age_days,
+            expected_profile=profile,
+            expected_source_commit=commit,
+            expected_cluster_id_sha256=openbao_cluster_ids[0],
+        )
+    except (OSError, json.JSONDecodeError, OpenBaoCeremonyEvidenceError) as exc:
+        raise EvidenceError(f"retained OpenBao ceremony evidence is invalid: {exc}") from exc
+
+    restore_reference = document.get("restoreEvidence")
+    if not isinstance(restore_reference, dict):
+        raise EvidenceError("restoreEvidence must be an object")
+    restore_path_value = restore_reference.get("path")
+    restore_hash = str(restore_reference.get("sha256", "")).lower()
+    if not isinstance(restore_path_value, str) or not restore_path_value.strip():
+        raise EvidenceError("restoreEvidence.path must be a non-empty string")
+    if not SHA256_RE.fullmatch(restore_hash):
+        raise EvidenceError("restoreEvidence.sha256 must be a lowercase SHA-256")
+    restore_path = retained_path(
+        restore_path_value.strip(), root, "restoreEvidence.path"
+    )
+    if not restore_path.is_file():
+        raise EvidenceError(f"retained restore evidence is missing: {restore_path}")
+    if sha256_file(restore_path) != restore_hash:
+        raise EvidenceError("retained restore evidence hash does not match restoreEvidence.sha256")
+    try:
+        restore_document = loads_strict_json(read_bounded_text(restore_path))
+        restore_summary = validate_restore_evidence(
+            restore_document,
+            now=now,
+            max_age_days=restore_max_age_days,
+            expected_profile=profile,
+            expected_commit=commit,
+        )
+    except (OSError, json.JSONDecodeError, RestoreEvidenceError) as exc:
+        raise EvidenceError(f"retained restore evidence is invalid: {exc}") from exc
+
+    forgejo_reference = document.get("forgejoRecovery")
+    if not isinstance(forgejo_reference, dict):
+        raise EvidenceError("forgejoRecovery must be an object")
+    forgejo_path_value = forgejo_reference.get("path")
+    forgejo_hash = str(forgejo_reference.get("sha256", "")).lower()
+    if not isinstance(forgejo_path_value, str) or not forgejo_path_value.strip():
+        raise EvidenceError("forgejoRecovery.path must be a non-empty string")
+    if not SHA256_RE.fullmatch(forgejo_hash):
+        raise EvidenceError("forgejoRecovery.sha256 must be a lowercase SHA-256")
+    forgejo_path = retained_path(
+        forgejo_path_value.strip(), root, "forgejoRecovery.path"
+    )
+    if not forgejo_path.is_file():
+        raise EvidenceError(f"retained Forgejo recovery evidence is missing: {forgejo_path}")
+    if sha256_file(forgejo_path) != forgejo_hash:
+        raise EvidenceError(
+            "retained Forgejo recovery evidence hash does not match forgejoRecovery.sha256"
+        )
+    try:
+        forgejo_document = loads_strict_json(read_bounded_text(forgejo_path))
+        forgejo_summary = validate_forgejo_recovery(
+            forgejo_document,
+            now=now,
+            max_age_days=forgejo_recovery_max_age_days,
+            expected_profile=profile,
+            expected_commit=commit,
+        )
+    except (OSError, json.JSONDecodeError, ForgejoRecoveryEvidenceError) as exc:
+        raise EvidenceError(f"retained Forgejo recovery evidence is invalid: {exc}") from exc
 
     return {
         "release_id": release_id,
         "profile": profile,
         "commit": commit,
+        "branch": branch,
+        "expected_ref": expected_ref,
+        "tree": tree,
         "completed_at": completed_at,
         "age_days": age.total_seconds() / 86400,
         "log_path": path,
+        "image_inventory_path": inventory_path,
+        "image_inventory_images": inventory_summary["images"],
+        "openbao_ceremony_path": ceremony_path,
+        "openbao_ceremony_id": ceremony_summary["ceremony_id"],
+        "openbao_seal_mode": ceremony_summary["seal_mode"],
+        "restore_evidence_path": restore_path,
+        "restore_drill_id": restore_summary["drill_id"],
+        "forgejo_recovery_path": forgejo_path,
+        "forgejo_recovery_drill_id": forgejo_summary["drill_id"],
     }
 
 
@@ -156,6 +350,21 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("PLATFORM_PRODUCTION_EVIDENCE_MAX_AGE_DAYS", "7")),
     )
+    parser.add_argument(
+        "--openbao-recovery-max-age-days",
+        type=int,
+        default=int(os.environ.get("PLATFORM_OPENBAO_RECOVERY_MAX_AGE_DAYS", "180")),
+    )
+    parser.add_argument(
+        "--restore-max-age-days",
+        type=int,
+        default=int(os.environ.get("PLATFORM_RESTORE_DRILL_MAX_AGE_DAYS", "92")),
+    )
+    parser.add_argument(
+        "--forgejo-recovery-max-age-days",
+        type=int,
+        default=int(os.environ.get("PLATFORM_FORGEJO_RECOVERY_MAX_AGE_DAYS", "92")),
+    )
     parser.add_argument("--expected-profile", default=os.environ.get("PLATFORM_PROFILE", ""))
     parser.add_argument("--expected-commit", default=os.environ.get("PLATFORM_EXPECTED_COMMIT", ""))
     return parser.parse_args()
@@ -166,16 +375,28 @@ def main() -> int:
     if args.max_age_days <= 0:
         print("--max-age-days must be greater than zero", file=sys.stderr)
         return 2
+    if args.openbao_recovery_max_age_days <= 0:
+        print("--openbao-recovery-max-age-days must be greater than zero", file=sys.stderr)
+        return 2
+    if args.restore_max_age_days <= 0:
+        print("--restore-max-age-days must be greater than zero", file=sys.stderr)
+        return 2
+    if args.forgejo_recovery_max_age_days <= 0:
+        print("--forgejo-recovery-max-age-days must be greater than zero", file=sys.stderr)
+        return 2
     if not args.evidence_file.is_file():
         print(f"Production evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
     try:
-        document = json.loads(args.evidence_file.read_text(encoding="utf-8"))
+        document = loads_strict_json(read_bounded_text(args.evidence_file))
         summary = validate_evidence(
             document,
             root=ROOT,
             now=datetime.now(timezone.utc),
             max_age_days=args.max_age_days,
+            openbao_recovery_max_age_days=args.openbao_recovery_max_age_days,
+            restore_max_age_days=args.restore_max_age_days,
+            forgejo_recovery_max_age_days=args.forgejo_recovery_max_age_days,
             expected_profile=args.expected_profile,
             expected_commit=args.expected_commit,
         )

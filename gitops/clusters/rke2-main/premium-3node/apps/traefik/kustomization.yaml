@@ -1,10 +1,12 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: traefik
+resources:
+  - namespace.yaml
+helmGlobals:
+  chartHome: charts/traefik-41.0.1
 helmCharts:
   - name: traefik
-    version: 41.0.1
-    repo: https://traefik.github.io/charts
     releaseName: platform-traefik
     namespace: traefik
     valuesFile: values.yaml

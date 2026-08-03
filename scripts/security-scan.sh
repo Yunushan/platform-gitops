@@ -38,8 +38,7 @@ fi
 trivy_args+=("${ROOT}")
 
 gitleaks_args=(
-  detect
-  --source "${ROOT}"
+  dir
   --redact
   --verbose
 )
@@ -47,6 +46,8 @@ gitleaks_args=(
 if [ -f "${ROOT}/.gitleaks.toml" ]; then
   gitleaks_args+=(--config "${ROOT}/.gitleaks.toml")
 fi
+
+gitleaks_args+=("${ROOT}")
 
 semgrep_args=(
   scan

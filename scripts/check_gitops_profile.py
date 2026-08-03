@@ -7,6 +7,8 @@ import re
 import sys
 from pathlib import Path
 
+from bounded_file import read_bounded_text
+
 
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
 APPLICATION_PATH_RE = re.compile(
@@ -42,7 +44,7 @@ def display_path(path: Path, repo_root: Path) -> str:
 def scan_file(path: Path, repo_root: Path, allow_repo_url: bool = False) -> list[str]:
     findings: list[str] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = read_bounded_text(path, encoding="utf-8").splitlines()
     except UnicodeDecodeError:
         return findings
 
@@ -80,7 +82,7 @@ def parse_simple_profile(path: Path) -> tuple[dict[str, str], dict[str, list[str
     lists: dict[str, list[str]] = {}
     current_list = ""
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
+    for raw_line in read_bounded_text(path, encoding="utf-8").splitlines():
         stripped = raw_line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -110,7 +112,7 @@ def append_unique(values: list[str], additions: list[str]) -> list[str]:
 
 
 def application_source_paths(applications_file: Path, repo_root: Path) -> list[Path]:
-    text = applications_file.read_text(encoding="utf-8")
+    text = read_bounded_text(applications_file, encoding="utf-8")
     paths: list[Path] = []
     for match in APPLICATION_PATH_RE.finditer(text):
         paths.append(repo_root / match.group("path"))
@@ -180,7 +182,7 @@ def is_application_source(path: Path) -> bool:
     kustomization = path / "kustomization.yaml"
     if not kustomization.exists():
         return False
-    text = kustomization.read_text(encoding="utf-8")
+    text = read_bounded_text(kustomization, encoding="utf-8")
     return "helmCharts:" in text
 
 

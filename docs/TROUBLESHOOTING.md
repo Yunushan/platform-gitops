@@ -405,6 +405,13 @@ To bootstrap Argo CD without manually copying commands:
 make platform-argocd
 ```
 
+This target downloads only the exact Argo CD release recorded by the vendored
+chart, rejects redirects, caps the manifest size and transfer time, and checks
+its reviewed SHA-256 before applying cluster-scoped resources. The automatic
+HA-to-core fallback verifies its separate core manifest the same way. A digest
+failure is a hard stop: update the vendored chart and both reviewed manifest
+hashes together instead of bypassing verification with a runtime URL.
+
 `make platform-argocd` also exposes Argo CD through a temporary bootstrap NodePort. The default browser URL is `https://<NODE_1_IP>:30443`. The NodePort probe is soft by default because some host firewalls or CNI/kube-proxy paths block direct NodePort access even though the final Traefik/MetalLB ingress will work. To expose an already-installed Argo CD instance again:
 
 ```bash
@@ -496,6 +503,14 @@ and Forgejo Argo CD applications, and prints storage/PVC status. If the
 Helm metadata instead of changing immutable fields. It is a first-deployment
 recovery path for the storage chicken-and-egg case; after Argo CD and pod
 networking are healthy, GitOps continues to own the desired Longhorn manifests.
+The bootstrap loads the reviewed chart archive committed beside the vendored
+Longhorn source, verifies its pinned SHA-256, and places it in RKE2 HelmChart
+`chartContent`. It does not download a chart repository index or CRD manifest at
+runtime. Helm `v3.21.0` must be installed on the Ansible controller so the CRDs
+can be rendered from the same vendored chart with the project's Kubernetes
+`1.35` API capabilities. `PLATFORM_LONGHORN_CHART_VERSION`
+may only select the version recorded in that chart's `Chart.yaml`; upgrading
+Longhorn requires a reviewed source, archive, checksum, and GitOps pin update.
 
 If Longhorn pods show `ImagePullBackOff` for `docker.io/longhornio/*` with
 `TLS handshake timeout` or `connection reset by peer`, the Longhorn chart is
@@ -615,6 +630,11 @@ resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
 ```bash
 make platform-longhorn-crd-repair
 ```
+
+The repair renders `templates/crds.yaml` from the reviewed vendored Longhorn
+chart and applies only that local output. Runtime overrides such as a remote CRD
+manifest URL are intentionally unsupported, preventing cluster-scoped recovery
+from trusting mutable network content.
 
 If `kubectl apply` reports `PriorityClass "longhorn-critical" is invalid:
 value: Forbidden: may not be changed in an update`, leave the existing
@@ -761,7 +781,7 @@ If Traefik still times out, the final failure message includes a compact status 
 
 The Traefik rollout poll is an instant readiness check, so the retry counter maps closely to `PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT` and `PLATFORM_INGRESS_POLL_INTERVAL` without an extra hidden `kubectl rollout status` wait on every attempt.
 
-If that summary shows `helm-install-platform-traefik` in `BackOff` or repeatedly `Running` with no Traefik deployment created, the Helm install job is failing before Traefik starts. Rerun `make platform-ingress` with the current playbook so stale Helm jobs are cleaned, schema-compatible chart values are applied, and pod DNS is verified against both MetalLB and Traefik chart repositories. If it still fails, read the `Helm install pod log tail` in the final failure summary; it normally shows the exact rejected value, DNS lookup error, or chart download problem.
+If that summary shows `helm-install-platform-traefik` in `BackOff` or repeatedly `Running` with no Traefik deployment created, the Helm install job is failing before Traefik starts. Rerun `make platform-ingress` with the current playbook so stale Helm jobs are cleaned and the checksum-verified local chart plus schema-compatible values are reapplied. If it still fails, read the `Helm install pod log tail` in the final failure summary; it normally shows the exact rejected value, image-pull failure, admission failure, or scheduling problem. A chart download or chart-repository DNS failure is not expected because the HelmChart uses embedded `chartContent`.
 
 To run only the Traefik chart-repository DNS repair:
 
@@ -769,50 +789,50 @@ To run only the Traefik chart-repository DNS repair:
 make platform-dns-repair-traefik
 ```
 
-Before creating the Traefik HelmChart, `platform-ingress` also runs a per-node chart repository check. It creates one short-lived pod per Kubernetes node so a node-specific failure such as `<POD_IP> -> <CLUSTER_DNS_SERVICE_IP>:53 i/o timeout` cannot slip through. Each pinned pod prints the Kubernetes DNS service IP probe, the live CoreDNS endpoint IP probes, CoreDNS endpoint placement by node, explicit `PLATFORM_NODE_DNS_SERVICE_OK` / `PLATFORM_NODE_COREDNS_ENDPOINT_OK` markers, and then retries Helm repository add/update before failing. The controller waits for all node checks to finish before printing diagnostics. If the check still fails, the playbook repairs the host CNI service path on every RKE2 node, including per-interface reverse-path filtering, RKE2 node-peer firewalld trust, and direct pod/CNI firewalld ACCEPT rules, refreshes kube-proxy/Cilium, ensures CoreDNS has HA placement with local service routing, and retries once before starting the Helm install job.
+The per-node chart-repository check is now an explicit diagnostic rather than a deployment prerequisite. Enable it with `PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true make platform-ingress`, or run `make platform-dns-repair-traefik` directly. It creates one short-lived pod per Kubernetes node so a node-specific failure such as `<POD_IP> -> <CLUSTER_DNS_SERVICE_IP>:53 i/o timeout` cannot slip through. Each pinned pod prints the Kubernetes DNS service IP probe, live CoreDNS endpoint probes, CoreDNS endpoint placement by node, explicit `PLATFORM_NODE_DNS_SERVICE_OK` / `PLATFORM_NODE_COREDNS_ENDPOINT_OK` markers, and retries Helm repository add/update before failing. When enabled, the same host CNI, kube-proxy, Cilium, CoreDNS, firewalld, and failed-node recovery path remains available for network diagnosis.
 
 The checker treats Helm output such as `Unable to get an update` as unhealthy even when Helm exits with status `0`, because that usually means the repo path is still flaky and a later Helm install job may fail on the same node. If the DNS service IP probe fails but CoreDNS endpoint probes work, focus on kube-proxy or service NAT rules. If both service and endpoint probes fail from the same node, focus on Cilium pod routing, host firewall zones, VXLAN/Geneve, or node egress. If Cilium health shows host connectivity OK but remote endpoint HTTP timeouts, the node-to-node underlay is reachable but pod-to-pod L4 forwarding is still blocked or filtered. If the post-repair retry still fails, the final message includes failed-node Kubernetes diagnostics plus host network/firewalld/Cilium/kube-proxy, iptables, nft, and conntrack diagnostics for the affected node.
 
-If the normal host service-path repair and retry still fail on a specific node, `platform-ingress` restarts `rke2-server` only on the failed node, waits for it to report Ready, waits for Cilium and kube-proxy on that node, and performs one final per-node DNS retry. This is enabled by default for HA clusters because one server restart is tolerated by the other two control-plane nodes. To disable that heavier recovery step:
+If the explicitly enabled host service-path diagnostic and retry still fail on a specific node, `platform-ingress` restarts `rke2-server` only on the failed node, waits for it to report Ready, waits for Cilium and kube-proxy on that node, and performs one final per-node DNS retry. To disable that heavier recovery step:
 
 ```bash
-PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART=false make platform-ingress
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART=false make platform-ingress
 ```
 
 To adjust how long the playbook waits for the restarted node:
 
 ```bash
-PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART_TIMEOUT=300 make platform-ingress
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true PLATFORM_TRAEFIK_DNS_FAILED_NODE_RESTART_TIMEOUT=300 make platform-ingress
 ```
 
 For a three-node HA control plane, the repair path targets three CoreDNS replicas with topology spread and preferred anti-affinity so every node can get a local DNS endpoint when the scheduler can place one. It also patches the CoreDNS service with `internalTrafficPolicy: Local`, so a pod uses the CoreDNS endpoint on its own node instead of randomly hitting a remote CoreDNS endpoint when cross-node pod DNS is flaky. RKE2's CoreDNS autoscaler can reconcile the Deployment back to two replicas, so the repair path temporarily scales that autoscaler to zero before enforcing the fixed HA CoreDNS placement. To override the Traefik per-node repair target replica count:
 
 ```bash
-PLATFORM_TRAEFIK_DNS_COREDNS_REPLICAS=3 make platform-ingress
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true PLATFORM_TRAEFIK_DNS_COREDNS_REPLICAS=3 make platform-ingress
 ```
 
 The default per-node check timeout is 300 seconds. To change it:
 
 ```bash
-PLATFORM_TRAEFIK_DNS_CHECK_TIMEOUT=300 make platform-ingress
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true PLATFORM_TRAEFIK_DNS_CHECK_TIMEOUT=300 make platform-ingress
 ```
 
 The post-repair per-node retry uses the same timeout by default. To make only the retry fail faster:
 
 ```bash
-PLATFORM_TRAEFIK_DNS_RETRY_TIMEOUT=120 make platform-ingress
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true PLATFORM_TRAEFIK_DNS_RETRY_TIMEOUT=120 make platform-ingress
 ```
 
 To tolerate short intermittent CoreDNS or chart-repository lookup failures during the per-node check:
 
 ```bash
-PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true PLATFORM_TRAEFIK_DNS_HELM_ATTEMPTS=5 PLATFORM_TRAEFIK_DNS_HELM_TIMEOUT=60 make platform-ingress
 ```
 
 To disable the host service-path repair pass while collecting diagnostics:
 
 ```bash
-PLATFORM_TRAEFIK_DNS_SERVICE_PATH_REPAIR=false make platform-ingress
+PLATFORM_TRAEFIK_CHART_REPO_DNS_CHECK=true PLATFORM_TRAEFIK_DNS_SERVICE_PATH_REPAIR=false make platform-ingress
 ```
 
 If applying the app VIP fails with `failed calling webhook` or `context deadline exceeded` for `metallb-webhook-service`, the Kubernetes API server could not reach MetalLB's validating webhook yet. The ingress playbook now waits for the webhook service endpoints and runs a server-side dry-run of the MetalLB pool before creating the real resources. To wait longer for that webhook phase:
@@ -871,7 +891,7 @@ To make node-originated VIP probes a strict deployment gate:
 PLATFORM_ARGOCD_INGRESS_NODE_STRICT=true make platform-ingress
 ```
 
-If Helm logs show `lookup ... on ...:53: i/o timeout`, pod DNS cannot resolve external chart repositories through CoreDNS. The `platform-ingress` target runs DNS repair first. To run that step directly:
+If image-pull or other workload logs show `lookup ... on ...:53: i/o timeout`, pod DNS cannot resolve an external endpoint through CoreDNS. Ingress charts no longer need external repositories, so DNS repair is an explicit operation:
 
 ```bash
 make platform-dns-repair
@@ -882,7 +902,7 @@ The repair excludes Kubernetes DNS service IPs from CoreDNS upstream candidates.
 If direct upstream DNS works from pods but Kubernetes DNS service lookups still time out, the problem is the Kubernetes DNS service path rather than the upstream resolver. The repair now applies the CNI service-path host prerequisites on all nodes, including reverse-path-filter sysctls, active-interface reverse-path filtering, Cilium VXLAN/Geneve firewalld ports, trusted pod CIDR and node IP firewalld sources, stable Cilium/firewalld interfaces, and direct pod/CNI ACCEPT rules, then restarts kube-proxy when present, Cilium, and CoreDNS. Before contacting firewalld, it atomically removes stale per-pod `lxc*`, `veth*`, `cni*`, and non-stable `cilium*` interface bindings from the permanent trusted zone. Those transient names are already covered by CIDR and wildcard rules and must not accumulate as pods churn; a large trusted zone can otherwise cause excessive firewalld CPU and memory usage or exceed its systemd startup deadline. Stable Cilium, WireGuard, and `cni0` interfaces are retained. Firewalld reloads are serialized across the RKE2 nodes; if firewalld is enabled but failed or stuck after a D-Bus timeout, the repair resets and restarts it from the cleaned configuration, waits for it to answer, and verifies the loaded runtime rules before proceeding. To disable that bootstrap repair step:
 
 ```bash
-PLATFORM_DNS_SERVICE_PATH_REPAIR=false make platform-ingress
+PLATFORM_DNS_SERVICE_PATH_REPAIR=false make platform-dns-repair
 ```
 
 The service-path repair is split into visible kube-proxy, Cilium, and CoreDNS tasks. If kube-proxy is delivered as static RKE2 pods instead of a DaemonSet, the playbook deletes those pods and waits for all three replacements to become Running before retrying DNS. Each rollout waits up to 120 seconds by default and polls every 5 seconds. To shorten that while troubleshooting:
@@ -890,84 +910,86 @@ The service-path repair is split into visible kube-proxy, Cilium, and CoreDNS ta
 ```bash
 PLATFORM_DNS_SERVICE_PATH_ROLLOUT_TIMEOUT=45 \
 PLATFORM_DNS_SERVICE_PATH_POLL_INTERVAL=5 \
-make platform-ingress
+make platform-dns-repair
 ```
 
 After those component restarts, the playbook enforces CoreDNS HA placement, patches the CoreDNS service with `internalTrafficPolicy: Local`, re-detects the current CoreDNS endpoint IPs, and reruns the service-path DNS probe before printing the final classification. This avoids diagnosing stale CoreDNS pod IPs after a rollout and avoids kube-proxy load-balancing DNS requests to remote CoreDNS endpoints when every node has a local CoreDNS pod. To override the generic DNS repair target replica count:
 
 ```bash
-PLATFORM_DNS_COREDNS_REPLICAS=3 make platform-ingress
+PLATFORM_DNS_COREDNS_REPLICAS=3 make platform-dns-repair
 ```
 
 The static kube-proxy delete request is non-blocking and uses a 30-second Kubernetes API request timeout by default. To make that fail faster:
 
 ```bash
-PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT=10 make platform-ingress
+PLATFORM_DNS_KUBE_PROXY_DELETE_TIMEOUT=10 make platform-dns-repair
 ```
 
 If the playbook says direct upstream DNS works but direct CoreDNS endpoint DNS fails, pod-to-pod overlay traffic is still broken. Rerun node preparation so firewalld trusts the pod CIDR, RKE2 node IPs, and Cilium interfaces on every node, and so active-interface reverse-path filtering is disabled:
 
 ```bash
 make rke2-prepare
-make platform-ingress
+make platform-dns-repair
 ```
 
 For non-default RKE2 pod CIDRs, override the trusted CIDR:
 
 ```bash
-PLATFORM_DNS_POD_CIDRS="<RKE2_POD_CIDR>" make platform-ingress
+PLATFORM_DNS_POD_CIDRS="<RKE2_POD_CIDR>" make platform-dns-repair
 ```
 
 To force explicit CoreDNS upstreams:
 
 ```bash
-PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-ingress
+PLATFORM_DNS_UPSTREAMS="DNS_SERVER_1 DNS_SERVER_2" make platform-dns-repair
 ```
 
 To shorten or extend the DNS test window:
 
 ```bash
-PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
+PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-dns-repair
 ```
 
 To make each in-pod DNS/HTTPS probe fail faster while keeping the outer check window:
 
 ```bash
-PLATFORM_DNS_PROBE_TIMEOUT=10 PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-ingress
+PLATFORM_DNS_PROBE_TIMEOUT=10 PLATFORM_DNS_CHECK_TIMEOUT=60 make platform-dns-repair
 ```
 
 If a previous interrupted run left a stale DNS check Job and Kubernetes is slow to delete it, the playbook waits up to 30 seconds before recreating the Job. To fail faster while debugging:
 
 ```bash
-PLATFORM_DNS_JOB_CLEANUP_TIMEOUT=10 make platform-ingress
+PLATFORM_DNS_JOB_CLEANUP_TIMEOUT=10 make platform-dns-repair
 ```
 
 Helm repository add/update uses a separate retry and timeout because chart repository access can be slower or briefly flakier than DNS probes. The default is 3 attempts and 90 seconds per Helm command:
 
 ```bash
-PLATFORM_DNS_HELM_ATTEMPTS=5 PLATFORM_DNS_HELM_TIMEOUT=60 make platform-ingress
+PLATFORM_DNS_HELM_ATTEMPTS=5 PLATFORM_DNS_HELM_TIMEOUT=60 make platform-dns-repair
 ```
 
 If you only want to increase the per-command wait without adding attempts:
 
 ```bash
-PLATFORM_DNS_HELM_TIMEOUT=180 make platform-ingress
+PLATFORM_DNS_HELM_TIMEOUT=180 make platform-dns-repair
 ```
 
 If the DNS check resolves a public IPv6 address and then fails with `network is unreachable`, keep the default IPv4-only DNS repair mode enabled. The repair suppresses external AAAA answers through CoreDNS so in-cluster Helm jobs use IPv4. Disable it only on networks with working IPv6 egress:
 
 ```bash
-PLATFORM_DNS_IPV4_ONLY=false make platform-ingress
+PLATFORM_DNS_IPV4_ONLY=false make platform-dns-repair
 ```
 
-If resolution succeeds but Helm repository add/update times out, the problem is pod egress rather than CoreDNS, or the Helm timeout is too short for your network path. Check firewall, NAT/masquerade, proxy policy, TLS inspection, or use an internal chart mirror reachable from pods. The direct repository HTTPS index probe is diagnostic only; the playbook no longer fails before the Helm repository check just because `curl` or `wget` behaves differently from the pod resolver.
-
-When using internal chart mirrors, override the platform chart repos:
+If resolution succeeds but the optional Helm repository diagnostic times out,
+the problem is pod egress rather than CoreDNS, or the diagnostic timeout is too
+short for your network path. Check firewall, NAT/masquerade, proxy policy, and
+TLS inspection. MetalLB and Traefik deployment artifacts are local and do not
+accept mirror overrides. To test a specific internal Traefik mirror without
+using it as executable deployment input:
 
 ```bash
-PLATFORM_METALLB_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/metallb" \
 PLATFORM_TRAEFIK_CHART_REPO="https://<INTERNAL_HELM_MIRROR>/traefik" \
-make platform-ingress
+make platform-dns-repair-traefik
 ```
 
 ## API VIP or API DNS does not answer

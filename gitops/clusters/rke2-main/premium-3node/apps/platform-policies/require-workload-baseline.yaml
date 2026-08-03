@@ -1,74 +1,34 @@
-apiVersion: kyverno.io/v1
-kind: ClusterPolicy
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
 metadata:
   name: require-workload-baseline
 spec:
-  admission: true
-  emitWarning: false
-  validationFailureAction: Audit
-  background: true
-  rules:
-    - name: require-resource-requests
-      skipBackgroundRequests: true
-      match:
-        any:
-          - resources:
-              kinds:
-                - Deployment
-                - StatefulSet
-                - DaemonSet
-      validate:
-        allowExistingViolations: true
-        message: Workloads should set CPU and memory requests.
-        pattern:
-          spec:
-            template:
-              spec:
-                containers:
-                  - resources:
-                      requests:
-                        memory: "?*"
-                        cpu: "?*"
-    - name: require-non-root
-      skipBackgroundRequests: true
-      match:
-        any:
-          - resources:
-              kinds:
-                - Pod
-      exclude:
-        any:
-          - resources:
-              namespaces:
-                - kube-system
-                - longhorn-system
-                - metallb-system
-      validate:
-        allowExistingViolations: true
-        message: Pods should opt into non-root execution where supported.
-        pattern:
-          spec:
-            securityContext:
-              runAsNonRoot: true
-    - name: require-no-privilege-escalation
-      skipBackgroundRequests: true
-      match:
-        any:
-          - resources:
-              kinds:
-                - Pod
-      exclude:
-        any:
-          - resources:
-              namespaces:
-                - kube-system
-                - longhorn-system
-                - metallb-system
-      validate:
-        allowExistingViolations: true
-        message: Containers should explicitly disable privilege escalation where supported.
-        pattern:
-          spec:
-            containers:
-              - securityContext:
-                  allowPrivilegeEscalation: false
+  evaluation:
+    admission:
+      enabled: true
+    background:
+      enabled: true
+  failurePolicy: Fail
+  validationActions:
+    - Audit
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - apps
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - deployments
+          - statefulsets
+          - daemonsets
+  validations:
+    - expression: >-
+        object.spec.template.spec.containers.all(container,
+          has(container.resources) &&
+          has(container.resources.requests) &&
+          'cpu' in container.resources.requests &&
+          'memory' in container.resources.requests)
+      message: Workloads must set CPU and memory requests for every container.

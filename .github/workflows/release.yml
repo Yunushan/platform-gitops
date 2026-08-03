@@ -1,0 +1,252 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      SEMGREP_IMAGE: semgrep/semgrep:1.171.0@sha256:bdf7013b2c3634a487671158da77c554f531742326b543a9464d2adf6c433ac8
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Configure Python
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: '3.12.13'
+      - name: Install pinned YAML parser
+        run: >-
+          python -m pip install --disable-pip-version-check --no-deps --only-binary=:all: --require-hashes --requirement requirements/ci-yaml.txt
+      - name: Verify immutable release ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "${tag}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tag must be a stable semantic version such as v1.2.3: ${tag}" >&2
+            exit 1
+          fi
+          test "$(git rev-list -n 1 "${tag}")" = "${GITHUB_SHA}"
+          git merge-base --is-ancestor "${GITHUB_SHA}" "origin/${DEFAULT_BRANCH}"
+      - name: Verify signed release commit and annotated tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >-
+          python scripts/verify_github_release_ref.py
+          --output rendered/governance/github-release-evidence.json
+      - name: Verify live GitHub release governance
+        env:
+          GITHUB_TOKEN: ${{ secrets.GOVERNANCE_AUDIT_TOKEN }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python scripts/verify_github_governance.py
+      - name: Install checksum-pinned Actionlint
+        run: >-
+          bash scripts/bootstrap/install-ci-tools.sh
+          "${{ runner.temp }}/platform-tools" actionlint
+      - name: Validate GitHub Actions workflow schemas
+        run: "${{ runner.temp }}/platform-tools/actionlint"
+      - name: Install checksum-pinned Kyverno CLI
+        run: bash scripts/bootstrap/install-kyverno-cli.sh "${{ runner.temp }}/platform-tools"
+      - name: Compile and behavior-test active Kyverno CEL policies
+        env:
+          KYVERNO_BIN: ${{ runner.temp }}/platform-tools/kyverno
+        run: python scripts/verify_active_kyverno_policies.py
+      - name: Validate tagged source
+        run: python scripts/run_validation.py
+      - name: Scan Git history with Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run Semgrep gate
+        run: >-
+          docker run --rm
+          --network none
+          --read-only
+          --security-opt no-new-privileges
+          --tmpfs /tmp:rw,noexec,nosuid,size=512m
+          --env HOME=/tmp
+          --volume "${PWD}:/src:ro"
+          --workdir /src
+          "${SEMGREP_IMAGE}"
+          semgrep scan --config .semgrep.yml --error --metrics=off .
+      - name: Run Trivy repository gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          trivy-config: trivy.yaml
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          scanners: vuln,secret,misconfig
+          ignore-unfixed: true
+      - name: Install rendered manifest validators
+        run: |
+          bash scripts/bootstrap/install-ci-tools.sh \
+            "${{ runner.temp }}/platform-tools" \
+            kustomize helm kubeconform
+          echo "${{ runner.temp }}/platform-tools" >> "$GITHUB_PATH"
+      - name: Validate rendered Kubernetes schemas
+        env:
+          PLATFORM_RENDERED_SCHEMA_PROFILES: base,premium-3node
+          PLATFORM_RENDERED_SCHEMA_ALLOW_INCOMPLETE: "true"
+        run: make rendered-schema-verify
+      - name: Download Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+      - name: Build reproducible release evidence
+        env:
+          SYFT_CMD: ${{ steps.syft.outputs.cmd }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          artifact="platform-gitops-${tag}"
+          mkdir -p dist
+          git archive --format=tar --prefix="${artifact}/" "${GITHUB_SHA}" |
+            gzip -n >"dist/${artifact}.tar.gz"
+
+          "${SYFT_CMD}" dir:. \
+            --exclude ./.git \
+            --exclude ./dist \
+            --exclude ./private \
+            --exclude ./rendered \
+            --exclude ./secrets \
+            -o "spdx-json=dist/${artifact}.spdx.json" \
+            -o "cyclonedx-json=dist/${artifact}.cyclonedx.json"
+          test -s rendered/governance/github-governance-evidence.json
+          cp rendered/governance/github-governance-evidence.json \
+            "dist/${artifact}.github-governance.json"
+          test -s rendered/governance/github-release-evidence.json
+          cp rendered/governance/github-release-evidence.json \
+            "dist/${artifact}.github-release.json"
+          python scripts/verify_supply_chain_evidence.py \
+            --sbom "dist/${artifact}.spdx.json"
+
+          cd dist
+          sha256sum \
+            "${artifact}.tar.gz" \
+            "${artifact}.spdx.json" \
+            "${artifact}.cyclonedx.json" \
+            "${artifact}.github-governance.json" \
+            "${artifact}.github-release.json" >SHA256SUMS
+      - name: Upload verified release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bundle-${{ github.sha }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  approval:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production-release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout tagged approval verifier
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Download verified release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-bundle-${{ github.sha }}
+          path: dist
+      - name: Verify transferred release checksums
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+      - name: Verify recorded independent environment approval
+        env:
+          GITHUB_TOKEN: ${{ secrets.GOVERNANCE_AUDIT_TOKEN }}
+        run: >-
+          python scripts/verify_github_release_approval.py
+          --output
+          dist/platform-gitops-${{ github.ref_name }}.github-release-approval.json
+      - name: Bind release approval to checksum manifest
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum \
+            "platform-gitops-${GITHUB_REF_NAME}.github-release-approval.json" \
+            >>SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Upload independently approved release bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: approved-release-bundle-${{ github.sha }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: approval
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Download independently approved release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: approved-release-bundle-${{ github.sha }}
+          path: dist
+      - name: Verify approved release checksums
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+      - name: Attest release provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: dist/platform-gitops-${{ github.ref_name }}.tar.gz
+      - name: Attest release SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: dist/platform-gitops-${{ github.ref_name }}.tar.gz
+          sbom-path: dist/platform-gitops-${{ github.ref_name }}.spdx.json
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign release checksums with GitHub OIDC
+        run: >-
+          cosign sign-blob --yes
+          --bundle dist/SHA256SUMS.sigstore.json
+          dist/SHA256SUMS
+      - name: Publish immutable tag release
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            "dist/platform-gitops-${GITHUB_REF_NAME}.tar.gz" \
+            "dist/platform-gitops-${GITHUB_REF_NAME}.spdx.json" \
+            "dist/platform-gitops-${GITHUB_REF_NAME}.cyclonedx.json" \
+            "dist/platform-gitops-${GITHUB_REF_NAME}.github-governance.json" \
+            "dist/platform-gitops-${GITHUB_REF_NAME}.github-release.json" \
+            "dist/platform-gitops-${GITHUB_REF_NAME}.github-release-approval.json" \
+            dist/SHA256SUMS \
+            dist/SHA256SUMS.sigstore.json \
+            --verify-tag \
+            --generate-notes \
+            --title "Platform GitOps ${GITHUB_REF_NAME}"

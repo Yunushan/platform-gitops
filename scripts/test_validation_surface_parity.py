@@ -25,6 +25,10 @@ RUNNER_SURFACE_FILES = [
     ROOT / "scripts" / "bootstrap" / "sync-seed-git.sh",
 ]
 ALLOWED_EXTRA_SCRIPTS = {
+    Path(".github/workflows/validate.yml"): {
+        "scripts/verify_active_kyverno_policies.py",
+        "scripts/verify_supply_chain_evidence.py",
+    },
     Path("scripts/bootstrap/private-first-deploy.sh"): {"scripts/render_private_platform_values.py"},
     Path("scripts/bootstrap/seed-first-deploy.sh"): {"scripts/render_private_platform_values.py"},
     Path("scripts/bootstrap/sync-seed-git.sh"): {"scripts/render_private_platform_values.py"},
@@ -87,7 +91,8 @@ def check_ci_surface(path: Path, expected: list[str]) -> list[str]:
     rel_path = path.relative_to(ROOT)
     actual = surface_scripts(path)
     problems: list[str] = []
-    unexpected = [script for script in actual if script not in expected]
+    allowed_extras = ALLOWED_EXTRA_SCRIPTS.get(rel_path, set())
+    unexpected = [script for script in actual if script not in expected and script not in allowed_extras]
     if unexpected:
         problems.append(f"{rel_path} runs unexpected Python script(s): {', '.join(unexpected)}")
 
@@ -99,6 +104,9 @@ def check_ci_surface(path: Path, expected: list[str]) -> list[str]:
     positions = [actual.index(script) for script in expected]
     if positions != sorted(positions):
         problems.append(f"{rel_path} runs validation scripts out of make validate order")
+    unused_allowed = sorted(allowed_extras.difference(actual))
+    if unused_allowed:
+        problems.append(f"{rel_path} allowlist contains unused script(s): {', '.join(unused_allowed)}")
     return problems
 
 

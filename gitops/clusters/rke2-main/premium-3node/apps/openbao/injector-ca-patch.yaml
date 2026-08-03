@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openbao-agent-injector
+  namespace: openbao
+spec:
+  template:
+    spec:
+      containers:
+        - name: sidecar-injector
+          env:
+            - name: AGENT_INJECT_VAULT_CACERT_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-internal-roots
+                  key: ca-certificates.crt

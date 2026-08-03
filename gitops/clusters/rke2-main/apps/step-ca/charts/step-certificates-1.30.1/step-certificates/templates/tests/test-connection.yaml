@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "step-certificates.fullname" . }}-test-connection"
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "step-certificates.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: curl
+      image: alpine/curl@sha256:7f62654f128ec8d5546f82f14f92c223314391b970cc959abc51bf91e9f2c67d
+      command:
+        - 'curl'
+      args:
+        - '-s'
+        - '-k'
+        - 'https://{{ include "step-certificates.fullname" . }}:{{ .Values.service.port }}/health'
+  restartPolicy: Never

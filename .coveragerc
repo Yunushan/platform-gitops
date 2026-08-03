@@ -1,0 +1,19 @@
+[run]
+branch = True
+parallel = True
+patch =
+    subprocess
+source =
+    scripts
+omit =
+    scripts/test_*.py
+    scripts/fixtures/*
+
+[report]
+include =
+    scripts/forge_migration.py
+    scripts/forge_cutover.py
+    scripts/forge_transition.py
+precision = 1
+show_missing = True
+skip_empty = True

@@ -3,10 +3,11 @@ kind: Kustomization
 namespace: kyverno
 resources:
   - namespace.yaml
+helmGlobals:
+  chartHome: charts/kyverno-3.8.1
 helmCharts:
   - name: kyverno
     version: 3.8.1
-    repo: https://kyverno.github.io/kyverno
     releaseName: kyverno
     namespace: kyverno
     valuesFile: values.yaml

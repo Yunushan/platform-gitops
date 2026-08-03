@@ -16,10 +16,14 @@ spec:
     namespace: cert-manager
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
       - ServerSideApply=true
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -40,10 +44,14 @@ spec:
     namespace: cert-manager
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -53,7 +61,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  project: platform
+  project: platform-services
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -63,10 +71,14 @@ spec:
     namespace: step-ca
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -86,10 +98,14 @@ spec:
     namespace: kyverno
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
       - ServerSideApply=true
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -110,10 +126,42 @@ spec:
     namespace: kyverno
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-image-integrity
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "6"
+spec:
+  project: platform
+  source:
+    repoURL: <THIS_REPO_URL>
+    targetRevision: main
+    path: gitops/clusters/rke2-main/premium-3node/apps/platform-image-integrity
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
       - ServerSideApply=true
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -134,10 +182,14 @@ spec:
     namespace: tetragon
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -157,10 +209,14 @@ spec:
     namespace: external-secrets
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
       - ServerSideApply=true
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -178,6 +234,14 @@ spec:
       name: openbao-agent-injector-cfg
       jqPathExpressions:
         - .webhooks[]?.clientConfig.caBundle
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.storageClassName
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -187,10 +251,15 @@ spec:
     namespace: openbao
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -210,10 +279,14 @@ spec:
     namespace: metallb-system
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -233,10 +306,14 @@ spec:
     namespace: traefik
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -256,10 +333,14 @@ spec:
     namespace: longhorn-system
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -279,10 +360,14 @@ spec:
     namespace: cnpg-system
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
       - ServerSideApply=true
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -293,7 +378,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "4"
 spec:
-  project: platform
+  project: platform-services
   ignoreDifferences:
     - group: ""
       kind: Namespace
@@ -339,10 +424,14 @@ spec:
     namespace: platform-databases
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
       - ServerSideApply=true
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -353,7 +442,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "4"
 spec:
-  project: platform
+  project: platform-services
   ignoreDifferences:
     - group: ""
       kind: Namespace
@@ -361,6 +450,14 @@ spec:
       jsonPointers:
         - /spec/finalizers
         - /status
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.storageClassName
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -370,40 +467,15 @@ spec:
     namespace: platform-cache
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
----
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: minio
-  namespace: argocd
-  annotations:
-    argocd.argoproj.io/sync-wave: "4"
-spec:
-  project: platform
-  ignoreDifferences:
-    - group: ""
-      kind: Namespace
-      name: object-storage
-      jsonPointers:
-        - /spec/finalizers
-        - /status
-  source:
-    repoURL: <THIS_REPO_URL>
-    targetRevision: main
-    path: gitops/clusters/rke2-main/premium-3node/apps/minio
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: object-storage
-  syncPolicy:
-    automated:
-      prune: false
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -413,7 +485,16 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "6"
 spec:
-  project: platform
+  project: platform-services
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.storageClassName
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -423,10 +504,15 @@ spec:
     namespace: keycloak
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -446,10 +532,14 @@ spec:
     namespace: argocd
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -459,7 +549,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "5"
 spec:
-  project: platform
+  project: platform-services
   ignoreDifferences:
     - group: ""
       kind: Secret
@@ -467,6 +557,14 @@ spec:
       namespace: forgejo
       jsonPointers:
         - /data/password
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.storageClassName
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -476,10 +574,15 @@ spec:
     namespace: forgejo
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -489,7 +592,16 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "6"
 spec:
-  project: platform
+  project: platform-services
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.storageClassName
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -499,10 +611,15 @@ spec:
     namespace: woodpecker
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -512,7 +629,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "5"
 spec:
-  project: platform
+  project: platform-services
   ignoreDifferences:
     - group: ""
       kind: Secret
@@ -566,6 +683,14 @@ spec:
         - '.spec.template.metadata.annotations."checksum/secret"'
         - '.spec.template.metadata.annotations."checksum/secret-core"'
         - '.spec.template.metadata.annotations."checksum/secret-jobservice"'
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.storageClassName
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -575,10 +700,15 @@ spec:
     namespace: harbor
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -589,6 +719,15 @@ metadata:
     argocd.argoproj.io/sync-wave: "3"
 spec:
   project: platform
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.storageClassName
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -598,10 +737,15 @@ spec:
     namespace: monitoring
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
       - ServerSideApply=true
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -613,6 +757,15 @@ metadata:
     argocd.argoproj.io/sync-wave: "4"
 spec:
   project: platform
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jqPathExpressions:
+        - .spec.volumeClaimTemplates[]?.spec.storageClassName
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /spec/storageClassName
   source:
     repoURL: <THIS_REPO_URL>
     targetRevision: main
@@ -622,10 +775,15 @@ spec:
     namespace: logging
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -645,8 +803,12 @@ spec:
     namespace: velero
   syncPolicy:
     automated:
-      prune: false
+      prune: true
       selfHeal: true
+      allowEmpty: false
     syncOptions:
       - CreateNamespace=true
+      - Prune=confirm
+      - PruneLast=true
+      - PrunePropagationPolicy=foreground
       - ServerSideApply=true

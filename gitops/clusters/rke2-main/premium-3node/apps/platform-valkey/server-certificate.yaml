@@ -1,0 +1,44 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-valkey-server
+  namespace: platform-cache
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  secretName: platform-valkey-tls
+  duration: 2160h
+  renewBefore: 360h
+  privateKey:
+    algorithm: ECDSA
+    size: 384
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - localhost
+    - platform-valkey
+    - platform-valkey.platform-cache
+    - platform-valkey.platform-cache.svc
+    - platform-valkey.platform-cache.svc.cluster.local
+    - platform-valkey-read
+    - platform-valkey-read.platform-cache
+    - platform-valkey-read.platform-cache.svc
+    - platform-valkey-read.platform-cache.svc.cluster.local
+    - platform-valkey-primary
+    - platform-valkey-primary.platform-cache
+    - platform-valkey-primary.platform-cache.svc
+    - platform-valkey-primary.platform-cache.svc.cluster.local
+    - platform-valkey-headless
+    - platform-valkey-headless.platform-cache
+    - platform-valkey-headless.platform-cache.svc
+    - platform-valkey-headless.platform-cache.svc.cluster.local
+    - "*.platform-valkey-headless.platform-cache.svc.cluster.local"
+  ipAddresses:
+    - 127.0.0.1
+  issuerRef:
+    name: platform-internal-ca
+    kind: ClusterIssuer
+    group: cert-manager.io

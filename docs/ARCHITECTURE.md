@@ -26,7 +26,7 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 | Logs | Loki |
 | Backups | Velero plus database and off-cluster backups |
 | Secrets | SOPS + age, External Secrets Operator, and internal OpenBao-ready backend |
-| Policy | Kyverno audit baseline and examples |
+| Policy | Kyverno stable CEL baseline and staged image-signature admission |
 | Runtime security | Tetragon eBPF observability |
 | Supply chain | Trivy, Gitleaks, Semgrep, Cosign, and Renovate helpers |
 
@@ -85,18 +85,23 @@ Argo CD uses the HA profile. The premium profile runs multiple `argocd-server`, 
 - CI builds artifacts and updates desired state; it does not directly deploy production.
 - Renovate tracks dependency update drift through `renovate.json`, with Docker
   digest pinning and dashboard approval for major changes.
-- Trivy, Gitleaks, and Semgrep are exposed through `make security-scan` for
-  deeper repository and supply-chain checks outside the fast validation suite.
+- Trivy, Gitleaks, and Semgrep are exposed through `make security-scan` and run
+  inside the required GitHub validation job.
   Semgrep defaults to the checked-in `.semgrep.yml` baseline for reproducible
   offline/private scans; connected runners can override `SEMGREP_CONFIG` to use
   Semgrep registry packs.
 - Tetragon is included in the premium profile for eBPF process, file, network,
   credential, namespace, and policy-filter observability on the RKE2 nodes.
-- Syft SBOM generation, optional OpenSSF Scorecard output, and optional Cosign
-  verification are exposed through `make supply-chain-posture`.
-- Cosign image signature verification is provided as an opt-in Kyverno example;
-  enable it only after CI signs images and registry credentials/key material are
-  available in the target namespaces.
+- Syft SBOM generation, OpenSSF Scorecard output, and Cosign verification are
+  exposed through `make supply-chain-posture`; `make supply-chain-verify`
+  promotes all three to fail-closed release evidence.
+- Cosign image signature verification is a separate premium Argo CD
+  Application backed by Kyverno's stable `ImageValidatingPolicy`. It is
+  privately rendered from disabled to `Audit`, then promoted to `Deny` only
+  after CI signs the private-registry inventory and the live signed/invalid
+  admission canary passes. The optional example remains a copyable starter.
+- The exact commands, evidence schema, digest-only image inventory, and known
+  transitive-image limitation are documented in `docs/SUPPLY_CHAIN.md`.
 - Production threat modeling is documented in `docs/THREAT_MODEL.md`, including
   assets, trust boundaries, high-risk changes, and private evidence.
 

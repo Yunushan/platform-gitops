@@ -6,9 +6,26 @@
   vars:
     platform_policy_enforcement_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_POLICY_ENFORCEMENT') }}"
     platform_policy_enforcement_effective: "{{ platform_policy_enforcement | default(platform_policy_enforcement_from_env, true) | default('Audit', true) | lower }}"
-    platform_managed_cluster_policies:
+    platform_policy_validation_action_effective: "{{ 'deny' if platform_policy_enforcement_effective == 'enforce' else 'audit' }}"
+    platform_image_integrity_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IMAGE_INTEGRITY_MODE') }}"
+    platform_image_integrity_mode_effective: "{{ platform_image_integrity_mode | default(platform_image_integrity_mode_from_env, true) | default('disabled', true) | lower }}"
+    platform_image_integrity_required_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IMAGE_INTEGRITY_REQUIRED') }}"
+    platform_image_integrity_required_effective: "{{ platform_image_integrity_required | default(platform_image_integrity_required_from_env, true) | default('false', true) | bool }}"
+    platform_image_integrity_canary_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IMAGE_INTEGRITY_CANARY_IMAGE') }}"
+    platform_image_integrity_canary_image_effective: "{{ platform_image_integrity_canary_image | default(platform_image_integrity_canary_image_from_env, true) | default('', true) }}"
+    platform_image_integrity_canary_namespace_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IMAGE_INTEGRITY_CANARY_NAMESPACE') }}"
+    platform_image_integrity_canary_namespace_effective: "{{ platform_image_integrity_canary_namespace | default(platform_image_integrity_canary_namespace_from_env, true) | default('kyverno', true) }}"
+    platform_image_integrity_canary_pull_secret_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_IMAGE_INTEGRITY_CANARY_PULL_SECRET') }}"
+    platform_image_integrity_canary_pull_secret_effective: "{{ platform_image_integrity_canary_pull_secret | default(platform_image_integrity_canary_pull_secret_from_env, true) | default('', true) }}"
+    platform_image_integrity_policy_name: verify-platform-image-signatures
+    platform_managed_validating_policies:
+      - require-private-secret-workflow
+      - require-pod-security-baseline
+      - require-workload-baseline
+    platform_legacy_cluster_policies:
       - require-private-secret-workflow
       - require-workload-baseline
+      - verify-signed-platform-images
   tasks:
     - name: Require a supported platform policy enforcement mode
       ansible.builtin.assert:
@@ -16,46 +33,263 @@
           - platform_policy_enforcement_effective in ['audit', 'enforce']
         fail_msg: "PLATFORM_POLICY_ENFORCEMENT must be Audit or Enforce."
 
-    - name: Require the managed Kyverno policies
+    - name: Require a supported platform image integrity mode
+      ansible.builtin.assert:
+        that:
+          - platform_image_integrity_mode_effective in ['disabled', 'audit', 'enforce']
+          - not (platform_image_integrity_required_effective | bool) or platform_image_integrity_mode_effective == 'enforce'
+        fail_msg: >-
+          PLATFORM_IMAGE_INTEGRITY_MODE must be disabled, Audit, or Enforce.
+          PLATFORM_IMAGE_INTEGRITY_REQUIRED=true requires Enforce.
+
+    - name: Read managed image validating policy state
       ansible.builtin.command: >-
         /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-        get clusterpolicy {{ item }}
-      loop: "{{ platform_managed_cluster_policies }}"
+        get imagevalidatingpolicy.policies.kyverno.io {{ platform_image_integrity_policy_name }}
+        --ignore-not-found -o name
+      register: platform_image_integrity_policy_state
+      changed_when: false
+
+    - name: Require disabled image integrity policy to be pruned
+      ansible.builtin.assert:
+        that:
+          - (platform_image_integrity_policy_state.stdout | trim | length) == 0
+        fail_msg: >-
+          PLATFORM_IMAGE_INTEGRITY_MODE=disabled, but {{ platform_image_integrity_policy_name }}
+          is still installed. Sync the private app selection, review and approve the guarded
+          platform-image-integrity prune, then rerun this gate.
+      when: platform_image_integrity_mode_effective == 'disabled'
+
+    - name: Require configured image integrity policy
+      ansible.builtin.assert:
+        that:
+          - (platform_image_integrity_policy_state.stdout | trim | length) > 0
+        fail_msg: >-
+          PLATFORM_IMAGE_INTEGRITY_MODE={{ platform_image_integrity_mode_effective }} requires
+          {{ platform_image_integrity_policy_name }}. Render PLATFORM_COSIGN_PUBLIC_KEY_FILE,
+          sync the platform-image-integrity Application, and rerun this gate.
+      when: platform_image_integrity_mode_effective != 'disabled'
+
+    - name: Read managed image integrity policy contract
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get imagevalidatingpolicy.policies.kyverno.io {{ platform_image_integrity_policy_name }}
+        -o jsonpath={.spec.validationActions[0]}{'|'}{.status.conditionStatus.ready}{'|'}{.spec.failurePolicy}{'|'}{.spec.validationConfigurations.mutateDigest}{'|'}{.spec.validationConfigurations.required}{'|'}{.spec.validationConfigurations.verifyDigest}
+      register: platform_image_integrity_policy_contract
+      changed_when: false
+      when: platform_image_integrity_mode_effective != 'disabled'
+
+    - name: Require managed image integrity policy to be ready and fail closed
+      ansible.builtin.assert:
+        that:
+          - (platform_image_integrity_policy_contract.stdout | trim).split('|')[0] | lower == ('deny' if platform_image_integrity_mode_effective == 'enforce' else 'audit')
+          - (platform_image_integrity_policy_contract.stdout | trim).split('|')[1] | lower == 'true'
+          - (platform_image_integrity_policy_contract.stdout | trim).split('|')[2] | lower == 'fail'
+          - (platform_image_integrity_policy_contract.stdout | trim).split('|')[3] | lower == 'true'
+          - (platform_image_integrity_policy_contract.stdout | trim).split('|')[4] | lower == 'true'
+          - (platform_image_integrity_policy_contract.stdout | trim).split('|')[5] | lower == 'true'
+        fail_msg: >-
+          {{ platform_image_integrity_policy_name }} must be Ready, use the requested Audit/Deny
+          action, fail closed, mutate tags to digests, require verification, and verify digests.
+          Observed: {{ platform_image_integrity_policy_contract.stdout | trim }}
+      when: platform_image_integrity_mode_effective != 'disabled'
+
+    - name: Require the managed stable Kyverno validating policies
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get validatingpolicy.policies.kyverno.io {{ item }}
+      loop: "{{ platform_managed_validating_policies }}"
       changed_when: false
 
     - name: Read managed Kyverno policy enforcement actions
       ansible.builtin.command: >-
         /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-        get clusterpolicy {{ item }} -o jsonpath={.spec.validationFailureAction}
-      loop: "{{ platform_managed_cluster_policies }}"
+        get validatingpolicy.policies.kyverno.io {{ item }} -o jsonpath={.spec.validationActions[0]}
+      loop: "{{ platform_managed_validating_policies }}"
       register: platform_policy_actions
       changed_when: false
 
     - name: Require managed Kyverno policy actions to match the requested mode
       ansible.builtin.assert:
         that:
-          - (item.stdout | trim | lower) == platform_policy_enforcement_effective
+          - (item.stdout | trim | lower) == platform_policy_validation_action_effective
         fail_msg: >-
           Managed Kyverno policy {{ item.item }} is {{ item.stdout | trim | default('unset', true) }},
-          but PLATFORM_POLICY_ENFORCEMENT requires {{ platform_policy_enforcement_effective }}.
+          but PLATFORM_POLICY_ENFORCEMENT={{ platform_policy_enforcement_effective }} requires
+          stable validation action {{ platform_policy_validation_action_effective }}.
           Render private values, sync the platform-policies Application, and rerun this gate.
       loop: "{{ platform_policy_actions.results }}"
       loop_control:
         label: "{{ item.item }}"
+
+    - name: Read managed Kyverno validating policy readiness
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get validatingpolicy.policies.kyverno.io {{ item }} -o jsonpath={.status.conditionStatus.ready}
+      loop: "{{ platform_managed_validating_policies }}"
+      register: platform_policy_ready_states
+      changed_when: false
+
+    - name: Require managed Kyverno validating policies to be ready
+      ansible.builtin.assert:
+        that:
+          - (item.stdout | trim | lower) == 'true'
+        fail_msg: >-
+          Managed Kyverno ValidatingPolicy {{ item.item }} is not Ready.
+          Inspect its status and Kyverno admission-controller logs before promoting enforcement.
+      loop: "{{ platform_policy_ready_states.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Check for superseded legacy Kyverno cluster policies
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get clusterpolicy.kyverno.io {{ item }} --ignore-not-found -o name
+      loop: "{{ platform_legacy_cluster_policies }}"
+      register: platform_legacy_policy_state
+      changed_when: false
+
+    - name: Require superseded legacy Kyverno cluster policies to be pruned
+      ansible.builtin.assert:
+        that:
+          - (item.stdout | trim | length) == 0
+        fail_msg: >-
+          Superseded {{ item.stdout | trim }} is still installed beside the stable CEL policy.
+          Review the Argo CD platform-policies diff, approve its guarded prune, sync it, and rerun this gate.
+      loop: "{{ platform_legacy_policy_state.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Require digest-bound signed image canary configuration
+      ansible.builtin.assert:
+        that:
+          - platform_image_integrity_canary_image_effective is match('^\S+@sha256:[0-9a-f]{64}$')
+          - platform_image_integrity_canary_namespace_effective is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+          - (platform_image_integrity_canary_pull_secret_effective | length) == 0 or platform_image_integrity_canary_pull_secret_effective is match('^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$')
+        fail_msg: >-
+          Production image-integrity proof requires PLATFORM_IMAGE_INTEGRITY_CANARY_IMAGE
+          as a signed IMAGE@sha256:DIGEST. Optional canary namespace and pull-secret names
+          must be valid Kubernetes names.
+      when: platform_image_integrity_required_effective | bool
+
+    - name: Require image integrity canary namespace
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        get namespace {{ platform_image_integrity_canary_namespace_effective }}
+      changed_when: false
+      when: platform_image_integrity_required_effective | bool
+
+    - name: Require optional image integrity canary pull secret
+      ansible.builtin.command: >-
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
+        -n {{ platform_image_integrity_canary_namespace_effective }}
+        get secret {{ platform_image_integrity_canary_pull_secret_effective }}
+      changed_when: false
+      when:
+        - platform_image_integrity_required_effective | bool
+        - (platform_image_integrity_canary_pull_secret_effective | length) > 0
+
+    - name: Prove signed image admission and unsigned image rejection
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        signed_image={{ platform_image_integrity_canary_image_effective | quote }}
+        namespace={{ platform_image_integrity_canary_namespace_effective | quote }}
+        pull_secret={{ platform_image_integrity_canary_pull_secret_effective | quote }}
+        policy={{ platform_image_integrity_policy_name | quote }}
+        work_dir="$(mktemp -d)"
+        trap 'rm -rf "${work_dir}"' EXIT
+
+        python3 - "${signed_image}" "${namespace}" "${pull_secret}" \
+          "${work_dir}/signed.json" "${work_dir}/unsigned.json" <<'PY'
+        import json
+        import re
+        import sys
+
+        image, namespace, pull_secret, signed_path, unsigned_path = sys.argv[1:]
+        unsigned = re.sub(r"@sha256:[0-9a-f]{64}$", "@sha256:" + "0" * 64, image)
+        if unsigned == image:
+            raise SystemExit("signed canary is not digest-bound")
+
+        def pod(name: str, image_ref: str) -> dict:
+            spec = {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": name, "namespace": namespace},
+                "spec": {
+                    "restartPolicy": "Never",
+                    "securityContext": {
+                        "runAsNonRoot": True,
+                        "seccompProfile": {"type": "RuntimeDefault"},
+                    },
+                    "containers": [{
+                        "name": "verify",
+                        "image": image_ref,
+                        "command": ["/bin/true"],
+                        "resources": {
+                            "requests": {"cpu": "10m", "memory": "16Mi"},
+                            "limits": {"memory": "32Mi"},
+                        },
+                        "securityContext": {
+                            "allowPrivilegeEscalation": False,
+                            "capabilities": {"drop": ["ALL"]},
+                        },
+                    }],
+                },
+            }
+            if pull_secret:
+                spec["spec"]["imagePullSecrets"] = [{"name": pull_secret}]
+            return spec
+
+        with open(signed_path, "w", encoding="utf-8") as handle:
+            json.dump(pod("platform-image-integrity-signed-canary", image), handle)
+        with open(unsigned_path, "w", encoding="utf-8") as handle:
+            json.dump(pod("platform-image-integrity-unsigned-canary", unsigned), handle)
+        PY
+
+        "$K" --kubeconfig "$C" create --dry-run=server \
+          -f "${work_dir}/signed.json" >"${work_dir}/signed.stdout" 2>"${work_dir}/signed.stderr"
+        if "$K" --kubeconfig "$C" create --dry-run=server \
+          -f "${work_dir}/unsigned.json" >"${work_dir}/unsigned.stdout" 2>"${work_dir}/unsigned.stderr"; then
+          echo "result=fail reason=unsigned-image-was-admitted" >&2
+          exit 1
+        fi
+        if ! grep -Eq "${policy}|valid Cosign signature|image signature" "${work_dir}/unsigned.stderr"; then
+          echo "result=fail reason=unsigned-image-rejection-was-not-attributed-to-policy" >&2
+          cat "${work_dir}/unsigned.stderr" >&2
+          exit 1
+        fi
+        echo "signed_image_admission=passed"
+        echo "unverifiable_image_rejection=passed"
+      args:
+        executable: /bin/bash
+      register: platform_image_integrity_canary_result
+      changed_when: false
+      when: platform_image_integrity_required_effective | bool
 
     - name: Classify managed Kyverno policy violations
       ansible.builtin.shell: |
         set -euo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
-        "$K" --kubeconfig "$C" get policyreports.wgpolicyk8s.io -A -o json |
-          python3 - '{{ platform_policy_enforcement_effective }}' <<'PY'
+        report_file="$(mktemp)"
+        trap 'rm -f "${report_file}"' EXIT
+        "$K" --kubeconfig "$C" get policyreports.wgpolicyk8s.io -A -o json >"${report_file}"
+        python3 - "${report_file}" '{{ platform_policy_enforcement_effective }}' <<'PY'
         import json
         import sys
 
-        mode = sys.argv[1]
-        managed = {"require-private-secret-workflow", "require-workload-baseline"}
-        report = json.load(sys.stdin)
+        report_path = sys.argv[1]
+        mode = sys.argv[2]
+        managed = {
+            "require-private-secret-workflow",
+            "require-pod-security-baseline",
+            "require-workload-baseline",
+            "verify-platform-image-signatures",
+        }
+        with open(report_path, encoding="utf-8") as handle:
+            report = json.load(handle)
         failures = []
         for item in report.get("items", []):
             namespace = item.get("metadata", {}).get("namespace", "")
@@ -67,6 +301,10 @@
                         f"policy={result.get('policy')} rule={result.get('rule', '<unknown>')}"
                     )
         print(f"platform_policy_enforcement={mode}")
+        print(
+            "platform_policy_validation_action="
+            + ("Deny" if mode == "enforce" else "Audit")
+        )
         print(f"managed_policy_violations={len(failures)}")
         for failure in failures[:100]:
             print(failure)
@@ -82,3 +320,8 @@
     - name: Print managed Kyverno policy readiness
       ansible.builtin.debug:
         var: platform_policy_readiness.stdout_lines
+
+    - name: Print image integrity admission proof
+      ansible.builtin.debug:
+        var: platform_image_integrity_canary_result.stdout_lines
+      when: platform_image_integrity_required_effective | bool

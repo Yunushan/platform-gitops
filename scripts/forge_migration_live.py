@@ -24,6 +24,8 @@ import uuid
 from typing import Any, Mapping
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from atomic_file import atomic_write_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -247,14 +249,14 @@ def seed_git_repository(source_url: str, work_dir: Path) -> None:
     git(["init", str(work)])
     git(["config", "user.email", "forge-migration-live@example.invalid"], cwd=work)
     git(["config", "user.name", "Forge Migration Live Acceptance"], cwd=work)
-    (work / "README.md").write_text("# live migration acceptance\n", encoding="utf-8")
+    atomic_write_text(work / "README.md", "# live migration acceptance\n")
     git(["add", "README.md"], cwd=work)
     git(["commit", "-m", "Seed live migration acceptance repository"], cwd=work)
     git(["branch", "-M", "main"], cwd=work)
     git(["remote", "add", "origin", source_url], cwd=work)
     git(["push", "--set-upstream", "origin", "main"], cwd=work)
     git(["checkout", "-b", "feature/live-proof"], cwd=work)
-    (work / "feature.txt").write_text("portable feature branch\n", encoding="utf-8")
+    atomic_write_text(work / "feature.txt", "portable feature branch\n")
     git(["add", "feature.txt"], cwd=work)
     git(["commit", "-m", "Add portable feature branch"], cwd=work)
     git(["push", "origin", "feature/live-proof"], cwd=work)
@@ -411,8 +413,7 @@ def dry_run_manifest(configs: Mapping[str, ProviderConfig], prefix: str, run_id:
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(path, json.dumps(value, indent=2, sort_keys=True) + "\n")
 
 
 def run_acceptance(configs: Mapping[str, ProviderConfig], prefix: str, run_id: str, output_dir: Path, cleanup: bool) -> int:

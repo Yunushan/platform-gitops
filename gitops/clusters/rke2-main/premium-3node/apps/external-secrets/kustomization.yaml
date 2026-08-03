@@ -3,10 +3,11 @@ kind: Kustomization
 namespace: external-secrets
 resources:
   - namespace.yaml
+helmGlobals:
+  chartHome: charts/external-secrets-2.6.0
 helmCharts:
   - name: external-secrets
     version: 2.6.0
-    repo: https://charts.external-secrets.io
     releaseName: external-secrets
     namespace: external-secrets
     valuesFile: values.yaml

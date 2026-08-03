@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 2,
+  "drillId": "forgejo-example-2026-q1",
+  "completedAt": "2026-01-15T12:30:00Z",
+  "operator": "platform-operator@example.test",
+  "approver": "service-owner@example.test",
+  "profile": "premium-3node",
+  "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "result": "passed",
+  "rtoSeconds": 300,
+  "elapsedSeconds": 71.25,
+  "namespace": "forgejo",
+  "deployment": "forgejo",
+  "service": "forgejo-http",
+  "recoveryMode": "node-failover",
+  "sourceNode": "node-example-a",
+  "targetNode": "node-example-b",
+  "eligibleRecoveryNodes": ["node-example-b", "node-example-c"],
+  "sourceNodeWasSchedulable": true,
+  "sourceNodeRestoredSchedulable": true,
+  "preRecovery": {
+    "deploymentUid": "deployment-uid-example",
+    "deploymentGeneration": 7,
+    "argocdApplicationUid": "argocd-application-uid-example",
+    "argocdRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "podName": "forgejo-old-example",
+    "podUid": "pod-old-uid-example",
+    "podIP": "192.0.2.10",
+    "node": "node-example-a",
+    "imageIDs": ["docker-pullable://codeberg.org/forgejo/forgejo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "serviceUid": "service-uid-example",
+    "serviceClusterIP": "198.51.100.20",
+    "servicePort": 3000,
+    "endpointAddresses": ["192.0.2.10"],
+    "httpCode": 200,
+    "storageClaims": [
+      {
+        "name": "forgejo-shared-storage",
+        "uid": "pvc-uid-example",
+        "volumeName": "pvc-volume-example",
+        "storageClass": "longhorn-critical-encrypted",
+        "csiDriver": "driver.longhorn.io",
+        "encrypted": true,
+        "encryptionSecretName": "longhorn-crypto",
+        "encryptionSecretRefs": {
+          "nodePublishSecretRef": "longhorn-system/longhorn-crypto",
+          "nodeStageSecretRef": "longhorn-system/longhorn-crypto",
+          "nodeExpandSecretRef": "longhorn-system/longhorn-crypto"
+        },
+        "longhornState": "attached",
+        "longhornRobustness": "healthy"
+      }
+    ]
+  },
+  "postRecovery": {
+    "deploymentUid": "deployment-uid-example",
+    "deploymentGeneration": 7,
+    "argocdApplicationUid": "argocd-application-uid-example",
+    "argocdRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "podName": "forgejo-new-example",
+    "podUid": "pod-new-uid-example",
+    "podIP": "192.0.2.11",
+    "node": "node-example-b",
+    "imageIDs": ["docker-pullable://codeberg.org/forgejo/forgejo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    "serviceUid": "service-uid-example",
+    "serviceClusterIP": "198.51.100.20",
+    "servicePort": 3000,
+    "endpointAddresses": ["192.0.2.11"],
+    "httpCode": 200,
+    "storageClaims": [
+      {
+        "name": "forgejo-shared-storage",
+        "uid": "pvc-uid-example",
+        "volumeName": "pvc-volume-example",
+        "storageClass": "longhorn-critical-encrypted",
+        "csiDriver": "driver.longhorn.io",
+        "encrypted": true,
+        "encryptionSecretName": "longhorn-crypto",
+        "encryptionSecretRefs": {
+          "nodePublishSecretRef": "longhorn-system/longhorn-crypto",
+          "nodeStageSecretRef": "longhorn-system/longhorn-crypto",
+          "nodeExpandSecretRef": "longhorn-system/longhorn-crypto"
+        },
+        "longhornState": "attached",
+        "longhornRobustness": "healthy"
+      }
+    ]
+  }
+}
