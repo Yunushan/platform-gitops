@@ -211,8 +211,13 @@
       "version": "87.4.0",
       "packageSha256": "8c6870c77b30758b85aeed9899dfafc208b14ce295f76a31dcebe0139fb0a6d2",
       "upstreamTreeSha256": "5c12b1f4615791ea04b0b1672f1c53aecc584cacb9b3b31ca5463da2f3c319d0",
-      "treeSha256": "5c12b1f4615791ea04b0b1672f1c53aecc584cacb9b3b31ca5463da2f3c319d0",
-      "patches": []
+      "treeSha256": "dbbb65311468b6394ca5e59ce8ac5a59ea17d7d14c7d8d07d1add06f15d9606c",
+      "patches": [
+        {
+          "path": "charts/kube-state-metrics/templates/kubeconfig-secret.yaml",
+          "reason": "Remove the unused kubeconfig Secret template to prevent accidental credential materialization."
+        }
+      ]
     },
     {
       "path": "gitops/clusters/rke2-main/premium-3node/apps/openbao/charts/openbao-0.28.3/openbao",

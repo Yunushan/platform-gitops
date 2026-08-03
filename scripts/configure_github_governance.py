@@ -802,8 +802,8 @@ def main() -> int:
         f"GitHub governance {status}: repository={args.repository} "
         f"actions={len(actions)} blockers={len(blockers)} output={args.output}"
     )
-    for blocker in blockers:
-        print(f"BLOCKED: {blocker}")
+    if blockers:
+        print("BLOCKED: governance prerequisite remains; see the generated plan for details")
     return 0
 
 

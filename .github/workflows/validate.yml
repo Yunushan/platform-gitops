@@ -152,7 +152,7 @@ jobs:
       - name: Enforce forge subprocess branch coverage
         run: bash scripts/forge-coverage.sh
       - name: Upload forge coverage evidence
-        if: always()
+        if: always() && hashFiles('rendered/coverage/**') != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forge-coverage-${{ github.sha }}

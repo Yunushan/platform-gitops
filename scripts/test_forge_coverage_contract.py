@@ -64,7 +64,7 @@ def main() -> int:
         "bash scripts/forge-coverage.sh",
         "name: forge-coverage-${{ github.sha }}",
         "path: rendered/coverage",
-        "if: always()",
+        "if: always() && hashFiles('rendered/coverage/**') != ''",
         label=".github/workflows/validate.yml",
     )
     require(

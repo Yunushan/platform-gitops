@@ -3,50 +3,75 @@ title = "platform-gitops public repository leak guard"
 [extend]
 useDefault = true
 
-[[allowlists]]
-description = "Public placeholders and documentation examples"
-regexes = [
-  '''<[^>]+>''',
-  '''EXAMPLE_[A-Z0-9_]+''',
-  '''CHANGE_ME_[A-Z0-9_]+''',
-  '''REPLACE_ME_[A-Z0-9_]+'''
-]
+# Gitleaks 8.24.x uses rule-scoped allowlists for rule-specific exceptions.
+# Keep every exception bound to a detector; a path-only global exception could
+# hide a real credential in an otherwise reviewed file.
+[[rules]]
+id = "generic-api-key"
 
-paths = [
-  '''docs/i18n/.*''',
-  '''.*\.example(\.yaml|\.yml|\.ini|\.env)?$'''
-]
+  [[rules.allowlists]]
+  description = "Public placeholders and documentation examples"
+  condition = "AND"
+  regexTarget = "line"
+  regexes = [
+    '''<[^>]+>|EXAMPLE_[A-Z0-9_]+|CHANGE_ME_[A-Z0-9_]+|REPLACE_ME_[A-Z0-9_]+'''
+  ]
+  paths = [
+    '''^docs/i18n/.*''',
+    '''.*[.]example([.]yaml|[.]yml|[.]ini|[.]env)?$'''
+  ]
 
-[[allowlists]]
-description = "Health-check diagnostic prose misclassified as a generic API key"
-regexTarget = "line"
-regexes = [
-  '''path, Harbor registry API path, Grafana/Prometheus monitoring API path,'''
-]
+  [[rules.allowlists]]
+  description = "Health-check diagnostic prose misclassified as a generic API key"
+  condition = "AND"
+  regexTarget = "line"
+  regexes = [
+    '''path, Harbor registry API path, Grafana/Prometheus monitoring API path,'''
+  ]
+  paths = [
+    '''^ansible/playbooks/verify-platform-app-health[.]yml$'''
+  ]
 
-[[allowlists]]
-description = "Longhorn dm-crypt cipher algorithm constant"
-condition = "AND"
-targetRules = ["generic-api-key"]
-regexTarget = "line"
-regexes = [
-  '''--from-literal=CRYPTO_KEY_CIPHER=aes-xts-plain64'''
-]
-paths = [
-  '''^ansible/playbooks/configure-platform-app-secrets[.]yml$'''
-]
+  [[rules.allowlists]]
+  description = "Reviewed Longhorn dm-crypt cipher algorithm constant in its introducing commit"
+  condition = "AND"
+  regexTarget = "line"
+  commits = ["6145d349e84fb9c6337fe9a515ea1d54fd9fab55"]
+  regexes = [
+    '''--from-literal=CRYPTO_KEY_CIPHER=aes-xts-plain64'''
+  ]
+  paths = [
+    '''^ansible/playbooks/configure-platform-app-secrets[.]yml$'''
+  ]
 
-[[allowlists]]
-description = "Literal-ellipsis private-key examples in exact vendored chart documentation"
-condition = "AND"
-targetRules = ["private-key"]
-regexTarget = "match"
-regexes = [
-  '''(?s)-----BEGIN (?:ENCRYPTED |EC |RSA |OPENSSH )?PRIVATE KEY-----.*[.][.][.].*-----END (?:ENCRYPTED |EC |RSA |OPENSSH )?PRIVATE KEY-----'''
-]
-paths = [
-  '''^gitops/clusters/rke2-main/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$''',
-  '''^gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10[.]0[.]0/argo-cd/values[.]yaml$''',
-  '''^gitops/clusters/rke2-main/premium-3node/apps/keycloak/charts/keycloak-25[.]2[.]0/keycloak/README[.]md$''',
-  '''^gitops/clusters/rke2-main/premium-3node/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$'''
-]
+  [[rules.allowlists]]
+  description = "Literal-ellipsis database password placeholders in example environment files"
+  condition = "AND"
+  regexTarget = "line"
+  regexes = [
+    '''<[^>]+>'''
+  ]
+  paths = [
+    '''^config/first-deploy[.]env[.]example$''',
+    '''^config/seed-git[.]env[.]example$'''
+  ]
+
+[[rules]]
+id = "private-key"
+
+  [[rules.allowlists]]
+  description = "Literal-ellipsis private-key examples in exact vendored chart documentation"
+  condition = "AND"
+  regexTarget = "match"
+  regexes = [
+    '''(?s)-----BEGIN (?:ENCRYPTED |EC |RSA |OPENSSH )?PRIVATE KEY-----.*[.][.][.].*-----END (?:ENCRYPTED |EC |RSA |OPENSSH )?PRIVATE KEY-----'''
+  ]
+  paths = [
+    '''^gitops/clusters/rke2-main/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$''',
+    '''^gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10[.]0[.]0/argo-cd/values[.]yaml$''',
+    '''^gitops/clusters/rke2-main/premium-3node/apps/keycloak/charts/keycloak-25[.]2[.]0/keycloak/README[.]md$'''
+  ]
+
+  [[rules.allowlists]]
+  description = "Reviewed vendored private-key examples in their introducing commit"
+  commits = ["2ee7db41c7d02791b3bf21db00371e523cf948db"]

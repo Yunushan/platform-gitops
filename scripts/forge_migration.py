@@ -303,7 +303,10 @@ def require_credential_free_plan(value: Any, path: str = "plan") -> None:
             require_credential_free_plan(child, f"{path}[{index}]")
         return
     if isinstance(value, str) and "://" in value:
-        parts = urlsplit(value)
+        try:
+            parts = urlsplit(value)
+        except ValueError as exc:
+            raise MigrationError(f"{path} must contain a valid URL") from exc
         if parts.password or (parts.scheme in {"http", "https"} and parts.username):
             raise MigrationError(f"{path} must not embed credentials in a URL")
 

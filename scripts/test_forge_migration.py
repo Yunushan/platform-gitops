@@ -1717,6 +1717,16 @@ def test_plan_rejects_literal_credentials() -> None:
     ssh_plan["repositories"][0]["source"]["url"] = "ssh://git@gitlab.example.test/source/repository.git"  # type: ignore[index]
     migration.parse_plan(ssh_plan)
 
+    malformed_url_plan = base_plan()
+    malformed_url_plan["repositories"][0]["source"]["url"] = "https://["  # type: ignore[index]
+    try:
+        migration.parse_plan(malformed_url_plan)
+    except migration.MigrationError as exc:
+        if "must contain a valid URL" not in str(exc):
+            raise AssertionError(f"unexpected malformed URL validation error: {exc}") from exc
+    else:
+        raise AssertionError("malformed URL unexpectedly passed plan validation")
+
 
 def main() -> int:
     if not shutil.which("git"):
