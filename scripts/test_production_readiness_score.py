@@ -6,6 +6,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
+import shutil
+import subprocess
 import sys
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -33,6 +36,149 @@ PROFILE = "premium-3node"
 APPROVER = "approver@example.test"
 PRODUCTION_EVIDENCE_SHA256 = "5" * 64
 APPROVAL_KEY_SHA256 = "6" * 64
+
+
+def bash_path(path: Path) -> str:
+    resolved = path.resolve()
+    if os.name != "nt":
+        return resolved.as_posix()
+    drive = resolved.drive.rstrip(":").lower()
+    rest = resolved.as_posix().split(":", 1)[1].lstrip("/")
+    return f"/mnt/{drive}/{rest}"
+
+
+def repo_path(path: Path) -> str:
+    return path.relative_to(ROOT).as_posix()
+
+
+def run_bash(root: Path, script: str, environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    bash = shutil.which("bash")
+    if bash is None:
+        raise AssertionError("bash is required for production score runner validation")
+    script_path = root / "score-runner-test.sh"
+    exports = "\n".join(
+        f"export {name}={shlex.quote(value)}" for name, value in environment.items()
+    )
+    script_path.write_text(exports + "\n" + script, encoding="utf-8", newline="\n")
+    command = "bash " + shlex.quote(bash_path(script_path))
+    env = os.environ.copy()
+    env.pop("PYTHON", None)
+    env.pop("PLATFORM_PRODUCTION_SCORE_PYTHON", None)
+    env.update(environment)
+    return subprocess.run(
+        [bash, "-lc", command],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def assert_runner_success(result: subprocess.CompletedProcess[str], description: str) -> None:
+    if result.returncode != 0:
+        raise AssertionError(
+            f"expected {description} to succeed, got {result.returncode}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+
+
+def read_capture(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if not separator:
+            raise AssertionError(f"score runner capture contains an invalid line: {line!r}")
+        values[key] = value
+    return values
+
+
+def test_score_runner_configuration(root: Path) -> None:
+    runner = (ROOT / "scripts/bootstrap/run-platform-production-score.sh").read_text(
+        encoding="utf-8"
+    )
+    if "umask 077" not in runner:
+        raise AssertionError("production score runner must protect its output by default")
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    if "platform-production-score:\n\t@bash scripts/bootstrap/run-platform-production-score.sh" not in makefile:
+        raise AssertionError("Makefile score target must delegate interpreter selection to the wrapper")
+    if 'PLATFORM_PRODUCTION_SCORE_PYTHON="$(PYTHON)"' in makefile:
+        raise AssertionError("Makefile score target must not override private-file PYTHON")
+
+    private_python = root / "private-python"
+    explicit_python = root / "explicit-python"
+    capture_from_file = root / "capture-from-file.txt"
+    capture_from_explicit = root / "capture-from-explicit.txt"
+    for path, label in ((private_python, "private"), (explicit_python, "explicit")):
+        path.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "{\n"
+            "  printf 'interpreter=%s\\n' '" + label + "'\n"
+            "  printf 'script=%s\\n' \"$1\"\n"
+            "  printf 'arg1=%s\\n' \"$2\"\n"
+            "  printf 'arg2=%s\\n' \"$3\"\n"
+            "  printf 'profile=%s\\n' \"${PLATFORM_PROFILE:-}\"\n"
+            "  printf 'from_file=%s\\n' \"${SCORE_FROM_FILE:-}\"\n"
+            "} > \"${SCORE_CAPTURE}\"\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        path.chmod(0o700)
+
+    env_file = root / "score.env"
+    env_file.write_text(
+        f"PYTHON={repo_path(private_python)}\n"
+        "PLATFORM_PROFILE=private-profile\n"
+        "SCORE_FROM_FILE=loaded\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    private_result = run_bash(
+        root,
+        """
+set -euo pipefail
+bash scripts/bootstrap/run-platform-production-score.sh --fixture-arg "value with spaces"
+""",
+        {
+            "PLATFORM_PRODUCTION_SCORE_ENV_FILE": repo_path(env_file),
+            "PLATFORM_PROFILE": "explicit-profile",
+            "SCORE_CAPTURE": repo_path(capture_from_file),
+        },
+    )
+    assert_runner_success(private_result, "loading the private score interpreter")
+    private_capture = read_capture(capture_from_file)
+    if private_capture != {
+        "interpreter": "private",
+        "script": "scripts/verify_production_readiness_score.py",
+        "arg1": "--fixture-arg",
+        "arg2": "value with spaces",
+        "profile": "explicit-profile",
+        "from_file": "loaded",
+    }:
+        raise AssertionError(f"private score runner configuration was not preserved: {private_capture}")
+
+    explicit_result = run_bash(
+        root,
+        """
+set -euo pipefail
+bash scripts/bootstrap/run-platform-production-score.sh --fixture-arg "value with spaces"
+""",
+        {
+            "PLATFORM_PRODUCTION_SCORE_ENV_FILE": repo_path(env_file),
+            "PLATFORM_PRODUCTION_SCORE_PYTHON": repo_path(explicit_python),
+            "PLATFORM_PROFILE": "explicit-profile",
+            "SCORE_CAPTURE": repo_path(capture_from_explicit),
+        },
+    )
+    assert_runner_success(explicit_result, "preserving an explicit score interpreter")
+    explicit_capture = read_capture(capture_from_explicit)
+    if explicit_capture["interpreter"] != "explicit" or explicit_capture["from_file"] != "loaded":
+        raise AssertionError(
+            f"explicit score interpreter was not preferred over the private file: {explicit_capture}"
+        )
 
 
 def governance_evidence(now: datetime) -> dict[str, object]:
@@ -130,8 +276,9 @@ def evaluate(
 
 def main() -> int:
     now = datetime.now(timezone.utc)
-    with tempfile.TemporaryDirectory(prefix="platform-readiness-score-") as directory:
+    with tempfile.TemporaryDirectory(prefix="platform-readiness-score-", dir=ROOT) as directory:
         root = Path(directory)
+        test_score_runner_configuration(root)
         production = production_fixture.fixture(root, now)
         production_approval = production_approval_evidence(production, now)
         governance = governance_evidence(now)
