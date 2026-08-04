@@ -28,6 +28,7 @@ from strict_yaml import StrictYamlError, loads_strict_yaml_all
 MAX_PIPELINE_BYTES = 2 * 1024 * 1024
 DEFAULT_IMAGE = "alpine:3.20"
 DEFAULT_GATE_MARKER = "FORGE_CUTOVER_DEPLOYMENT_ENABLED"
+GITLAB_DEFAULT_STAGES = (".pre", "build", "test", "deploy", ".post")
 SECRET_NAME_RE = re.compile(r"(?i)(?:secret|token|password|passwd|private|credential|api[_-]?key|access[_-]?key)")
 GITLAB_SECRET_REF_RE = re.compile(r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))")
 GITHUB_SECRET_REF_RE = re.compile(r"\$\{\{\s*(?:secrets|vars)\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
@@ -67,6 +68,7 @@ GITLAB_UNSUPPORTED_JOB_KEYS = {
 }
 GITHUB_UNSUPPORTED_JOB_KEYS = {
     "concurrency",
+    "continue-on-error",
     "defaults",
     "environment",
     "outputs",
@@ -368,14 +370,17 @@ def _github_conditions(job: dict[str, Any], issues: list[dict[str, str]], path: 
     value = _string(job.get("if")).strip()
     if not value:
         return {}
-    if value in {"always()", "success()"}:
+    normalized = value.replace("${{", "").replace("}}", "").strip()
+    if normalized == "always()":
+        return {"status": ["success", "failure"]}
+    if normalized == "success()":
         return {}
-    if value == "failure()":
+    if normalized == "failure()":
         return {"status": ["failure"]}
-    match = re.fullmatch(r"github\.ref\s*==\s*['\"]refs/heads/([^'\"]+)['\"]", value.replace("${{", "").replace("}}", "").strip())
+    match = re.fullmatch(r"github\.ref\s*==\s*['\"]refs/heads/([^'\"]+)['\"]", normalized)
     if match:
         return {"branch": [match.group(1)]}
-    match = re.fullmatch(r"github\.event_name\s*==\s*['\"]([^'\"]+)['\"]", value.replace("${{", "").replace("}}", "").strip())
+    match = re.fullmatch(r"github\.event_name\s*==\s*['\"]([^'\"]+)['\"]", normalized)
     if match:
         return {"event": [match.group(1)]}
     _issue(issues, "github-condition", f"{path}.if", "expression is not representable")
@@ -515,7 +520,13 @@ def _translate_gitlab(document: dict[str, Any], report: dict[str, Any], config: 
             _issue(issues, "gitlab-service", f"services[{index}]", "service image is missing")
         else:
             services.append(service_image)
-    stages = [_string(stage) for stage in _list(document.get("stages"))]
+    raw_stages = document.get("stages")
+    stages = (
+        list(GITLAB_DEFAULT_STAGES)
+        if raw_stages is None
+        else [_string(stage) for stage in _list(raw_stages)]
+    )
+    default_job_stage = "test" if "test" in stages else (stages[0] if stages else "build")
     jobs: list[dict[str, Any]] = []
     for name, raw_job in document.items():
         if name in GITLAB_RESERVED or name.startswith("."):
@@ -545,18 +556,23 @@ def _translate_gitlab(document: dict[str, Any], report: dict[str, Any], config: 
         if needs is not None:
             for need in _list(needs):
                 dependencies.append(_string(need.get("job") if isinstance(need, dict) else need))
-        elif stages and _string(job.get("stage"), stages[0]) in stages:
-            stage_index = stages.index(_string(job.get("stage"), stages[0]))
+        elif stages and _string(job.get("stage"), default_job_stage) in stages:
+            stage_index = stages.index(_string(job.get("stage"), default_job_stage))
             if stage_index:
                 previous_stage = stages[stage_index - 1]
                 dependencies = [candidate["name"] for candidate in jobs if candidate["stage"] == previous_stage]
         labels = _runner_labels(job.get("tags", default.get("tags")), config, issues, f"{name}.tags")
         conditions = _gitlab_conditions(job, issues, name, config)
-        if _string(job.get("when")) == "always":
+        job_when = _string(job.get("when")).strip()
+        if job_when == "manual":
+            conditions["event"] = ["manual"]
+        elif job_when == "always":
             conditions["status"] = ["success", "failure"]
+        elif job_when not in {"", "on_success"}:
+            _issue(issues, "gitlab-when", f"{name}.when", f"unsupported job action {job_when!r}")
         if _bool(job.get("allow_failure")):
             _issue(issues, "gitlab-allow-failure", f"{name}.allow_failure", "allow_failure changes pipeline failure semantics")
-        jobs.append({"name": name, "source_job": name, "stage": _string(job.get("stage"), stages[0] if stages else "build"), "image": job_image, "commands": commands, "environment": environment, "depends_on": dependencies, "conditions": conditions, "labels": labels})
+        jobs.append({"name": name, "source_job": name, "stage": _string(job.get("stage"), default_job_stage), "image": job_image, "commands": commands, "environment": environment, "depends_on": dependencies, "conditions": conditions, "labels": labels})
     if not jobs:
         _issue(issues, "empty-pipeline", "jobs", "no runnable GitLab jobs were found")
     if document.get("workflow") is not None:
@@ -869,8 +885,8 @@ def _translate_github(document: dict[str, Any], report: dict[str, Any], config: 
             _issue(issues, "empty-job", job_path, "job has no runnable commands")
             continue
         job_records.append({"name": name, "needs": needs, "steps": run_steps})
-    first_steps = {
-        record["name"]: record["steps"][0]["name"]
+    last_steps = {
+        record["name"]: record["steps"][-1]["name"]
         for record in job_records
         if record["steps"]
     }
@@ -880,10 +896,10 @@ def _translate_github(document: dict[str, Any], report: dict[str, Any], config: 
         for step_index, step in enumerate(record["steps"]):
             if step_index == 0:
                 for need in record["needs"]:
-                    if need not in first_steps:
+                    if need not in last_steps:
                         _issue(issues, "github-needs", f"jobs.{record['name']}.needs", f"needed job {need!r} has no converted runnable step")
                     else:
-                        step["depends_on"].append(first_steps[need])
+                        step["depends_on"].append(last_steps[need])
             if previous:
                 step["depends_on"].append(previous)
             previous = step["name"]
@@ -909,15 +925,28 @@ def _finish_translation(report: dict[str, Any], jobs: list[dict[str, Any]], serv
     deployment_patterns = config.get("deployment_jobs") or []
     if isinstance(deployment_patterns, str):
         deployment_patterns = [deployment_patterns]
-    marker = _string(config.get("deployment_gate_marker"), DEFAULT_GATE_MARKER)
+    marker = _string(config.get("deployment_gate_marker"), DEFAULT_GATE_MARKER).strip()
+    if not re.fullmatch(r"[A-Z_][A-Z0-9_]*", marker):
+        raise PipelineConversionError("deployment_gate_marker must be an uppercase shell variable name")
+
+    def deployment_gate_command() -> str:
+        return (
+            'if [ "${' + marker + ':-false}" != "true" ]; then '
+            'echo "deployment gate ' + marker + ' is not enabled; refusing deployment"; '
+            "exit 78; fi"
+        )
+
     checked_deployment_jobs: set[str] = set()
     for job in jobs:
         source_job = _string(job.get("source_job") or job["name"])
-        if source_job in checked_deployment_jobs:
-            continue
-        checked_deployment_jobs.add(source_job)
-        if _job_is_deployment(source_job, job["commands"], config) and not any(fnmatch.fnmatchcase(source_job, _string(pattern)) for pattern in deployment_patterns):
-            _issue(report["unsupported"], "deployment-job-unmapped", source_job, "deployment-like job needs an explicit deployment_jobs mapping")
+        is_deployment = _job_is_deployment(source_job, job["commands"], config)
+        is_mapped = any(fnmatch.fnmatchcase(source_job, _string(pattern)) for pattern in deployment_patterns)
+        if source_job not in checked_deployment_jobs:
+            checked_deployment_jobs.add(source_job)
+            if is_deployment and not is_mapped:
+                _issue(report["unsupported"], "deployment-job-unmapped", source_job, "deployment-like job needs an explicit deployment_jobs mapping")
+        if is_deployment and is_mapped:
+            job["commands"] = [deployment_gate_command(), *job["commands"]]
     rendered = _render_pipeline(
         jobs,
         services,
@@ -950,7 +979,11 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
 
 def _parse_cli_mappings(values: list[str], label: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for raw in values:
+    expanded: list[str] = []
+    for value in values:
+        expanded.extend(value.split(";"))
+    for raw in expanded:
+        raw = raw.strip()
         source, separator, target = raw.partition("=")
         if not separator or not source.strip() or not target.strip():
             raise PipelineConversionError(f"{label} must use SOURCE=TARGET syntax")

@@ -60,6 +60,7 @@ deploy:
         fail(f"supported GitLab fixture was rejected: {json.dumps(report)}")
     for expected in (
         "FORGE_GATE",
+        "FORGE_GATE:-false",
         "from_secret: \"DEPLOY_TOKEN\"",
         "depends_on:",
         "platform: \"linux/amd64\"",
@@ -208,6 +209,83 @@ jobs:
         fail("GitHub workflow permissions were not blocked")
 
 
+def test_semantic_guardrails() -> None:
+    gitlab = """
+build:
+  stage: build
+  script: echo build
+test:
+  stage: test
+  script: echo test
+deploy:
+  stage: deploy
+  when: manual
+  script: kubectl apply -f deploy.yaml
+"""
+    rendered, report = pipeline.convert_pipeline(
+        "gitlab",
+        gitlab,
+        ".gitlab-ci.yml",
+        {"deployment_jobs": ["deploy"]},
+    )
+    if not report["supported"]:
+        fail(f"default GitLab stages/manual job were rejected: {json.dumps(report)}")
+    document = yaml.safe_load(rendered)
+    steps = {step["name"]: step for step in document["steps"]}
+    if steps["test"].get("depends_on") != ["build"] or steps["deploy"].get("depends_on") != ["test"]:
+        fail(f"GitLab default stage ordering was not preserved: {rendered}")
+    if steps["deploy"].get("when") != [{"event": "manual"}]:
+        fail(f"GitLab job-level manual execution was not preserved: {rendered}")
+    if not any("FORGE_CUTOVER_DEPLOYMENT_ENABLED:-false" in command for command in steps["deploy"]["commands"]):
+        fail(f"deployment gate guard was not rendered: {rendered}")
+
+    github = """
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: compile
+        run: echo compile
+      - name: package
+        run: echo package
+  cleanup:
+    if: ${{ always() }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo cleanup
+"""
+    rendered, report = pipeline.convert_pipeline(
+        "github",
+        github,
+        ".github/workflows/ci.yml",
+        {"runner_labels": {"ubuntu-latest": {"platform": "linux/amd64"}}},
+    )
+    if not report["supported"]:
+        fail(f"GitHub dependency/always fixture was rejected: {json.dumps(report)}")
+    codes = {item["code"] for item in report["unsupported"]}
+    document = yaml.safe_load(rendered) if rendered else {}
+    cleanup = next((step for step in document.get("steps", []) if step["name"].startswith("cleanup-")), None)
+    if cleanup is None or cleanup.get("depends_on") != ["build-package"]:
+        fail(f"GitHub needs did not target the prerequisite's final step: {rendered}")
+    if cleanup.get("when") != [{"status": ["success", "failure"]}]:
+        fail(f"GitHub always() was not preserved: {rendered}")
+
+    tolerated = github.replace(
+        "  cleanup:\n",
+        "  tolerated:\n    continue-on-error: true\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo tolerated\n  cleanup:\n",
+    )
+    _, report = pipeline.convert_pipeline(
+        "github",
+        tolerated,
+        ".github/workflows/ci.yml",
+        {"runner_labels": {"ubuntu-latest": {"platform": "linux/amd64"}}},
+    )
+    codes = {item["code"] for item in report["unsupported"]}
+    if "github-continue-on-error" not in codes:
+        fail(f"GitHub job-level continue-on-error was not rejected: {codes}")
+
+
 def test_github_step_scope_and_filters() -> None:
     source = """
 on:
@@ -350,6 +428,12 @@ jobs:
         )
         if result != 0 or "cron: \"nightly\"" not in output_path.read_text(encoding="utf-8"):
             fail("CLI runner-label and schedule mappings were not applied")
+    parsed = pipeline._parse_cli_mappings(
+        ["0 4 * * *=nightly;30 5 * * *=weekly"],
+        "schedule-mapping",
+    )
+    if parsed != {"0 4 * * *": "nightly", "30 5 * * *": "weekly"}:
+        fail(f"semicolon-separated cron mappings were not preserved: {parsed}")
 
 
 def test_deterministic_report() -> None:
@@ -367,6 +451,7 @@ def main() -> int:
     test_github_conversion()
     test_secret_values_never_render()
     test_unsupported_features_fail_closed()
+    test_semantic_guardrails()
     test_github_step_scope_and_filters()
     test_github_schedule_mapping()
     test_gitlab_schedule_mapping()
