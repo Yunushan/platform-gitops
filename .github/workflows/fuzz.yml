@@ -7,9 +7,12 @@ on:
       - '.github/workflows/fuzz.yml'
       - 'examples/migrations/**'
       - 'scripts/forge_cutover.py'
+      - 'scripts/forge_pipeline.py'
       - 'scripts/forge_migration.py'
+      - 'scripts/strict_yaml.py'
       - 'scripts/forge_transition.py'
       - 'scripts/fuzz_forge_plans.py'
+      - 'requirements/ci-yaml.txt'
   schedule:
     - cron: '17 2 * * 1'
   workflow_dispatch:
