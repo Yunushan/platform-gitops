@@ -45,3 +45,9 @@ platform bootstrap. Copy one to `private/`, keep all credentials in the named
 environment variables, and follow `docs/FORGE_TRANSITION.md`. The workflow
 includes a relay-preserving temporary fallback, a full pre-finalization
 rollback, and a verified Forgejo-to-source failback after finalization.
+
+Before preparing shadow state, run the optional fail-closed converter described
+in `docs/FORGE_PIPELINE.md` for each GitLab CI or GitHub Actions workflow that
+will become a Woodpecker file. Add the reviewed destination file to the
+repository and its path to the plan's `cutover.pipelines.mappings`; conversion
+reports are proof inputs, not replacements for code review.

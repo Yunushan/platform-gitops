@@ -12,6 +12,13 @@ every discovered surface must be managed, mapped, or explicitly accepted as a
 manual/skip decision. An unsupported or newly discovered unmapped item blocks
 the cutover.
 
+Before shadow preparation, use [Pipeline Compatibility And Conversion](FORGE_PIPELINE.md)
+for each source pipeline that is intended to become a Woodpecker workflow. The
+converter produces reviewed destination YAML for the supported subset and a
+redacted report; it fails closed for lossy constructs. The generated file must
+then be committed to Forgejo and listed in the plan mapping. A repository
+transfer proof by itself never proves CI equivalence.
+
 If GitLab or GitHub must remain writable while its CI is disabled and commits
 continue to relay into Forgejo, use the optional
 [Forge Coexistence Transition Runbook](FORGE_TRANSITION.md) instead. This

@@ -443,7 +443,11 @@ def github_file_text(repo: TransitionRepo, path: str, branch: str) -> str:
         raise TransitionError(f"{repo.migration.name}: GitHub workflow {path} is not valid UTF-8") from exc
 
 
-def github_workflows(repo: TransitionRepo, project: dict[str, Any]) -> list[dict[str, Any]]:
+def github_workflows(
+    repo: TransitionRepo,
+    project: dict[str, Any],
+    include_content: bool = False,
+) -> list[dict[str, Any]]:
     target, base = api_base(repo, "source")
     default_branch = str(project.get("default_branch") or "")
     payload = migration.api_request(target, "GET", f"{base}/git/trees/{quote(default_branch, safe='')}", query={"recursive": 1})
@@ -460,7 +464,10 @@ def github_workflows(repo: TransitionRepo, project: dict[str, Any]) -> list[dict
             continue
         text = github_file_text(repo, path, default_branch)
         schedules = sorted(set(re.findall(r"(?m)^\s*-?\s*cron\s*:\s*['\"]?([^'\"#\r\n]+)", text)))
-        workflows.append({"path": path, "sha": item.get("sha"), "schedules": schedules})
+        workflow = {"path": path, "sha": item.get("sha"), "schedules": schedules}
+        if include_content:
+            workflow["_content"] = text
+        workflows.append(workflow)
     return sorted(workflows, key=lambda item: item["path"])
 
 
@@ -516,7 +523,7 @@ def github_discover(repo: TransitionRepo, verify_destination: bool = False) -> d
     project = migration.api_request(source, "GET", source_base)
     destination_status, destination_project = migration.api_request(destination, "GET", destination_base, expected=(200, 404), return_status=True)
     destination_exists = destination_status == 200
-    source_workflows = github_workflows(repo, project)
+    source_workflows = github_workflows(repo, project, include_content=True)
     destination_files: list[dict[str, Any]] = []
     default_branch = str(destination_project.get("default_branch") or project.get("default_branch") or "main")
     if destination_exists:

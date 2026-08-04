@@ -114,6 +114,13 @@ optional: null
     if documents[1] != {"enabled": True, "replicas": 3, "ratio": 1.25, "optional": None}:
         raise AssertionError("strict YAML decoder changed valid scalar semantics")
 
+    provider_documents = loads_strict_yaml_all(
+        "on:\n  push: {}\nenabled: true\nlegacy: on\n",
+        yaml_12=True,
+    )
+    if provider_documents != [{"on": {"push": {}}, "enabled": True, "legacy": "on"}]:
+        raise AssertionError("YAML 1.2 provider mode did not preserve GitHub keys and values")
+
 
 def test_duplicate_keys_are_rejected() -> None:
     for document in (
