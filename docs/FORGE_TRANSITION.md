@@ -18,6 +18,13 @@ schedules, runner labels, protections, integrations, service health, writer
 policy, and authority state. Any newly discovered or unmapped required surface
 fails closed.
 
+Use [Pipeline Compatibility And Conversion](FORGE_PIPELINE.md) before shadow
+preparation when a source CI file needs conversion into Woodpecker. The
+converter handles a reviewed common subset and emits a redacted report; it
+blocks unsupported provider semantics instead of silently dropping them. The
+resulting Woodpecker file remains a reviewed Forgejo commit and must be included
+in the transition plan's pipeline mapping.
+
 Use [Forge Migration](FORGE_MIGRATION.md) for repository-only transfers. Use
 [GitLab to Forgejo Cutover](FORGE_CUTOVER.md) for an immediate GitLab freeze and
 handover. This runbook is for a coexistence period followed by an optional

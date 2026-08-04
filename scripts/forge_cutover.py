@@ -33,6 +33,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request
 
 import forge_migration as migration
+import forge_pipeline as pipeline
 from atomic_file import atomic_write_text
 from strict_json import loads_strict_json
 from http_transport import (
@@ -241,6 +242,33 @@ def validate_pipeline_section(section: dict[str, Any], label: str) -> None:
         checked = validate_accounted_entry(include, f"{label}.external_includes[{index}]")
         string_value(checked, "source", f"{label}.external_includes[{index}]")
     string_value(section, "deployment_gate_marker", label)
+    conversion = section.get("conversion")
+    if conversion is not None:
+        if not isinstance(conversion, dict):
+            raise CutoverError(f"{label}.conversion must be an object")
+        conversion = validate_accounted_entry(conversion, f"{label}.conversion")
+        mode = str(conversion["mode"]).lower()
+        if mode in {"managed", "mapped"}:
+            output = string_value(conversion, "output", f"{label}.conversion")
+            if output.startswith("/") or ".." in Path(output).parts:
+                raise CutoverError(f"{label}.conversion.output must be a repository-relative path")
+            provider = str(conversion.get("provider") or "auto").lower()
+            if provider not in {"auto", "gitlab", "github"}:
+                raise CutoverError(f"{label}.conversion.provider is unsupported: {provider}")
+            for field in ("secret_names", "deployment_jobs"):
+                values = conversion.get(field, [])
+                if isinstance(values, str):
+                    values = [values]
+                if not isinstance(values, list) or not all(str(item).strip() for item in values):
+                    raise CutoverError(f"{label}.conversion.{field} must be an array of non-empty strings")
+            aliases = conversion.get("secret_aliases", {})
+            if not isinstance(aliases, dict):
+                raise CutoverError(f"{label}.conversion.secret_aliases must be an object")
+            runner_labels = conversion.get("runner_labels", {})
+            if not isinstance(runner_labels, dict) or any(not isinstance(value, dict) or not value for value in runner_labels.values()):
+                raise CutoverError(f"{label}.conversion.runner_labels must map source labels to non-empty objects")
+        elif mode not in {"manual", "skipped"}:
+            raise CutoverError(f"{label}.conversion.mode is unsupported: {mode}")
     for field in ("source_globs", "destination_globs"):
         patterns = section.get(field)
         if patterns is not None and (
@@ -693,7 +721,11 @@ def gitlab_local_includes(content: str) -> list[str]:
     return sorted(include.lstrip("/") for include in includes if include.strip("/"))
 
 
-def inventory_gitlab_pipeline_files(repo: CutoverRepo, project: dict[str, Any]) -> list[dict[str, Any]]:
+def inventory_gitlab_pipeline_files(
+    repo: CutoverRepo,
+    project: dict[str, Any],
+    include_content: bool = False,
+) -> list[dict[str, Any]]:
     target, base = repo_base(repo, "source")
     pipelines = object_value(repo.cutover, "pipelines", f"{repo.migration.name}.cutover")
     patterns = pipelines.get("source_globs") or list(DEFAULT_SOURCE_PIPELINE_GLOBS)
@@ -737,6 +769,8 @@ def inventory_gitlab_pipeline_files(repo: CutoverRepo, project: dict[str, Any]) 
             item["unresolved_local_includes"] = [path]
             continue
         content = gitlab_file_text(repo, path, branch)
+        if include_content:
+            item["_content"] = content
         item["external_includes"] = gitlab_external_includes(content)
         local_includes = gitlab_local_includes(content)
         item["local_includes"] = local_includes
@@ -826,6 +860,8 @@ def account_pipeline_files(
     mapped: list[dict[str, Any]] = []
     verified = True
     marker = str(section["deployment_gate_marker"])
+    conversion_config = section.get("conversion")
+    conversion_result: dict[str, Any] = {"mode": "disabled", "verified": True}
     source_mapping_counts = {path: 0 for path in source_by_path}
     detected_includes = sorted(
         {
@@ -856,6 +892,132 @@ def account_pipeline_files(
         for source in detected_includes
         if source in include_plan
     ]
+    if isinstance(conversion_config, dict) and str(conversion_config.get("mode") or "").lower() in {"managed", "mapped"}:
+        conversion_mode = str(conversion_config["mode"]).lower()
+        requested_provider = str(conversion_config.get("provider") or "auto").lower()
+        conversion_provider = (
+            repo.migration.source_provider
+            if requested_provider == "auto"
+            else requested_provider
+        )
+        runner_labels = dict(conversion_config.get("runner_labels") or {})
+        for runner_item in repo.cutover.get("runner_tags", {}).get("mappings", []):
+            if str(runner_item.get("mode") or "").lower() not in {"managed", "mapped"}:
+                continue
+            source_label = str(runner_item.get("source") or "").strip()
+            target_labels = runner_item.get("target_labels")
+            if source_label and isinstance(target_labels, dict) and target_labels:
+                runner_labels.setdefault(source_label, target_labels)
+        conversion_options = {
+            "deployment_gate_marker": marker,
+            "default_image": str(conversion_config.get("default_image") or pipeline.DEFAULT_IMAGE),
+            "secret_names": conversion_config.get("secret_names") or [],
+            "secret_aliases": conversion_config.get("secret_aliases") or {},
+            "deployment_jobs": conversion_config.get("deployment_jobs") or [],
+            "runner_labels": runner_labels,
+        }
+        schedule_mappings: dict[str, str] = {}
+        for schedule_item in repo.cutover.get("schedules", {}).get("mappings", []):
+            if str(schedule_item.get("mode") or "").lower() not in {"managed", "mapped"}:
+                continue
+            target_name = str(schedule_item.get("target_name") or "").strip()
+            schedule = str(schedule_item.get("schedule") or "").strip()
+            if target_name and schedule:
+                schedule_mappings[schedule] = target_name
+        if schedule_mappings:
+            conversion_options["schedule_mappings"] = schedule_mappings
+        conversion_items: list[dict[str, Any]] = []
+        conversion_verified = True
+        conversion_output = str(conversion_config["output"])
+        if conversion_provider != repo.migration.source_provider:
+            conversion_verified = False
+            conversion_items.append({
+                "error": f"conversion provider {conversion_provider!r} does not match source provider {repo.migration.source_provider!r}",
+                "verified": False,
+            })
+        for source_file in source_files:
+            source_path = str(source_file.get("path") or "")
+            matching_mappings = [
+                item
+                for item in section.get("mappings", [])
+                if fnmatch.fnmatchcase(source_path, str(item.get("source") or ""))
+                and str(item.get("mode") or "").lower() in {"managed", "mapped"}
+            ]
+            if not matching_mappings or conversion_provider != repo.migration.source_provider:
+                continue
+            content = source_file.get("_content")
+            if not isinstance(content, str):
+                conversion_verified = False
+                conversion_items.append({"source": source_path, "supported": False, "error": "source content was not available"})
+                continue
+            try:
+                rendered, report = pipeline.convert_pipeline(
+                    conversion_provider,
+                    content,
+                    source_path,
+                    conversion_options,
+                )
+            except (pipeline.PipelineConversionError, ValueError) as exc:
+                conversion_verified = False
+                conversion_items.append({"source": source_path, "supported": False, "error": str(exc)})
+                continue
+            destination_paths = sorted(
+                {
+                    str(destination)
+                    for mapping_item in matching_mappings
+                    for destination in (
+                        [mapping_item.get("destinations")]
+                        if isinstance(mapping_item.get("destinations"), str)
+                        else mapping_item.get("destinations", [])
+                    )
+                    if str(destination).strip()
+                }
+            )
+            destination_checks: list[dict[str, Any]] = []
+            if len(destination_paths) != 1 or destination_paths[0] != conversion_output:
+                report["unsupported"].append({
+                    "code": "conversion-output-mismatch",
+                    "path": source_path,
+                    "message": f"conversion output must be the sole mapped destination {conversion_output!r}",
+                })
+                report["supported"] = False
+            if destination_branch and verify_destination and report.get("supported"):
+                destination_path = conversion_output
+                if destination_path not in destination_by_path:
+                    destination_checks.append({"path": destination_path, "present": False, "verified": False})
+                else:
+                    actual = forgejo_file_text(repo, destination_path, destination_branch)
+                    actual_digest = hashlib.sha256(actual.encode("utf-8")).hexdigest()
+                    expected_digest = str(report.get("rendered_sha256") or "")
+                    destination_checks.append({
+                        "path": destination_path,
+                        "present": True,
+                        "expected_sha256": expected_digest,
+                        "actual_sha256": actual_digest,
+                        "verified": actual_digest == expected_digest,
+                    })
+            item_verified = bool(report.get("supported")) and (
+                not verify_destination or all(check.get("verified") for check in destination_checks)
+            )
+            conversion_verified = conversion_verified and item_verified
+            conversion_items.append({
+                "source": source_path,
+                "report": report,
+                "destination_checks": destination_checks,
+                "verified": item_verified,
+            })
+        if not conversion_items:
+            conversion_verified = False
+            conversion_items.append({"error": "no mapped source pipeline was available for conversion", "verified": False})
+        conversion_result = {
+            "mode": conversion_mode,
+            "provider": conversion_provider,
+            "output": conversion_output,
+            "destination_verification_deferred": not verify_destination,
+            "items": conversion_items,
+            "verified": conversion_verified,
+        }
+        verified = verified and conversion_verified
     for mapping_item in section.get("mappings", []):
         mode = str(mapping_item["mode"]).lower()
         source_pattern = str(mapping_item.get("source") or "")
@@ -915,8 +1077,12 @@ def account_pipeline_files(
         or stale_include_mappings
     ):
         verified = False
+    public_source_files = [
+        {key: value for key, value in item.items() if not str(key).startswith("_")}
+        for item in source_files
+    ]
     return {
-        "source_files": source_files,
+        "source_files": public_source_files,
         "destination_files": destination_files,
         "mappings": mapped,
         "unaccounted_source_files": unaccounted,
@@ -930,6 +1096,7 @@ def account_pipeline_files(
             "verified": not unaccounted_includes and not stale_include_mappings,
         },
         "deployment_gate_marker": marker,
+        "conversion": conversion_result,
         "destination_verification_deferred": not verify_destination,
         "verified": verified,
     }
@@ -1100,7 +1267,7 @@ def discover_repository(repo: CutoverRepo, verify_destination: bool = False) -> 
             f"{repo.migration.name}: Forgejo destination is absent and destination.create is not required"
         )
     default_branch = str(destination_project.get("default_branch") or project.get("default_branch") or "main")
-    source_pipelines = inventory_gitlab_pipeline_files(repo, project)
+    source_pipelines = inventory_gitlab_pipeline_files(repo, project, include_content=True)
     destination_pipelines = (
         inventory_forgejo_pipeline_files(repo, default_branch)
         if destination_exists and verify_destination

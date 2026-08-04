@@ -5,6 +5,16 @@ fuzzer_name="forge_plan_fuzzer"
 fuzzer_source="$project_root/.clusterfuzzlite/fuzzers/${fuzzer_name}.py"
 package_name="${fuzzer_name}.pkg"
 
+# The fuzzer imports the same YAML parser used by the migration converter.
+# Install the repository lock before PyInstaller analyzes the import graph so
+# the dependency is present both while building and in the packaged binary.
+python3 -m pip install \
+  --disable-pip-version-check \
+  --no-deps \
+  --only-binary=:all: \
+  --require-hashes \
+  --requirement "$project_root/requirements/ci-yaml.txt"
+
 pyinstaller \
   --clean \
   --distpath "$OUT" \

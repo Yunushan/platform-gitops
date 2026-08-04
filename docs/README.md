@@ -24,6 +24,7 @@
 - [Release and Environment Promotion](RELEASE_PROMOTION.md)
 - [Alerting and SLOs](ALERTING.md)
 - [Platform Support](PLATFORM_SUPPORT.md)
+- [Forge Pipeline Compatibility and Conversion](FORGE_PIPELINE.md)
 - [Node OS Support](NODE_OS_SUPPORT.md)
 - [Push Ready](PUSH_READY.md)
 - [Troubleshooting](TROUBLESHOOTING.md)

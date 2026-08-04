@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import copy
 import math
+import re
 from typing import Any
 
 import yaml
@@ -81,6 +83,25 @@ class _StrictSafeLoader(yaml.SafeLoader):
         return result
 
 
+class _StrictYaml12Loader(_StrictSafeLoader):
+    """Strict loader with YAML 1.2 boolean resolution for provider files."""
+
+    yaml_implicit_resolvers = copy.deepcopy(_StrictSafeLoader.yaml_implicit_resolvers)
+
+
+for _first, _resolvers in list(_StrictYaml12Loader.yaml_implicit_resolvers.items()):
+    _StrictYaml12Loader.yaml_implicit_resolvers[_first] = [
+        item
+        for item in _resolvers
+        if item[0] != "tag:yaml.org,2002:bool"
+    ]
+_StrictYaml12Loader.add_implicit_resolver(
+    "tag:yaml.org,2002:bool",
+    re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$"),
+    list("tTfF"),
+)
+
+
 def _validate_json_compatible(document: Any) -> None:
     pending = [document]
     while pending:
@@ -101,12 +122,17 @@ def _validate_json_compatible(document: Any) -> None:
             raise StrictYamlError("YAML contains a non-JSON scalar or collection type")
 
 
-def loads_strict_yaml_all(document: str | bytes | bytearray) -> list[Any]:
+def loads_strict_yaml_all(
+    document: str | bytes | bytearray,
+    *,
+    yaml_12: bool = False,
+) -> list[Any]:
     """Decode all YAML documents with deterministic Kubernetes-safe semantics."""
     documents: list[Any] = []
     payload = bytes(document) if isinstance(document, bytearray) else document
+    loader = _StrictYaml12Loader if yaml_12 else _StrictSafeLoader
     try:
-        stream = yaml.load_all(payload, Loader=_StrictSafeLoader)
+        stream = yaml.load_all(payload, Loader=loader)
         for index, decoded in enumerate(stream, start=1):
             if index > MAX_YAML_DOCUMENTS:
                 raise StrictYamlError("YAML stream exceeds the document limit")

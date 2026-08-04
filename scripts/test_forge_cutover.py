@@ -1014,6 +1014,51 @@ def test_pipeline_accounting_and_gate() -> None:
         fail("accepted manual pipeline mapping must account for its matched source")
 
 
+def test_pipeline_conversion_accounting() -> None:
+    raw_plan = copy.deepcopy(base_plan())
+    raw_plan["repositories"][0]["cutover"]["pipelines"]["conversion"] = {  # type: ignore[index]
+        "mode": "managed",
+        "output": ".woodpecker.yml",
+        "provider": "gitlab",
+        "deployment_jobs": [],
+    }
+    plan = cutover.parse_cutover_plan(raw_plan)
+    repo = plan.repositories[0]
+    source_text = "build:\n  tags: [linux]\n  script: echo converted\n"
+    expected, expected_report = cutover.pipeline.convert_pipeline(
+        "gitlab",
+        source_text,
+        ".gitlab-ci.yml",
+        {
+            "deployment_gate_marker": "FORGE_CUTOVER_DEPLOYMENT_ENABLED",
+            "default_image": cutover.pipeline.DEFAULT_IMAGE,
+            "secret_names": [],
+            "deployment_jobs": [],
+            "runner_labels": {"linux": {"platform": "linux"}},
+            "schedule_mappings": {"0 2 * * *": "nightly"},
+        },
+    )
+    if not expected_report["supported"]:
+        fail(f"conversion fixture unexpectedly failed: {expected_report}")
+    source = [
+        {
+            "path": ".gitlab-ci.yml",
+            "sha": "source-sha",
+            "_content": source_text,
+            "external_includes": [],
+        }
+    ]
+    destination = [{"path": ".woodpecker.yml", "sha": "destination-sha"}]
+    with mock.patch("forge_cutover.forgejo_file_text", return_value=expected):
+        result = cutover.account_pipeline_files(repo, source, destination, "main")
+    conversion = result.get("conversion") or {}
+    if result["verified"] is not True or conversion.get("verified") is not True:
+        fail(f"converted pipeline did not verify: {result}")
+    public_source = result["source_files"][0]
+    if "_content" in public_source:
+        fail("pipeline source content leaked into migration proof")
+
+
 def test_external_include_detection() -> None:
     content = """
 include:
@@ -1831,6 +1876,7 @@ def main() -> int:
     test_operational_verification_helpers()
     test_gitlab_freeze_restore_and_authority_helpers()
     test_pipeline_accounting_and_gate()
+    test_pipeline_conversion_accounting()
     test_external_include_detection()
     test_discovery_accounts_every_surface()
     test_gitlab_variable_scope_inventory()

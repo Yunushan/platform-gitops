@@ -55,6 +55,7 @@ CI_REQUIREMENT_LOCKS = {
         "PyYAML==6.0.3",
         frozenset(
             {
+                "b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d",
                 "9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28",
                 "ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc",
             }
