@@ -32,6 +32,31 @@ fi
 # This target is a production gate, so a private bootstrap environment cannot
 # downgrade its strictness after it has been loaded.
 export PLATFORM_PRODUCTION_STRICT=true
+# Force every opt-out health control on for production acceptance. These are
+# exported after loading the private environment so debug settings cannot
+# silently weaken the production gate.
+export PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS=true
+export PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=true
+export PLATFORM_APP_HEALTH_OPENBAO_READY=true
+export PLATFORM_APP_HEALTH_REGISTRY_API=true
+export PLATFORM_APP_HEALTH_MONITORING_API=true
+export PLATFORM_APP_HEALTH_STEP_CA_API=true
+export PLATFORM_APP_HEALTH_LOKI_API=true
+export PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE=true
+export PLATFORM_APP_HEALTH_VELERO_SCHEDULES=true
+export PLATFORM_APP_HEALTH_APP_SECRETS=auto
+export PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true
+export PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true
+export PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET=true
+export PLATFORM_APP_HEALTH_CNPG_OBJECT_STORAGE_SECRET=true
+export PLATFORM_APP_HEALTH_SSO=true
+export PLATFORM_APP_HEALTH_ARGOCD_GUARDED_PRUNE=true
+export PLATFORM_APP_HEALTH_ARGOCD_RUNTIME=true
+export PLATFORM_APP_HEALTH_LONGHORN_RUNTIME=true
+export PLATFORM_APP_HEALTH_HA_REPLICAS=true
+export PLATFORM_APP_HEALTH_FORGEJO_SINGLETON_SAFETY=true
+export PLATFORM_APP_HEALTH_HTTP_REDIRECT=true
+export PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT=true
 
 make_command="${MAKE:-make}"
 

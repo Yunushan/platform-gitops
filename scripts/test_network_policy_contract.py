@@ -75,7 +75,7 @@ EGRESS_ROLES = {
     },
     "external-object-storage-egress": {
         "ports": {9000},
-        "apps": {"harbor", "loki", "minio", "platform-postgres"},
+        "apps": {"forgejo", "harbor", "loki", "minio", "platform-postgres"},
     },
     "kubernetes-api-egress": {
         "ports": {6443},
