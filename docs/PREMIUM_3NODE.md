@@ -71,6 +71,7 @@ database credentials, the Woodpecker
 PostgreSQL datasource, Harbor external PostgreSQL/Redis/S3 credentials, Loki,
 Velero, and CloudNativePG Kubernetes secrets from
 `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
+`FORGEJO_S3_ACCESS_KEY_ID` / `FORGEJO_S3_SECRET_ACCESS_KEY`,
 `WOODPECKER_DATABASE_DATASOURCE`,
 `WOODPECKER_DATABASE_HOST` / `WOODPECKER_DATABASE_PASSWORD`,
 `HARBOR_DATABASE_PASSWORD`, `HARBOR_REDIS_PASSWORD`,
@@ -101,6 +102,10 @@ Harbor external PostgreSQL, Redis, and S3 registry storage.
 Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` before enabling an
 external Forgejo SQL backend. Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true`
 only when `FORGEJO_REDIS_MODE=redis`.
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE=true` for production
+Forgejo. Strict rendering requires HTTPS S3-compatible object storage for
+attachments, LFS, avatars, and packages; credentials are kept in the managed
+`forgejo-object-storage` Secret and never rendered into Git.
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
 `GRAFANA_DATABASE_MODE=postgres`.
 Set `PLATFORM_APP_SECRET_REQUIRE_KEYCLOAK_DATABASE=true` only when you require
@@ -136,6 +141,32 @@ derives the `forgejo/forgejo-redis` URI secret. To use another cache, provide
 `FORGEJO_REDIS_PASSWORD` and optional `FORGEJO_REDIS_PORT`, `FORGEJO_REDIS_DB`,
 and `FORGEJO_REDIS_TLS`. Managed Valkey transport is TLS-only; production-strict
 rendering rejects `FORGEJO_REDIS_TLS=false`.
+
+Forgejo's production asset storage is configured separately from its SQL and
+cache dependencies:
+
+```bash
+FORGEJO_S3_ACCESS_KEY_ID='<ACCESS_KEY>' \
+FORGEJO_S3_SECRET_ACCESS_KEY='<SECRET_KEY>' \
+PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE=true \
+make platform-app-secrets
+
+FORGEJO_OBJECT_STORAGE_MODE=s3 \
+FORGEJO_S3_ENDPOINT=https://<S3_ENDPOINT> \
+FORGEJO_S3_REGION=<S3_REGION> \
+FORGEJO_S3_BUCKET=platform-forgejo \
+FORGEJO_S3_SECRET_NAME=forgejo-object-storage \
+FORGEJO_S3_SECURE=true \
+make platform-render-private-values
+```
+
+The renderer maps Forgejo attachments, LFS, avatars, and packages to S3 and
+rejects a cluster-local endpoint or plaintext HTTP in production-strict mode.
+The filesystem mode remains available only with
+`PLATFORM_PRODUCTION_STRICT=false` for lab bootstrap. Forgejo remains a
+single-replica workload until its repository storage and restore process are
+proven independently; object storage removes the shared-asset bottleneck but
+does not make the Forgejo SQL/SSH process itself active-active.
 
 ## CI/CD high availability
 

@@ -338,7 +338,13 @@ def main() -> int:
 
         sqlite_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/sqlite-values.yaml")
         sqlite_forgejo_env = dict(env)
-        sqlite_forgejo_env["FORGEJO_DATABASE_MODE"] = "sqlite"
+        sqlite_forgejo_env.update(
+            {
+                "FORGEJO_DATABASE_MODE": "sqlite",
+                "PLATFORM_PRODUCTION_STRICT": "false",
+                "FORGEJO_OBJECT_STORAGE_MODE": "filesystem",
+            }
+        )
         with patched_env(sqlite_forgejo_env):
             renderer.render_forgejo(sqlite_forgejo_path, inventory)
         assert_contains(
@@ -363,6 +369,12 @@ def main() -> int:
                 "FORGEJO_DATABASE_SSL_MODE": "verify-full",
                 "FORGEJO_REDIS_MODE": "redis",
                 "FORGEJO_REDIS_SECRET_NAME": "forgejo-redis-test",
+                "FORGEJO_OBJECT_STORAGE_MODE": "s3",
+                "FORGEJO_S3_ENDPOINT": "https://object.example.test",
+                "FORGEJO_S3_REGION": "eu-test-1",
+                "FORGEJO_S3_BUCKET": "platform-test-forgejo",
+                "FORGEJO_S3_SECRET_NAME": "forgejo-object-test",
+                "FORGEJO_S3_SECURE": "true",
             }
         )
         with patched_env(external_forgejo_env):
@@ -377,15 +389,55 @@ def main() -> int:
             "GITEA__queue__CONN_STR",
             'name: "forgejo-redis-test"',
             "key: uri",
+            "GITEA__storage__MINIO_ACCESS_KEY_ID",
+            "GITEA__storage__MINIO_SECRET_ACCESS_KEY",
+            'name: "forgejo-object-test"',
+            "key: access-key-id",
+            "key: secret-access-key",
             "DB_TYPE: postgres",
             'HOST: "forgejo-postgres.example.test:5432"',
             'SSL_MODE: "verify-full"',
+            "attachment:\n      STORAGE_TYPE: minio",
+            "lfs:\n      STORAGE_TYPE: minio",
+            "AVATAR_STORAGE_TYPE: minio",
+            "'storage.packages':\n      STORAGE_TYPE: minio",
+            'MINIO_ENDPOINT: "object.example.test"',
+            'MINIO_LOCATION: "eu-test-1"',
+            'MINIO_BUCKET: "platform-test-forgejo"',
+            "MINIO_USE_SSL: true",
             "mountPath: /data/gitea/git/.postgresql",
             "name: SSL_CERT_FILE",
             "value: /etc/ssl/platform/ca-certificates.crt",
             "mountPath: /etc/ssl/platform",
         )
         assert_not_contains(external_forgejo_path, "FORGEJO_REDIS_URL", "redis://")
+
+        insecure_forgejo_storage_env = dict(external_forgejo_env, FORGEJO_S3_SECURE="false")
+        with patched_env(insecure_forgejo_storage_env):
+            try:
+                renderer.render_forgejo(external_forgejo_path, inventory)
+            except SystemExit as exc:
+                if "FORGEJO_S3_SECURE must be true" not in str(exc):
+                    raise AssertionError(
+                        f"unexpected Forgejo object-storage validation error: {exc}"
+                    ) from exc
+            else:
+                raise AssertionError("Forgejo renderer accepted plaintext object storage in strict mode")
+
+        local_forgejo_storage_env = dict(
+            external_forgejo_env,
+            FORGEJO_S3_ENDPOINT="http://platform-minio.object-storage.svc.cluster.local:9000",
+        )
+        with patched_env(local_forgejo_storage_env):
+            try:
+                renderer.render_forgejo(external_forgejo_path, inventory)
+            except SystemExit as exc:
+                if "off-cluster S3-compatible endpoint" not in str(exc):
+                    raise AssertionError(
+                        f"unexpected Forgejo local-storage validation error: {exc}"
+                    ) from exc
+            else:
+                raise AssertionError("Forgejo renderer accepted cluster-local object storage in strict mode")
 
         mysql_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/mysql-values.yaml")
         mysql_forgejo_env = dict(env)

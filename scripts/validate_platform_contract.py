@@ -2501,11 +2501,14 @@ def main() -> None:
         "FORGEJO_DATABASE_SECRET_NAME",
         "FORGEJO_REDIS_MODE",
         "FORGEJO_REDIS_SECRET_NAME",
+        "FORGEJO_S3_SECRET_NAME",
         "PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS",
         "platform_app_health_forgejo_production_secrets_effective",
         "platform_forgejo_database_secret_name_effective",
         "platform_forgejo_redis_mode_effective",
         "platform_forgejo_redis_secret_name_effective",
+        "platform_forgejo_object_storage_secret_name_effective",
+        "access-key-id secret-access-key",
         "username password",
         "forgejo-redis-secret-contract-disabled",
         "forgejo-production-secret-contracts-disabled",
@@ -7617,9 +7620,22 @@ def main() -> None:
         "FORGEJO_DATABASE_SECRET_NAME",
         "FORGEJO_DATABASE_SSL_MODE",
         "FORGEJO_REDIS_SECRET_NAME",
+        "FORGEJO_OBJECT_STORAGE_MODE",
+        "FORGEJO_S3_ENDPOINT",
+        "FORGEJO_S3_BUCKET",
+        "FORGEJO_S3_SECRET_NAME",
         "GITEA__database__PASSWD",
         "GITEA__cache__HOST",
         "GITEA__queue__CONN_STR",
+        "GITEA__storage__MINIO_ACCESS_KEY_ID",
+        "GITEA__storage__MINIO_SECRET_ACCESS_KEY",
+        "attachment:\n      STORAGE_TYPE: minio",
+        "lfs:\n      STORAGE_TYPE: minio",
+        "AVATAR_STORAGE_TYPE: minio",
+        "'storage.packages':\n      STORAGE_TYPE: minio",
+        "MINIO_ENDPOINT:",
+        "MINIO_BUCKET:",
+        "MINIO_USE_SSL:",
         "GRAFANA_DATABASE_MODE",
         "GRAFANA_DATABASE_SECRET_NAME",
         "$__env{GF_DATABASE_PASSWORD}",
@@ -7652,9 +7668,18 @@ def main() -> None:
         "FORGEJO_DATABASE_MODE",
         "forgejo-db-test",
         "forgejo-redis-test",
+        "FORGEJO_OBJECT_STORAGE_MODE",
+        "FORGEJO_S3_ENDPOINT",
+        "FORGEJO_S3_BUCKET",
+        "forgejo-object-test",
         "additionalConfigFromEnvs:",
         "GITEA__database__PASSWD",
         "GITEA__queue__CONN_STR",
+        "GITEA__storage__MINIO_ACCESS_KEY_ID",
+        "GITEA__storage__MINIO_SECRET_ACCESS_KEY",
+        "MINIO_ENDPOINT:",
+        "MINIO_BUCKET:",
+        "MINIO_USE_SSL: true",
         "WOODPECKER_DATABASE_MODE",
         "woodpecker-db-test",
         'WOODPECKER_DATABASE_DRIVER: "postgres"',
@@ -7715,8 +7740,12 @@ def main() -> None:
         "REGISTRY_STORAGE_S3_SECRETKEY",
         "FORGEJO_DATABASE_SECRET_NAME",
         "FORGEJO_REDIS_SECRET_NAME",
+        "FORGEJO_S3_SECRET_NAME",
         "forgejo-db-custom",
         "forgejo-redis-custom",
+        "forgejo-object-custom",
+        "FORGEJO_S3_ENDPOINT",
+        "FORGEJO_S3_BUCKET",
         "WOODPECKER_FORGEJO_OAUTH_SECRET_NAME",
         "WOODPECKER_DATABASE_SECRET_NAME",
         "WOODPECKER_DATABASE_DATASOURCE",
@@ -7997,8 +8026,10 @@ def main() -> None:
         "Check CloudNativePG object storage credentials secret state",
         "Generate or preserve Forgejo external database password secret",
         "Generate or preserve Forgejo Redis URI secret",
+        "Generate or preserve Forgejo object storage credentials secret",
         "Check Forgejo external database password secret state",
         "Check Forgejo Redis URI secret state",
+        "Check Forgejo object storage credentials secret state",
         "Require Forgejo production dependency secrets when enabled",
         "Check Woodpecker database datasource secret state",
         "Check Grafana database password secret state",
@@ -8014,6 +8045,7 @@ def main() -> None:
         "PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE",
         "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE",
         "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS",
+        "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE",
         "HARBOR_DATABASE_PASSWORD",
         "HARBOR_REDIS_PASSWORD",
         "HARBOR_S3_ACCESS_KEY_ID",
@@ -8025,6 +8057,10 @@ def main() -> None:
         "FORGEJO_REDIS_HOST",
         "FORGEJO_REDIS_PASSWORD",
         "FORGEJO_REDIS_TLS",
+        "FORGEJO_S3_ACCESS_KEY_ID",
+        "FORGEJO_S3_SECRET_ACCESS_KEY",
+        "access-key-id",
+        "secret-access-key",
         "HARBOR_REDIS_TLS",
         "FORGEJO_REDIS_TLS:-true",
         "HARBOR_REDIS_TLS:-true",
@@ -8133,7 +8169,10 @@ def main() -> None:
             or "FORGEJO_REDIS_URL" not in doc_text
             or "FORGEJO_DATABASE_SECRET_NAME" not in doc_text
             or "FORGEJO_REDIS_SECRET_NAME" not in doc_text
+            or "FORGEJO_S3_ACCESS_KEY_ID" not in doc_text
+            or "FORGEJO_S3_SECRET_ACCESS_KEY" not in doc_text
             or "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE" not in doc_text
+            or "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE" not in doc_text
             or "PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS" not in doc_text
         ):
             fail(f"{doc.relative_to(root)} does not document Forgejo production dependency automation")
@@ -8158,7 +8197,12 @@ def main() -> None:
             fail(f"{doc.relative_to(root)} must document private Woodpecker database secret automation")
         if "HARBOR_DATABASE_MODE" not in doc_text or "PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE" not in doc_text:
             fail(f"{doc.relative_to(root)} must document private Harbor production dependency automation")
-        if "FORGEJO_DATABASE_MODE" not in doc_text or "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE" not in doc_text:
+        if (
+            "FORGEJO_DATABASE_MODE" not in doc_text
+            or "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE" not in doc_text
+            or "FORGEJO_S3_ACCESS_KEY_ID" not in doc_text
+            or "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE" not in doc_text
+        ):
             fail(f"{doc.relative_to(root)} must document private Forgejo production dependency automation")
         if "GRAFANA_DATABASE_MODE" not in doc_text or "PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE" not in doc_text:
             fail(f"{doc.relative_to(root)} must document private Grafana database secret automation")
@@ -8222,6 +8266,13 @@ def main() -> None:
         for needle in (
             "FORGEJO_REDIS_MODE=redis",
             "FORGEJO_REDIS_SECRET_NAME=forgejo-redis",
+            "FORGEJO_OBJECT_STORAGE_MODE=s3",
+            "FORGEJO_S3_ENDPOINT=https://s3.amazonaws.com",
+            "FORGEJO_S3_REGION=us-east-1",
+            "FORGEJO_S3_BUCKET=platform-forgejo",
+            "FORGEJO_S3_SECRET_NAME=forgejo-object-storage",
+            "FORGEJO_S3_SECURE=true",
+            "PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE=true",
             "PLATFORM_VALKEY_AUTH_SECRET_NAME=platform-valkey-auth",
             "PLATFORM_VALKEY_PASSWORD_KEY=valkey-password",
             "PLATFORM_VALKEY_PRIMARY_HOST=platform-valkey-primary.platform-cache.svc.cluster.local",
