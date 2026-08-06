@@ -7530,6 +7530,7 @@ def main() -> None:
         "PLATFORM_SEED_DEPLOY_ENV_FILE",
         "PLATFORM_FIRST_DEPLOY_ENV_FILE",
         "load_env_file",
+        "export PLATFORM_PRODUCTION_STRICT=true",
         '"${make_command}" platform-profile-check',
         '"${make_command}" rke2-verify',
         '"${make_command}" platform-status',

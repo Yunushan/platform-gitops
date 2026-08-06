@@ -29,6 +29,10 @@ if [[ -n "${env_file}" ]]; then
   load_env_file "${env_file}" preserve-existing
 fi
 
+# This target is a production gate, so a private bootstrap environment cannot
+# downgrade its strictness after it has been loaded.
+export PLATFORM_PRODUCTION_STRICT=true
+
 make_command="${MAKE:-make}"
 
 "${make_command}" platform-profile-check
