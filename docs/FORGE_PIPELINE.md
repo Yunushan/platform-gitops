@@ -36,9 +36,10 @@ not obviously secret, and a space-separated `DEPLOYMENT_JOB` value for every
 deployment job. Obvious secret references are detected automatically, but
 explicit secret mapping is preferred for production cutovers. Repeat
 `RUNNER_LABEL=SOURCE=KEY:VALUE[,KEY:VALUE]` for each source runner label and
-`SCHEDULE_MAPPING=SOURCE_CRON=WOODPECKER_CRON_NAME` for each schedule used by
-the source pipeline. These options contain names and labels only, never secret
-values.
+`SCHEDULE_MAPPING='SOURCE_CRON=WOODPECKER_CRON_NAME'` for a schedule used by
+the source pipeline. The Make target passes this as one quoted argument so the
+cron's spaces remain intact; separate multiple mappings with `;`. These
+options contain names and labels only, never secret values.
 
 ## Supported Mapping
 

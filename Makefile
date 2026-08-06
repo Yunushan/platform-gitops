@@ -175,7 +175,7 @@ forge-pipeline-convert:
 	@test -n "$(SOURCE)" || (echo "SOURCE=/path/to/.gitlab-ci.yml or workflow.yml is required" >&2; exit 2)
 	@test -n "$(OUTPUT)" || (echo "OUTPUT=/path/to/.woodpecker.yml is required" >&2; exit 2)
 	@test -n "$(REPORT)" || (echo "REPORT=/path/to/conversion-report.json is required" >&2; exit 2)
-	@$(PYTHON) scripts/forge_pipeline.py "$(PROVIDER)" "$(SOURCE)" --output "$(OUTPUT)" --report "$(REPORT)" $(if $(GATE_MARKER),--deployment-gate-marker "$(GATE_MARKER)",) $(if $(DEFAULT_IMAGE),--default-image "$(DEFAULT_IMAGE)",) $(foreach secret,$(SECRET),--secret-name "$(secret)") $(foreach job,$(DEPLOYMENT_JOB),--deployment-job "$(job)") $(foreach mapping,$(RUNNER_LABEL),--runner-label "$(mapping)") $(foreach mapping,$(SCHEDULE_MAPPING),--schedule-mapping "$(mapping)")
+	@$(PYTHON) scripts/forge_pipeline.py "$(PROVIDER)" "$(SOURCE)" --output "$(OUTPUT)" --report "$(REPORT)" $(if $(GATE_MARKER),--deployment-gate-marker "$(GATE_MARKER)",) $(if $(DEFAULT_IMAGE),--default-image "$(DEFAULT_IMAGE)",) $(foreach secret,$(SECRET),--secret-name "$(secret)") $(foreach job,$(DEPLOYMENT_JOB),--deployment-job "$(job)") $(foreach mapping,$(RUNNER_LABEL),--runner-label "$(mapping)") $(if $(SCHEDULE_MAPPING),--schedule-mapping "$(SCHEDULE_MAPPING)",)
 
 forge-cutover-validate:
 	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/cutover.json is required" >&2; exit 2)

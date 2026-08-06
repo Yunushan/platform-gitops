@@ -1,4 +1,5 @@
-# Python 3.12 Linux wheels verified from official PyPI for amd64 and arm64.
+# Python 3.11 and 3.12 Linux wheels verified from official PyPI for amd64 and arm64.
 PyYAML==6.0.3 \
+    --hash=sha256:b8bb0864c5a28024fac8a632c443c87c5aa6f215c0b126c449ae1a150412f31d \
     --hash=sha256:9149cad251584d5fb4981be1ecde53a1ca46c891a79788c0df828d2f166bda28 \
     --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
