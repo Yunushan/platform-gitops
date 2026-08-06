@@ -89,13 +89,95 @@ def postgres_ssl_mode(name: str) -> str:
 
 
 def is_cluster_local_endpoint(endpoint: str) -> bool:
-    hostname = (urlparse(endpoint).hostname or "").lower()
+    parsed_endpoint = endpoint if "://" in endpoint else f"//{endpoint}"
+    hostname = (urlparse(parsed_endpoint).hostname or "").lower()
     return (
         endpoint.rstrip("/") == INTERNAL_MINIO_ENDPOINT.rstrip("/")
         or hostname in {"localhost", "127.0.0.1", "::1"}
         or hostname.endswith(".svc")
         or hostname.endswith(".svc.cluster.local")
     )
+
+
+def forgejo_object_storage_values() -> tuple[str, str]:
+    """Return Forgejo's secret-backed S3 env entries and config block."""
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    mode = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip().lower()
+    if not mode:
+        mode = "s3" if production_strict else "filesystem"
+    if mode in {"filesystem", "file", "local", "disk"}:
+        if production_strict:
+            raise SystemExit(
+                "FORGEJO_OBJECT_STORAGE_MODE must be s3 in production-strict mode"
+            )
+        return "", ""
+    if mode not in {"s3", "minio", "object", "object-storage", "object_storage"}:
+        raise SystemExit(
+            "FORGEJO_OBJECT_STORAGE_MODE must be filesystem or s3"
+        )
+
+    endpoint = first_value(
+        os.environ.get("FORGEJO_S3_ENDPOINT", "").strip(),
+        os.environ.get("FORGEJO_OBJECT_STORAGE_ENDPOINT", "").strip(),
+        os.environ.get("OBJECT_STORAGE_ENDPOINT", "").strip(),
+    )
+    if not endpoint and not production_strict:
+        endpoint = INTERNAL_MINIO_ENDPOINT
+    endpoint = require(
+        "FORGEJO_S3_ENDPOINT or FORGEJO_OBJECT_STORAGE_ENDPOINT or OBJECT_STORAGE_ENDPOINT",
+        endpoint,
+    ).rstrip("/")
+    if production_strict and is_cluster_local_endpoint(endpoint):
+        raise SystemExit(
+            "Production Forgejo object storage must use an off-cluster S3-compatible endpoint; "
+            "set FORGEJO_S3_ENDPOINT or OBJECT_STORAGE_ENDPOINT to external storage"
+        )
+
+    endpoint_without_scheme = re.sub(r"^https?://", "", endpoint, flags=re.IGNORECASE)
+    if not endpoint_without_scheme or "/" in endpoint_without_scheme:
+        raise SystemExit(
+            "FORGEJO_S3_ENDPOINT must be an S3 host with an optional port, without a path"
+        )
+    secure = env_bool(
+        "FORGEJO_S3_SECURE",
+        not endpoint.lower().startswith("http://"),
+    )
+    if production_strict and not secure:
+        raise SystemExit("FORGEJO_S3_SECURE must be true when PLATFORM_PRODUCTION_STRICT=true")
+
+    region = first_value(
+        os.environ.get("FORGEJO_S3_REGION", "").strip(),
+        os.environ.get("OBJECT_STORAGE_REGION", "us-east-1").strip(),
+    ) or "us-east-1"
+    bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
+    bucket = os.environ.get("FORGEJO_S3_BUCKET", f"{bucket_prefix}-forgejo").strip()
+    bucket = require("FORGEJO_S3_BUCKET", bucket)
+    secret_name = os.environ.get("FORGEJO_S3_SECRET_NAME", "forgejo-object-storage").strip() or "forgejo-object-storage"
+
+    env_block = f"""    - name: GITEA__storage__MINIO_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: {yaml_string(secret_name)}
+          key: access-key-id
+    - name: GITEA__storage__MINIO_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: {yaml_string(secret_name)}
+          key: secret-access-key"""
+    config_block = f"""    attachment:
+      STORAGE_TYPE: minio
+    lfs:
+      STORAGE_TYPE: minio
+    picture:
+      AVATAR_STORAGE_TYPE: minio
+    'storage.packages':
+      STORAGE_TYPE: minio
+    storage:
+      MINIO_ENDPOINT: {yaml_string(endpoint_without_scheme)}
+      MINIO_LOCATION: {yaml_string(region)}
+      MINIO_BUCKET: {yaml_string(bucket)}
+      MINIO_USE_SSL: {str(secure).lower()}"""
+    return env_block, config_block
 
 
 def backup_object_storage_endpoint() -> str:
@@ -703,6 +785,7 @@ def render_minio(path: Path) -> bool:
             os.environ.get("CNPG_BACKUP_BUCKET", f"{bucket_prefix}-cnpg-backups").strip(),
             os.environ.get("LONGHORN_BACKUP_BUCKET", f"{bucket_prefix}-longhorn-backups").strip(),
             os.environ.get("HARBOR_S3_BUCKET", f"{bucket_prefix}-harbor-registry").strip(),
+            os.environ.get("FORGEJO_S3_BUCKET", f"{bucket_prefix}-forgejo").strip(),
         ],
     )
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
@@ -1283,6 +1366,8 @@ def forgejo_external_values(
     database_secret_name: str,
     database_ssl_mode: str,
     redis_secret_name: str | None,
+    object_storage_env: str,
+    object_storage_config: str,
 ) -> str:
     redis_config_env = ""
     redis_config = """    cache:
@@ -1402,6 +1487,7 @@ gitea:
         secretKeyRef:
           name: {yaml_string(database_secret_name)}
           key: password
+{object_storage_env}
 {redis_config_env}
   config:
     server:
@@ -1422,6 +1508,7 @@ gitea:
       SSL_MODE: {yaml_string(database_ssl_mode)}
     session:
       PROVIDER: db
+{object_storage_config}
 {redis_config}
 
 resources:
@@ -1464,7 +1551,12 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
         or "postgres"
     ).strip().lower()
 
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
     if database_mode in {"sqlite", "sqlite3"}:
+        if production_strict:
+            raise SystemExit(
+                "FORGEJO_DATABASE_MODE=sqlite is only supported when PLATFORM_PRODUCTION_STRICT=false"
+            )
         rendered = forgejo_bootstrap_values(host, data_size, storage_class, image_tag)
     elif database_mode in ("external", "postgres", "postgresql", "mysql", "mariadb"):
         database_type = "mysql" if database_mode in {"mysql", "mariadb"} else "postgres"
@@ -1494,6 +1586,10 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
         redis_mode = os.environ.get("FORGEJO_REDIS_MODE", "redis").strip().lower() or "redis"
         if redis_mode not in {"memory", "local", "redis", "external", "valkey"}:
             raise SystemExit("FORGEJO_REDIS_MODE must be memory, local, redis, external, or valkey")
+        if production_strict and redis_mode in {"memory", "local"}:
+            raise SystemExit(
+                "FORGEJO_REDIS_MODE must use an external Redis-compatible service in production-strict mode"
+            )
         redis_secret_name = None
         if redis_mode in {"redis", "external", "valkey"}:
             redis_secret_name = os.environ.get("FORGEJO_REDIS_SECRET_NAME", "forgejo-redis").strip()
@@ -1510,6 +1606,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
             database_secret_name,
             database_ssl_mode,
             redis_secret_name,
+            *forgejo_object_storage_values(),
         )
     else:
         raise SystemExit("FORGEJO_DATABASE_MODE must be sqlite, postgres, postgresql, external, mysql, or mariadb")

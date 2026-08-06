@@ -35,6 +35,7 @@ ALLOWED_NO_LOG_TASKS = {
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve platform SSO client secrets"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Forgejo external database password secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Forgejo Redis URI secret"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Forgejo object storage credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve CloudNativePG object storage credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Loki object storage credentials secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Loki gateway and client credentials"),

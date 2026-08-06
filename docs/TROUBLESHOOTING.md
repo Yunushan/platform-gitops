@@ -697,6 +697,12 @@ external Forgejo SQL backend. Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=tru
 only when `FORGEJO_REDIS_MODE=redis`; the default secret names are
 `FORGEJO_DATABASE_SECRET_NAME=forgejo-database` and
 `FORGEJO_REDIS_SECRET_NAME=forgejo-redis`.
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE=true` for production
+Forgejo and provide `FORGEJO_S3_ACCESS_KEY_ID` plus
+`FORGEJO_S3_SECRET_ACCESS_KEY`. If this check fails, verify that the managed
+`forgejo-object-storage` Secret contains `access-key-id` and
+`secret-access-key`, that `FORGEJO_S3_ENDPOINT` is an external HTTPS
+S3-compatible endpoint, and that the configured bucket exists.
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` when enabling
 `GRAFANA_DATABASE_MODE=postgres`.
 Set `PLATFORM_APP_SECRET_REQUIRE_KEYCLOAK_DATABASE=true` when you require a

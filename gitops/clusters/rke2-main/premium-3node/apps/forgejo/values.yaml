@@ -82,6 +82,16 @@ gitea:
         secretKeyRef:
           name: forgejo-redis
           key: uri
+    - name: GITEA__storage__MINIO_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: forgejo-object-storage
+          key: access-key-id
+    - name: GITEA__storage__MINIO_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: forgejo-object-storage
+          key: secret-access-key
   config:
     server:
       DOMAIN: forgejo.<PLATFORM_DOMAIN>
@@ -101,6 +111,19 @@ gitea:
       SSL_MODE: verify-full
     session:
       PROVIDER: db
+    attachment:
+      STORAGE_TYPE: minio
+    lfs:
+      STORAGE_TYPE: minio
+    picture:
+      AVATAR_STORAGE_TYPE: minio
+    'storage.packages':
+      STORAGE_TYPE: minio
+    storage:
+      MINIO_ENDPOINT: platform-minio.object-storage.svc.cluster.local:9000
+      MINIO_LOCATION: us-east-1
+      MINIO_BUCKET: platform-forgejo
+      MINIO_USE_SSL: false
     cache:
       ADAPTER: redis
     queue:

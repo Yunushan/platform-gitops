@@ -55,6 +55,7 @@
     platform_forgejo_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_DATABASE_SECRET_NAME') }}"
     platform_forgejo_redis_mode_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_MODE') }}"
     platform_forgejo_redis_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_SECRET_NAME') }}"
+    platform_forgejo_object_storage_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_S3_SECRET_NAME') }}"
     platform_woodpecker_oauth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_FORGEJO_OAUTH_SECRET_NAME') }}"
     platform_woodpecker_agent_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_AGENT_SECRET_NAME') }}"
     platform_woodpecker_database_mode_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_MODE') }}"
@@ -118,6 +119,7 @@
     platform_forgejo_database_secret_name_effective: "{{ platform_forgejo_database_secret_name | default(platform_forgejo_database_secret_name_from_env, true) | default('forgejo-database', true) }}"
     platform_forgejo_redis_mode_effective: "{{ platform_forgejo_redis_mode | default(platform_forgejo_redis_mode_from_env, true) | default('redis', true) }}"
     platform_forgejo_redis_secret_name_effective: "{{ platform_forgejo_redis_secret_name | default(platform_forgejo_redis_secret_name_from_env, true) | default('forgejo-redis', true) }}"
+    platform_forgejo_object_storage_secret_name_effective: "{{ platform_forgejo_object_storage_secret_name | default(platform_forgejo_object_storage_secret_name_from_env, true) | default('forgejo-object-storage', true) }}"
     platform_woodpecker_oauth_secret_name_effective: "{{ platform_woodpecker_oauth_secret_name | default(platform_woodpecker_oauth_secret_name_from_env, true) | default('woodpecker-forgejo-oauth', true) }}"
     platform_woodpecker_agent_secret_name_effective: "{{ platform_woodpecker_agent_secret_name | default(platform_woodpecker_agent_secret_name_from_env, true) | default('woodpecker-agent-secret', true) }}"
     platform_woodpecker_database_mode_effective: "{{ platform_woodpecker_database_mode | default(platform_woodpecker_database_mode_from_env, true) | default('auto', true) | lower }}"
@@ -168,6 +170,7 @@
           - platform_harbor_s3_secret_name_effective | length > 0
           - platform_forgejo_database_secret_name_effective | length > 0
           - platform_forgejo_redis_secret_name_effective | length > 0
+          - platform_forgejo_object_storage_secret_name_effective | length > 0
           - platform_woodpecker_oauth_secret_name_effective | length > 0
           - platform_woodpecker_agent_secret_name_effective | length > 0
           - platform_woodpecker_database_secret_name_effective | length > 0
@@ -1927,6 +1930,7 @@
                     echo "result=skip reason=forgejo-redis-secret-contract-disabled"
                     ;;
                 esac
+                check_secret_contract forgejo "{{ platform_forgejo_object_storage_secret_name_effective }}" access-key-id secret-access-key
               else
                 echo "result=skip reason=forgejo-production-secret-contracts-disabled"
               fi
@@ -3482,8 +3486,8 @@
           generated Harbor, Forgejo, Woodpecker, Keycloak, Grafana, Loki, or Velero secrets are missing or
           lack required keys, including Harbor external PostgreSQL, Redis, and
           registry S3 secret keys when PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true,
-          Forgejo SQL password and optional Redis secret keys when
-          PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true,
+          Forgejo SQL password, optional Redis secret keys, and S3 object-storage
+          secret keys when PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true,
           Keycloak admin and database secrets when Keycloak is required,
           or the Grafana external PostgreSQL password secret when
           PLATFORM_APP_HEALTH_GRAFANA_DATABASE_SECRET=true.
@@ -3552,8 +3556,8 @@
           credential secrets during production checks:
           PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true make platform-app-health
 
-          To enforce Forgejo SQL password and optional Redis credential secrets
-          during production checks:
+          To enforce Forgejo SQL password, Redis credentials, and object-storage
+          credentials during production checks:
           PLATFORM_APP_HEALTH_FORGEJO_PRODUCTION_SECRETS=true make platform-app-health
 
           To enforce the Grafana external PostgreSQL password secret during
@@ -3598,5 +3602,5 @@
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); live Argo CD Applications enable self-healing and approval-gated foreground pruning in the final sync wave with empty-target protection; when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; singleton Forgejo uses a Recreate rollout and a minAvailable=1 PodDisruptionBudget; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey and SSO secrets exist with required keys; Harbor production dependency secrets, Forgejo production dependency secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana and Prometheus deny or redirect unauthenticated public access when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); live Argo CD Applications enable self-healing and approval-gated foreground pruning in the final sync wave with empty-target protection; when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; singleton Forgejo uses a Recreate rollout and a minAvailable=1 PodDisruptionBudget; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey and SSO secrets exist with required keys; Harbor production dependency secrets, Forgejo SQL/Redis/object-storage production secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana and Prometheus deny or redirect unauthenticated public access when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
       run_once: true

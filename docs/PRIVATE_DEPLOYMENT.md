@@ -170,9 +170,10 @@ can create shared platform Valkey auth, Grafana admin credentials, Grafana's
 external PostgreSQL password, Forgejo's external PostgreSQL password and Redis
 URI, Woodpecker's PostgreSQL datasource secret, Keycloak admin/database
 secrets, Harbor's external
-database/Redis/S3 secrets, plus Loki, Velero, and CloudNativePG
-object-storage secrets from ignored env values such
+database/Redis/S3 secrets, Forgejo object-storage credentials, plus Loki,
+Velero, and CloudNativePG object-storage secrets from ignored env values such
 as `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
+`FORGEJO_S3_ACCESS_KEY_ID`, `FORGEJO_S3_SECRET_ACCESS_KEY`,
 `WOODPECKER_DATABASE_PASSWORD` or a full `WOODPECKER_DATABASE_DATASOURCE`,
 `HARBOR_DATABASE_PASSWORD`,
 `HARBOR_REDIS_PASSWORD`, `HARBOR_S3_ACCESS_KEY_ID`,
@@ -199,6 +200,12 @@ external Forgejo SQL backend. Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=tru
 only when `FORGEJO_REDIS_MODE=redis`; the premium default uses shared
 `platform-valkey` and can generate the `forgejo-redis` URI secret
 automatically.
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE=true` for production
+Forgejo. Strict rendering requires `FORGEJO_OBJECT_STORAGE_MODE=s3`, an
+HTTPS-compatible external S3 endpoint, and the managed
+`forgejo/forgejo-object-storage` Secret. This keeps attachments, LFS, avatars,
+and packages out of Forgejo's single RWO filesystem and makes the storage
+boundary explicit before synchronization.
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
 `GRAFANA_DATABASE_MODE=postgres`.
 Set `PLATFORM_APP_SECRET_REQUIRE_KEYCLOAK_DATABASE=true` when you want a
@@ -332,6 +339,32 @@ FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
 FORGEJO_DATABASE_SSL_MODE=verify-full \
 make platform-render-private-values
 ```
+
+Configure Forgejo's shared object storage before rendering. The S3 credentials
+are stored only in the cluster Secret; the rendered values contain the endpoint,
+bucket, region, and Secret name. Use the same external S3-compatible provider as
+the other production data paths, or select a separate bucket with a least-
+privilege access key:
+
+```bash
+FORGEJO_S3_ACCESS_KEY_ID='<ACCESS_KEY>' \
+FORGEJO_S3_SECRET_ACCESS_KEY='<SECRET_KEY>' \
+PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE=true \
+make platform-app-secrets
+
+FORGEJO_OBJECT_STORAGE_MODE=s3 \
+FORGEJO_S3_ENDPOINT=https://<S3_ENDPOINT> \
+FORGEJO_S3_REGION=<S3_REGION> \
+FORGEJO_S3_BUCKET=platform-forgejo \
+FORGEJO_S3_SECRET_NAME=forgejo-object-storage \
+FORGEJO_S3_SECURE=true \
+make platform-render-private-values
+```
+
+`PLATFORM_PRODUCTION_STRICT=false` with
+`FORGEJO_OBJECT_STORAGE_MODE=filesystem` is a lab-only escape hatch. Do not use
+it for the premium production profile: Forgejo's RWO filesystem is not a
+replica-safe shared asset store.
 
 For Redis-backed cache and queue, the premium default is
 `FORGEJO_REDIS_MODE=redis` using shared `platform-valkey`. Provide a full

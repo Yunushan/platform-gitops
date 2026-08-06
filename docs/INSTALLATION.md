@@ -587,6 +587,11 @@ Harbor external PostgreSQL, Redis, and S3 registry storage.
 Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_DATABASE=true` before enabling an
 external Forgejo SQL backend. Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_REDIS=true`
 only when `FORGEJO_REDIS_MODE=redis`.
+Set `PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE=true` for production
+Forgejo and provide `FORGEJO_S3_ACCESS_KEY_ID` plus
+`FORGEJO_S3_SECRET_ACCESS_KEY`; strict rendering stores attachments, LFS,
+avatars, and packages in HTTPS S3-compatible storage instead of the RWO
+filesystem.
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
 `GRAFANA_DATABASE_MODE=postgres`.
 
@@ -992,6 +997,7 @@ HARBOR_REDIS_SECRET_NAME=harbor-redis \
 HARBOR_S3_SECRET_NAME=harbor-registry-s3 \
 FORGEJO_DATABASE_SECRET_NAME=forgejo-database \
 FORGEJO_REDIS_SECRET_NAME=forgejo-redis \
+FORGEJO_S3_SECRET_NAME=forgejo-object-storage \
 WOODPECKER_FORGEJO_OAUTH_SECRET_NAME=woodpecker-forgejo-oauth \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
 GRAFANA_ADMIN_SECRET_NAME=grafana-admin \
