@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 import sys
+import tempfile
 from unittest import mock
 
 
@@ -101,10 +102,38 @@ def test_redaction_and_destination_url() -> None:
         raise AssertionError("group variable endpoint was not selected")
     if workspace.source_variable_path({"source_scope": "instance", "key": "GLOBAL"}, "7") != "admin/ci/variables/GLOBAL":
         raise AssertionError("instance variable endpoint was not selected")
+    if workspace.source_variable_query({"environment_scope": "production", "key": "REGISTRY"}) != {"filter[environment_scope]": "production"}:
+        raise AssertionError("environment-scoped variable filter was not selected")
+    if workspace.repository_create_path("alice", "user", "alice") != "user/repos":
+        raise AssertionError("authenticated user repository endpoint was not selected")
+    if workspace.repository_create_path("alice", "user", "admin") != "admin/users/alice/repos":
+        raise AssertionError("administrative user repository endpoint was not selected")
     mapped = copy.deepcopy(plan)
     mapped["mappings"] = {"groups": {"platform": {"target_name": "platform-team"}}}
     if workspace.mapped_name(mapped, "groups", "platform", "fallback") != "platform-team":
         raise AssertionError("target_name group mapping was ignored")
+
+
+def test_selected_nested_group_is_a_root() -> None:
+    plan = base_plan()
+    plan["source"]["group_paths"] = ["engineering/platform"]  # type: ignore[index]
+    if workspace.group_is_subgroup(plan, "engineering/platform"):
+        raise AssertionError("selected nested group was incorrectly classified as a subgroup")
+    if not workspace.group_is_subgroup(plan, "engineering/platform/api"):
+        raise AssertionError("child of selected nested group was not classified as a subgroup")
+
+
+def test_ci_checkout_is_retryable() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        repo_root = Path(temp_dir) / "ci" / "platform-control"
+        (repo_root / ".git").mkdir(parents=True)
+        with mock.patch.object(workspace.migration, "run_command") as run_command:
+            workspace.prepare_ci_checkout("https://forgejo.example.test/platform/control-plane.git", repo_root)
+        commands = [call.args[0] for call in run_command.call_args_list]
+        if not any(command[0:4] == ["git", "-C", str(repo_root), "fetch"] for command in commands):
+            raise AssertionError("existing CI checkout was not fetched for retry")
+        if not any(command[0:4] == ["git", "-C", str(repo_root), "reset"] for command in commands):
+            raise AssertionError("existing CI checkout was not reset for retry")
 
 
 def test_pipeline_schedule_import_is_not_history_import() -> None:
@@ -149,6 +178,8 @@ def test_pipeline_schedule_import_is_not_history_import() -> None:
 def main() -> int:
     test_selective_plan_contract()
     test_redaction_and_destination_url()
+    test_selected_nested_group_is_a_root()
+    test_ci_checkout_is_retryable()
     test_pipeline_schedule_import_is_not_history_import()
     print("Forge workspace migration self-test passed.")
     return 0

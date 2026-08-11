@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -362,6 +363,11 @@ def source_group_paths(plan: dict[str, Any]) -> list[str]:
     return sorted({string(item).strip("/") for item in values if string(item).strip("/")})
 
 
+def group_is_subgroup(plan: dict[str, Any], path: str) -> bool:
+    """Classify groups relative to the explicitly selected migration roots."""
+    return string(path).strip("/") not in set(source_group_paths(plan))
+
+
 def source_project_paths(plan: dict[str, Any]) -> list[str]:
     source = plan["source"]
     values = source.get("project_paths") or []
@@ -387,7 +393,7 @@ def discover_groups(source: Endpoint, plan: dict[str, Any]) -> list[dict[str, An
     group_mode = surface_config((plan.get("surfaces") or {}).get("groups"), "surfaces.groups")["mode"]
     subgroup_mode = surface_config((plan.get("surfaces") or {}).get("subgroups"), "surfaces.subgroups")["mode"]
     for path, group in sorted(groups.items()):
-        is_subgroup = "/" in path
+        is_subgroup = group_is_subgroup(plan, path)
         if is_subgroup and subgroup_mode == "skip":
             continue
         if not is_subgroup and group_mode == "skip":
@@ -635,7 +641,7 @@ def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
         if name == "users":
             snapshot["surfaces"][name] = {"mode": config["mode"], "items": discover_users(source, plan)}
         elif name in {"groups", "subgroups"}:
-            items = [item for item in groups if ("/" in string(item.get("full_path"))) == (name == "subgroups")]
+            items = [item for item in groups if group_is_subgroup(plan, string(item.get("full_path"))) == (name == "subgroups")]
             snapshot["surfaces"][name] = {"mode": config["mode"], "items": items}
         elif name in {"projects", "repositories"}:
             items = project_index
@@ -781,7 +787,7 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
         else:
             existing += 1
         org_by_path[source_path] = target_name
-        policy = string(group_configs["subgroup" if "/" in source_path else "group"].get("members_mode") or "import").lower()
+        policy = string(group_configs["subgroup" if group_is_subgroup(plan, source_path) else "group"].get("members_mode") or "import").lower()
         if isinstance(mappings, dict):
             mapping = mappings.get(source_path)
             if isinstance(mapping, dict) and string(mapping.get("members_mode")):
@@ -832,6 +838,28 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
     return int(created["id"])
 
 
+def destination_authenticated_username(destination: Endpoint) -> str:
+    current = request(destination, "GET", "user", expected=(200,))
+    if not isinstance(current, dict):
+        raise WorkspaceError("Forgejo authenticated-user response was not an object")
+    username = string(current.get("login") or current.get("username"))
+    if not username:
+        raise WorkspaceError("Forgejo authenticated-user response did not include login")
+    return username
+
+
+def repository_create_path(owner: str, owner_kind: str, authenticated_username: str | None) -> str:
+    if owner_kind in {"organization", "organisation", "org", "group"}:
+        return f"orgs/{quote(owner, safe='')}/repos"
+    if owner_kind == "user":
+        if not authenticated_username:
+            raise WorkspaceError(f"authenticated Forgejo username is required to create user repository {owner!r}")
+        if owner.casefold() == authenticated_username.casefold():
+            return "user/repos"
+        return f"admin/users/{quote(owner, safe='')}/repos"
+    raise WorkspaceError(f"unsupported Forgejo repository owner_kind {owner_kind!r} for {owner}")
+
+
 def ensure_repository(destination: Endpoint, owner: str, repo: str, owner_kind: str, project: dict[str, Any]) -> dict[str, Any]:
     status, current = request(destination, "GET", f"repos/{quote(owner, safe='')}/{quote(repo, safe='')}", expected=(200, 404), return_status=True)
     private = string(project.get("visibility")) != "public"
@@ -842,12 +870,8 @@ def ensure_repository(destination: Endpoint, owner: str, repo: str, owner_kind: 
             "private": private,
             "auto_init": False,
         }
-        if owner_kind in {"organization", "organisation", "org", "group"}:
-            path = f"orgs/{quote(owner, safe='')}/repos"
-        elif owner_kind == "user":
-            path = "user/repos"
-        else:
-            raise WorkspaceError(f"unsupported Forgejo repository owner_kind {owner_kind!r} for {owner}/{repo}")
+        authenticated_username = destination_authenticated_username(destination) if owner_kind == "user" else None
+        path = repository_create_path(owner, owner_kind, authenticated_username)
         current = request(destination, "POST", path, body=body, expected=(201, 200))
         action = "created"
     else:
@@ -967,6 +991,10 @@ def source_variable_path(metadata: dict[str, Any], project_id: str) -> str:
     raise WorkspaceError(f"unsupported GitLab variable scope {scope!r}")
 
 
+def source_variable_query(metadata: dict[str, Any]) -> dict[str, str]:
+    return {"filter[environment_scope]": string(metadata.get("environment_scope") or "*")}
+
+
 def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("variables"), "surfaces.variables")
     if config["mode"] != "managed":
@@ -1005,13 +1033,35 @@ def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
                 continue
             if mode != "managed":
                 raise WorkspaceError(f"unsupported variable mapping mode {mode!r} for {identity}")
-            live = request(source, "GET", source_variable_path(metadata, source_project), expected=(200,))
+            live = request(
+                source,
+                "GET",
+                source_variable_path(metadata, source_project),
+                query=source_variable_query(metadata),
+                expected=(200,),
+            )
             value = string(live.get("value") if isinstance(live, dict) else "")
             if not value:
                 raise WorkspaceError(f"GitLab variable {identity} has no readable value; map it manually")
             result = cutover.woodpecker_secret_upsert(wp, repo_id, string(mapping.get("target_name") or key), value)
             results.append({"project": project_path, "identity": identity, "target_name": string(mapping.get("target_name") or key), "mode": mode, "verified": result.get("verified") is True})
     return {"mode": config["mode"], "items": results, "verified": all(item.get("verified") is True for item in results)}
+
+
+def prepare_ci_checkout(destination_url: str, repo_root: Path) -> None:
+    """Reuse a dedicated checkout so interrupted imports can be retried safely."""
+    repo_root.parent.mkdir(parents=True, exist_ok=True)
+    if repo_root.exists():
+        if repo_root.is_symlink() or not repo_root.is_dir():
+            raise WorkspaceError(f"CI checkout path is not a safe directory: {repo_root}")
+        if (repo_root / ".git").exists():
+            migration.run_command(["git", "-C", str(repo_root), "remote", "set-url", "origin", destination_url], check=True)
+            migration.run_command(["git", "-C", str(repo_root), "fetch", "--quiet", "--prune", "origin"], check=True)
+            migration.run_command(["git", "-C", str(repo_root), "reset", "--hard", "origin/HEAD"], check=True)
+            migration.run_command(["git", "-C", str(repo_root), "clean", "-fdx"], check=True)
+            return
+        shutil.rmtree(repo_root)
+    migration.run_command(["git", "clone", "--quiet", destination_url, str(repo_root)], check=True)
 
 
 def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) -> dict[str, Any]:
@@ -1047,7 +1097,7 @@ def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) ->
             continue
         destination_url = string(source_item["destination"]["git_url"])
         repo_root = work_dir / "ci" / re.sub(r"[^A-Za-z0-9_.-]+", "-", project_path)
-        migration.run_command(["git", "clone", "--quiet", destination_url, str(repo_root)], check=True)
+        prepare_ci_checkout(destination_url, repo_root)
         for path, content in rendered_files:
             destination_file = repo_root / path
             destination_file.parent.mkdir(parents=True, exist_ok=True)
