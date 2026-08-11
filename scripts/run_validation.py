@@ -55,6 +55,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_supply_chain_helpers.py",
     "scripts/test_supply_chain_evidence.py",
     "scripts/test_image_inventory_evidence.py",
+    "scripts/test_local_inventory_preflight.py",
     "scripts/test_release_workflow.py",
     "scripts/test_github_release_ref.py",
     "scripts/test_github_release_approval.py",

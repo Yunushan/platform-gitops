@@ -25,6 +25,18 @@ config/cluster.local.yaml
 inventory/hosts.local.ini
 ```
 
+Cluster targets automatically run an inventory preflight. To check the local
+file without contacting any node, run:
+
+```bash
+make platform-inventory-preflight
+```
+
+This removes a UTF-8 BOM, normalizes line endings, and asks Ansible to parse
+the inventory before a playbook starts. It requires exactly three
+`rke2_servers` hosts with real `ansible_host` values. It deliberately does not
+invent private IP addresses, SSH users, or credentials.
+
 ## Step 2: Configure VIP
 
 Default: kube-vip.
