@@ -3628,7 +3628,7 @@ def main() -> None:
         "platform_metallb_vendored_chart_archive_sha256",
         "fb06bb584fcb7856f15733b2a6a2aff5b61b5c350687e341c163ae24a5938adc",
         "platform_traefik_vendored_chart_archive_sha256",
-        "150f5c608f2d25eaa292d306470cbfd1b0681d67d88da5985433354f716c5a7f",
+        "b1c5e2194b8e2c63b3db39676924b46e63bec207174673e38d4ad54d66743e68",
         "Validate vendored platform ingress chart selection",
         "Verify vendored platform ingress chart archives",
         "platform_metallb_chart_archive.content",
@@ -3668,7 +3668,7 @@ def main() -> None:
         ),
         (
             "gitops/clusters/rke2-main/premium-3node/apps/traefik/kustomization.yaml",
-            "charts/traefik-41.0.1",
+            "charts/traefik-41.2.0",
             "https://traefik.github.io/charts",
         ),
     ):

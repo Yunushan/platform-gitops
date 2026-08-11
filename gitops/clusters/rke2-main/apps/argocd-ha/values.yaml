@@ -117,6 +117,9 @@ redis-ha:
         limits:
           memory: 128Mi
 
+  image:
+    tag: 8.10.0-alpine
+
 dex:
   resources:
     requests:

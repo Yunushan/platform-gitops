@@ -13,7 +13,7 @@ components:
   - ../../components/external-database-egress
   - ../../components/external-object-storage-egress
 helmGlobals:
-  chartHome: charts/forgejo-15.0.3
+  chartHome: charts/forgejo-17.1.4
 helmCharts:
   - name: forgejo
     releaseName: forgejo

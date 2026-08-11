@@ -51,7 +51,7 @@ make rke2-install
 Optional exact RKE2 version pin:
 
 ```bash
-RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
+RKE2_VERSION='v1.36.2+rke2r1' make rke2-install
 ```
 
 ## 5. Deploy order

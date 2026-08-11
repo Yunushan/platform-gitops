@@ -61,6 +61,7 @@ required = [
     'docs/THREAT_MODEL.md',
     'docs/SECRETS_AND_PRIVACY.md',
     'docs/FORGE_TRANSITION.md',
+    'docs/FORGE_WORKSPACE.md',
     'config/sops.age.example.yaml',
     'gitops/bootstrap/root-app.yaml',
     'ansible/playbooks/verify-platform-app-health.yml',
@@ -71,9 +72,11 @@ required = [
     'ansible/playbooks/repair-woodpecker-service-path-nodes.yml',
     'scripts/forge_migration_live.py',
     'scripts/forge_transition.py',
+    'scripts/forge_workspace.py',
     'scripts/fuzz_forge_plans.py',
     'scripts/forge-coverage.sh',
     'scripts/test_forge_transition.py',
+    'scripts/test_forge_workspace.py',
     'scripts/test_forge_fuzz_contract.py',
     'scripts/test_forge_coverage_contract.py',
     'scripts/test_forge_migration_live.py',
@@ -160,6 +163,7 @@ required = [
     'scripts/test_rendered_schema_contract.py',
     'scripts/validate_platform_contract.py',
     'examples/migrations/gitlab-to-forgejo.transition.example.json',
+    'examples/migrations/gitlab-to-forgejo.workspace.example.json',
     'examples/migrations/github-to-forgejo.transition.example.json',
 ]
 missing = [p for p in required if not (root / p).exists()]

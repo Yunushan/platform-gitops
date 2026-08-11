@@ -44,11 +44,11 @@
     platform_metallb_vendored_chart_archive_sha256: "fb06bb584fcb7856f15733b2a6a2aff5b61b5c350687e341c163ae24a5938adc"
     platform_metallb_chart_version_effective: "{{ platform_metallb_chart_version | default(platform_metallb_chart_version_from_env, true) | default(platform_metallb_vendored_chart_version, true) }}"
     platform_metallb_chart_archive_max_bytes: 1048576
-    platform_traefik_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik"
+    platform_traefik_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.2.0/traefik"
     platform_traefik_vendored_chart_metadata: "{{ lookup('ansible.builtin.file', platform_traefik_vendored_chart_path ~ '/Chart.yaml') | from_yaml }}"
     platform_traefik_vendored_chart_version: "{{ platform_traefik_vendored_chart_metadata.version }}"
-    platform_traefik_vendored_chart_archive_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik-41.0.1.tgz"
-    platform_traefik_vendored_chart_archive_sha256: "150f5c608f2d25eaa292d306470cbfd1b0681d67d88da5985433354f716c5a7f"
+    platform_traefik_vendored_chart_archive_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.2.0/traefik-41.2.0.tgz"
+    platform_traefik_vendored_chart_archive_sha256: "b1c5e2194b8e2c63b3db39676924b46e63bec207174673e38d4ad54d66743e68"
     platform_traefik_chart_archive_max_bytes: 1048576
     platform_traefik_chart_repo_effective: "{{ platform_traefik_chart_repo | default(platform_traefik_chart_repo_from_env, true) | default('https://traefik.github.io/charts', true) }}"
     platform_traefik_chart_version_effective: "{{ platform_traefik_chart_version | default(platform_traefik_chart_version_from_env, true) | default(platform_traefik_vendored_chart_version, true) }}"

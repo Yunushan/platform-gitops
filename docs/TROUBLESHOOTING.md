@@ -1190,14 +1190,14 @@ RKE2_INSTALL_TIMEOUT=1800 RKE2_START_TIMEOUT=1200 make rke2-install
 If logs show image pull failures such as `image ... not found`, pin a known-good RKE2 version:
 
 ```bash
-RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
+RKE2_VERSION='v1.36.2+rke2r1' make rke2-install
 ```
 
 You can also use:
 
 ```bash
 ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml \
-  -e rke2_version='v1.35.4+rke2r1'
+  -e rke2_version='v1.36.2+rke2r1'
 ```
 
 ## CI cannot push images

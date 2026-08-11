@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "direction": "gitlab-to-forgejo",
+  "source": {
+    "api_url": "https://gitlab.example.test/api/v4",
+    "token_env": "GITLAB_MIGRATION_TOKEN",
+    "group_paths": [
+      "engineering/platform"
+    ],
+    "project_paths": [
+      "engineering/platform/control-plane"
+    ],
+    "usernames": [
+      "alice",
+      "bob"
+    ],
+    "all_available_projects": false
+  },
+  "destination": {
+    "api_url": "https://forgejo.example.test/api/v1",
+    "token_env": "FORGEJO_ADMIN_TOKEN",
+    "owner_kind": "organization",
+    "default_owner": "platform",
+    "git_url_template": "ssh://git@forgejo.example.test/{owner}/{repo}.git"
+  },
+  "surfaces": {
+    "users": {
+      "mode": "managed",
+      "default_password_env": "FORGEJO_IMPORTED_USER_PASSWORD",
+      "placeholder_email_domain": "migration.invalid",
+      "skip_bots": true
+    },
+    "groups": {
+      "mode": "managed",
+      "members_mode": "import"
+    },
+    "subgroups": {
+      "mode": "managed",
+      "include_subgroups": true,
+      "members_mode": "import"
+    },
+    "projects": {
+      "mode": "managed"
+    },
+    "repositories": {
+      "mode": "managed"
+    },
+    "runners": {
+      "mode": "mapped",
+      "target": "woodpecker",
+      "label_mappings": {
+        "linux-amd64": {
+          "platform": "linux",
+          "arch": "amd64"
+        }
+      }
+    },
+    "variables": {
+      "mode": "managed",
+      "target": "woodpecker",
+      "scopes": [
+        "project",
+        "group"
+      ]
+    },
+    "ci": {
+      "mode": "managed",
+      "include_content": true,
+      "source_globs": [
+        ".gitlab-ci.yml",
+        ".gitlab/ci/*.yml"
+      ],
+      "destination_mappings": {
+        ".gitlab-ci.yml": ".woodpecker.yml"
+      },
+      "conversion": {
+        "deployment_gate_marker": "FORGE_WORKSPACE_DEPLOYMENT_ENABLED"
+      }
+    },
+    "pipelines": {
+      "mode": "managed",
+      "include_history": true,
+      "include_schedules": true,
+      "include_triggers": false,
+      "import_history": false
+    }
+  },
+  "services": {
+    "woodpecker": {
+      "api_url": "https://ci.example.test",
+      "token_env": "WOODPECKER_ADMIN_TOKEN"
+    }
+  },
+  "mappings": {
+    "groups": {
+      "engineering/platform": "platform"
+    },
+    "projects": {
+      "engineering/platform/control-plane": {
+        "owner": "platform",
+        "repo": "control-plane",
+        "owner_kind": "organization"
+      }
+    },
+    "variables": {
+      "project:DEPLOY_TOKEN:*": {
+        "mode": "managed",
+        "target_name": "DEPLOY_TOKEN"
+      },
+      "group:engineering/platform:REGISTRY_HOST:*": {
+        "mode": "managed",
+        "target_name": "REGISTRY_HOST"
+      }
+    }
+  }
+}

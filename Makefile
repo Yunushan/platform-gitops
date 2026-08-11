@@ -1,7 +1,7 @@
 SHELL := bash
 PYTHON ?= python3
 
-.PHONY: help init-local validate no-secrets security-scan supply-chain-posture supply-chain-verify vendored-chart-provenance-verify github-governance-plan github-governance-security-apply github-governance-apply github-governance-verify rendered-schema-verify rendered-private-schema-verify policy-cel-verify forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-pipeline-convert forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify forge-transition-validate forge-transition-discover forge-transition-prepare forge-transition-verify-shadow forge-transition-enter forge-transition-status forge-transition-reconcile forge-transition-relay forge-transition-fallback forge-transition-finalize forge-transition-failback forge-transition-rollback forge-transition-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-network-isolation-verify platform-internal-tls-verify platform-openbao-status platform-openbao-verify platform-openbao-ceremony-digest platform-openbao-ceremony-evidence-verify platform-observability-verify platform-capacity-verify platform-image-inventory-verify platform-production-evidence platform-production-score platform-production-check platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-forgejo-recovery-drill platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
+.PHONY: help init-local validate no-secrets security-scan supply-chain-posture supply-chain-verify vendored-chart-provenance-verify github-governance-plan github-governance-security-apply github-governance-apply github-governance-verify rendered-schema-verify rendered-private-schema-verify policy-cel-verify forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-workspace-validate forge-workspace-export forge-workspace-import forge-pipeline-convert forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify forge-transition-validate forge-transition-discover forge-transition-prepare forge-transition-verify-shadow forge-transition-enter forge-transition-status forge-transition-reconcile forge-transition-relay forge-transition-fallback forge-transition-finalize forge-transition-failback forge-transition-rollback forge-transition-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-network-isolation-verify platform-internal-tls-verify platform-openbao-status platform-openbao-verify platform-openbao-ceremony-digest platform-openbao-ceremony-evidence-verify platform-observability-verify platform-capacity-verify platform-image-inventory-verify platform-production-evidence platform-production-score platform-production-check platform-node-storage-diagnose platform-node-storage-cleanup platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-forgejo-recovery-drill platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
 	@echo "Platform GitOps Workspace"
@@ -27,6 +27,9 @@ help:
 	@echo "  forge-migration-proof-verify  Verify stored PROOF integrity and acceptance"
 	@echo "  forge-migration-live-plan  Print the redacted four-direction live acceptance manifest"
 	@echo "  forge-migration-live-run  Run opt-in GitHub/GitLab/Forgejo live migration acceptance and write LIVE_DIR proof"
+	@echo "  forge-workspace-validate  Validate selective GitLab users/groups/projects/CI workspace PLAN"
+	@echo "  forge-workspace-export  Export selected GitLab workspace surfaces to redacted SNAPSHOT"
+	@echo "  forge-workspace-import  Import only PLAN surfaces marked managed into Forgejo/Woodpecker"
 	@echo "  forge-pipeline-convert  Convert a supported GitLab/GitHub pipeline to Woodpecker or fail with a compatibility report"
 	@echo "  forge-cutover-validate  Validate the opt-in GitLab-to-Forgejo cutover PLAN"
 	@echo "  forge-cutover-discover  Inventory source/destination CI/CD surfaces into DISCOVERY proof"
@@ -84,6 +87,8 @@ help:
 	@echo "  platform-observability-verify  Prove authenticated Loki ingestion, retention, Alloy collection, and alert delivery"
 	@echo "  platform-capacity-verify  Fail when node, scheduler, or Longhorn headroom is below production thresholds"
 	@echo "  platform-image-inventory-verify  Reconcile exact rendered/live image digests with signatures and admission scope"
+	@echo "  platform-node-storage-diagnose  Report root, container runtime, journal, and Longhorn storage usage"
+	@echo "  platform-node-storage-cleanup  Reclaim safe node caches without deleting Longhorn or PVC data"
 	@echo "  platform-production-evidence  Run production gates and retain commit-bound, independently approved evidence"
 	@echo "  platform-production-score  Require live, governance, approval, and signed-release evidence for exactly 100/100"
 	@echo "  platform-production-check  Run repo, RKE2, app, backup, and restore-evidence readiness gates"
@@ -169,6 +174,21 @@ forge-migration-live-run:
 	@test "$(FORGE_MIGRATION_LIVE)" = "1" || (echo "FORGE_MIGRATION_LIVE=1 is required for a live acceptance run" >&2; exit 2)
 	@test -n "$(LIVE_DIR)" || (echo "LIVE_DIR=/private/evidence/directory is required" >&2; exit 2)
 	@$(PYTHON) scripts/forge_migration_live.py --run --output-dir "$(LIVE_DIR)" $(if $(filter 1 true yes,$(LIVE_CLEANUP)),--cleanup,)
+
+forge-workspace-validate:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/gitlab-to-forgejo.workspace.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_workspace.py validate-plan "$(PLAN)" $(if $(PROOF),--proof "$(PROOF)",)
+
+forge-workspace-export:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/gitlab-to-forgejo.workspace.json is required" >&2; exit 2)
+	@test -n "$(SNAPSHOT)" || (echo "SNAPSHOT=private/migrations/proof/workspace-snapshot.json is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_workspace.py export "$(PLAN)" --snapshot "$(SNAPSHOT)" $(if $(PROOF),--proof "$(PROOF)",)
+
+forge-workspace-import:
+	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/gitlab-to-forgejo.workspace.json is required" >&2; exit 2)
+	@test -n "$(SNAPSHOT)" || (echo "SNAPSHOT=private/migrations/proof/workspace-snapshot.json is required" >&2; exit 2)
+	@test -n "$(WORK_DIR)" || (echo "WORK_DIR=private/migrations/workspace is required" >&2; exit 2)
+	@$(PYTHON) scripts/forge_workspace.py import "$(PLAN)" --snapshot "$(SNAPSHOT)" --work-dir "$(WORK_DIR)" $(if $(PROOF),--proof "$(PROOF)",)
 
 forge-pipeline-convert:
 	@test -n "$(PROVIDER)" || (echo "PROVIDER=gitlab or github is required" >&2; exit 2)
@@ -663,6 +683,12 @@ rke2-status:
 
 rke2-cleanup-installers:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-cleanup-installers.yml $(if $(HOST),--limit $(HOST),)
+
+platform-node-storage-diagnose:
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/cleanup-node-storage.yml $(if $(HOST),--limit $(HOST),)
+
+platform-node-storage-cleanup:
+	@PLATFORM_NODE_STORAGE_CLEANUP=true ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/cleanup-node-storage.yml $(if $(HOST),--limit $(HOST),)
 
 rke2-network-check:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-network-check.yml

@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${RKE2_TOKEN:?Set RKE2_TOKEN in your private shell environment, never in git.}"
 : "${RKE2_API_ENDPOINT:?Set RKE2_API_ENDPOINT to your VIP DNS or VIP address.}"
-: "${RKE2_VERSION:?Set RKE2_VERSION to an exact release such as v1.35.6+rke2r1.}"
+: "${RKE2_VERSION:?Set RKE2_VERSION to an exact release such as v1.36.2+rke2r1.}"
 : "${RKE2_INSTALL_SCRIPT_SHA256:?Set RKE2_INSTALL_SCRIPT_SHA256 to the reviewed get.rke2.io installer digest.}"
 : "${RKE2_CNI:=cilium}"
 : "${RKE2_INSTALL_TIMEOUT:=1200}"
@@ -16,7 +16,7 @@ if [[ -n "${INSTALL_RKE2_TYPE:-}" && "${INSTALL_RKE2_TYPE}" != "server" ]]; then
   exit 1
 fi
 if [[ ! "${RKE2_VERSION}" =~ ^v?[0-9]+[.][0-9]+[.][0-9]+[+]rke2r[0-9]+$ ]]; then
-  echo "RKE2_VERSION must be an exact release such as v1.35.6+rke2r1." >&2
+  echo "RKE2_VERSION must be an exact release such as v1.36.2+rke2r1." >&2
   exit 1
 fi
 if [[ -n "${INSTALL_RKE2_VERSION:-}" && "${INSTALL_RKE2_VERSION}" != "${RKE2_VERSION}" ]]; then

@@ -9,7 +9,7 @@ components:
   - ../../components/external-git-egress
   - ../../components/kubernetes-api-egress
 helmGlobals:
-  chartHome: charts/argo-cd-10.0.0
+  chartHome: charts/argo-cd-10.3.2
 helmCharts:
   - name: argo-cd
     releaseName: argo-cd
