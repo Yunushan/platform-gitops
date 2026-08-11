@@ -1,6 +1,8 @@
 SHELL := bash
 PYTHON ?= python3
 
+.PHONY: platform-inventory-preflight
+
 .PHONY: help init-local validate no-secrets security-scan supply-chain-posture supply-chain-verify vendored-chart-provenance-verify github-governance-plan github-governance-security-apply github-governance-apply github-governance-verify rendered-schema-verify rendered-private-schema-verify policy-cel-verify forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-workspace-validate forge-workspace-export forge-workspace-import forge-pipeline-convert forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify forge-transition-validate forge-transition-discover forge-transition-prepare forge-transition-verify-shadow forge-transition-enter forge-transition-status forge-transition-reconcile forge-transition-relay forge-transition-fallback forge-transition-finalize forge-transition-failback forge-transition-rollback forge-transition-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-network-isolation-verify platform-internal-tls-verify platform-openbao-status platform-openbao-verify platform-openbao-ceremony-digest platform-openbao-ceremony-evidence-verify platform-observability-verify platform-capacity-verify platform-image-inventory-verify platform-production-evidence platform-production-score platform-production-check platform-node-storage-diagnose platform-node-storage-cleanup platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-storage-repair platform-forgejo-ingress platform-forgejo-recovery-drill platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
 help:
@@ -87,6 +89,7 @@ help:
 	@echo "  platform-observability-verify  Prove authenticated Loki ingestion, retention, Alloy collection, and alert delivery"
 	@echo "  platform-capacity-verify  Fail when node, scheduler, or Longhorn headroom is below production thresholds"
 	@echo "  platform-image-inventory-verify  Reconcile exact rendered/live image digests with signatures and admission scope"
+	@echo "  platform-inventory-preflight  Normalize and validate the private Ansible inventory before cluster targets"
 	@echo "  platform-node-storage-diagnose  Report root, container runtime, journal, and Longhorn storage usage"
 	@echo "  platform-node-storage-cleanup  Reclaim safe node caches without deleting Longhorn or PVC data"
 	@echo "  platform-production-evidence  Run production gates and retain commit-bound, independently approved evidence"
@@ -647,7 +650,7 @@ platform-ingress-diagnose:
 platform-status:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/platform-status.yml
 
-rke2-preflight:
+rke2-preflight: platform-inventory-preflight
 	@ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/preflight.yml
 
 rke2-controller-hosts:
@@ -684,10 +687,13 @@ rke2-status:
 rke2-cleanup-installers:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-cleanup-installers.yml $(if $(HOST),--limit $(HOST),)
 
-platform-node-storage-diagnose:
+platform-inventory-preflight:
+	@$(PYTHON) scripts/prepare_local_inventory.py --inventory inventory/hosts.local.ini
+
+platform-node-storage-diagnose: platform-inventory-preflight
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/cleanup-node-storage.yml $(if $(HOST),--limit $(HOST),)
 
-platform-node-storage-cleanup:
+platform-node-storage-cleanup: platform-inventory-preflight
 	@PLATFORM_NODE_STORAGE_CLEANUP=true ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/cleanup-node-storage.yml $(if $(HOST),--limit $(HOST),)
 
 rke2-network-check:

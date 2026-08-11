@@ -96,6 +96,8 @@ jobs:
         run: python scripts/test_supply_chain_evidence.py
       - name: Test exact runtime image inventory evidence
         run: python scripts/test_image_inventory_evidence.py
+      - name: Test local inventory preflight
+        run: python scripts/test_local_inventory_preflight.py
       - name: Test attested release workflow
         run: python scripts/test_release_workflow.py
       - name: Test signed GitHub release refs

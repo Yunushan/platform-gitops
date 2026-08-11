@@ -48,6 +48,7 @@ validate:
     - python scripts/test_supply_chain_helpers.py
     - python scripts/test_supply_chain_evidence.py
     - python scripts/test_image_inventory_evidence.py
+    - python scripts/test_local_inventory_preflight.py
     - python scripts/test_release_workflow.py
     - python scripts/test_github_release_ref.py
     - python scripts/test_github_release_approval.py
