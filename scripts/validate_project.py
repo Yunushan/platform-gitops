@@ -104,6 +104,8 @@ required = [
     'scripts/test_supply_chain_helpers.py',
     'scripts/test_supply_chain_evidence.py',
     'scripts/test_image_inventory_evidence.py',
+    'scripts/prepare_local_inventory.py',
+    'scripts/test_local_inventory_preflight.py',
     'scripts/verify_github_release_ref.py',
     'scripts/test_github_release_ref.py',
     'scripts/verify_github_release_approval.py',
