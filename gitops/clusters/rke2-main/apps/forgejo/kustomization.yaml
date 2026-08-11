@@ -2,7 +2,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: forgejo
 helmGlobals:
-  chartHome: charts/forgejo-15.0.3
+  chartHome: charts/forgejo-17.1.4
 helmCharts:
   - name: forgejo
     releaseName: forgejo

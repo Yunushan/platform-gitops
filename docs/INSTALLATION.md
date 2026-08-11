@@ -182,14 +182,14 @@ If `rke2_token` is omitted or left as a placeholder, the playbook generates a pr
 To pin an exact RKE2 version, use either environment variable style:
 
 ```bash
-RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
+RKE2_VERSION='v1.36.2+rke2r1' make rke2-install
 ```
 
 or Ansible extra vars:
 
 ```bash
 ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml \
-  -e rke2_version='v1.35.4+rke2r1'
+  -e rke2_version='v1.36.2+rke2r1'
 ```
 
 If no version is pinned, the playbook uses the configured channel:
@@ -717,7 +717,7 @@ PLATFORM_METALLB_WEBHOOK_REPAIR=false make platform-ingress
 ```
 
 `make platform-ingress` verifies the reviewed MetalLB `0.16.1` and Traefik
-`41.0.1` archives committed beside their vendored chart source, then embeds the
+`41.2.0` archives committed beside their vendored chart source, then embeds the
 base64 payloads in RKE2 HelmChart `chartContent`. It does not download a chart
 index or accept a runtime chart-repository override. A chart update requires a
 reviewed source/archive change and matching SHA-256 contract update.

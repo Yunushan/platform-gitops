@@ -72,8 +72,8 @@ LONGHORN_CHART_EXPANDED_MAX_BYTES = 4 * 1024 * 1024
 LONGHORN_CHART_MEMBER_MAX = 128
 METALLB_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/apps/metallb/charts/metallb-0.16.1/metallb"
 METALLB_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/apps/metallb/charts/metallb-0.16.1/metallb-0.16.1.tgz"
-TRAEFIK_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik"
-TRAEFIK_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik-41.0.1.tgz"
+TRAEFIK_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.2.0/traefik"
+TRAEFIK_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.2.0/traefik-41.2.0.tgz"
 METALLB_KUSTOMIZATION = ROOT / "gitops/clusters/rke2-main/apps/metallb/kustomization.yaml"
 TRAEFIK_KUSTOMIZATION = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/traefik/kustomization.yaml"
 INGRESS_CHART_ARCHIVE_MAX_BYTES = 1 * 1024 * 1024
@@ -513,9 +513,9 @@ def main() -> int:
             argocd_bootstrap_text,
             "platform_argocd_vendored_chart_metadata",
             "platform_argocd_core_manifest_sha256",
-            "b0f9119821f2e19b852c842b9cb235eb9c3ef1549554fbda6aa5904e8d440eae",
+            "a32bf36a437071a1f563ebf9e81c8a39fba9057c17db7d5d041afb7b6e3f4afe",
             "platform_argocd_ha_manifest_sha256",
-            "278787c5f36b790ab0338d5b30d4a3fec3fddb532bf0d12f78a8977c06ecea80",
+            "65d9d4ff520ddb40bad2c39b1f44188ceecfe96b5dd29c8ead569b52d6c6b8c6",
             "Download, verify, and apply Argo CD bootstrap manifest",
             "Download, verify, and apply core Argo CD fallback manifest",
             "--proto '=https'",
@@ -707,7 +707,7 @@ def main() -> int:
             "platform_metallb_vendored_chart_archive_sha256",
             "fb06bb584fcb7856f15733b2a6a2aff5b61b5c350687e341c163ae24a5938adc",
             "platform_traefik_vendored_chart_archive_sha256",
-            "150f5c608f2d25eaa292d306470cbfd1b0681d67d88da5985433354f716c5a7f",
+            "b1c5e2194b8e2c63b3db39676924b46e63bec207174673e38d4ad54d66743e68",
             "Verify vendored platform ingress chart archives",
             "platform_metallb_chart_archive.content",
             "platform_traefik_chart_archive.content",
@@ -739,7 +739,7 @@ def main() -> int:
             )
         for path, chart_home, chart_repo in (
             (METALLB_KUSTOMIZATION, "charts/metallb-0.16.1", "https://metallb.github.io/metallb"),
-            (TRAEFIK_KUSTOMIZATION, "charts/traefik-41.0.1", "https://traefik.github.io/charts"),
+            (TRAEFIK_KUSTOMIZATION, "charts/traefik-41.2.0", "https://traefik.github.io/charts"),
         ):
             kustomization_text = read(path)
             assert_contains(
@@ -958,8 +958,8 @@ def main() -> int:
         assert_contains(
             no_secrets_text,
             "vendored_document_exceptions = {",
-            "traefik-41.0.1/traefik/Changelog.md",
-            "traefik-41.0.1/traefik/EXAMPLES.md",
+            "traefik-41.2.0/traefik/Changelog.md",
+            "traefik-41.2.0/traefik/EXAMPLES.md",
             "if rel_posix in vendored_document_exceptions:",
             label=str(NO_SECRETS_SCANNER.relative_to(ROOT)),
         )
@@ -1566,7 +1566,7 @@ def main() -> int:
                 "chart-repository and CRD-manifest URL overrides are rejected",
                 "platform ingress bootstrap follows the same offline model",
                 "MetalLB",
-                "`0.16.1` and Traefik `41.0.1`",
+                "`0.16.1` and Traefik `41.2.0`",
                 "chart-repository DNS probes remain explicit diagnostics",
                 "active premium profile resolves every Helm chart from committed local",
                 "zero chart-repository network dependency",

@@ -31,6 +31,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_gitops_selection_helper.py",
     "scripts/test_bootstrap_env_loader.py",
     "scripts/test_forge_migration.py",
+    "scripts/test_forge_workspace.py",
     "scripts/test_forge_pipeline.py",
     "scripts/test_forge_cutover.py",
     "scripts/test_forge_transition.py",

@@ -6,11 +6,11 @@ resources:
   - bundles.yaml
 
 helmGlobals:
-  chartHome: charts/trust-manager-v0.23.0
+  chartHome: charts/trust-manager-v0.24.0
 
 helmCharts:
   - name: trust-manager
-    version: v0.23.0
+    version: v0.24.0
     releaseName: trust-manager
     namespace: cert-manager
     valuesFile: values.yaml

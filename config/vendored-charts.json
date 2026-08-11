@@ -12,13 +12,13 @@
       "patches": []
     },
     {
-      "path": "gitops/clusters/rke2-main/apps/forgejo/charts/forgejo-15.0.3/forgejo",
+      "path": "gitops/clusters/rke2-main/apps/forgejo/charts/forgejo-17.1.4/forgejo",
       "repository": "oci://code.forgejo.org/forgejo-helm",
       "name": "forgejo",
-      "version": "15.0.3",
-      "packageSha256": "79270965ece26676391b1167040242b2096b1b026d9241fcda73fbad833adc83",
-      "upstreamTreeSha256": "3bb05300429744a3ec42530de8611b8daec5a7ec8d31010941ca20c0b20bbc6d",
-      "treeSha256": "3bb05300429744a3ec42530de8611b8daec5a7ec8d31010941ca20c0b20bbc6d",
+      "version": "17.1.4",
+      "packageSha256": "49c605a126596e2776d65156368b090bdf44308aa48227081a10de266b3e0dd7",
+      "upstreamTreeSha256": "78c04d9c71d1a6c1d479d67b5a6624abb7a09c87c0aed82753be1ef468197806",
+      "treeSha256": "78c04d9c71d1a6c1d479d67b5a6624abb7a09c87c0aed82753be1ef468197806",
       "patches": []
     },
     {
@@ -67,13 +67,13 @@
       "patches": []
     },
     {
-      "path": "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10.0.0/argo-cd",
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10.3.2/argo-cd",
       "repository": "https://argoproj.github.io/argo-helm",
       "name": "argo-cd",
-      "version": "10.0.0",
-      "packageSha256": "3acd39c464ef933cdf65072bf589baf1a8e8867a1a0753b6ff72c48e4363aa2f",
-      "upstreamTreeSha256": "22aa7115699216f620e553d062640b57140a77780e55c40a1d257342bdef66e4",
-      "treeSha256": "ff8e9333e57aca8950449b67185a48586605188e10bb6999f5b53c9ee0a61fba",
+      "version": "10.3.2",
+      "packageSha256": "33fc29ad7e0e1b2116e9d2ba4079e18619efde844f9a7cd3dbe74bfc7b9bc4c2",
+      "upstreamTreeSha256": "1b21b6dac0278d9a4589b30b6f6a515540bd86971e1216d062c70104eae4380e",
+      "treeSha256": "ead9fc0534f5de337b2d820799297a4edcacced0e3049882314e835493fb7ede",
       "patches": [
         {
           "path": "charts/redis-ha/templates/redis-ha-statefulset.yaml",
@@ -82,13 +82,13 @@
       ]
     },
     {
-      "path": "gitops/clusters/rke2-main/premium-3node/apps/cert-manager/charts/cert-manager-v1.20.3/cert-manager",
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/cert-manager/charts/cert-manager-v1.21.1/cert-manager",
       "repository": "https://charts.jetstack.io",
       "name": "cert-manager",
-      "version": "v1.20.3",
-      "packageSha256": "ef5d707f5afbb2c3ce9892f5ff3fca0dec6864db8830a1c454b3d4822c485843",
-      "upstreamTreeSha256": "e63c0235fa7f2c91c563b3adfccff3b7e1671a68445d590795d04040ebc60469",
-      "treeSha256": "e63c0235fa7f2c91c563b3adfccff3b7e1671a68445d590795d04040ebc60469",
+      "version": "v1.21.1",
+      "packageSha256": "c27101f3f3e2349fb4a9e704316105bf7b52ad73b8c8257d3498ef7f2f6a4adc",
+      "upstreamTreeSha256": "f612cfaf8ff74a09400cc8d493829d5fc5134d5198848cf1bf274b6f68fd7b02",
+      "treeSha256": "f612cfaf8ff74a09400cc8d493829d5fc5134d5198848cf1bf274b6f68fd7b02",
       "patches": []
     },
     {
@@ -112,13 +112,13 @@
       "patches": []
     },
     {
-      "path": "gitops/clusters/rke2-main/premium-3node/apps/forgejo/charts/forgejo-15.0.3/forgejo",
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/forgejo/charts/forgejo-17.1.4/forgejo",
       "repository": "oci://code.forgejo.org/forgejo-helm",
       "name": "forgejo",
-      "version": "15.0.3",
-      "packageSha256": "79270965ece26676391b1167040242b2096b1b026d9241fcda73fbad833adc83",
-      "upstreamTreeSha256": "3bb05300429744a3ec42530de8611b8daec5a7ec8d31010941ca20c0b20bbc6d",
-      "treeSha256": "3bb05300429744a3ec42530de8611b8daec5a7ec8d31010941ca20c0b20bbc6d",
+      "version": "17.1.4",
+      "packageSha256": "49c605a126596e2776d65156368b090bdf44308aa48227081a10de266b3e0dd7",
+      "upstreamTreeSha256": "78c04d9c71d1a6c1d479d67b5a6624abb7a09c87c0aed82753be1ef468197806",
+      "treeSha256": "78c04d9c71d1a6c1d479d67b5a6624abb7a09c87c0aed82753be1ef468197806",
       "patches": []
     },
     {
@@ -274,23 +274,23 @@
       "patches": []
     },
     {
-      "path": "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.0.1/traefik",
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/traefik-41.2.0/traefik",
       "repository": "https://traefik.github.io/charts",
       "name": "traefik",
-      "version": "41.0.1",
-      "packageSha256": "150f5c608f2d25eaa292d306470cbfd1b0681d67d88da5985433354f716c5a7f",
-      "upstreamTreeSha256": "2f4566977b27df25b0373dac7d1ae62cdb84fe35db9e7469f67924da36754124",
-      "treeSha256": "2f4566977b27df25b0373dac7d1ae62cdb84fe35db9e7469f67924da36754124",
+      "version": "41.2.0",
+      "packageSha256": "b1c5e2194b8e2c63b3db39676924b46e63bec207174673e38d4ad54d66743e68",
+      "upstreamTreeSha256": "da8dee69c9703db509f0e9de58f422385525c172d60f11df28f52175e7f89cbb",
+      "treeSha256": "da8dee69c9703db509f0e9de58f422385525c172d60f11df28f52175e7f89cbb",
       "patches": []
     },
     {
-      "path": "gitops/clusters/rke2-main/premium-3node/apps/trust-manager/charts/trust-manager-v0.23.0/trust-manager",
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/trust-manager/charts/trust-manager-v0.24.0/trust-manager",
       "repository": "https://charts.jetstack.io",
       "name": "trust-manager",
-      "version": "v0.23.0",
-      "packageSha256": "5faeb8fc29ddd958e86ecece947f974b400b408340e18e9c521b2167cac21c8e",
-      "upstreamTreeSha256": "7b07cbcd458a07978d071dd3bb69410cc51332ded4518b159967307094c492fb",
-      "treeSha256": "7b07cbcd458a07978d071dd3bb69410cc51332ded4518b159967307094c492fb",
+      "version": "v0.24.0",
+      "packageSha256": "0de4bbef2d1a013bd4a91c6f59a9cb0273dda9a785e018a9a16e8f2b096af823",
+      "upstreamTreeSha256": "38d1f1da82a18183f8c4f92a1809a05536da8ee16e778f2a48c9286945c3ca10",
+      "treeSha256": "38d1f1da82a18183f8c4f92a1809a05536da8ee16e778f2a48c9286945c3ca10",
       "patches": []
     },
     {

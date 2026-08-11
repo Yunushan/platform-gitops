@@ -211,7 +211,7 @@ chart-repository and CRD-manifest URL overrides are rejected so a storage
 recovery cannot silently widen the supply-chain trust boundary.
 
 The platform ingress bootstrap follows the same offline model for MetalLB
-`0.16.1` and Traefik `41.0.1`. Their reviewed source trees and chart archives
+`0.16.1` and Traefik `41.2.0`. Their reviewed source trees and chart archives
 are committed together, archive sizes and SHA-256 values are verified on the
 Ansible controller, and RKE2 receives only checksum-annotated `chartContent`.
 The production Kustomizations render those same local chart trees. External

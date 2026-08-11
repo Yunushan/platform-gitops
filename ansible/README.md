@@ -67,14 +67,14 @@ ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/preflight.yml \
 Pin an exact RKE2 release when needed:
 
 ```bash
-RKE2_VERSION='v1.35.4+rke2r1' make rke2-install
+RKE2_VERSION='v1.36.2+rke2r1' make rke2-install
 ```
 
 Or pass it directly to Ansible:
 
 ```bash
 ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml \
-  -e rke2_version='v1.35.4+rke2r1'
+  -e rke2_version='v1.36.2+rke2r1'
 ```
 
 If the API VIP is not online yet, join node-2 and node-3 through node-1 while still keeping the API DNS/VIP in TLS SANs:

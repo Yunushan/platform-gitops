@@ -1,0 +1,224 @@
+---
+- name: Diagnose and optionally reclaim safe node-local storage
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    platform_node_storage_cleanup_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_CLEANUP') }}"
+    platform_node_storage_cri_prune_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_CRI_PRUNE') }}"
+    platform_node_storage_dnf_clean_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_DNF_CLEAN') }}"
+    platform_node_storage_tmpfiles_clean_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_TMPFILES_CLEAN') }}"
+    platform_node_storage_docker_prune_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_DOCKER_PRUNE') }}"
+    platform_node_storage_docker_prune_until_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_DOCKER_PRUNE_UNTIL') }}"
+    platform_node_storage_journal_vacuum_size_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_JOURNAL_VACUUM_SIZE') }}"
+    platform_node_storage_longhorn_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
+    platform_node_storage_cleanup_effective: "{{ platform_node_storage_cleanup | default(platform_node_storage_cleanup_from_env, true) | default(false, true) | bool }}"
+    platform_node_storage_cri_prune_effective: "{{ platform_node_storage_cri_prune | default(platform_node_storage_cri_prune_from_env, true) | default(true, true) | bool }}"
+    platform_node_storage_dnf_clean_effective: "{{ platform_node_storage_dnf_clean | default(platform_node_storage_dnf_clean_from_env, true) | default(true, true) | bool }}"
+    platform_node_storage_tmpfiles_clean_effective: "{{ platform_node_storage_tmpfiles_clean | default(platform_node_storage_tmpfiles_clean_from_env, true) | default(true, true) | bool }}"
+    platform_node_storage_docker_prune_effective: "{{ platform_node_storage_docker_prune | default(platform_node_storage_docker_prune_from_env, true) | default(false, true) | bool }}"
+    platform_node_storage_docker_prune_until_effective: "{{ platform_node_storage_docker_prune_until | default(platform_node_storage_docker_prune_until_from_env, true) | default('168h', true) }}"
+    platform_node_storage_journal_vacuum_size_effective: "{{ platform_node_storage_journal_vacuum_size | default(platform_node_storage_journal_vacuum_size_from_env, true) | default('0', true) }}"
+    platform_node_storage_longhorn_path_effective: "{{ platform_node_storage_longhorn_path | default(platform_node_storage_longhorn_path_from_env, true) | default('/var/lib/longhorn', true) }}"
+
+  tasks:
+    - name: Validate node storage cleanup controls
+      ansible.builtin.assert:
+        that:
+          - platform_node_storage_docker_prune_until_effective is match('^[0-9]+[smhdw]$')
+          - platform_node_storage_journal_vacuum_size_effective == '0' or platform_node_storage_journal_vacuum_size_effective is match('^[0-9]+[KMG]$')
+          - platform_node_storage_longhorn_path_effective.startswith('/')
+        fail_msg: >-
+          Node storage cleanup controls are invalid. Docker retention must look
+          like 168h, journal vacuum must be 0 or a size such as 2G, and the
+          Longhorn path must be absolute.
+
+    - name: Collect root and Longhorn filesystem usage
+      ansible.builtin.shell: |
+        set -o pipefail
+        longhorn_path={{ platform_node_storage_longhorn_path_effective | quote }}
+        root_device="$(df -P / | awk 'NR == 2 { print $1 }')"
+        root_used="$(df -P / | awk 'NR == 2 { print $5 }')"
+        root_available_kib="$(df -P / | awk 'NR == 2 { print $4 }')"
+        if [ -e "${longhorn_path}" ]; then
+          longhorn_device="$(df -P "${longhorn_path}" | awk 'NR == 2 { print $1 }')"
+          longhorn_used="$(df -P "${longhorn_path}" | awk 'NR == 2 { print $5 }')"
+          longhorn_available_kib="$(df -P "${longhorn_path}" | awk 'NR == 2 { print $4 }')"
+        else
+          longhorn_device=absent
+          longhorn_used=unknown
+          longhorn_available_kib=unknown
+        fi
+
+        printf 'node=%s root_device=%s root_used=%s root_available_kib=%s longhorn_path=%s longhorn_device=%s longhorn_used=%s longhorn_available_kib=%s\n' \
+          {{ inventory_hostname | quote }} \
+          "${root_device:-unknown}" \
+          "${root_used:-unknown}" \
+          "${root_available_kib:-unknown}" \
+          "${longhorn_path}" \
+          "${longhorn_device:-unknown}" \
+          "${longhorn_used:-unknown}" \
+          "${longhorn_available_kib:-unknown}"
+
+        if [ "${root_device}" = "${longhorn_device}" ]; then
+          echo 'longhorn_default_path_shares_root=true'
+          echo 'warning=Longhorn replica and snapshot data can consume root filesystem space.'
+        elif [ "${longhorn_device}" = absent ]; then
+          echo 'longhorn_default_path_shares_root=unknown'
+        else
+          echo 'longhorn_default_path_shares_root=false'
+        fi
+
+        echo 'top_root_filesystems_bytes:'
+        if command -v timeout >/dev/null 2>&1; then
+          timeout 120 du -x -d 1 -B1 / 2>/dev/null | sort -n | tail -20 || true
+        else
+          du -x -d 1 -B1 / 2>/dev/null | sort -n | tail -20 || true
+        fi
+
+        if [ -d "${longhorn_path}" ]; then
+          echo 'top_longhorn_paths_bytes:'
+          if command -v timeout >/dev/null 2>&1; then
+            timeout 120 du -x -d 2 -B1 "${longhorn_path}" 2>/dev/null | sort -n | tail -20 || true
+          else
+            du -x -d 2 -B1 "${longhorn_path}" 2>/dev/null | sort -n | tail -20 || true
+          fi
+        fi
+
+        echo 'journal_usage:'
+        journalctl --disk-usage 2>/dev/null || true
+        echo 'container_log_usage:'
+        for path in /var/log/pods /var/log/containers; do
+          if [ -d "${path}" ]; then
+            du -shx "${path}" 2>/dev/null || true
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_before
+      changed_when: false
+
+    - name: Print root and Longhorn filesystem usage
+      ansible.builtin.debug:
+        var: platform_node_storage_before.stdout_lines
+
+    - name: Reclaim unused RKE2 container images
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ "{{ platform_node_storage_cleanup_effective | bool | lower }}" != "true" ] ||
+          [ "{{ platform_node_storage_cri_prune_effective | bool | lower }}" != "true" ]; then
+          echo 'cri_image_prune=skipped'
+          exit 0
+        fi
+
+        CRICTL=/var/lib/rancher/rke2/bin/crictl
+        if [ ! -x "${CRICTL}" ]; then
+          echo 'cri_image_prune=skipped reason=crictl-not-found'
+          exit 0
+        fi
+
+        crictl_args=(--timeout 60s)
+        if [ -S /run/k3s/containerd/containerd.sock ]; then
+          crictl_args+=(--runtime-endpoint unix:///run/k3s/containerd/containerd.sock)
+        elif [ -S /run/containerd/containerd.sock ]; then
+          crictl_args+=(--runtime-endpoint unix:///run/containerd/containerd.sock)
+        fi
+
+        echo 'cri_image_prune=started'
+        "${CRICTL}" "${crictl_args[@]}" rmi --prune
+        echo 'cri_image_prune=completed'
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_cri_prune
+      changed_when: "'cri_image_prune=completed' in platform_node_storage_cri_prune.stdout"
+
+    - name: Clean package-manager caches
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ "{{ platform_node_storage_cleanup_effective | bool | lower }}" != "true" ] ||
+          [ "{{ platform_node_storage_dnf_clean_effective | bool | lower }}" != "true" ]; then
+          echo 'dnf_clean=skipped'
+          exit 0
+        fi
+        if ! command -v dnf >/dev/null 2>&1; then
+          echo 'dnf_clean=skipped reason=dnf-not-found'
+          exit 0
+        fi
+        dnf clean all
+        echo 'dnf_clean=completed'
+      register: platform_node_storage_dnf_clean
+      args:
+        executable: /bin/bash
+      changed_when: "'dnf_clean=completed' in platform_node_storage_dnf_clean.stdout"
+
+    - name: Clean system-managed temporary files
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ "{{ platform_node_storage_cleanup_effective | bool | lower }}" != "true" ] ||
+          [ "{{ platform_node_storage_tmpfiles_clean_effective | bool | lower }}" != "true" ]; then
+          echo 'tmpfiles_clean=skipped'
+          exit 0
+        fi
+        if ! command -v systemd-tmpfiles >/dev/null 2>&1; then
+          echo 'tmpfiles_clean=skipped reason=systemd-tmpfiles-not-found'
+          exit 0
+        fi
+        systemd-tmpfiles --clean
+        echo 'tmpfiles_clean=completed'
+      register: platform_node_storage_tmpfiles_clean
+      args:
+        executable: /bin/bash
+      changed_when: "'tmpfiles_clean=completed' in platform_node_storage_tmpfiles_clean.stdout"
+
+    - name: Optionally prune old Docker images and build cache
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! command -v docker >/dev/null 2>&1; then
+          echo 'docker_prune=skipped reason=docker-not-found'
+          exit 0
+        fi
+        if ! docker info >/dev/null 2>&1; then
+          echo 'docker_prune=skipped reason=docker-daemon-unavailable'
+          exit 0
+        fi
+        docker system prune --all --force --filter "until={{ platform_node_storage_docker_prune_until_effective }}"
+        echo 'docker_prune=completed'
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_docker_prune
+      changed_when: "'docker_prune=completed' in platform_node_storage_docker_prune.stdout"
+      when:
+        - platform_node_storage_cleanup_effective | bool
+        - platform_node_storage_docker_prune_effective | bool
+
+    - name: Optionally vacuum old system journal entries
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! command -v journalctl >/dev/null 2>&1; then
+          echo 'journal_vacuum=skipped reason=journalctl-not-found'
+          exit 0
+        fi
+        journalctl --vacuum-size={{ platform_node_storage_journal_vacuum_size_effective | quote }}
+        echo 'journal_vacuum=completed'
+      register: platform_node_storage_journal_vacuum
+      args:
+        executable: /bin/bash
+      changed_when: "'journal_vacuum=completed' in platform_node_storage_journal_vacuum.stdout"
+      when:
+        - platform_node_storage_cleanup_effective | bool
+        - platform_node_storage_journal_vacuum_size_effective != '0'
+
+    - name: Collect root filesystem usage after cleanup
+      ansible.builtin.shell: |
+        set -o pipefail
+        df -hT /
+        echo 'cleanup_policy=Longhorn replicas, snapshots, volume heads, PVCs, and mounted application data were not deleted'
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_after
+      changed_when: false
+
+    - name: Print root filesystem usage after cleanup
+      ansible.builtin.debug:
+        var: platform_node_storage_after.stdout_lines

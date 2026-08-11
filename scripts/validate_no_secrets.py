@@ -40,9 +40,9 @@ default_rke2_pod_cidr = '.'.join(('10', '42', '0', '0')) + '/16'
 
 vendored_document_exceptions = {
     'gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/'
-    'traefik-41.0.1/traefik/Changelog.md',
+    'traefik-41.2.0/traefik/Changelog.md',
     'gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/'
-    'traefik-41.0.1/traefik/EXAMPLES.md',
+    'traefik-41.2.0/traefik/EXAMPLES.md',
 }
 
 allow_fragments = [

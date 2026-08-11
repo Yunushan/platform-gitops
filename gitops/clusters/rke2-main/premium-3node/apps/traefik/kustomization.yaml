@@ -4,7 +4,7 @@ namespace: traefik
 resources:
   - namespace.yaml
 helmGlobals:
-  chartHome: charts/traefik-41.0.1
+  chartHome: charts/traefik-41.2.0
 helmCharts:
   - name: traefik
     releaseName: platform-traefik
