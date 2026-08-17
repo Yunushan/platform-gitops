@@ -541,6 +541,17 @@ PLATFORM_LONGHORN_IMAGE_PULL_FAST_FAIL=true make platform-longhorn-bootstrap
 For production, configure a local registry mirror or preload the Longhorn images
 on all RKE2 nodes.
 
+All Forgejo diagnostics and repair targets validate and normalize
+`inventory/hosts.local.ini` before invoking Ansible. If the inventory is
+missing, malformed, or still contains example node values, the target stops
+before contacting the cluster. Replace the example node addresses and SSH
+users in the ignored local inventory, then rerun the target:
+
+```bash
+make platform-inventory-preflight
+make platform-forgejo-diagnose
+```
+
 If the Forgejo PVC is `Bound` but the Forgejo pod remains in `Init:*`, Longhorn
 has provisioned storage and the next useful signal is the Forgejo pod's
 init-container state, logs, PVC/PV mapping, and Longhorn volume attachment:
