@@ -11,9 +11,11 @@
     platform_forgejo_ingress_verify_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_INGRESS_VERIFY_TIMEOUT') }}"
     platform_forgejo_ingress_connect_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_INGRESS_CONNECT_TIMEOUT') }}"
     platform_forgejo_ingress_max_time_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_INGRESS_MAX_TIME') }}"
+    platform_forgejo_ingress_native_lb_fallback_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_INGRESS_NATIVE_LB_FALLBACK') }}"
     platform_forgejo_ingress_verify_timeout_effective: "{{ platform_forgejo_ingress_verify_timeout | default(platform_forgejo_ingress_verify_timeout_from_env, true) | default(180, true) | string | regex_replace('s$', '') | int }}"
     platform_forgejo_ingress_connect_timeout_effective: "{{ platform_forgejo_ingress_connect_timeout | default(platform_forgejo_ingress_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_forgejo_ingress_max_time_effective: "{{ platform_forgejo_ingress_max_time | default(platform_forgejo_ingress_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
+    platform_forgejo_ingress_native_lb_fallback_effective: "{{ platform_forgejo_ingress_native_lb_fallback | default(platform_forgejo_ingress_native_lb_fallback_from_env, true) | default(true, true) | bool }}"
     platform_forgejo_ingress_poll_interval_effective: 10
     platform_forgejo_ingress_verify_retries: "{{ (((platform_forgejo_ingress_verify_timeout_effective | int) / (platform_forgejo_ingress_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
   vars_files:
@@ -262,6 +264,90 @@
       delegate_to: localhost
       run_once: true
 
+    - name: Retry Forgejo ingress with endpoint load balancing after native path failure
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        echo "forgejo_ingress_fallback=endpoint-mode"
+        "$K" --kubeconfig "$C" -n forgejo annotate service/forgejo-http \
+          traefik.ingress.kubernetes.io/service.nativelb=false --overwrite
+
+        if "$K" --kubeconfig "$C" -n forgejo get ingress/platform-forgejo >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n forgejo annotate ingress/platform-forgejo \
+            traefik.ingress.kubernetes.io/service.nativelb=false --overwrite
+        fi
+
+        if "$K" --kubeconfig "$C" -n forgejo get ingressroute/forgejo-http >/dev/null 2>&1; then
+          "$K" --kubeconfig "$C" -n forgejo patch ingressroute/forgejo-http --type=merge -p '{
+            "spec": {
+              "entryPoints": ["websecure"],
+              "routes": [{
+                "match": "Host(`{{ platform_forgejo_host_effective }}`)",
+                "kind": "Rule",
+                "services": [{
+                  "name": "forgejo-http",
+                  "namespace": "forgejo",
+                  "port": 3000,
+                  "scheme": "http",
+                  "nativeLB": false
+                }]
+              }],
+              "tls": {}
+            }
+          }'
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_forgejo_ingress_endpoint_mode_apply
+      changed_when: true
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when:
+        - platform_forgejo_ingress_controller_check.rc != 0
+        - platform_forgejo_ingress_native_lb_fallback_effective | bool
+
+    - name: Verify Forgejo ingress after endpoint-mode fallback
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if ! command -v curl >/dev/null 2>&1; then
+          echo "curl is not installed on the Ansible controller." >&2
+          exit 127
+        fi
+
+        echo "Checking endpoint-mode fallback for https://{{ platform_forgejo_host_effective }}/ through {{ rke2_ingress_vip_effective }}:443"
+        code="$(curl --silent --show-error --insecure --output /dev/null \
+          --write-out '%{http_code}' \
+          --connect-timeout {{ platform_forgejo_ingress_connect_timeout_effective }} \
+          --max-time {{ platform_forgejo_ingress_max_time_effective }} \
+          --resolve {{ platform_forgejo_host_effective }}:443:{{ rke2_ingress_vip_effective }} \
+          https://{{ platform_forgejo_host_effective }}/)"
+        printf 'fallback_http_code=%s\n' "${code}"
+        case "${code}" in
+          200|301|302|303|307|308|401|403) exit 0 ;;
+          *) exit 1 ;;
+        esac
+      args:
+        executable: /bin/bash
+      register: platform_forgejo_ingress_endpoint_mode_check
+      retries: "{{ platform_forgejo_ingress_verify_retries }}"
+      delay: "{{ platform_forgejo_ingress_poll_interval_effective }}"
+      until: platform_forgejo_ingress_endpoint_mode_check.rc == 0
+      changed_when: false
+      failed_when: false
+      become: false
+      delegate_to: localhost
+      run_once: true
+      when:
+        - platform_forgejo_ingress_controller_check.rc != 0
+        - platform_forgejo_ingress_native_lb_fallback_effective | bool
+
+    - name: Select final Forgejo ingress verification result
+      ansible.builtin.set_fact:
+        platform_forgejo_ingress_final_check: "{{ platform_forgejo_ingress_endpoint_mode_check if (platform_forgejo_ingress_native_lb_fallback_effective | bool and platform_forgejo_ingress_endpoint_mode_check is defined) else platform_forgejo_ingress_controller_check }}"
+      run_once: true
+
     - name: Collect Forgejo ingress diagnostics after verification failure
       ansible.builtin.shell: |
         set -o pipefail
@@ -284,7 +370,7 @@
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
-      when: platform_forgejo_ingress_controller_check.rc != 0
+      when: platform_forgejo_ingress_final_check.rc != 0
 
     - name: Stop after Forgejo ingress verification failure
       ansible.builtin.fail:
@@ -294,21 +380,27 @@
           {{ platform_forgejo_ingress_verify_timeout_effective }}s.
 
           Controller/client VIP check:
-          rc={{ platform_forgejo_ingress_controller_check.rc | default('not run') }}
+          rc={{ platform_forgejo_ingress_final_check.rc | default('not run') }}
           stdout:
-          {{ platform_forgejo_ingress_controller_check.stdout | default('not run') }}
+          {{ platform_forgejo_ingress_final_check.stdout | default('not run') }}
           stderr:
-          {{ platform_forgejo_ingress_controller_check.stderr | default('') }}
+          {{ platform_forgejo_ingress_final_check.stderr | default('') }}
+
+          Native service-load-balancing fallback:
+          {{ 'attempted' if (platform_forgejo_ingress_native_lb_fallback_effective | bool and platform_forgejo_ingress_controller_check.rc != 0) else 'disabled/not needed' }}
 
           Diagnostic summary:
           {{ platform_forgejo_ingress_failure.stdout | default('not collected') }}
       run_once: true
-      when: platform_forgejo_ingress_controller_check.rc != 0
+      when: platform_forgejo_ingress_final_check.rc != 0
 
     - name: Show Forgejo ingress access summary
       ansible.builtin.debug:
         msg: |-
           Forgejo ingress is ready.
+
+          Backend routing mode:
+          - {{ 'endpoint mode (nativeLB fallback)' if (platform_forgejo_ingress_endpoint_mode_check is defined and platform_forgejo_ingress_endpoint_mode_check.rc == 0) else 'native service load balancing' }}
 
           URL:
           - https://{{ platform_forgejo_host_effective }}

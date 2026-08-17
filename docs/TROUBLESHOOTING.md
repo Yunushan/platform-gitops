@@ -623,6 +623,22 @@ PLATFORM_FORGEJO_INGRESS_VERIFY_TIMEOUT=60 make platform-forgejo-ingress
 PLATFORM_FORGEJO_INGRESS_VERIFY_TIMEOUT=600 make platform-forgejo-ingress
 ```
 
+If Forgejo is `1/1 Running` and the host returns `502 Bad Gateway` or `504`,
+the VIP and Traefik are reachable but the native Kubernetes Service path may
+be failing. `platform-forgejo-ingress` now retries the published route in
+endpoint mode automatically after the first VIP probe fails. The fallback is
+enabled by default and can be disabled when native Service load balancing is
+required:
+
+```bash
+PLATFORM_FORGEJO_INGRESS_NATIVE_LB_FALLBACK=false make platform-forgejo-ingress
+```
+
+If endpoint mode also fails, the target prints the Forgejo Service,
+EndpointSlice, Traefik, and node-path diagnostics. A failure with no ready
+endpoints still requires repairing the Forgejo pod, database, or PVC before
+ingress can work; the fallback does not bypass an unhealthy application.
+
 If Longhorn manager logs repeat `the server could not find the requested
 resource` for `nodes.longhorn.io`, `engines.longhorn.io`, or
 `engineimages.longhorn.io`, restore the missing CRDs and restart Longhorn:
