@@ -1,5 +1,5 @@
 ---
-- name: Repair Forgejo storage after an interrupted first deploy
+- name: Repair Forgejo storage and backend runtime
   hosts: rke2_servers
   become: true
   gather_facts: false
@@ -14,6 +14,8 @@
     platform_forgejo_storage_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_STORAGE_REPAIR_TIMEOUT') }}"
     platform_forgejo_volume_attach_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_VOLUME_ATTACH_REPAIR_TIMEOUT') }}"
     platform_forgejo_pod_ip_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_POD_IP_WAIT_TIMEOUT') }}"
+    platform_forgejo_stale_pod_min_age_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_STALE_POD_MIN_AGE') }}"
+    platform_forgejo_backend_ready_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_BACKEND_READY_TIMEOUT') }}"
     platform_longhorn_default_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
     platform_longhorn_default_disk_repair_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_REPAIR_ENABLED') }}"
     platform_forgejo_namespace_effective: "{{ platform_forgejo_namespace | default(platform_forgejo_namespace_from_env, true) | default('forgejo', true) }}"
@@ -24,6 +26,8 @@
     platform_forgejo_storage_repair_timeout_effective: "{{ platform_forgejo_storage_repair_timeout | default(platform_forgejo_storage_repair_timeout_from_env, true) | default(300, true) | int }}"
     platform_forgejo_volume_attach_repair_timeout_effective: "{{ platform_forgejo_volume_attach_repair_timeout | default(platform_forgejo_volume_attach_repair_timeout_from_env, true) | default(600, true) | int }}"
     platform_forgejo_pod_ip_wait_timeout_effective: "{{ platform_forgejo_pod_ip_wait_timeout | default(platform_forgejo_pod_ip_wait_timeout_from_env, true) | default(180, true) | int }}"
+    platform_forgejo_stale_pod_min_age_effective: "{{ platform_forgejo_stale_pod_min_age | default(platform_forgejo_stale_pod_min_age_from_env, true) | default(120, true) | int }}"
+    platform_forgejo_backend_ready_timeout_effective: "{{ platform_forgejo_backend_ready_timeout | default(platform_forgejo_backend_ready_timeout_from_env, true) | default(600, true) | int }}"
     platform_longhorn_default_disk_path_effective: "{{ platform_longhorn_default_disk_path | default(platform_longhorn_default_disk_path_from_env, true) | default('/var/lib/longhorn', true) }}"
     platform_longhorn_default_disk_repair_enabled_effective: "{{ platform_longhorn_default_disk_repair_enabled | default(platform_longhorn_default_disk_repair_enabled_from_env, true) | default(true, true) | bool }}"
   tasks:
@@ -857,6 +861,189 @@
           run_once: true
 
       when: forgejo_longhorn_attach_problem.rc == 42
+
+    - name: Recycle stale non-ready Forgejo pods after storage recovery
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        ns={{ platform_forgejo_namespace_effective | quote }}
+        min_age={{ platform_forgejo_stale_pod_min_age_effective | int }}
+
+        if ! "$K" --kubeconfig "$C" get "namespace/${ns}" >/dev/null 2>&1; then
+          echo "forgejo_stale_pod_recycle=not-needed reason=namespace-absent"
+          exit 0
+        fi
+
+        pod_lines="$("$K" --kubeconfig "$C" -n "$ns" get pods \
+          -l app.kubernetes.io/name=forgejo \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.creationTimestamp}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}{"|"}{.spec.nodeName}{"|"}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' \
+          2>/dev/null || true)"
+        if [ -z "${pod_lines}" ]; then
+          pod_lines="$("$K" --kubeconfig "$C" -n "$ns" get pods \
+            -l app.kubernetes.io/instance=forgejo \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.creationTimestamp}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}{"|"}{.spec.nodeName}{"|"}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' \
+            2>/dev/null || true)"
+        fi
+        if [ -z "${pod_lines}" ]; then
+          echo "forgejo_stale_pod_recycle=not-needed reason=no-pods"
+          exit 0
+        fi
+
+        ready_count="$(printf '%s\n' "${pod_lines}" | awk -F'|' '$6 == "True" { count++ } END { print count + 0 }')"
+        if [ "${ready_count}" -gt 0 ]; then
+          echo "forgejo_stale_pod_recycle=not-needed reason=ready-backend-present ready=${ready_count}"
+          exit 0
+        fi
+
+        now="$(date +%s)"
+        changed=0
+        while IFS='|' read -r pod created deleting phase node ready; do
+          [ -n "${pod}" ] || continue
+          if [ -n "${deleting}" ]; then
+            echo "pod=${pod} action=retain reason=already-terminating"
+            continue
+          fi
+          created_epoch="$(date -d "${created}" +%s 2>/dev/null || printf '%s' "${now}")"
+          age=$((now - created_epoch))
+          reason=""
+          case "${phase}" in
+            Failed|Unknown)
+              reason="terminal-${phase}"
+              ;;
+            Pending)
+              if [ -z "${node}" ] && [ "${age}" -ge "${min_age}" ]; then
+                reason="unscheduled-pending"
+              fi
+              ;;
+          esac
+          if [ -z "${reason}" ]; then
+            echo "pod=${pod} action=retain phase=${phase:-unknown} node=${node:-none} age_seconds=${age}"
+            continue
+          fi
+          echo "pod=${pod} action=delete-stale-forgejo-pod reason=${reason} age_seconds=${age}"
+          "$K" --kubeconfig "$C" -n "$ns" delete "pod/${pod}" \
+            --ignore-not-found=true --wait=false
+          changed=1
+        done <<<"${pod_lines}"
+
+        if [ "${changed}" -eq 0 ]; then
+          echo "forgejo_stale_pod_recycle=not-needed"
+        else
+          echo "forgejo_stale_pod_recycle=requested"
+        fi
+      args:
+        executable: /bin/bash
+      register: forgejo_stale_pod_recycle
+      changed_when: "'action=delete-stale-forgejo-pod' in forgejo_stale_pod_recycle.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Print Forgejo stale pod recovery
+      ansible.builtin.debug:
+        var: forgejo_stale_pod_recycle.stdout_lines
+      run_once: true
+
+    - block:
+        - name: Wait for a ready Forgejo backend and service endpoint
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+
+            pod_lines="$("$K" --kubeconfig "$C" -n "$ns" get pods \
+              -l app.kubernetes.io/name=forgejo \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{.spec.nodeName}{"|"}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' \
+              2>/dev/null || true)"
+            ready_pods="$(printf '%s\n' "${pod_lines}" | awk -F'|' '$4 == "True" { count++ } END { print count + 0 }')"
+            endpoint_lines="$("$K" --kubeconfig "$C" -n "$ns" get endpointslice \
+              -l kubernetes.io/service-name=forgejo-http \
+              -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{"|"}{.conditions.ready}{"\n"}{end}' \
+              2>/dev/null || true)"
+            ready_endpoints="$(printf '%s\n' "${endpoint_lines}" | awk -F'|' '$1 != "" && $2 != "false" { count++ } END { print count + 0 }')"
+
+            printf '%s\n' "${pod_lines}"
+            printf 'forgejo_ready_pods=%s forgejo_ready_endpoints=%s\n' \
+              "${ready_pods}" "${ready_endpoints}"
+            test "${ready_pods}" -ge 1
+            test "${ready_endpoints}" -ge 1
+          args:
+            executable: /bin/bash
+          register: forgejo_backend_ready
+          retries: "{{ (((platform_forgejo_backend_ready_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+          delay: 10
+          until: forgejo_backend_ready.rc == 0
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+      rescue:
+        - name: Collect Forgejo backend recovery failure diagnostics
+          ansible.builtin.shell: |
+            set -o pipefail
+            K=/var/lib/rancher/rke2/bin/kubectl
+            C=/etc/rancher/rke2/rke2.yaml
+            ns={{ platform_forgejo_namespace_effective | quote }}
+            pvc={{ platform_forgejo_pvc_name_effective | quote }}
+
+            echo "===== Forgejo workloads ====="
+            "$K" --kubeconfig "$C" -n "$ns" get deployment,statefulset,replicaset,pods -o wide || true
+            echo "===== Forgejo service endpoints ====="
+            "$K" --kubeconfig "$C" -n "$ns" get service,endpointslice -o wide || true
+            echo "===== Forgejo scheduling and mount events ====="
+            for pod in $("$K" --kubeconfig "$C" -n "$ns" get pods \
+              -l app.kubernetes.io/name=forgejo -o name 2>/dev/null); do
+              echo "===== ${pod} ====="
+              "$K" --kubeconfig "$C" -n "$ns" describe "$pod" | sed -n '/Events:/,$p' || true
+            done
+            echo "===== Node capacity and conditions ====="
+            "$K" --kubeconfig "$C" get nodes \
+              -o custom-columns='NAME:.metadata.name,CPU:.status.allocatable.cpu,MEMORY:.status.allocatable.memory,EPHEMERAL:.status.allocatable.ephemeral-storage,TAINTS:.spec.taints' || true
+            echo "===== Forgejo PVC and Longhorn volume ====="
+            "$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o wide || true
+            pv="$("$K" --kubeconfig "$C" -n "$ns" get "pvc/${pvc}" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+            handle=""
+            if [ -n "${pv}" ]; then
+              "$K" --kubeconfig "$C" get "pv/${pv}" -o wide || true
+              handle="$("$K" --kubeconfig "$C" get "pv/${pv}" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)"
+            fi
+            if [ -n "${handle}" ]; then
+              "$K" --kubeconfig "$C" -n longhorn-system get \
+                "volumes.longhorn.io/${handle}" -o wide || true
+              "$K" --kubeconfig "$C" -n longhorn-system get replicas.longhorn.io \
+                -l "longhornvolume=${handle}" -o wide || true
+            fi
+            echo "===== Volume attachments ====="
+            if [ -n "${handle}" ]; then
+              "$K" --kubeconfig "$C" get volumeattachment -o wide | \
+                { grep -F "${handle}" || true; }
+            else
+              echo "No Forgejo Longhorn volume handle was resolved."
+            fi
+            echo "===== Recent Forgejo events ====="
+            "$K" --kubeconfig "$C" -n "$ns" get events --sort-by=.lastTimestamp | tail -120 || true
+          args:
+            executable: /bin/bash
+          register: forgejo_backend_recovery_failure
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Stop when Forgejo backend recovery remains incomplete
+          ansible.builtin.fail:
+            msg: |-
+              Forgejo still has no ready Kubernetes Service endpoint after
+              {{ platform_forgejo_backend_ready_timeout_effective }}s.
+
+              The recovery did not delete the Forgejo PVC, PV, Longhorn volume,
+              or any Longhorn replica. Do not enable
+              PLATFORM_FORGEJO_RESET_STUCK_PVC for an instance that may contain
+              repositories or other data.
+
+              Diagnostics:
+              {{ forgejo_backend_recovery_failure.stdout }}
+          run_once: true
 
     - name: Show Forgejo storage repair result
       ansible.builtin.shell: |
