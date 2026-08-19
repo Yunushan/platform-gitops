@@ -81,11 +81,22 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Copy TLS chain completion helper to first server
+      ansible.builtin.copy:
+        src: ../../scripts/complete_tls_chain.sh
+        dest: "{{ platform_tls_remote_directory }}/complete-tls-chain.sh"
+        owner: root
+        group: root
+        mode: "0700"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Validate wildcard TLS material and apply namespace-local secrets
       ansible.builtin.shell: |
         set -euo pipefail
         cert="{{ platform_tls_remote_directory }}/tls.crt"
         key="{{ platform_tls_remote_directory }}/tls.key"
+        fullchain="{{ platform_tls_remote_directory }}/tls.fullchain.crt"
         minimum_validity_seconds=$(({{ platform_tls_min_validity_days_effective | int }} * 86400))
         cleanup() {
           rm -rf "{{ platform_tls_remote_directory }}"
@@ -96,6 +107,10 @@
         openssl x509 -in "${cert}" -noout -checkend "${minimum_validity_seconds}"
         test "$(openssl x509 -in "${cert}" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | awk '{print $1}')" = \
           "$(openssl pkey -in "${key}" -pubout -outform DER | sha256sum | awk '{print $1}')"
+
+        "{{ platform_tls_remote_directory }}/complete-tls-chain.sh" \
+          "${cert}" \
+          "${fullchain}"
 
         for host in \
           "{{ platform_argocd_host_effective }}" \
@@ -118,7 +133,7 @@
         while IFS=: read -r namespace secret; do
           namespace_result="$("$K" --kubeconfig "$C" create namespace "${namespace}" --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -)"
           secret_result="$("$K" --kubeconfig "$C" -n "${namespace}" create secret tls "${secret}" \
-            --cert="${cert}" \
+            --cert="${fullchain}" \
             --key="${key}" \
             --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -)"
           case "${namespace_result} ${secret_result}" in
@@ -148,7 +163,10 @@
       ansible.builtin.debug:
         msg: >-
           Validated a matching wildcard certificate/key pair and applied
-          namespace-local TLS Secrets for Argo CD, Forgejo, Woodpecker, Harbor,
-          Keycloak, Grafana, Prometheus, and Loki. Private source files were
-          removed from the server after the Kubernetes Secrets were updated.
+          a system-trusted leaf-and-intermediate chain to namespace-local TLS
+          Secrets for Argo CD, Forgejo, Woodpecker, Harbor, Keycloak, Grafana,
+          Prometheus, and Loki. Missing intermediates were retrieved from the
+          certificate's signed AIA issuer path when necessary. Private source
+          files were removed from the server after the Kubernetes Secrets were
+          updated.
       run_once: true

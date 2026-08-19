@@ -921,9 +921,14 @@ PLATFORM_APP_HEALTH_TRUST_BUNDLES="platform-public-roots" make platform-app-heal
 
 To deploy a pre-issued wildcard certificate, keep the certificate and private
 key in ignored local paths, then let the TLS target validate the matching key,
-minimum remaining validity, and coverage for every platform hostname before it
-creates namespace-local Secrets. Neither input is committed and the temporary
-server copy is removed automatically:
+minimum remaining validity, hostname coverage, and complete system-trusted
+issuer chain before it creates namespace-local Secrets. A PEM full chain is
+accepted directly. When the input contains only the leaf certificate, the
+target follows the certificate's HTTP(S) CA Issuers AIA path with bounded
+downloads and accepts each intermediate only after its signature and CA
+constraints are verified. Disconnected environments should provide the leaf
+and intermediates in the certificate file. Neither input is committed and the
+temporary server copy is removed automatically:
 
 ```bash
 PLATFORM_WILDCARD_TLS_CERT_FILE=/secure/path/wildcard.crt \
@@ -937,6 +942,11 @@ The target updates `argocd-server-tls`, `forgejo-tls`, `woodpecker-tls`,
 in their respective namespaces. Set `HARBOR_TLS_CERT_SOURCE=secret` and
 `HARBOR_TLS_SECRET_NAME=harbor-tls` before rendering Harbor values so it uses
 the same managed wildcard Secret.
+
+`make platform-tls-verify` verifies both the Secret contents and every chain
+served by the ingress VIP against the node's system trust store. A leaf-only
+Secret therefore fails before applications such as Woodpecker encounter an
+`x509: certificate signed by unknown authority` error during OAuth.
 
 When step-ca is required, the health gate probes its in-cluster HTTPS
 `/health` endpoint through the ClusterIP service. To skip that during a

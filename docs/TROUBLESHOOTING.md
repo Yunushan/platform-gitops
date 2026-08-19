@@ -327,6 +327,30 @@ printing secret values. To skip only that check during a temporary debug run:
 PLATFORM_APP_HEALTH_APP_SECRETS=skip make platform-app-health
 ```
 
+If Woodpecker redirects back to `/login?error=oauth_error`, inspect the server
+log before rotating OAuth credentials. When it reports `x509: certificate
+signed by unknown authority` for Forgejo's token endpoint, the OAuth client and
+redirect can still be correct; the ingress is serving an incomplete TLS chain.
+Run the normal repair target:
+
+```bash
+make platform-woodpecker-repair
+```
+
+The repair verifies Forgejo from the ingress VIP with SNI and the system trust
+store. If an intermediate is missing, it completes the existing Forgejo TLS
+Secret from the certificate's cryptographically verified CA Issuers AIA path,
+updates other platform TLS Secrets only when they contain the exact same wildcard
+leaf fingerprint, waits for Traefik to serve the repaired chain, and then
+continues Woodpecker reconciliation. If ready Traefik replicas retain the old certificate cache, the
+repair recycles them serially and waits for full replica readiness after each
+replacement. It never enables Woodpecker's TLS skip-verification setting.
+
+The `platform-tls-verify` gate uses each live Ingress TLS Secret binding as the
+authoritative hostname when one exists. This keeps verification aligned with
+custom hostnames even when optional hostname variables are absent from the local
+inventory.
+
 For production Harbor, add
 `PLATFORM_APP_HEALTH_HARBOR_PRODUCTION_SECRETS=true` so the same gate also
 requires the external PostgreSQL password, external Redis password, and registry

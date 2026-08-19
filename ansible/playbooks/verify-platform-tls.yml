@@ -32,21 +32,93 @@
         vip="{{ rke2_ingress_vip_effective }}"
         minimum_validity_seconds=$(({{ platform_tls_min_validity_days_effective | int }} * 86400))
         temporary_directory="$(mktemp -d /run/platform-tls-verify.XXXXXX)"
+        trust_bundle=""
+        for candidate in \
+          /etc/pki/tls/certs/ca-bundle.crt \
+          /etc/ssl/certs/ca-certificates.crt \
+          /etc/ssl/ca-bundle.pem
+        do
+          if [ -s "${candidate}" ]; then
+            trust_bundle="${candidate}"
+            break
+          fi
+        done
+        test -n "${trust_bundle}"
         cleanup() {
           rm -rf "${temporary_directory}"
         }
         trap cleanup EXIT
 
+        verify_chain_file() {
+          source_path="$1"
+          prefix="$2"
+          leaf_path="${prefix}-leaf.crt"
+          intermediate_path="${prefix}-intermediates.crt"
+          : >"${leaf_path}"
+          : >"${intermediate_path}"
+          awk -v leaf="${leaf_path}" -v intermediates="${intermediate_path}" '
+            /-----BEGIN CERTIFICATE-----/ { count++; capture=1 }
+            capture {
+              if (count == 1) print > leaf
+              else print > intermediates
+            }
+            /-----END CERTIFICATE-----/ { capture=0 }
+            END { if (count < 1 || capture) exit 1 }
+          ' "${source_path}"
+          if [ -s "${intermediate_path}" ]; then
+            openssl verify -purpose sslserver \
+              -CAfile "${trust_bundle}" \
+              -untrusted "${intermediate_path}" \
+              "${leaf_path}" >/dev/null
+          else
+            openssl verify -purpose sslserver \
+              -CAfile "${trust_bundle}" \
+              "${leaf_path}" >/dev/null
+          fi
+        }
+
         verify_certificate() {
           namespace="$1"
           secret="$2"
-          host="$3"
+          configured_host="$3"
+          ingress_path="${temporary_directory}/${namespace}-ingresses.json"
           certificate_path="${temporary_directory}/${namespace}-${secret}.crt"
           served_path="${temporary_directory}/${namespace}-${secret}-served.crt"
+
+          if [ ! -s "${ingress_path}" ]; then
+            "$K" --kubeconfig "$C" -n "${namespace}" get ingress -o json >"${ingress_path}"
+          fi
+          discovered_host="$(python3 - "${ingress_path}" "${secret}" <<'PY'
+        import json
+        import sys
+
+        with open(sys.argv[1], encoding="utf-8") as handle:
+            ingresses = json.load(handle).get("items", [])
+        wanted_secret = sys.argv[2]
+        for ingress in ingresses:
+            spec = ingress.get("spec", {})
+            for tls in spec.get("tls", []) or []:
+                if str(tls.get("secretName") or "") != wanted_secret:
+                    continue
+                hosts = [str(host).strip() for host in tls.get("hosts", []) or [] if str(host).strip()]
+                if not hosts:
+                    hosts = [
+                        str(rule.get("host") or "").strip()
+                        for rule in spec.get("rules", [])
+                        if str(rule.get("host") or "").strip()
+                    ]
+                if hosts:
+                    print(hosts[0])
+                    raise SystemExit(0)
+        PY
+          )"
+          host="${discovered_host:-${configured_host}}"
+          test -n "${host}"
 
           "$K" --kubeconfig "$C" -n "${namespace}" get "secret/${secret}" \
             -o jsonpath='{.data.tls\.crt}' | base64 -d >"${certificate_path}"
           test -s "${certificate_path}"
+          verify_chain_file "${certificate_path}" "${temporary_directory}/${namespace}-${secret}-secret"
           openssl x509 -in "${certificate_path}" -noout -checkend "${minimum_validity_seconds}"
           host_result="$(openssl x509 -in "${certificate_path}" -noout -checkhost "${host}")"
           printf '%s' "${host_result}" | grep -F 'does match' >/dev/null
@@ -55,17 +127,26 @@
           timeout 20 openssl s_client \
             -connect "${vip}:443" \
             -servername "${host}" \
-            -showcerts </dev/null 2>/dev/null |
-            awk '
-              /-----BEGIN CERTIFICATE-----/ { capture=1 }
+            -showcerts \
+            -verify_return_error \
+            -verify_hostname "${host}" \
+            -verify_depth 5 \
+            -CAfile "${trust_bundle}" \
+            </dev/null >"${served_path}.raw" 2>&1
+          awk '
+              /-----BEGIN CERTIFICATE-----/ { capture=1; count++ }
               capture { print }
-              /-----END CERTIFICATE-----/ { exit }
-            ' >"${served_path}"
+              /-----END CERTIFICATE-----/ { capture=0 }
+              END { if (count < 1 || capture) exit 1 }
+            ' "${served_path}.raw" >"${served_path}"
           test -s "${served_path}"
+          verify_chain_file "${served_path}" "${temporary_directory}/${namespace}-${secret}-served-chain"
           served_fingerprint="$(openssl x509 -in "${served_path}" -outform DER | sha256sum | awk '{print $1}')"
           test "${expected_fingerprint}" = "${served_fingerprint}"
-          printf 'tls=%s/%s host=%s fingerprint=%s state=verified\n' \
-            "${namespace}" "${secret}" "${host}" "${served_fingerprint}"
+          printf 'tls=%s/%s host=%s host_source=%s fingerprint=%s state=verified\n' \
+            "${namespace}" "${secret}" "${host}" \
+            "$([ -n "${discovered_host}" ] && echo ingress || echo configured-fallback)" \
+            "${served_fingerprint}"
         }
 
         verify_certificate argocd argocd-server-tls "{{ platform_argocd_host_effective }}"
