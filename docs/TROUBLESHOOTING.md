@@ -552,6 +552,20 @@ make platform-inventory-preflight
 make platform-forgejo-diagnose
 ```
 
+After node disk pressure, eviction, or a Longhorn CSI registration outage, use
+the data-safe end-to-end recovery target:
+
+```bash
+make platform-forgejo-repair
+```
+
+It repairs the Longhorn runtime, removes only terminal Forgejo pods or old
+unscheduled `Pending` pods when no ready Forgejo backend exists, waits for a
+ready `forgejo-http` endpoint, and then verifies the published ingress. It does
+not enable `PLATFORM_FORGEJO_RESET_STUCK_PVC` and never deletes the Forgejo
+PVC/PV or Longhorn replicas. If storage cannot be recovered without risking
+data, the target stops with focused diagnostics.
+
 If the Forgejo PVC is `Bound` but the Forgejo pod remains in `Init:*`, Longhorn
 has provisioned storage and the next useful signal is the Forgejo pod's
 init-container state, logs, PVC/PV mapping, and Longhorn volume attachment:
