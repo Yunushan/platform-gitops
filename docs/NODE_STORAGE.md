@@ -50,6 +50,35 @@ old build cache, but does not remove Docker volumes. Journal vacuuming removes
 the oldest entries until the requested size remains, so use it only when the
 retention policy allows it.
 
+GitLab Runner Docker cache volumes can be reclaimed separately. The cleanup is
+restricted to unused volumes carrying both GitLab Runner managed-cache labels,
+matching the runner cache naming convention, and older than the retention
+window:
+
+```bash
+PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true \
+PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE_UNTIL=168h \
+make platform-node-storage-cleanup
+```
+
+`make platform-forgejo-repair` automatically enables this guarded cache cleanup
+only on nodes where Kubernetes reports `DiskPressure=True`, waits for pressure
+to clear, then repairs Longhorn and retries Forgejo. It preserves RKE2 images
+needed by the recovery so Longhorn is not delayed by avoidable image pulls.
+Active runner volumes, ordinary Docker volumes, Longhorn data, and PVC data are
+never selected.
+
+The focused Longhorn runtime repair also validates the v1 instance-manager data
+plane on every Ready Longhorn node. If an attaching data-bearing RWO volume has
+exactly one healthy registered replica and one stopped healthy-history replica
+whose local disk registration was removed, the repair can recover the stale
+path without deleting data. It requires one unambiguous Ready/Schedulable local
+filesystem disk, makes a same-filesystem reflink copy, compares the complete
+directory manifest, performs a server-side dry run, and then updates only the
+replica's disk metadata. The original directory remains in place as a recovery
+copy and should be removed only after backup and replica health are independently
+verified.
+
 ## What This Does Not Fix
 
 If the root filesystem is full because Longhorn replica data is on

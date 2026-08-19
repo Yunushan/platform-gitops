@@ -619,6 +619,12 @@ platform-forgejo-diagnose: platform-inventory-preflight
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/diagnose-forgejo.yml
 
 platform-forgejo-repair: platform-inventory-preflight
+	@PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true \
+		PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR=true \
+		PLATFORM_NODE_STORAGE_CRI_PRUNE=false \
+		PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true \
+		PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true \
+		$(MAKE) platform-node-storage-cleanup
 	@$(MAKE) platform-longhorn-runtime-repair
 	@$(MAKE) platform-forgejo-storage-repair
 	@$(MAKE) platform-forgejo-ingress

@@ -11,6 +11,11 @@
     platform_node_storage_tmpfiles_clean_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_TMPFILES_CLEAN') }}"
     platform_node_storage_docker_prune_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_DOCKER_PRUNE') }}"
     platform_node_storage_docker_prune_until_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_DOCKER_PRUNE_UNTIL') }}"
+    platform_node_storage_gitlab_runner_cache_prune_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE') }}"
+    platform_node_storage_gitlab_runner_cache_prune_until_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE_UNTIL') }}"
+    platform_node_storage_pressure_only_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_PRESSURE_ONLY') }}"
+    platform_node_storage_wait_for_pressure_clear_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR') }}"
+    platform_node_storage_pressure_clear_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_PRESSURE_CLEAR_TIMEOUT') }}"
     platform_node_storage_journal_vacuum_size_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_JOURNAL_VACUUM_SIZE') }}"
     platform_node_storage_longhorn_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
     platform_node_storage_cleanup_effective: "{{ platform_node_storage_cleanup | default(platform_node_storage_cleanup_from_env, true) | default(false, true) | bool }}"
@@ -19,6 +24,11 @@
     platform_node_storage_tmpfiles_clean_effective: "{{ platform_node_storage_tmpfiles_clean | default(platform_node_storage_tmpfiles_clean_from_env, true) | default(true, true) | bool }}"
     platform_node_storage_docker_prune_effective: "{{ platform_node_storage_docker_prune | default(platform_node_storage_docker_prune_from_env, true) | default(false, true) | bool }}"
     platform_node_storage_docker_prune_until_effective: "{{ platform_node_storage_docker_prune_until | default(platform_node_storage_docker_prune_until_from_env, true) | default('168h', true) }}"
+    platform_node_storage_gitlab_runner_cache_prune_effective: "{{ platform_node_storage_gitlab_runner_cache_prune | default(platform_node_storage_gitlab_runner_cache_prune_from_env, true) | default(false, true) | bool }}"
+    platform_node_storage_gitlab_runner_cache_prune_until_effective: "{{ platform_node_storage_gitlab_runner_cache_prune_until | default(platform_node_storage_gitlab_runner_cache_prune_until_from_env, true) | default('168h', true) }}"
+    platform_node_storage_pressure_only_effective: "{{ platform_node_storage_pressure_only | default(platform_node_storage_pressure_only_from_env, true) | default(false, true) | bool }}"
+    platform_node_storage_wait_for_pressure_clear_effective: "{{ platform_node_storage_wait_for_pressure_clear | default(platform_node_storage_wait_for_pressure_clear_from_env, true) | default(false, true) | bool }}"
+    platform_node_storage_pressure_clear_timeout_effective: "{{ platform_node_storage_pressure_clear_timeout | default(platform_node_storage_pressure_clear_timeout_from_env, true) | default(300, true) | int }}"
     platform_node_storage_journal_vacuum_size_effective: "{{ platform_node_storage_journal_vacuum_size | default(platform_node_storage_journal_vacuum_size_from_env, true) | default('0', true) }}"
     platform_node_storage_longhorn_path_effective: "{{ platform_node_storage_longhorn_path | default(platform_node_storage_longhorn_path_from_env, true) | default('/var/lib/longhorn', true) }}"
 
@@ -27,12 +37,58 @@
       ansible.builtin.assert:
         that:
           - platform_node_storage_docker_prune_until_effective is match('^[0-9]+[smhdw]$')
+          - platform_node_storage_gitlab_runner_cache_prune_until_effective is match('^[0-9]+[smhdw]$')
+          - platform_node_storage_pressure_clear_timeout_effective | int >= 30
           - platform_node_storage_journal_vacuum_size_effective == '0' or platform_node_storage_journal_vacuum_size_effective is match('^[0-9]+[KMG]$')
           - platform_node_storage_longhorn_path_effective.startswith('/')
         fail_msg: >-
           Node storage cleanup controls are invalid. Docker retention must look
           like 168h, journal vacuum must be 0 or a size such as 2G, and the
           Longhorn path must be absolute.
+
+    - name: Inspect Kubernetes DiskPressure before cleanup
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        if [ ! -x "${K}" ] || [ ! -r "${C}" ]; then
+          echo 'disk_pressure=unknown reason=kubectl-or-kubeconfig-unavailable'
+          exit 2
+        fi
+        pressure="$("${K}" --kubeconfig "${C}" get node {{ inventory_hostname | quote }} \
+          -o jsonpath='{.status.conditions[?(@.type=="DiskPressure")].status}' 2>/dev/null || true)"
+        printf 'disk_pressure=%s\n' "${pressure:-unknown}"
+        case "${pressure}" in
+          True) exit 42 ;;
+          False) exit 0 ;;
+          *) exit 2 ;;
+        esac
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_pressure_before
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when pressure-only cleanup cannot classify the node
+      ansible.builtin.assert:
+        that:
+          - platform_node_storage_pressure_before.rc in [0, 42]
+        fail_msg: >-
+          Pressure-only storage cleanup could not read Kubernetes DiskPressure
+          for {{ inventory_hostname }}. Refusing to run an automatic cleanup
+          without a positive pressure classification.
+      when: platform_node_storage_pressure_only_effective | bool
+
+    - name: Select nodes eligible for guarded storage cleanup
+      ansible.builtin.set_fact:
+        platform_node_storage_should_cleanup: >-
+          {{
+            (platform_node_storage_cleanup_effective | bool)
+            and (
+              not (platform_node_storage_pressure_only_effective | bool)
+              or (platform_node_storage_pressure_before.rc == 42)
+            )
+          }}
 
     - name: Collect root and Longhorn filesystem usage
       ansible.builtin.shell: |
@@ -106,7 +162,7 @@
     - name: Reclaim unused RKE2 container images
       ansible.builtin.shell: |
         set -o pipefail
-        if [ "{{ platform_node_storage_cleanup_effective | bool | lower }}" != "true" ] ||
+        if [ "{{ platform_node_storage_should_cleanup | bool | lower }}" != "true" ] ||
           [ "{{ platform_node_storage_cri_prune_effective | bool | lower }}" != "true" ]; then
           echo 'cri_image_prune=skipped'
           exit 0
@@ -136,7 +192,7 @@
     - name: Clean package-manager caches
       ansible.builtin.shell: |
         set -o pipefail
-        if [ "{{ platform_node_storage_cleanup_effective | bool | lower }}" != "true" ] ||
+        if [ "{{ platform_node_storage_should_cleanup | bool | lower }}" != "true" ] ||
           [ "{{ platform_node_storage_dnf_clean_effective | bool | lower }}" != "true" ]; then
           echo 'dnf_clean=skipped'
           exit 0
@@ -155,7 +211,7 @@
     - name: Clean system-managed temporary files
       ansible.builtin.shell: |
         set -o pipefail
-        if [ "{{ platform_node_storage_cleanup_effective | bool | lower }}" != "true" ] ||
+        if [ "{{ platform_node_storage_should_cleanup | bool | lower }}" != "true" ] ||
           [ "{{ platform_node_storage_tmpfiles_clean_effective | bool | lower }}" != "true" ]; then
           echo 'tmpfiles_clean=skipped'
           exit 0
@@ -189,8 +245,99 @@
       register: platform_node_storage_docker_prune
       changed_when: "'docker_prune=completed' in platform_node_storage_docker_prune.stdout"
       when:
-        - platform_node_storage_cleanup_effective | bool
+        - platform_node_storage_should_cleanup | bool
         - platform_node_storage_docker_prune_effective | bool
+
+    - name: Prune old unused GitLab Runner cache volumes under disk pressure
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ! command -v docker >/dev/null 2>&1; then
+          echo 'gitlab_runner_cache_prune=skipped reason=docker-not-found'
+          exit 0
+        fi
+        if ! docker info >/dev/null 2>&1; then
+          echo 'gitlab_runner_cache_prune=skipped reason=docker-daemon-unavailable'
+          exit 0
+        fi
+
+        retention={{ platform_node_storage_gitlab_runner_cache_prune_until_effective | quote }}
+        retention_value="${retention%?}"
+        retention_unit="${retention#${retention_value}}"
+        case "${retention_unit}" in
+          s) multiplier=1 ;;
+          m) multiplier=60 ;;
+          h) multiplier=3600 ;;
+          d) multiplier=86400 ;;
+          w) multiplier=604800 ;;
+          *) echo "invalid retention unit: ${retention_unit}" >&2; exit 2 ;;
+        esac
+        retention_seconds=$((retention_value * multiplier))
+        now="$(date +%s)"
+        changed=0
+
+        candidates="$(docker volume ls -q \
+          --filter dangling=true \
+          --filter label=com.gitlab.gitlab-runner.type=cache \
+          --filter label=com.gitlab.gitlab-runner.managed=true)"
+        if [ -z "${candidates}" ]; then
+          echo 'gitlab_runner_cache_prune=not-needed'
+          exit 0
+        fi
+
+        while IFS= read -r volume; do
+          [ -n "${volume}" ] || continue
+          case "${volume}" in
+            runner-*-cache-*) ;;
+            *)
+              echo "volume=${volume} action=retain reason=unexpected-cache-name"
+              continue
+              ;;
+          esac
+
+          metadata="$(docker volume inspect "${volume}" 2>/dev/null || true)"
+          if [ -z "${metadata}" ]; then
+            echo "volume=${volume} action=retain reason=inspect-failed"
+            continue
+          fi
+          created="$(printf '%s' "${metadata}" | python3 -c \
+            'import json,sys; print(json.load(sys.stdin)[0].get("CreatedAt", ""))')"
+          created_epoch="$(date -d "${created}" +%s 2>/dev/null || true)"
+          if [ -z "${created_epoch}" ]; then
+            echo "volume=${volume} action=retain reason=creation-time-unreadable"
+            continue
+          fi
+          age_seconds=$((now - created_epoch))
+          if [ "${age_seconds}" -lt "${retention_seconds}" ]; then
+            echo "volume=${volume} action=retain reason=within-retention age_seconds=${age_seconds}"
+            continue
+          fi
+
+          if docker ps -aq --filter "volume=${volume}" | grep -q .; then
+            echo "volume=${volume} action=retain reason=container-reference-present"
+            continue
+          fi
+          if docker volume rm "${volume}" >/dev/null; then
+            echo "volume=${volume} action=delete-stale-gitlab-runner-cache age_seconds=${age_seconds}"
+            changed=1
+          else
+            echo "volume=${volume} action=retain reason=remove-refused"
+          fi
+        done <<<"${candidates}"
+
+        if [ "${changed}" -eq 0 ]; then
+          echo 'gitlab_runner_cache_prune=not-needed'
+        else
+          echo 'gitlab_runner_cache_prune=completed'
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_gitlab_runner_cache_prune
+      changed_when: >-
+        'action=delete-stale-gitlab-runner-cache' in
+        platform_node_storage_gitlab_runner_cache_prune.stdout
+      when:
+        - platform_node_storage_should_cleanup | bool
+        - platform_node_storage_gitlab_runner_cache_prune_effective | bool
 
     - name: Optionally vacuum old system journal entries
       ansible.builtin.shell: |
@@ -206,8 +353,30 @@
         executable: /bin/bash
       changed_when: "'journal_vacuum=completed' in platform_node_storage_journal_vacuum.stdout"
       when:
-        - platform_node_storage_cleanup_effective | bool
+        - platform_node_storage_should_cleanup | bool
         - platform_node_storage_journal_vacuum_size_effective != '0'
+
+    - name: Wait for Kubernetes DiskPressure to clear after guarded cleanup
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        pressure="$("${K}" --kubeconfig "${C}" get node {{ inventory_hostname | quote }} \
+          -o jsonpath='{.status.conditions[?(@.type=="DiskPressure")].status}')"
+        root_usage="$(df -P / | awk 'NR == 2 { print $5 }')"
+        printf 'node=%s disk_pressure=%s root_used=%s\n' \
+          {{ inventory_hostname | quote }} "${pressure:-unknown}" "${root_usage:-unknown}"
+        test "${pressure}" != True
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_pressure_after
+      retries: "{{ (((platform_node_storage_pressure_clear_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+      delay: 10
+      until: platform_node_storage_pressure_after.rc == 0
+      changed_when: false
+      when:
+        - platform_node_storage_wait_for_pressure_clear_effective | bool
+        - platform_node_storage_pressure_before.rc == 42
 
     - name: Collect root filesystem usage after cleanup
       ansible.builtin.shell: |
