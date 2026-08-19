@@ -445,7 +445,8 @@ platform-ci-health:
 
 platform-woodpecker-repair:
 	@$(MAKE) platform-argocd-service-repair
-	@$(MAKE) platform-app-secrets
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini \
+		ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker
 	@set -o pipefail; \
 		repair_log="$$(mktemp)"; \
 		trap 'rm -f "$$repair_log"' EXIT; \

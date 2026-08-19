@@ -840,6 +840,10 @@ routing, and then runs the focused CI health gate:
 make platform-woodpecker-repair
 ```
 
+This focused repair reconciles only Woodpecker's agent, database, and Forgejo
+OAuth secrets. Run `make platform-app-secrets` separately when validating the
+complete production secret posture, including Harbor S3 and backup credentials.
+
 Before final production registration, also prove the selected GitOps profile is
 fully rendered and has no unresolved placeholders:
 
