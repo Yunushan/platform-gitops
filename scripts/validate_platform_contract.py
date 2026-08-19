@@ -4059,6 +4059,7 @@ def main() -> None:
     argocd_repair = "@$(MAKE) platform-argocd-service-repair"
     consumer_refresh = "@$(MAKE) platform-service-path-consumers-repair"
     strict_repair = "ansible/playbooks/repair-woodpecker.yml"
+    focused_secret_repair = "ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker"
     first_consumer_refresh = woodpecker_repair_body.find(consumer_refresh)
     strict_repair_index = woodpecker_repair_body.find(strict_repair)
     argocd_repair_index = woodpecker_repair_body.find(argocd_repair)
@@ -4066,6 +4067,26 @@ def main() -> None:
         fail("platform-woodpecker-repair must repair Argo CD and its shared service paths before Woodpecker")
     if "@$(MAKE) platform-dns-repair" in woodpecker_repair_body:
         fail("platform-woodpecker-repair must not duplicate the Argo CD DNS/API service-path preflight")
+    if focused_secret_repair not in woodpecker_repair_body:
+        fail("platform-woodpecker-repair must reconcile only Woodpecker application secrets")
+    if "@$(MAKE) platform-app-secrets" in woodpecker_repair_body:
+        fail("platform-woodpecker-repair must not enforce unrelated platform application secrets")
+    for task_name in (
+        "Generate or preserve Woodpecker shared agent secret",
+        "Generate or preserve Woodpecker database datasource secret",
+        "Check Woodpecker database datasource secret state",
+        "Require Woodpecker database datasource secret when enabled",
+        "Configure Forgejo OAuth application for Woodpecker",
+    ):
+        task = re.search(
+            rf"(?ms)^    - name: {re.escape(task_name)}\n(?P<body>.*?)(?=^    - name:|\Z)",
+            app_secrets_text,
+        )
+        if not task or not re.search(
+            r"(?m)^      tags:\n        - woodpecker$",
+            task.group("body"),
+        ):
+            fail(f"platform app secret task must carry the Woodpecker focus tag: {task_name}")
     longhorn_runtime_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-runtime-repair")
     longhorn_bootstrap_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-bootstrap")
     if not (strict_repair_index < longhorn_runtime_index < longhorn_bootstrap_index < first_consumer_refresh):

@@ -80,7 +80,10 @@ make platform-woodpecker-repair
 
 It hard-refreshes and syncs the Woodpecker application first, waits for the
 server and agents, verifies the runtime server and agent image tags, refreshes
-service-path consumers, and then runs `make platform-ci-health`.
+service-path consumers, and then runs `make platform-ci-health`. The repair
+reconciles only Woodpecker's agent, database, and Forgejo OAuth secrets, so an
+unrelated Harbor S3 or backup credential cannot block this focused workflow.
+Use `make platform-app-secrets` to enforce the complete production secret gate.
 
 The premium renderer does not use the chart-generated
 `woodpecker-default-agent-secret`. That chart secret depends on random Helm
