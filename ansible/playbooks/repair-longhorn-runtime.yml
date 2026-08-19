@@ -813,34 +813,69 @@
       run_once: true
       when: platform_longhorn_runtime_empty_unscheduled_replica_repair_effective | bool
 
-    - name: Quarantine unmapped replica blocking data-bearing Longhorn attachment
-      ansible.builtin.script:
-        cmd: >-
-          {{ playbook_dir }}/../../scripts/repair_stuck_longhorn_attachments.py
-          --timeout {{ platform_longhorn_runtime_repair_timeout_effective }}
-          --minimum-age {{ platform_longhorn_runtime_stuck_attachment_min_age_effective }}
-        executable: /usr/bin/python3
-      register: platform_longhorn_stuck_attachment_repair
-      changed_when: >-
-        'action=quarantine-unmapped-replica' in
-        (platform_longhorn_stuck_attachment_repair.stdout | default(''))
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
-      when: platform_longhorn_runtime_stuck_attachment_repair_effective | bool
+    - name: Run guarded Longhorn Python data recovery helpers
+      block:
+        - name: Create temporary Longhorn Python repair workspace
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: platform-longhorn-runtime-repair-
+          register: platform_longhorn_runtime_python_workspace
+          changed_when: false
 
-    - name: Recreate only empty faulted StatefulSet claims without recovery sources
-      ansible.builtin.script:
-        cmd: >-
-          {{ playbook_dir }}/../../scripts/repair_empty_faulted_longhorn_claims.py
-          --timeout {{ platform_longhorn_runtime_repair_timeout_effective }}
-        executable: /usr/bin/python3
-      register: platform_longhorn_empty_faulted_claim_repair
-      changed_when: >-
-        'action=recycle-empty-faulted-statefulset-claim result=healthy' in
-        (platform_longhorn_empty_faulted_claim_repair.stdout | default(''))
+        - name: Install Longhorn Python repair bundle temporarily
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+            dest: "{{ platform_longhorn_runtime_python_workspace.path }}/{{ item }}"
+            owner: root
+            group: root
+            mode: "0600"
+          loop:
+            - repair_stuck_longhorn_attachments.py
+            - repair_empty_faulted_longhorn_claims.py
+            - bounded_subprocess.py
+            - strict_json.py
+            - subprocess_timeout.py
+          changed_when: false
+
+        - name: Quarantine unmapped replica blocking data-bearing Longhorn attachment
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ platform_longhorn_runtime_python_workspace.path }}/repair_stuck_longhorn_attachments.py"
+              - --timeout
+              - "{{ platform_longhorn_runtime_repair_timeout_effective }}"
+              - --minimum-age
+              - "{{ platform_longhorn_runtime_stuck_attachment_min_age_effective }}"
+          register: platform_longhorn_stuck_attachment_repair
+          changed_when: >-
+            'action=quarantine-unmapped-replica' in
+            (platform_longhorn_stuck_attachment_repair.stdout | default(''))
+          when: platform_longhorn_runtime_stuck_attachment_repair_effective | bool
+
+        - name: Recreate only empty faulted StatefulSet claims without recovery sources
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ platform_longhorn_runtime_python_workspace.path }}/repair_empty_faulted_longhorn_claims.py"
+              - --timeout
+              - "{{ platform_longhorn_runtime_repair_timeout_effective }}"
+          register: platform_longhorn_empty_faulted_claim_repair
+          changed_when: >-
+            'action=recycle-empty-faulted-statefulset-claim result=healthy' in
+            (platform_longhorn_empty_faulted_claim_repair.stdout | default(''))
+          when: platform_longhorn_runtime_empty_faulted_claim_repair_effective | bool
+      always:
+        - name: Remove temporary Longhorn Python repair workspace
+          ansible.builtin.file:
+            path: "{{ platform_longhorn_runtime_python_workspace.path }}"
+            state: absent
+          when: platform_longhorn_runtime_python_workspace.path is defined
+          changed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
-      when: platform_longhorn_runtime_empty_faulted_claim_repair_effective | bool
+      when: >-
+        (platform_longhorn_runtime_stuck_attachment_repair_effective | bool)
+        or (platform_longhorn_runtime_empty_faulted_claim_repair_effective | bool)
 
     - name: Show focused Longhorn runtime repair result
       ansible.builtin.debug:
