@@ -561,10 +561,13 @@ make platform-forgejo-repair
 
 It repairs the Longhorn runtime, removes only terminal Forgejo pods or old
 unscheduled `Pending` pods when no ready Forgejo backend exists, waits for a
-ready `forgejo-http` endpoint, and then verifies the published ingress. It does
-not enable `PLATFORM_FORGEJO_RESET_STUCK_PVC` and never deletes the Forgejo
-PVC/PV or Longhorn replicas. If storage cannot be recovered without risking
-data, the target stops with focused diagnostics.
+ready `forgejo-http` endpoint, and then verifies the published ingress. When an
+old Kubernetes `VolumeAttachment` says `attached=true` while Longhorn proves
+that its RWO engine is stopped and unassigned, the repair deletes the Pending
+controller pod and recycles only that stale attachment record so CSI can retry.
+It does not enable `PLATFORM_FORGEJO_RESET_STUCK_PVC` and never deletes the
+Forgejo PVC/PV, Longhorn volume, engine, or replicas. If storage cannot be
+recovered without risking data, the target stops with focused diagnostics.
 
 If the Forgejo PVC is `Bound` but the Forgejo pod remains in `Init:*`, Longhorn
 has provisioned storage and the next useful signal is the Forgejo pod's

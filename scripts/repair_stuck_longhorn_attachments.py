@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quarantine one unmapped replica that blocks a proven Longhorn attachment."""
+"""Repair narrowly proven Longhorn attachment control-plane deadlocks."""
 
 from __future__ import annotations
 
@@ -35,6 +35,18 @@ class Candidate:
     orphan_disk_id: str
     orphan_disk_path: str
     healthy_replicas: tuple[str, ...]
+    consumer_pods: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StaleNativeAttachmentCandidate:
+    volume_name: str
+    pv_name: str
+    namespace: str
+    pvc_name: str
+    target_node: str
+    attachment_name: str
+    attachment_uid: str
     consumer_pods: tuple[str, ...]
 
 
@@ -84,6 +96,15 @@ def ticket_is_active(longhorn_attachment: JsonObject, target_node: str) -> bool:
     return False
 
 
+def csi_ticket_nodes(longhorn_attachment: JsonObject) -> set[str]:
+    tickets = longhorn_attachment.get("spec", {}).get("attachmentTickets") or {}
+    return {
+        ticket.get("nodeID", "")
+        for ticket in tickets.values()
+        if ticket.get("type") == "csi-attacher" and ticket.get("nodeID")
+    }
+
+
 def registered_disk_ids(nodes: list[JsonObject]) -> dict[str, set[str]]:
     result: dict[str, set[str]] = {}
     for node in nodes:
@@ -105,6 +126,143 @@ def replica_history_is_safe(replica: JsonObject) -> bool:
     if healthy_at is None:
         return False
     return failed_at is None or healthy_at > failed_at
+
+
+def evaluate_stale_native_attachment_candidate(
+    *,
+    volume: JsonObject,
+    engines: list[JsonObject],
+    longhorn_attachment: JsonObject,
+    native_attachments: list[JsonObject],
+    pv: JsonObject,
+    pods: list[JsonObject],
+    now: datetime,
+    minimum_age_seconds: int,
+) -> tuple[StaleNativeAttachmentCandidate | None, str]:
+    """Select an attached=true Kubernetes record for an unattached Longhorn volume."""
+
+    metadata = volume.get("metadata", {})
+    spec = volume.get("spec", {})
+    status = volume.get("status", {})
+    volume_name = metadata.get("name", "")
+    if not volume_name or metadata.get("deletionTimestamp"):
+        return None, "volume-missing-or-deleting"
+    if status.get("state") != "attaching":
+        return None, "volume-not-attaching"
+    if status.get("robustness") not in {"unknown", "degraded"}:
+        return None, "volume-robustness-not-recoverable"
+    try:
+        actual_size = int(status.get("actualSize") or 0)
+    except (TypeError, ValueError):
+        return None, "invalid-volume-size"
+    if actual_size <= 0:
+        return None, "volume-has-no-proven-data"
+    if spec.get("accessMode") != "rwo" or spec.get("migratable") is True:
+        return None, "volume-not-nonmigratable-rwo"
+    if spec.get("migrationNodeID") or status.get("currentMigrationNodeID"):
+        return None, "volume-migration-active"
+
+    target_node = spec.get("nodeID", "")
+    current_node = status.get("currentNodeID", "")
+    if not target_node or current_node:
+        return None, "volume-target-state-not-stuck-signature"
+
+    kubernetes_status = status.get("kubernetesStatus") or {}
+    namespace = kubernetes_status.get("namespace", "")
+    pvc_name = kubernetes_status.get("pvcName", "")
+    pv_name = kubernetes_status.get("pvName", "")
+    pv_spec = pv.get("spec", {})
+    csi = pv_spec.get("csi", {})
+    if not (
+        namespace
+        and pvc_name
+        and pv_name
+        and pv.get("metadata", {}).get("name") == pv_name
+        and csi.get("driver") == "driver.longhorn.io"
+        and csi.get("volumeHandle") == volume_name
+    ):
+        return None, "kubernetes-volume-identity-mismatch"
+
+    volume_engines = [
+        engine
+        for engine in engines
+        if engine.get("spec", {}).get("volumeName") == volume_name
+        and not engine.get("metadata", {}).get("deletionTimestamp")
+    ]
+    if len(volume_engines) != 1:
+        return None, "engine-cardinality-not-one"
+    engine_spec = volume_engines[0].get("spec", {})
+    engine_status = volume_engines[0].get("status", {})
+    if not (
+        not engine_spec.get("nodeID")
+        and engine_spec.get("desireState") == "stopped"
+        and engine_status.get("currentState") == "stopped"
+        and not engine_status.get("instanceManagerName")
+        and not engine_status.get("ip")
+    ):
+        return None, "engine-not-stopped-unassigned"
+
+    ticket_nodes = csi_ticket_nodes(longhorn_attachment)
+    if ticket_nodes - {target_node}:
+        return None, "conflicting-csi-ticket-target-present"
+
+    claim_consumers = [
+        pod
+        for pod in pods
+        if pod.get("metadata", {}).get("namespace") == namespace
+        and not pod.get("metadata", {}).get("deletionTimestamp")
+        and pod_uses_claim(pod, pvc_name)
+    ]
+    consumers = [
+        pod
+        for pod in claim_consumers
+        if pod.get("spec", {}).get("nodeName") == target_node
+        and pod.get("status", {}).get("phase") == "Pending"
+        and controller_owner(pod) is not None
+    ]
+    if not consumers:
+        return None, "pending-controller-managed-consumer-absent"
+    if len(consumers) != len(claim_consumers):
+        return None, "other-active-consumer-present"
+
+    stale_attachments = []
+    for attachment in native_attachments:
+        attachment_metadata = attachment.get("metadata", {})
+        attachment_spec = attachment.get("spec", {})
+        attachment_status = attachment.get("status", {})
+        age = object_age_seconds(attachment, now)
+        if not (
+            not attachment_metadata.get("deletionTimestamp")
+            and attachment_metadata.get("uid")
+            and attachment_spec.get("attacher") == "driver.longhorn.io"
+            and attachment_spec.get("source", {}).get("persistentVolumeName")
+            == pv_name
+            and attachment_spec.get("nodeName") == target_node
+            and attachment_status.get("attached") is True
+            and age is not None
+            and age >= minimum_age_seconds
+        ):
+            continue
+        stale_attachments.append(attachment)
+    if len(stale_attachments) != 1:
+        return None, "old-successful-native-attachment-cardinality-not-one"
+
+    attachment = stale_attachments[0]
+    return (
+        StaleNativeAttachmentCandidate(
+            volume_name=volume_name,
+            pv_name=pv_name,
+            namespace=namespace,
+            pvc_name=pvc_name,
+            target_node=target_node,
+            attachment_name=attachment.get("metadata", {}).get("name", ""),
+            attachment_uid=attachment.get("metadata", {}).get("uid", ""),
+            consumer_pods=tuple(
+                sorted(pod.get("metadata", {}).get("name", "") for pod in consumers)
+            ),
+        ),
+        "stale-native-attachment-claims-unattached-volume",
+    )
 
 
 def evaluate_candidate(
@@ -342,6 +500,161 @@ def items(kube: Kubectl, *args: str) -> list[JsonObject]:
     return kube.get_json(*args).get("items", [])
 
 
+def discover_stale_native_attachment_candidates(
+    kube: Kubectl,
+    *,
+    minimum_age_seconds: int,
+    report: bool,
+) -> list[StaleNativeAttachmentCandidate]:
+    volumes = items(kube, "-n", "longhorn-system", "get", "volumes.longhorn.io")
+    engines = items(kube, "-n", "longhorn-system", "get", "engines.longhorn.io")
+    longhorn_attachments = {
+        item.get("metadata", {}).get("name", ""): item
+        for item in items(
+            kube, "-n", "longhorn-system", "get", "volumeattachments.longhorn.io"
+        )
+    }
+    native_attachments = items(kube, "get", "volumeattachments.storage.k8s.io")
+    pvs = {
+        item.get("metadata", {}).get("name", ""): item
+        for item in items(kube, "get", "persistentvolumes")
+    }
+    pods = items(kube, "get", "pods", "--all-namespaces")
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for volume in volumes:
+        status = volume.get("status", {})
+        try:
+            data_bearing = int(status.get("actualSize") or 0) > 0
+        except (TypeError, ValueError):
+            data_bearing = False
+        if status.get("state") != "attaching" or not data_bearing:
+            continue
+        volume_name = volume.get("metadata", {}).get("name", "")
+        pv_name = (status.get("kubernetesStatus") or {}).get("pvName", "")
+        candidate, reason = evaluate_stale_native_attachment_candidate(
+            volume=volume,
+            engines=engines,
+            longhorn_attachment=longhorn_attachments.get(volume_name, {}),
+            native_attachments=native_attachments,
+            pv=pvs.get(pv_name, {}),
+            pods=pods,
+            now=now,
+            minimum_age_seconds=minimum_age_seconds,
+        )
+        if candidate:
+            candidates.append(candidate)
+        elif report:
+            print(
+                f"longhorn_volume={volume_name} "
+                f"stale_native_attachment_action=retain reason={reason}"
+            )
+    return candidates
+
+
+def recycle_stale_native_attachments(
+    kube: Kubectl,
+    candidates: list[StaleNativeAttachmentCandidate],
+    *,
+    timeout_seconds: int,
+) -> int:
+    for candidate in candidates:
+        for pod_name in candidate.consumer_pods:
+            result = kube.run(
+                "-n",
+                candidate.namespace,
+                "delete",
+                f"pod/{pod_name}",
+                "--ignore-not-found=true",
+                "--wait=true",
+                "--timeout=60s",
+                check=False,
+            )
+            if result.returncode != 0:
+                sys.stderr.write((result.stderr or "") + (result.stdout or ""))
+                print(
+                    f"longhorn_volume={candidate.volume_name} result=fail "
+                    f"reason=pending-consumer-delete-failed pod={pod_name}",
+                    file=sys.stderr,
+                )
+                return 1
+
+        result = kube.run(
+            "delete",
+            f"volumeattachment.storage.k8s.io/{candidate.attachment_name}",
+            "--ignore-not-found=true",
+            "--wait=false",
+            check=False,
+        )
+        if result.returncode != 0:
+            sys.stderr.write((result.stderr or "") + (result.stdout or ""))
+            print(
+                f"longhorn_volume={candidate.volume_name} result=fail "
+                "reason=stale-native-attachment-delete-failed "
+                f"attachment={candidate.attachment_name}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"longhorn_volume={candidate.volume_name} pv={candidate.pv_name} "
+            f"claim={candidate.namespace}/{candidate.pvc_name} "
+            f"node={candidate.target_node} attachment={candidate.attachment_name} "
+            f"consumers={','.join(candidate.consumer_pods)} "
+            "action=recycle-stale-native-attachment"
+        )
+
+    deadline = time.monotonic() + timeout_seconds
+    pending = {candidate.volume_name: candidate for candidate in candidates}
+    last_report = 0.0
+    while pending and time.monotonic() < deadline:
+        report_now = time.monotonic() - last_report >= 15
+        for volume_name, candidate in list(pending.items()):
+            result = kube.run(
+                "get",
+                f"volumeattachment.storage.k8s.io/{candidate.attachment_name}",
+                "-o",
+                "json",
+                check=False,
+            )
+            if result.returncode != 0:
+                pending.pop(volume_name)
+                print(
+                    f"longhorn_volume={volume_name} result=recycled-native-attachment "
+                    "state=absent"
+                )
+                continue
+            attachment = loads_strict_json(result.stdout)
+            metadata = attachment.get("metadata", {})
+            current_uid = metadata.get("uid", "")
+            if current_uid and current_uid != candidate.attachment_uid:
+                pending.pop(volume_name)
+                print(
+                    f"longhorn_volume={volume_name} result=recycled-native-attachment "
+                    "state=recreated"
+                )
+            elif report_now:
+                deleting = metadata.get("deletionTimestamp") or "none"
+                print(
+                    f"longhorn_volume={volume_name} result=waiting-native-attachment-recycle "
+                    f"deletionTimestamp={deleting}"
+                )
+        if report_now:
+            last_report = time.monotonic()
+        if pending:
+            time.sleep(5)
+
+    if pending:
+        for volume_name, candidate in sorted(pending.items()):
+            print(
+                f"longhorn_volume={volume_name} result=fail "
+                "reason=stale-native-attachment-recycle-timeout "
+                f"attachment={candidate.attachment_name}",
+                file=sys.stderr,
+            )
+        return 1
+    return 0
+
+
 def discover_candidates(
     kube: Kubectl,
     *,
@@ -428,6 +741,32 @@ def repair(
     minimum_age_seconds: int,
     settle_seconds: int,
 ) -> int:
+    stale_native_candidates = discover_stale_native_attachment_candidates(
+        kube,
+        minimum_age_seconds=minimum_age_seconds,
+        report=True,
+    )
+    if stale_native_candidates:
+        if settle_seconds > 0:
+            print(
+                "longhorn_stale_native_attachment_repair=settling "
+                f"seconds={settle_seconds}"
+            )
+            time.sleep(settle_seconds)
+            stale_native_candidates = discover_stale_native_attachment_candidates(
+                kube,
+                minimum_age_seconds=minimum_age_seconds,
+                report=True,
+            )
+        if stale_native_candidates:
+            return recycle_stale_native_attachments(
+                kube,
+                stale_native_candidates,
+                timeout_seconds=timeout_seconds,
+            )
+        print("longhorn_stale_native_attachment_repair=progressing-before-recycle")
+        return 0
+
     candidates = discover_candidates(kube, minimum_age_seconds=minimum_age_seconds, report=True)
     if not candidates:
         print("longhorn_stuck_attachment_replica_repair=not-needed")
@@ -508,7 +847,10 @@ def repair(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Quarantine one unmapped Longhorn replica blocking a proven attachment",
+        description=(
+            "Repair a stale native attachment or quarantine one unmapped Longhorn "
+            "replica blocking a proven attachment"
+        ),
     )
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--minimum-age", type=int, default=120)
