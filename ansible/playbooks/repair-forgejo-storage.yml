@@ -481,6 +481,24 @@
           exit 0
         fi
 
+        ready_pods=0
+        for pod in ${pods}; do
+          ready="$("$K" --kubeconfig "$C" -n "$ns" get "${pod}" \
+            -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}' \
+            2>/dev/null || true)"
+          if [ "${ready}" = "True" ]; then
+            ready_pods=$((ready_pods + 1))
+          fi
+        done
+        endpoint_lines="$("$K" --kubeconfig "$C" -n "$ns" get endpointslice \
+          -l kubernetes.io/service-name=forgejo-http \
+          -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{"|"}{.conditions.ready}{"\n"}{end}' \
+          2>/dev/null || true)"
+        ready_endpoints="$(printf '%s\n' "${endpoint_lines}" |
+          awk -F'|' '$1 != "" && $2 != "false" { count++ } END { print count + 0 }')"
+        printf 'forgejo_current_ready_pods=%s forgejo_current_ready_endpoints=%s\n' \
+          "${ready_pods}" "${ready_endpoints}"
+
         echo "===== Forgejo pod summary ====="
         "$K" --kubeconfig "$C" -n "$ns" get pods -l app.kubernetes.io/name=forgejo -o wide || true
         echo "===== Forgejo PVC ====="
@@ -492,12 +510,17 @@
         fi
         printf 'pv=%s\nlonghornVolume=%s\n' "${pv:-none}" "${handle:-none}"
 
+        if [ "${ready_pods}" -gt 0 ]; then
+          echo "FORGEJO_LONGHORN_ATTACH_REPAIR_NEEDED=false reason=current-ready-backend-present"
+          exit 0
+        fi
+
         echo "===== Forgejo pod events ====="
         describe="$("$K" --kubeconfig "$C" -n "$ns" describe ${pods} || true)"
         printf '%s\n' "${describe}" | sed -n '/Events:/,$p'
 
         if printf '%s\n' "${describe}" |
-          grep -E 'AttachVolume.Attach failed.*(node .* not found|volume .* is not ready for workloads|not ready for workloads)' >/dev/null; then
+          grep -E '(AttachVolume\.Attach failed|MountVolume\.(WaitForAttach|MountDevice) failed).*(node .* not found|volume .* (is not attached|failed to attach|is not ready for workloads|hasn.t been attached)|not ready for workloads|DeadlineExceeded)' >/dev/null; then
           echo "FORGEJO_LONGHORN_ATTACH_REPAIR_NEEDED=true"
           exit 42
         fi

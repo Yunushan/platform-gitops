@@ -33,6 +33,8 @@
         diagnose() {
           echo "===== Longhorn runtime diagnostics =====" >&2
           "$K" --kubeconfig "$C" -n longhorn-system get daemonset/longhorn-manager daemonset/longhorn-csi-plugin deployment/longhorn-driver-deployer -o wide >&2 || true
+          "$K" --kubeconfig "$C" -n longhorn-system get instancemanagers.longhorn.io -o wide >&2 || true
+          "$K" --kubeconfig "$C" -n longhorn-system get pods -l longhorn.io/component=instance-manager -o wide >&2 || true
           "$K" --kubeconfig "$C" -n longhorn-system get pods -o wide >&2 || true
           "$K" --kubeconfig "$C" get csinode -o custom-columns='NAME:.metadata.name,DRIVERS:.spec.drivers[*].name' >&2 || true
         }
@@ -45,6 +47,38 @@
         deployment_counts() {
           "$K" --kubeconfig "$C" -n longhorn-system get "deployment/$1" \
             -o jsonpath='{.spec.replicas} {.status.availableReplicas}' 2>/dev/null || true
+        }
+
+        longhorn_ready_node_count() {
+          "$K" --kubeconfig "$C" -n longhorn-system get nodes.longhorn.io \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' \
+            2>/dev/null |
+            awk -F'|' '$1 != "" && $2 == "True" { count++ } END { print count + 0 }'
+        }
+
+        instance_manager_counts() {
+          "$K" --kubeconfig "$C" -n longhorn-system get instancemanagers.longhorn.io \
+            -o jsonpath='{range .items[*]}{.spec.dataEngine}{"|"}{.spec.nodeID}{"|"}{.status.currentState}{"|"}{range .status.conditions[?(@.type=="PodReady")]}{.status}{end}{"\n"}{end}' \
+            2>/dev/null |
+            awk -F'|' '
+              $1 == "v1" && $2 != "" {
+                seen[$2] = 1
+                if ($3 == "running" && $4 == "True") ready[$2] = 1
+              }
+              END {
+                for (node in seen) seen_count++
+                for (node in ready) ready_count++
+                print seen_count + 0, ready_count + 0
+              }
+            '
+        }
+
+        recyclable_instance_manager_pods() {
+          "$K" --kubeconfig "$C" -n longhorn-system get pods \
+            -l longhorn.io/component=instance-manager \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{.status.podIP}{"|"}{range .status.containerStatuses[*]}{.containerID}{end}{"\n"}{end}' \
+            2>/dev/null |
+            awk -F'|' '$1 != "" && $2 == "Pending" && $3 == "" && $4 == "" { print $1 }'
         }
 
         missing_csi_nodes() {
@@ -76,6 +110,24 @@
               return 0
             fi
             echo "longhorn_csi_registration=waiting missing_nodes=${missing}"
+            sleep 5
+          done
+          return 1
+        }
+
+        wait_for_instance_managers() {
+          deadline=$(( $(date +%s) + TIMEOUT ))
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            expected="$(longhorn_ready_node_count)"
+            read -r seen ready <<<"$(instance_manager_counts)"
+            expected="${expected:-0}"
+            seen="${seen:-0}"
+            ready="${ready:-0}"
+            if [ "${expected}" -gt 0 ] && [ "${seen}" -ge "${expected}" ] &&
+              [ "${ready}" -ge "${expected}" ]; then
+              return 0
+            fi
+            echo "longhorn_instance_manager=waiting ready=${ready}/${expected} discovered=${seen}"
             sleep 5
           done
           return 1
@@ -171,20 +223,48 @@
           exit 1
         fi
 
+        expected_instance_managers="$(longhorn_ready_node_count)"
+        read -r instance_managers_seen instance_managers_ready <<<"$(instance_manager_counts)"
+        expected_instance_managers="${expected_instance_managers:-0}"
+        instance_managers_seen="${instance_managers_seen:-0}"
+        instance_managers_ready="${instance_managers_ready:-0}"
+        if [ "${expected_instance_managers}" -eq 0 ] ||
+          [ "${instance_managers_seen}" -lt "${expected_instance_managers}" ] ||
+          [ "${instance_managers_ready}" -lt "${expected_instance_managers}" ]; then
+          for pod in $(recyclable_instance_manager_pods); do
+            echo "action=recycle-unready-longhorn-instance-manager pod=${pod}"
+            "$K" --kubeconfig "$C" -n longhorn-system delete "pod/${pod}" \
+              --ignore-not-found=true --wait=false
+          done
+          if ! wait_for_instance_managers; then
+            read -r instance_managers_seen instance_managers_ready <<<"$(instance_manager_counts)"
+            echo "result=fail reason=longhorn-instance-manager-timeout ready=${instance_managers_ready:-0}/${expected_instance_managers} discovered=${instance_managers_seen:-0}" >&2
+            diagnose
+            exit 1
+          fi
+        fi
+
         read -r manager_desired manager_ready <<<"$(daemonset_counts longhorn-manager)"
         read -r csi_desired csi_ready <<<"$(daemonset_counts longhorn-csi-plugin)"
+        expected_instance_managers="$(longhorn_ready_node_count)"
+        read -r instance_managers_seen instance_managers_ready <<<"$(instance_manager_counts)"
         if [ "${manager_desired:-0}" -eq 0 ] || [ "${manager_ready:-0}" -lt "${manager_desired:-0}" ] ||
-          [ "${csi_desired:-0}" -eq 0 ] || [ "${csi_ready:-0}" -lt "${csi_desired:-0}" ]; then
-          echo "result=fail reason=longhorn-runtime-not-ready manager=${manager_ready:-0}/${manager_desired:-0} csi=${csi_ready:-0}/${csi_desired:-0}" >&2
+          [ "${csi_desired:-0}" -eq 0 ] || [ "${csi_ready:-0}" -lt "${csi_desired:-0}" ] ||
+          [ "${expected_instance_managers:-0}" -eq 0 ] ||
+          [ "${instance_managers_seen:-0}" -lt "${expected_instance_managers:-0}" ] ||
+          [ "${instance_managers_ready:-0}" -lt "${expected_instance_managers:-0}" ]; then
+          echo "result=fail reason=longhorn-runtime-not-ready manager=${manager_ready:-0}/${manager_desired:-0} csi=${csi_ready:-0}/${csi_desired:-0} instance_manager=${instance_managers_ready:-0}/${expected_instance_managers:-0} discovered_instance_managers=${instance_managers_seen:-0}" >&2
           diagnose
           exit 1
         fi
 
-        echo "result=ok longhorn_manager=${manager_ready}/${manager_desired} longhorn_csi=${csi_ready}/${csi_desired} csi_registrations=all-nodes"
+        echo "result=ok longhorn_manager=${manager_ready}/${manager_desired} longhorn_csi=${csi_ready}/${csi_desired} longhorn_instance_manager=${instance_managers_ready}/${expected_instance_managers} csi_registrations=all-nodes"
       args:
         executable: /bin/bash
       register: platform_longhorn_runtime_repair
-      changed_when: "'action=rollout-restart-' in platform_longhorn_runtime_repair.stdout"
+      changed_when: >-
+        'action=rollout-restart-' in platform_longhorn_runtime_repair.stdout or
+        'action=recycle-unready-longhorn-instance-manager' in platform_longhorn_runtime_repair.stdout
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
@@ -368,6 +448,60 @@
         'action=remove-empty-duplicate' in platform_longhorn_duplicate_runtime_repair.stdout
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
+
+    - name: Relocate stopped Longhorn replicas from removed local disk registrations
+      block:
+        - name: Create temporary local Longhorn replica relocation workspace
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: platform-longhorn-replica-relocation-
+          register: platform_longhorn_replica_relocation_workspace
+          changed_when: false
+
+        - name: Install local Longhorn replica relocation bundle temporarily
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+            dest: "{{ platform_longhorn_replica_relocation_workspace.path }}/{{ item }}"
+            owner: root
+            group: root
+            mode: "0600"
+          loop:
+            - repair_unregistered_longhorn_replica_paths.py
+            - bounded_subprocess.py
+            - strict_json.py
+            - subprocess_timeout.py
+          changed_when: false
+
+        - name: Relocate stopped replica data onto the registered local Longhorn disk
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ platform_longhorn_replica_relocation_workspace.path }}/repair_unregistered_longhorn_replica_paths.py"
+              - --node
+              - "{{ inventory_hostname }}"
+              - --timeout
+              - "{{ platform_longhorn_runtime_repair_timeout_effective }}"
+              - --minimum-age
+              - "{{ platform_longhorn_runtime_stuck_attachment_min_age_effective }}"
+          register: platform_longhorn_unregistered_replica_path_repair
+          changed_when: >-
+            'action=relocate-unregistered-replica-copy-preserved' in
+            (platform_longhorn_unregistered_replica_path_repair.stdout | default(''))
+      always:
+        - name: Remove temporary local Longhorn replica relocation workspace
+          ansible.builtin.file:
+            path: "{{ platform_longhorn_replica_relocation_workspace.path }}"
+            state: absent
+          when: platform_longhorn_replica_relocation_workspace.path is defined
+          changed_when: false
+      when: platform_longhorn_runtime_stale_replica_repair_effective | bool
+
+    - name: Show local Longhorn replica relocation result
+      ansible.builtin.debug:
+        var: platform_longhorn_unregistered_replica_path_repair.stdout_lines
+      when:
+        - platform_longhorn_runtime_stale_replica_repair_effective | bool
+        - platform_longhorn_unregistered_replica_path_repair.stdout_lines is defined
 
     - name: Remove stopped Longhorn replicas whose registered disk no longer exists
       ansible.builtin.shell: |

@@ -130,8 +130,11 @@ woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
 woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpecker-service-path-nodes.yml"
 cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
+node_storage_cleanup_playbook = root / "ansible/playbooks/cleanup-node-storage.yml"
+forgejo_storage_repair_playbook = root / "ansible/playbooks/repair-forgejo-storage.yml"
 empty_faulted_longhorn_claim_repair = root / "scripts/repair_empty_faulted_longhorn_claims.py"
 stuck_longhorn_attachment_repair = root / "scripts/repair_stuck_longhorn_attachments.py"
+unregistered_longhorn_replica_path_repair = root / "scripts/repair_unregistered_longhorn_replica_paths.py"
 longhorn_bootstrap_playbook = root / "ansible/playbooks/bootstrap-longhorn.yml"
 longhorn_bootstrap_runner = root / "scripts/bootstrap/run-longhorn-bootstrap.sh"
 platform_app_health_runner = root / "scripts/bootstrap/run-platform-app-health.sh"
@@ -3582,6 +3585,68 @@ def main() -> None:
         fail(f"platform host entries are missing GUI apps: {', '.join(missing_gui_hosts)}")
 
     makefile_text = read(makefile)
+    node_storage_cleanup_text = read(node_storage_cleanup_playbook)
+    forgejo_storage_repair_text = read(forgejo_storage_repair_playbook)
+    for needle in (
+        "PLATFORM_NODE_STORAGE_PRESSURE_ONLY",
+        "PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR",
+        "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE",
+        "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE_UNTIL",
+        "Inspect Kubernetes DiskPressure before cleanup",
+        "--filter dangling=true",
+        "label=com.gitlab.gitlab-runner.type=cache",
+        "label=com.gitlab.gitlab-runner.managed=true",
+        "runner-*-cache-*",
+        "reason=container-reference-present",
+        "action=delete-stale-gitlab-runner-cache",
+        "Wait for Kubernetes DiskPressure to clear after guarded cleanup",
+    ):
+        require_text(
+            node_storage_cleanup_text,
+            needle,
+            f"guarded node storage pressure recovery must cover {needle}",
+        )
+    forgejo_repair_target = re.search(
+        r"(?m)^platform-forgejo-repair:[^\n]*\n(?P<body>(?:\t[^\n]*\n)+)",
+        makefile_text,
+    )
+    if not forgejo_repair_target:
+        fail("could not parse platform-forgejo-repair target body")
+    forgejo_repair_body = forgejo_repair_target.group("body")
+    pressure_cleanup_index = forgejo_repair_body.find("$(MAKE) platform-node-storage-cleanup")
+    runtime_repair_index = forgejo_repair_body.find("$(MAKE) platform-longhorn-runtime-repair")
+    storage_repair_index = forgejo_repair_body.find("$(MAKE) platform-forgejo-storage-repair")
+    if not (0 <= pressure_cleanup_index < runtime_repair_index < storage_repair_index):
+        fail(
+            "platform-forgejo-repair must clear guarded node storage pressure "
+            "before Longhorn and Forgejo storage repair"
+        )
+    for needle in (
+        "PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true",
+        "PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR=true",
+        "PLATFORM_NODE_STORAGE_CRI_PRUNE=false",
+        "PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true",
+        "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true",
+    ):
+        require_text(
+            forgejo_repair_body,
+            needle,
+            f"platform-forgejo-repair must enable guarded pressure recovery: {needle}",
+        )
+    for needle in (
+        "forgejo_current_ready_pods",
+        "forgejo_current_ready_endpoints",
+        "reason=current-ready-backend-present",
+        "MountVolume\\.(WaitForAttach|MountDevice) failed",
+        "is not attached",
+        "failed to attach",
+        "DeadlineExceeded",
+    ):
+        require_text(
+            forgejo_storage_repair_text,
+            needle,
+            f"Forgejo storage repair must classify Longhorn attach failure: {needle}",
+        )
     profile_check_text = read(profile_check_script)
     profile_check_test_text = read(profile_check_test)
     deployable_renderer_text = read(deployable_renderer)
@@ -3970,6 +4035,11 @@ def main() -> None:
         "driver.longhorn.io",
         "daemonset/longhorn-csi-plugin",
         "longhorn-csi-registration-timeout",
+        "longhorn_ready_node_count",
+        "instance_manager_counts",
+        "longhorn-instance-manager-timeout",
+        "action=recycle-unready-longhorn-instance-manager",
+        "longhorn_instance_manager=",
         "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART",
         "csi-attacher csi-provisioner csi-resizer csi-snapshotter",
         "len(spec_disks) <= 1",
@@ -3991,6 +4061,9 @@ def main() -> None:
         "action=remove-invalid-disk-reference",
         "defer_data_bearing_stuck_attachment",
         "action=defer-invalid-disk-reference-to-attachment-repair",
+        "Relocate stopped Longhorn replicas from removed local disk registrations",
+        "repair_unregistered_longhorn_replica_paths.py",
+        "action=relocate-unregistered-replica-copy-preserved",
         "PLATFORM_LONGHORN_RUNTIME_EMPTY_UNSCHEDULED_REPLICA_REPAIR",
         "Reset zero-byte unscheduled Longhorn replica placeholders",
         "ReplicaSchedulingFailure",
@@ -4022,6 +4095,30 @@ def main() -> None:
             longhorn_runtime_repair_text,
             needle,
             f"focused Longhorn runtime repair must cover {needle}",
+        )
+    unregistered_replica_path_repair_text = read(
+        unregistered_longhorn_replica_path_repair
+    )
+    for needle in (
+        'status.get("state") != "attaching"',
+        'declared_replicas < 3',
+        'len(volume_replicas) != 2',
+        'len(healthy_replicas) != 1',
+        'len(stopped_replicas) != 1',
+        'status.get("currentState") == "stopped"',
+        'disk_id not in registered_ids.get(node_id, set())',
+        'len(destination_disks) != 1',
+        '"--reflink=always"',
+        '"--sparse=always"',
+        "directory_manifest",
+        '"--dry-run=server"',
+        "action=relocate-unregistered-replica-copy-preserved",
+        "source and destination Longhorn disks are not on the same filesystem",
+    ):
+        require_text(
+            unregistered_replica_path_repair_text,
+            needle,
+            f"unregistered Longhorn replica relocation must cover {needle}",
         )
     empty_faulted_claim_repair_text = read(empty_faulted_longhorn_claim_repair)
     for needle in (

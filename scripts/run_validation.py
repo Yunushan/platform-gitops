@@ -95,6 +95,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_ansible_no_log_contract.py",
     "scripts/test_empty_faulted_longhorn_claim_repair.py",
     "scripts/test_stuck_longhorn_attachment_repair.py",
+    "scripts/test_unregistered_longhorn_replica_path_repair.py",
     "scripts/test_docs_make_targets.py",
     "scripts/test_markdown_links.py",
     "scripts/test_example_templates.py",
