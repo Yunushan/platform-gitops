@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Self-test guarded Longhorn unmapped-replica quarantine selection."""
+"""Self-test guarded Longhorn attachment deadlock recovery."""
 
 from __future__ import annotations
 
 import copy
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,12 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from repair_stuck_longhorn_attachments import evaluate_candidate  # noqa: E402
+from repair_stuck_longhorn_attachments import (  # noqa: E402
+    StaleNativeAttachmentCandidate,
+    evaluate_candidate,
+    evaluate_stale_native_attachment_candidate,
+    recycle_stale_native_attachments,
+)
 
 
 NOW = datetime(2026, 7, 24, 8, 0, tzinfo=timezone.utc)
@@ -169,6 +175,7 @@ def fixtures():
         {
             "metadata": {
                 "name": "csi-native",
+                "uid": "old-attachment-uid",
                 "creationTimestamp": "2026-07-24T07:50:00Z",
             },
             "spec": {
@@ -236,6 +243,34 @@ def evaluate(mutate=None):
     )
 
 
+def evaluate_stale(mutate=None):
+    data = copy.deepcopy(fixtures())
+    data["native_attachments"][0]["status"] = {"attached": True}
+    if mutate:
+        mutate(data)
+    return evaluate_stale_native_attachment_candidate(
+        volume=data["volume"],
+        engines=data["engines"],
+        longhorn_attachment=data["longhorn_attachment"],
+        native_attachments=data["native_attachments"],
+        pv=data["pv"],
+        pods=data["pods"],
+        now=NOW,
+        minimum_age_seconds=120,
+    )
+
+
+class FakeRecycleKubectl:
+    def __init__(self):
+        self.calls: list[tuple[str, ...]] = []
+
+    def run(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        self.calls.append(args)
+        if args[:2] == ("get", "volumeattachment.storage.k8s.io/csi-native"):
+            return subprocess.CompletedProcess(args, 1, "", "not found")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+
 def expect_rejected(reason: str, mutate) -> None:
     candidate, actual_reason = evaluate(mutate)
     assert candidate is None and actual_reason == reason, (actual_reason, reason)
@@ -252,6 +287,88 @@ def main() -> int:
     assert candidate.orphan_disk_id == "removed-disk-3"
     assert candidate.healthy_replicas == ("pvc-data-r-1", "pvc-data-r-2")
     assert reason == "unmapped-stopped-replica-blocking-attachment"
+
+    stale_candidate, stale_reason = evaluate_stale(
+        lambda data: data["replicas"][1]["status"].update(currentState="stopped")
+    )
+    assert stale_candidate is not None, stale_reason
+    assert stale_candidate.attachment_name == "csi-native"
+    assert stale_candidate.attachment_uid == "old-attachment-uid"
+    assert stale_candidate.consumer_pods == ("platform-postgres-4",)
+    assert stale_reason == "stale-native-attachment-claims-unattached-volume"
+
+    stale_candidate_too_young, stale_too_young_reason = evaluate_stale(
+        lambda data: data["native_attachments"][0]["metadata"].update(
+            creationTimestamp="2026-07-24T07:59:30Z"
+        )
+    )
+    assert stale_candidate_too_young is None
+    assert (
+        stale_too_young_reason
+        == "old-successful-native-attachment-cardinality-not-one"
+    )
+
+    stale_candidate_running, stale_running_reason = evaluate_stale(
+        lambda data: data["pods"][0]["status"].update(phase="Running")
+    )
+    assert stale_candidate_running is None
+    assert stale_running_reason == "pending-controller-managed-consumer-absent"
+
+    def add_running_consumer(data):
+        running = copy.deepcopy(data["pods"][0])
+        running["metadata"]["name"] = "unexpected-running-consumer"
+        running["status"]["phase"] = "Running"
+        data["pods"].append(running)
+
+    stale_candidate_shared, stale_shared_reason = evaluate_stale(
+        add_running_consumer
+    )
+    assert stale_candidate_shared is None
+    assert stale_shared_reason == "other-active-consumer-present"
+
+    stale_candidate_conflict, stale_conflict_reason = evaluate_stale(
+        lambda data: data["longhorn_attachment"]["spec"][
+            "attachmentTickets"
+        ]["csi-ticket"].update(nodeID="node-3")
+    )
+    assert stale_candidate_conflict is None
+    assert stale_conflict_reason == "conflicting-csi-ticket-target-present"
+
+    fake_kube = FakeRecycleKubectl()
+    recycle_candidate = StaleNativeAttachmentCandidate(
+        volume_name="pvc-data",
+        pv_name="pvc-data",
+        namespace="platform-databases",
+        pvc_name="platform-postgres-4",
+        target_node="node-2",
+        attachment_name="csi-native",
+        attachment_uid="old-attachment-uid",
+        consumer_pods=("platform-postgres-4",),
+    )
+    assert (
+        recycle_stale_native_attachments(
+            fake_kube,
+            [recycle_candidate],
+            timeout_seconds=5,
+        )
+        == 0
+    )
+    assert fake_kube.calls[0][:4] == (
+        "-n",
+        "platform-databases",
+        "delete",
+        "pod/platform-postgres-4",
+    )
+    assert fake_kube.calls[1][:2] == (
+        "delete",
+        "volumeattachment.storage.k8s.io/csi-native",
+    )
+    destructive_storage_kinds = ("persistentvolume", "replica", "volume.longhorn")
+    assert not any(
+        any(kind in argument.lower() for kind in destructive_storage_kinds)
+        for call in fake_kube.calls
+        for argument in call
+    )
 
     expect_rejected(
         "old-failed-native-attachment-cardinality-not-one",

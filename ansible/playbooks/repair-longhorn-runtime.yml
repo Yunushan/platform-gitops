@@ -837,7 +837,7 @@
             - subprocess_timeout.py
           changed_when: false
 
-        - name: Quarantine unmapped replica blocking data-bearing Longhorn attachment
+        - name: Reconcile guarded data-bearing Longhorn attachment deadlocks
           ansible.builtin.command:
             argv:
               - /usr/bin/python3
@@ -849,6 +849,8 @@
           register: platform_longhorn_stuck_attachment_repair
           changed_when: >-
             'action=quarantine-unmapped-replica' in
+            (platform_longhorn_stuck_attachment_repair.stdout | default(''))
+            or 'action=recycle-stale-native-attachment' in
             (platform_longhorn_stuck_attachment_repair.stdout | default(''))
           when: platform_longhorn_runtime_stuck_attachment_repair_effective | bool
 
