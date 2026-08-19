@@ -19,6 +19,40 @@ from repair_stuck_longhorn_attachments import evaluate_candidate  # noqa: E402
 NOW = datetime(2026, 7, 24, 8, 0, tzinfo=timezone.utc)
 
 
+def verify_ansible_repair_bundle() -> None:
+    playbook_path = ROOT / "ansible/playbooks/repair-longhorn-runtime.yml"
+    playbook = playbook_path.read_text(encoding="utf-8")
+    required_fragments = (
+        "Create temporary Longhorn Python repair workspace",
+        "Install Longhorn Python repair bundle temporarily",
+        "repair_stuck_longhorn_attachments.py",
+        "repair_empty_faulted_longhorn_claims.py",
+        "bounded_subprocess.py",
+        "strict_json.py",
+        "subprocess_timeout.py",
+        "Remove temporary Longhorn Python repair workspace",
+    )
+    missing = [fragment for fragment in required_fragments if fragment not in playbook]
+    if missing:
+        raise AssertionError(
+            "Longhorn runtime repair playbook is missing its remote Python bundle: "
+            + ", ".join(missing)
+        )
+
+    for script_name in (
+        "repair_stuck_longhorn_attachments.py",
+        "repair_empty_faulted_longhorn_claims.py",
+    ):
+        remote_path = (
+            '"{{ platform_longhorn_runtime_python_workspace.path }}/'
+            f'{script_name}"'
+        )
+        if remote_path not in playbook:
+            raise AssertionError(
+                f"Longhorn runtime repair does not execute staged {script_name}"
+            )
+
+
 def fixtures():
     volume_name = "pvc-data"
     pv_name = volume_name
@@ -208,6 +242,8 @@ def expect_rejected(reason: str, mutate) -> None:
 
 
 def main() -> int:
+    verify_ansible_repair_bundle()
+
     candidate, reason = evaluate()
     assert candidate is not None, reason
     assert candidate.target_node == "node-2"
