@@ -3,6 +3,13 @@
 
 from __future__ import annotations
 
+import functools
+import http.server
+import os
+import shutil
+import subprocess
+import tempfile
+import threading
 from pathlib import Path
 
 
@@ -12,6 +19,11 @@ MAKEFILE = ROOT / "Makefile"
 PRODUCTION_CHECK = ROOT / "scripts/bootstrap/run-platform-production-check.sh"
 VERIFY_PLAYBOOK = ROOT / "ansible/playbooks/verify-platform-internal-tls.yml"
 SECRET_PLAYBOOK = ROOT / "ansible/playbooks/configure-platform-app-secrets.yml"
+PUBLIC_TLS_PLAYBOOK = ROOT / "ansible/playbooks/manage-platform-tls.yml"
+PUBLIC_TLS_VERIFY_PLAYBOOK = ROOT / "ansible/playbooks/verify-platform-tls.yml"
+WOODPECKER_REPAIR_PLAYBOOK = ROOT / "ansible/playbooks/repair-woodpecker.yml"
+TLS_CHAIN_HELPER = ROOT / "scripts/complete_tls_chain.sh"
+WOODPECKER_TLS_REPAIR_HELPER = ROOT / "scripts/repair_woodpecker_oauth_tls.sh"
 PKI_DOC = ROOT / "docs/INTERNAL_PKI.md"
 PRODUCTION_READINESS = ROOT / "docs/PRODUCTION_READINESS.md"
 
@@ -30,6 +42,272 @@ def require(text: str, needle: str, label: str) -> None:
 def forbid(text: str, needle: str, label: str) -> None:
     if needle in text:
         raise AssertionError(f"{label} must not contain {needle!r}")
+
+
+def run_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        command,
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if check and result.returncode != 0:
+        raise AssertionError(
+            f"command failed ({' '.join(command)}):\n{result.stdout}\n{result.stderr}"
+        )
+    return result
+
+
+class QuietRequestHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, format: str, *args: object) -> None:
+        del format, args
+
+
+def test_public_tls_chain_completion() -> None:
+    if os.name == "nt":
+        print("Public TLS chain behavior test skipped on Windows; static contract still enforced.")
+        return
+    bash = shutil.which("bash")
+    openssl = shutil.which("openssl")
+    curl = shutil.which("curl")
+    if not bash or not openssl or not curl:
+        print("Public TLS chain behavior test skipped because bash/openssl/curl are unavailable.")
+        return
+
+    with tempfile.TemporaryDirectory(prefix="platform-public-tls-") as raw_directory:
+        directory = Path(raw_directory)
+        root_key = directory / "root.key"
+        root_cert = directory / "root.pem"
+        intermediate_key = directory / "intermediate.key"
+        intermediate_csr = directory / "intermediate.csr"
+        intermediate_cert = directory / "intermediate.pem"
+        intermediate_der = directory / "intermediate.der"
+        leaf_key = directory / "leaf.key"
+        leaf_csr = directory / "leaf.csr"
+        leaf_cert = directory / "leaf.pem"
+
+        run_command(
+            [
+                openssl,
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-sha256",
+                "-nodes",
+                "-days",
+                "2",
+                "-subj",
+                "/CN=Platform TLS Test Root",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "keyUsage=critical,keyCertSign,cRLSign",
+                "-keyout",
+                str(root_key),
+                "-out",
+                str(root_cert),
+            ],
+            cwd=directory,
+        )
+        run_command(
+            [
+                openssl,
+                "req",
+                "-new",
+                "-newkey",
+                "rsa:2048",
+                "-sha256",
+                "-nodes",
+                "-subj",
+                "/CN=Platform TLS Test Intermediate",
+                "-keyout",
+                str(intermediate_key),
+                "-out",
+                str(intermediate_csr),
+            ],
+            cwd=directory,
+        )
+        intermediate_extensions = directory / "intermediate.ext"
+        intermediate_extensions.write_text(
+            "\n".join(
+                (
+                    "basicConstraints=critical,CA:TRUE,pathlen:0",
+                    "keyUsage=critical,keyCertSign,cRLSign",
+                    "subjectKeyIdentifier=hash",
+                    "authorityKeyIdentifier=keyid,issuer",
+                    "",
+                )
+            ),
+            encoding="utf-8",
+        )
+        run_command(
+            [
+                openssl,
+                "x509",
+                "-req",
+                "-in",
+                str(intermediate_csr),
+                "-CA",
+                str(root_cert),
+                "-CAkey",
+                str(root_key),
+                "-CAcreateserial",
+                "-days",
+                "2",
+                "-sha256",
+                "-extfile",
+                str(intermediate_extensions),
+                "-out",
+                str(intermediate_cert),
+            ],
+            cwd=directory,
+        )
+        run_command(
+            [
+                openssl,
+                "x509",
+                "-in",
+                str(intermediate_cert),
+                "-outform",
+                "DER",
+                "-out",
+                str(intermediate_der),
+            ],
+            cwd=directory,
+        )
+
+        handler = functools.partial(QuietRequestHandler, directory=str(directory))
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            leaf_extensions = directory / "leaf.ext"
+            leaf_extensions.write_text(
+                "\n".join(
+                    (
+                        "basicConstraints=critical,CA:FALSE",
+                        "keyUsage=critical,digitalSignature,keyEncipherment",
+                        "extendedKeyUsage=serverAuth",
+                        "subjectAltName=DNS:forgejo.example.test",
+                        (
+                            "authorityInfoAccess=caIssuers;URI:"
+                            f"http://127.0.0.1:{server.server_port}/{intermediate_der.name}"
+                        ),
+                        "",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            run_command(
+                [
+                    openssl,
+                    "req",
+                    "-new",
+                    "-newkey",
+                    "rsa:2048",
+                    "-sha256",
+                    "-nodes",
+                    "-subj",
+                    "/CN=forgejo.example.test",
+                    "-keyout",
+                    str(leaf_key),
+                    "-out",
+                    str(leaf_csr),
+                ],
+                cwd=directory,
+            )
+            run_command(
+                [
+                    openssl,
+                    "x509",
+                    "-req",
+                    "-in",
+                    str(leaf_csr),
+                    "-CA",
+                    str(intermediate_cert),
+                    "-CAkey",
+                    str(intermediate_key),
+                    "-CAcreateserial",
+                    "-days",
+                    "2",
+                    "-sha256",
+                    "-extfile",
+                    str(leaf_extensions),
+                    "-out",
+                    str(leaf_cert),
+                ],
+                cwd=directory,
+            )
+
+            completed_chain = directory / "completed-fullchain.pem"
+            result = run_command(
+                [bash, str(TLS_CHAIN_HELPER), str(leaf_cert), str(completed_chain), str(root_cert)],
+                cwd=directory,
+            )
+            if "tls_chain=completed" not in result.stdout:
+                raise AssertionError("leaf-only certificate did not use verified AIA completion")
+            if completed_chain.read_text(encoding="utf-8").count("BEGIN CERTIFICATE") != 2:
+                raise AssertionError("completed TLS chain must contain leaf plus one intermediate")
+            run_command(
+                [
+                    openssl,
+                    "verify",
+                    "-purpose",
+                    "sslserver",
+                    "-CAfile",
+                    str(root_cert),
+                    "-untrusted",
+                    str(completed_chain),
+                    str(leaf_cert),
+                ],
+                cwd=directory,
+            )
+
+            supplied_chain = directory / "supplied-fullchain.pem"
+            supplied_chain.write_text(
+                leaf_cert.read_text(encoding="utf-8")
+                + intermediate_cert.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            offline_output = directory / "offline-fullchain.pem"
+            offline_env = dict(os.environ)
+            offline_env["PLATFORM_TLS_AUTO_COMPLETE_CHAIN"] = "false"
+            offline_result = run_command(
+                [
+                    bash,
+                    str(TLS_CHAIN_HELPER),
+                    str(supplied_chain),
+                    str(offline_output),
+                    str(root_cert),
+                ],
+                cwd=directory,
+                env=offline_env,
+            )
+            if "tls_chain=verified" not in offline_result.stdout:
+                raise AssertionError("supplied full chain was not accepted without network completion")
+
+            rejected = run_command(
+                [bash, str(TLS_CHAIN_HELPER), str(leaf_cert), str(directory / "rejected.pem"), str(root_cert)],
+                cwd=directory,
+                env=offline_env,
+                check=False,
+            )
+            if rejected.returncode == 0 or "AIA completion is disabled" not in rejected.stderr:
+                raise AssertionError("leaf-only certificate did not fail closed with AIA disabled")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 def main() -> int:
@@ -65,6 +343,11 @@ def main() -> int:
     monitoring = read(PREMIUM / "monitoring/values.yaml")
     verifier = read(VERIFY_PLAYBOOK)
     secret_playbook = read(SECRET_PLAYBOOK)
+    public_tls_playbook = read(PUBLIC_TLS_PLAYBOOK)
+    public_tls_verifier = read(PUBLIC_TLS_VERIFY_PLAYBOOK)
+    woodpecker_repair = read(WOODPECKER_REPAIR_PLAYBOOK)
+    tls_chain_helper = read(TLS_CHAIN_HELPER)
+    woodpecker_tls_repair_helper = read(WOODPECKER_TLS_REPAIR_HELPER)
     makefile = read(MAKEFILE)
     pki_doc = read(PKI_DOC)
     readiness = read(PRODUCTION_READINESS)
@@ -232,6 +515,55 @@ def main() -> int:
         "state=reconciled",
     ):
         require(secret_playbook, needle, "cache URI secret automation")
+
+    for needle in (
+        "complete_tls_chain.sh",
+        'fullchain="{{ platform_tls_remote_directory }}/tls.fullchain.crt"',
+        '--cert="${fullchain}"',
+        "signed AIA issuer path",
+    ):
+        require(public_tls_playbook, needle, "public TLS distribution")
+    for needle in (
+        "verify_chain_file",
+        "-verify_return_error",
+        "-CAfile \"${trust_bundle}\"",
+        "-untrusted \"${intermediate_path}\"",
+        "discovered_host",
+        "host_source=%s",
+    ):
+        require(public_tls_verifier, needle, "public TLS verification")
+    for needle in (
+        "PLATFORM_WOODPECKER_REPAIR_AUTO_FORGEJO_TLS_CHAIN",
+        "woodpecker_oauth_tls",
+        "repair_woodpecker_oauth_tls.sh",
+        "complete_tls_chain.sh",
+    ):
+        require(woodpecker_repair, needle, "Woodpecker OAuth TLS repair")
+    for needle in (
+        "openssl verify -purpose sslserver",
+        "authorityInfoAccess",
+        "--proto '=http,https'",
+        "--max-filesize 1048576",
+        "openssl verify -partial_chain",
+        "CA:TRUE",
+        "AIA issuer chain contains a cycle",
+    ):
+        require(tls_chain_helper, needle, "TLS chain completion helper")
+    for needle in (
+        "forgejo_oauth_tls_chain=verified",
+        "forgejo-oauth-tls-chain-untrusted",
+        "WOODPECKER_FORGEJO_URL",
+        "-verify_return_error",
+        '-verify_hostname "${forgejo_host}"',
+        'create secret tls "${secret}"',
+        "refresh_traefik_certificate_cache",
+        "reason=tls-secret-cache-refresh",
+        "traefik-serial-refresh-timeout",
+        "matching-wildcard-leaf-fingerprint",
+        "reconcile_matching_tls_secrets",
+    ):
+        require(woodpecker_tls_repair_helper, needle, "Woodpecker OAuth TLS repair helper")
+    test_public_tls_chain_completion()
 
     for needle in (
         "openssl s_client",

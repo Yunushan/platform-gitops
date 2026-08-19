@@ -67,6 +67,8 @@ required = [
     'ansible/playbooks/verify-platform-app-health.yml',
     'ansible/playbooks/manage-platform-tls.yml',
     'ansible/playbooks/verify-platform-tls.yml',
+    'scripts/complete_tls_chain.sh',
+    'scripts/repair_woodpecker_oauth_tls.sh',
     'ansible/playbooks/repair-platform-service-path-consumers.yml',
     'ansible/playbooks/repair-woodpecker.yml',
     'ansible/playbooks/repair-woodpecker-service-path-nodes.yml',

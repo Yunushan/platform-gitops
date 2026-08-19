@@ -71,6 +71,8 @@ github_validate_workflow = root / ".github/workflows/validate.yml"
 github_release_workflow = root / ".github/workflows/release.yml"
 platform_tls_playbook = root / "ansible/playbooks/manage-platform-tls.yml"
 platform_tls_verify_playbook = root / "ansible/playbooks/verify-platform-tls.yml"
+platform_tls_chain_helper = root / "scripts/complete_tls_chain.sh"
+woodpecker_tls_repair_helper = root / "scripts/repair_woodpecker_oauth_tls.sh"
 production_evidence_script = root / "scripts/verify_production_evidence.py"
 production_evidence_runner = root / "scripts/bootstrap/run-platform-production-evidence.sh"
 production_evidence_test = root / "scripts/test_production_evidence.py"
@@ -2976,6 +2978,9 @@ def main() -> None:
         "keycloak:keycloak-tls",
         "platform_tls_remote_directory",
         "trap cleanup EXIT",
+        "complete_tls_chain.sh",
+        'fullchain="{{ platform_tls_remote_directory }}/tls.fullchain.crt"',
+        '--cert="${fullchain}"',
     ):
         require_text(
             platform_tls_text,
@@ -2993,11 +2998,51 @@ def main() -> None:
         "served_fingerprint",
         "trap cleanup EXIT",
         "keycloak keycloak-tls",
+        "verify_chain_file",
+        "-verify_return_error",
+        '-untrusted "${intermediate_path}"',
+        "discovered_host",
+        "host_source=%s",
     ):
         require_text(
             platform_tls_verify_text,
             needle,
             f"TLS verification gate must retain ingress proof: {needle}",
+        )
+
+    platform_tls_chain_helper_text = read(platform_tls_chain_helper)
+    woodpecker_tls_repair_helper_text = read(woodpecker_tls_repair_helper)
+    for needle in (
+        "authorityInfoAccess",
+        "--proto '=http,https'",
+        "--max-filesize 1048576",
+        "openssl verify -partial_chain",
+        "CA:TRUE",
+        "AIA issuer chain contains a cycle",
+    ):
+        require_text(
+            platform_tls_chain_helper_text,
+            needle,
+            f"TLS chain completion must fail closed: {needle}",
+        )
+
+    for needle in (
+        "forgejo_oauth_tls_chain=verified",
+        "forgejo-oauth-tls-chain-untrusted",
+        "WOODPECKER_FORGEJO_URL",
+        "-verify_return_error",
+        '-verify_hostname "${forgejo_host}"',
+        'create secret tls "${secret}"',
+        "refresh_traefik_certificate_cache",
+        "reason=tls-secret-cache-refresh",
+        "traefik-serial-refresh-timeout",
+        "matching-wildcard-leaf-fingerprint",
+        "reconcile_matching_tls_secrets",
+    ):
+        require_text(
+            woodpecker_tls_repair_helper_text,
+            needle,
+            f"Woodpecker OAuth TLS repair must retain fail-closed controls: {needle}",
         )
 
     for path in (

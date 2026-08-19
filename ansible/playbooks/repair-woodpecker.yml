@@ -18,6 +18,8 @@
     platform_woodpecker_repair_auto_service_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_SERVICE_PATH') }}"
     platform_woodpecker_repair_service_path_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_ROLLOUT_TIMEOUT') }}"
     platform_woodpecker_repair_service_path_convergence_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_SERVICE_PATH_CONVERGENCE_TIMEOUT') }}"
+    platform_woodpecker_repair_auto_forgejo_tls_chain_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_AUTO_FORGEJO_TLS_CHAIN') }}"
+    platform_woodpecker_repair_forgejo_tls_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_WOODPECKER_REPAIR_FORGEJO_TLS_TIMEOUT') }}"
     platform_woodpecker_agent_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_AGENT_SECRET_NAME') }}"
     platform_woodpecker_image_tag_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_IMAGE_TAG') }}"
     platform_woodpecker_repair_timeout_effective: "{{ platform_woodpecker_repair_timeout | default(platform_woodpecker_repair_timeout_from_env, true) | default(300, true) | int }}"
@@ -32,6 +34,8 @@
     platform_woodpecker_repair_auto_service_path_effective: "{{ platform_woodpecker_repair_auto_service_path | default(platform_woodpecker_repair_auto_service_path_from_env, true) | default(true, true) | bool }}"
     platform_woodpecker_repair_service_path_rollout_timeout_effective: "{{ platform_woodpecker_repair_service_path_rollout_timeout | default(platform_woodpecker_repair_service_path_rollout_timeout_from_env, true) | default(120, true) | int }}"
     platform_woodpecker_repair_service_path_convergence_timeout_effective: "{{ platform_woodpecker_repair_service_path_convergence_timeout | default(platform_woodpecker_repair_service_path_convergence_timeout_from_env, true) | default(180, true) | int }}"
+    platform_woodpecker_repair_auto_forgejo_tls_chain_effective: "{{ platform_woodpecker_repair_auto_forgejo_tls_chain | default(platform_woodpecker_repair_auto_forgejo_tls_chain_from_env, true) | default(true, true) | bool }}"
+    platform_woodpecker_repair_forgejo_tls_timeout_effective: "{{ platform_woodpecker_repair_forgejo_tls_timeout | default(platform_woodpecker_repair_forgejo_tls_timeout_from_env, true) | default(180, true) | int }}"
     platform_woodpecker_agent_secret_name_effective: "{{ platform_woodpecker_agent_secret_name | default(platform_woodpecker_agent_secret_name_from_env, true) | default('woodpecker-agent-secret', true) }}"
   tasks:
     - name: Show Woodpecker state before repair
@@ -58,6 +62,71 @@
       ansible.builtin.debug:
         var: platform_woodpecker_repair_state_before.stdout_lines
       run_once: true
+
+    - name: Copy public TLS chain repair helpers for Woodpecker
+      ansible.builtin.copy:
+        src: "../../scripts/{{ item.source }}"
+        dest: "/run/{{ item.destination }}"
+        owner: root
+        group: root
+        mode: "0700"
+      loop:
+        - source: complete_tls_chain.sh
+          destination: platform-woodpecker-complete-tls-chain.sh
+        - source: repair_woodpecker_oauth_tls.sh
+          destination: platform-woodpecker-repair-oauth-tls.sh
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      tags:
+        - woodpecker_oauth_tls
+
+    - name: Verify and repair the Forgejo TLS chain used by Woodpecker OAuth
+      ansible.builtin.command:
+        argv:
+          - /run/platform-woodpecker-repair-oauth-tls.sh
+          - "{{ platform_woodpecker_repair_auto_forgejo_tls_chain_effective | ternary('true', 'false') }}"
+          - "{{ platform_woodpecker_repair_forgejo_tls_timeout_effective | string }}"
+          - /run/platform-woodpecker-complete-tls-chain.sh
+      register: platform_woodpecker_forgejo_tls_chain_repair
+      changed_when: "'state=repaired' in platform_woodpecker_forgejo_tls_chain_repair.stdout"
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      tags:
+        - woodpecker_oauth_tls
+
+    - name: Remove public TLS chain repair helpers after Woodpecker preflight
+      ansible.builtin.file:
+        path: "/run/{{ item }}"
+        state: absent
+      loop:
+        - platform-woodpecker-complete-tls-chain.sh
+        - platform-woodpecker-repair-oauth-tls.sh
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      tags:
+        - woodpecker_oauth_tls
+
+    - name: Show Forgejo OAuth TLS chain preflight
+      ansible.builtin.debug:
+        var: platform_woodpecker_forgejo_tls_chain_repair.stdout_lines
+      run_once: true
+      tags:
+        - woodpecker_oauth_tls
+
+    - name: Stop when Forgejo OAuth TLS chain cannot be trusted
+      ansible.builtin.fail:
+        msg: |
+          Woodpecker cannot verify the HTTPS certificate chain served by
+          Forgejo. The repair attempted to complete missing intermediates from
+          the certificate's cryptographically verified AIA issuer path.
+
+          {{ platform_woodpecker_forgejo_tls_chain_repair.stdout | default('No TLS-chain diagnostics were returned.', true) }}
+          {{ platform_woodpecker_forgejo_tls_chain_repair.stderr | default('', true) }}
+      when: (platform_woodpecker_forgejo_tls_chain_repair.rc | default(1) | int) != 0
+      run_once: true
+      tags:
+        - woodpecker_oauth_tls
 
     - name: Ensure platform PostgreSQL backend is available when Woodpecker uses Postgres
       ansible.builtin.shell: |
