@@ -345,7 +345,16 @@
 
     - name: Select final Forgejo ingress verification result
       ansible.builtin.set_fact:
-        platform_forgejo_ingress_final_check: "{{ platform_forgejo_ingress_endpoint_mode_check if (platform_forgejo_ingress_native_lb_fallback_effective | bool and platform_forgejo_ingress_endpoint_mode_check is defined) else platform_forgejo_ingress_controller_check }}"
+        platform_forgejo_ingress_final_check: >-
+          {{
+            platform_forgejo_ingress_endpoint_mode_check
+            if (
+              platform_forgejo_ingress_native_lb_fallback_effective | bool
+              and platform_forgejo_ingress_endpoint_mode_check is defined
+              and platform_forgejo_ingress_endpoint_mode_check.rc is defined
+            )
+            else platform_forgejo_ingress_controller_check
+          }}
       run_once: true
 
     - name: Collect Forgejo ingress diagnostics after verification failure
@@ -370,7 +379,7 @@
       changed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
-      when: platform_forgejo_ingress_final_check.rc != 0
+      when: (platform_forgejo_ingress_final_check.rc | default(1) | int) != 0
 
     - name: Stop after Forgejo ingress verification failure
       ansible.builtin.fail:
@@ -392,7 +401,7 @@
           Diagnostic summary:
           {{ platform_forgejo_ingress_failure.stdout | default('not collected') }}
       run_once: true
-      when: platform_forgejo_ingress_final_check.rc != 0
+      when: (platform_forgejo_ingress_final_check.rc | default(1) | int) != 0
 
     - name: Show Forgejo ingress access summary
       ansible.builtin.debug:
@@ -400,7 +409,7 @@
           Forgejo ingress is ready.
 
           Backend routing mode:
-          - {{ 'endpoint mode (nativeLB fallback)' if (platform_forgejo_ingress_endpoint_mode_check is defined and platform_forgejo_ingress_endpoint_mode_check.rc == 0) else 'native service load balancing' }}
+          - {{ 'endpoint mode (nativeLB fallback)' if (platform_forgejo_ingress_endpoint_mode_check is defined and platform_forgejo_ingress_endpoint_mode_check.rc is defined and (platform_forgejo_ingress_endpoint_mode_check.rc | int) == 0) else 'native service load balancing' }}
 
           URL:
           - https://{{ platform_forgejo_host_effective }}
