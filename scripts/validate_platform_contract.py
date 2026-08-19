@@ -132,6 +132,7 @@ cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-v
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 node_storage_cleanup_playbook = root / "ansible/playbooks/cleanup-node-storage.yml"
 forgejo_storage_repair_playbook = root / "ansible/playbooks/repair-forgejo-storage.yml"
+forgejo_ingress_publish_playbook = root / "ansible/playbooks/publish-forgejo-ingress.yml"
 empty_faulted_longhorn_claim_repair = root / "scripts/repair_empty_faulted_longhorn_claims.py"
 stuck_longhorn_attachment_repair = root / "scripts/repair_stuck_longhorn_attachments.py"
 unregistered_longhorn_replica_path_repair = root / "scripts/repair_unregistered_longhorn_replica_paths.py"
@@ -3587,6 +3588,7 @@ def main() -> None:
     makefile_text = read(makefile)
     node_storage_cleanup_text = read(node_storage_cleanup_playbook)
     forgejo_storage_repair_text = read(forgejo_storage_repair_playbook)
+    forgejo_ingress_publish_text = read(forgejo_ingress_publish_playbook)
     for needle in (
         "PLATFORM_NODE_STORAGE_PRESSURE_ONLY",
         "PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR",
@@ -3646,6 +3648,15 @@ def main() -> None:
             forgejo_storage_repair_text,
             needle,
             f"Forgejo storage repair must classify Longhorn attach failure: {needle}",
+        )
+    for needle in (
+        "platform_forgejo_ingress_endpoint_mode_check.rc is defined",
+        "(platform_forgejo_ingress_final_check.rc | default(1) | int) != 0",
+    ):
+        require_text(
+            forgejo_ingress_publish_text,
+            needle,
+            f"Forgejo ingress result selection must tolerate skipped tasks: {needle}",
         )
     profile_check_text = read(profile_check_script)
     profile_check_test_text = read(profile_check_test)
