@@ -2010,19 +2010,86 @@
 
     - name: Ensure Woodpecker PostgreSQL trust bundle mount before restart
       ansible.builtin.shell: |
-        set -u
+        set -uo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         namespace=woodpecker
+        bundle_file="$(mktemp)"
+        trap 'rm -f "${bundle_file}"' EXIT
         bundle_ready=false
         refresh_requested=false
+
+        # The declarative Bundle is preferred. During a partial bootstrap or
+        # while Argo CD is still on an older revision, recover the target from
+        # the cert-manager public CA certificate so the application can start.
+        ensure_bundle_resource() {
+          if ! "$K" --kubeconfig "$C" get crd bundles.trust.cert-manager.io >/dev/null 2>&1; then
+            return 0
+          fi
+          if "$K" --kubeconfig "$C" get bundle/platform-internal-roots >/dev/null 2>&1; then
+            return 0
+          fi
+          printf '%s\n' \
+            'apiVersion: trust.cert-manager.io/v1alpha1' \
+            'kind: Bundle' \
+            'metadata:' \
+            '  name: platform-internal-roots' \
+            'spec:' \
+            '  sources:' \
+            '    - useDefaultCAs: true' \
+            '    - secret:' \
+            '        name: platform-internal-root-ca' \
+            '        key: tls.crt' \
+            '  target:' \
+            '    configMap:' \
+            '      key: ca-certificates.crt' \
+            '      metadata:' \
+            '        labels:' \
+            '          app.kubernetes.io/part-of: platform-pki' \
+            '          platform.gitops/trust-bundle: internal-roots' \
+            | "$K" --kubeconfig "$C" apply -f - >/dev/null 2>&1 || return 1
+          echo "woodpecker_postgres_ca_bundle_resource=created"
+        }
+
+        materialize_from_cert_manager_root() {
+          source_data="$($K --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca \
+            -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
+          if [ -z "${source_data}" ]; then
+            source_data="$($K --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca \
+              -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+          fi
+          if [ -z "${source_data}" ]; then
+            return 1
+          fi
+          if ! printf '%s' "${source_data}" | base64 -d > "${bundle_file}" ||
+            ! grep -q 'BEGIN CERTIFICATE' "${bundle_file}"; then
+            return 1
+          fi
+          if ! "$K" --kubeconfig "$C" -n "$namespace" create configmap platform-internal-roots \
+            --from-file=ca-certificates.crt="${bundle_file}" \
+            --dry-run=client -o yaml |
+            "$K" --kubeconfig "$C" apply -f - >/dev/null; then
+            return 1
+          fi
+          if ! "$K" --kubeconfig "$C" -n "$namespace" label configmap/platform-internal-roots \
+            app.kubernetes.io/part-of=platform-pki \
+            platform.gitops/trust-bundle=internal-roots --overwrite >/dev/null; then
+            return 1
+          fi
+          echo "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca"
+          return 0
+        }
+
+        ensure_bundle_resource ||
+          echo "woodpecker_postgres_ca_bundle_resource=reconcile-failed"
 
         # Trust-manager writes the bundle into each target namespace. Refresh it
         # once here so a transient or stale target does not leave Woodpecker
         # restarting against an absent CA file.
         for attempt in $(seq 1 18); do
-          bundle_value="$($K --kubeconfig "$C" -n "$namespace" get configmap/platform-internal-roots -o jsonpath='{.data.ca-certificates\.crt}' 2>/dev/null || true)"
-          if [ -n "${bundle_value}" ]; then
+          bundle_value="$($K --kubeconfig "$C" -n "$namespace" get configmap/platform-internal-roots \
+            -o jsonpath='{.data.ca-certificates\.crt}' 2>/dev/null || true)"
+          if printf '%s' "${bundle_value}" | grep -q 'BEGIN CERTIFICATE'; then
             bundle_ready=true
             break
           fi
@@ -2032,12 +2099,20 @@
               argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
             refresh_requested=true
           fi
+          if [ "${attempt}" -ge 3 ] && materialize_from_cert_manager_root; then
+            bundle_ready=true
+            break
+          fi
           sleep 5
         done
 
         if [ "${bundle_ready}" != "true" ]; then
           echo "woodpecker_postgres_ca_bundle=missing"
-          echo "result=fail reason=woodpecker-postgres-ca-bundle-missing"
+          if "$K" --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca >/dev/null 2>&1; then
+            echo "result=fail reason=woodpecker-postgres-ca-bundle-missing"
+          else
+            echo "result=fail reason=woodpecker-postgres-ca-source-missing"
+          fi
           exit 1
         fi
 
@@ -2079,7 +2154,11 @@
       args:
         executable: /bin/bash
       register: platform_woodpecker_postgres_ca_mount_repair
-      changed_when: "'woodpecker_postgres_ca_mount=patched' in platform_woodpecker_postgres_ca_mount_repair.stdout"
+      changed_when: >-
+        'woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca' in
+        platform_woodpecker_postgres_ca_mount_repair.stdout or
+        'woodpecker_postgres_ca_mount=patched' in
+        platform_woodpecker_postgres_ca_mount_repair.stdout
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
