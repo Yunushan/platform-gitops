@@ -446,6 +446,10 @@ def main() -> int:
         "materialize_from_cert_manager_root",
         "configmap/platform-internal-root-ca",
         "root-ca.pem",
+        "Recycle stale Woodpecker server Pods after PostgreSQL CA mount repair",
+        "woodpecker_postgres_ca_pod_recycle=recycled",
+        "woodpecker-postgres-ca-pod-recycle-last-ready-server",
+        "pvc=retained",
     ):
         require(woodpecker_repair, needle, "Woodpecker PostgreSQL CA recovery")
     forbid(

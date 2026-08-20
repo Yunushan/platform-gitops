@@ -162,6 +162,12 @@ decoded value contains a PEM certificate before creating the ConfigMap and
 never disables PostgreSQL certificate verification. If neither authoritative
 source exists, the repair still fails closed.
 
+When the StatefulSet template has the trust mount but an older, unhealthy Pod
+still lacks it, `platform-woodpecker-repair` recycles stale server Pods one at a
+time, starting with the highest unready ordinal. Every PVC is retained, each
+replacement must contain the CA mount and become Ready before repair continues,
+and the last Ready server is never removed without another Ready replica.
+
 The premium CloudNativePG profile keeps its mutating and validating webhooks
 enabled with `failurePolicy: Ignore`. Healthy requests still pass through both
 webhooks, while a temporary API-server-to-webhook ClusterIP outage no longer
