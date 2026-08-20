@@ -662,6 +662,8 @@ def main() -> int:
             "whenUnsatisfiable: DoNotSchedule",
             "name: platform-postgres-ca",
             "name: platform-internal-roots",
+            "key: ca-certificates.crt",
+            "path: ca-certificates.crt",
             "mountPath: /etc/ssl/platform-postgres",
         )
         invalid_woodpecker_log_env = dict(env, WOODPECKER_LOG_LEVEL="verbose")

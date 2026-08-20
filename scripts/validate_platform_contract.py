@@ -1230,6 +1230,10 @@ def main() -> None:
         "probes:\n    liveness:\n      timeoutSeconds: 10\n      periodSeconds: 10\n      successThreshold: 1\n      failureThreshold: 30",
         "- woodpecker-agent-secret",
         "- woodpecker-forgejo-oauth",
+        "name: platform-postgres-ca",
+        "name: platform-internal-roots",
+        "key: ca-certificates.crt",
+        "path: ca-certificates.crt",
         "createAgentSecret: false",
         "mapAgentSecret: false",
         "app.kubernetes.io/name: server\n              app.kubernetes.io/instance: woodpecker\n          topologyKey: kubernetes.io/hostname",
@@ -4087,6 +4091,37 @@ def main() -> None:
             task.group("body"),
         ):
             fail(f"platform app secret task must carry the Woodpecker focus tag: {task_name}")
+    for task_name in (
+        "Generate or preserve Harbor bootstrap secrets",
+        "Generate or preserve Harbor external database password secret",
+        "Check Harbor external database password secret state",
+        "Generate or preserve Harbor external Redis credentials secret",
+        "Check Harbor external Redis credentials secret state",
+        "Generate or preserve Harbor registry S3 credentials secret",
+        "Generate Harbor core Redis URL override secret",
+        "Check Harbor registry S3 credentials secret state",
+        "Require Harbor production dependency secrets when enabled",
+    ):
+        task = re.search(
+            rf"(?ms)^    - name: {re.escape(task_name)}\n(?P<body>.*?)(?=^    - name:|\Z)",
+            app_secrets_text,
+        )
+        if not task or not re.search(
+            r"(?m)^      tags:\n        - harbor$",
+            task.group("body"),
+        ):
+            fail(f"platform app secret task must carry the Harbor focus tag: {task_name}")
+    for needle in (
+        "PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=false",
+        "PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=false",
+        "PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=false",
+        "--tags woodpecker --skip-tags harbor",
+    ):
+        require_text(
+            makefile_text,
+            needle,
+            f"platform-woodpecker-repair must isolate Harbor secret gates with {needle}",
+        )
     longhorn_runtime_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-runtime-repair")
     longhorn_bootstrap_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-bootstrap")
     if not (strict_repair_index < longhorn_runtime_index < longhorn_bootstrap_index < first_consumer_refresh):

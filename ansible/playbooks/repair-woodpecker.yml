@@ -2008,6 +2008,82 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Ensure Woodpecker PostgreSQL trust bundle mount before restart
+      ansible.builtin.shell: |
+        set -u
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        namespace=woodpecker
+        bundle_ready=false
+        refresh_requested=false
+
+        # Trust-manager writes the bundle into each target namespace. Refresh it
+        # once here so a transient or stale target does not leave Woodpecker
+        # restarting against an absent CA file.
+        for attempt in $(seq 1 18); do
+          bundle_value="$($K --kubeconfig "$C" -n "$namespace" get configmap/platform-internal-roots -o jsonpath='{.data.ca-certificates\.crt}' 2>/dev/null || true)"
+          if [ -n "${bundle_value}" ]; then
+            bundle_ready=true
+            break
+          fi
+          if [ "${refresh_requested}" != "true" ] &&
+            "$K" --kubeconfig "$C" -n argocd get application/trust-manager >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd annotate application/trust-manager \
+              argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
+            refresh_requested=true
+          fi
+          sleep 5
+        done
+
+        if [ "${bundle_ready}" != "true" ]; then
+          echo "woodpecker_postgres_ca_bundle=missing"
+          echo "result=fail reason=woodpecker-postgres-ca-bundle-missing"
+          exit 1
+        fi
+
+        controller=
+        for candidate in statefulset/woodpecker-server deployment/woodpecker-server; do
+          if "$K" --kubeconfig "$C" -n "$namespace" get "$candidate" >/dev/null 2>&1; then
+            controller="$candidate"
+            break
+          fi
+        done
+        if [ -z "${controller}" ]; then
+          echo "result=fail reason=woodpecker-postgres-ca-controller-missing"
+          exit 1
+        fi
+
+        volume_configmap="$($K --kubeconfig "$C" -n "$namespace" get "$controller" \
+          -o jsonpath='{.spec.template.spec.volumes[?(@.name=="platform-postgres-ca")].configMap.name}' 2>/dev/null || true)"
+        volume_item_path="$($K --kubeconfig "$C" -n "$namespace" get "$controller" \
+          -o jsonpath='{.spec.template.spec.volumes[?(@.name=="platform-postgres-ca")].configMap.items[?(@.key=="ca-certificates.crt")].path}' 2>/dev/null || true)"
+        mount_path="$($K --kubeconfig "$C" -n "$namespace" get "$controller" \
+          -o jsonpath='{range .spec.template.spec.containers[*].volumeMounts[?(@.name=="platform-postgres-ca")]}{.mountPath}{"\n"}{end}' 2>/dev/null || true)"
+        if [ "${volume_configmap}" = "platform-internal-roots" ] &&
+          [ "${volume_item_path}" = "ca-certificates.crt" ] &&
+          printf '%s\n' "${mount_path}" | grep -qx '/etc/ssl/platform-postgres'; then
+          echo "woodpecker_postgres_ca_mount=present controller=${controller}"
+          exit 0
+        fi
+
+        container_name="$($K --kubeconfig "$C" -n "$namespace" get "$controller" \
+          -o jsonpath='{.spec.template.spec.containers[0].name}' 2>/dev/null || true)"
+        if [ -z "${container_name}" ]; then
+          echo "result=fail reason=woodpecker-postgres-ca-container-missing"
+          exit 1
+        fi
+
+        patch='{"spec":{"template":{"spec":{"volumes":[{"name":"platform-postgres-ca","configMap":{"name":"platform-internal-roots","items":[{"key":"ca-certificates.crt","path":"ca-certificates.crt"}]}}],"containers":[{"name":"'"${container_name}"'","volumeMounts":[{"name":"platform-postgres-ca","mountPath":"/etc/ssl/platform-postgres","readOnly":true}]}]}}}}'
+        "$K" --kubeconfig "$C" -n "$namespace" patch "$controller" --type=strategic -p "${patch}"
+        echo "woodpecker_postgres_ca_mount=patched controller=${controller}"
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_postgres_ca_mount_repair
+      changed_when: "'woodpecker_postgres_ca_mount=patched' in platform_woodpecker_postgres_ca_mount_repair.stdout"
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
     - name: Restart Woodpecker workloads after secret and source repair
       ansible.builtin.shell: |
         set -u
@@ -2144,6 +2220,23 @@
           echo "result=fail reason=woodpecker-server-has-no-ready-endpoints"
           failed=1
         fi
+        server_pods="$($K --kubeconfig "$C" -n woodpecker get pods \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep '^woodpecker-server-' || true)"
+        for pod in ${server_pods}; do
+          pod_phase="$($K --kubeconfig "$C" -n woodpecker get pod "$pod" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          if [ "${pod_phase}" != "Running" ]; then
+            continue
+          fi
+          if "$K" --kubeconfig "$C" -n woodpecker exec "pod/${pod}" -c server -- \
+            test -s /etc/ssl/platform-postgres/ca-certificates.crt >/dev/null 2>&1; then
+            echo "woodpecker_postgres_ca_bundle pod=${pod} result=ok"
+          else
+            echo "woodpecker_postgres_ca_bundle pod=${pod} result=fail"
+            echo "result=fail reason=woodpecker-postgres-ca-file-missing pod=${pod}"
+            failed=1
+          fi
+        done
         exit "${failed}"
       args:
         executable: /bin/bash
@@ -2181,6 +2274,22 @@
             echo "--- ${workload} ---"
             "$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
               -o jsonpath='images={range .spec.template.spec.containers[*]}{.image}{" "}{end}{"\n"}env_names={range .spec.template.spec.containers[*].env[*]}{.name}{" "}{end}{"\n"}env_from_secrets={range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{" "}{end}{"\n"}env_value_from_secrets={range .spec.template.spec.containers[*].env[*].valueFrom.secretKeyRef}{.name}{" "}{end}{"\n"}' 2>&1 | redact || true
+          fi
+        done
+
+        echo "===== woodpecker PostgreSQL trust bundle ====="
+        if "$K" --kubeconfig "$C" -n woodpecker get configmap/platform-internal-roots >/dev/null 2>&1; then
+          bundle_keys="$($K --kubeconfig "$C" -n woodpecker get configmap/platform-internal-roots \
+            -o go-template='{{ "{{" }} range $key, $_ := .data {{ "}}" }}{{ "{{" }} $key {{ "}}" }} {{ "{{" }} end {{ "}}" }}' 2>/dev/null || true)"
+          echo "configmap=woodpecker/platform-internal-roots state=present keys=${bundle_keys:-none}"
+        else
+          echo "configmap=woodpecker/platform-internal-roots state=absent"
+        fi
+        for workload in statefulset/woodpecker-server deployment/woodpecker-server; do
+          if "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
+            echo "--- ${workload} trust mounts ---"
+            "$K" --kubeconfig "$C" -n woodpecker get "${workload}" \
+              -o jsonpath='volumes={range .spec.template.spec.volumes[*]}{.name}={.configMap.name}{" "}{end}{"\n"}mounts={range .spec.template.spec.containers[*]}{.name}:{range .volumeMounts[*]}{.name}={.mountPath}{" "}{end}{"\n"}{end}' 2>&1 | redact || true
           fi
         done
 
@@ -2228,6 +2337,7 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: >
+        ((platform_woodpecker_postgres_ca_mount_repair | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_server_replica_volume_repair | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_argocd_sync_wait | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_rollout_wait | default({})).rc | default(0) | int != 0) or
@@ -2270,6 +2380,13 @@
           Failure diagnostics:
           {{ (platform_woodpecker_failure_diagnostics | default({})).stdout | default('not run') }}
 
+          PostgreSQL trust-bundle mount repair:
+          rc={{ (platform_woodpecker_postgres_ca_mount_repair | default({})).rc | default('not run') }}
+          stdout:
+          {{ (platform_woodpecker_postgres_ca_mount_repair | default({})).stdout | default('not run') }}
+          stderr:
+          {{ (platform_woodpecker_postgres_ca_mount_repair | default({})).stderr | default('not run') }}
+
           If runtime verification shows `woodpecker-image-tag-mismatch`, the
           Argo CD source still contains stale rendered Woodpecker values. For
           example, `woodpecker-server:3.16.0` must be rendered and synced as
@@ -2282,6 +2399,7 @@
           make platform-woodpecker-repair
       run_once: true
       when: >
+        ((platform_woodpecker_postgres_ca_mount_repair | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_server_replica_volume_repair | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_argocd_sync_wait | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_rollout_wait | default({})).rc | default(0) | int != 0) or

@@ -445,8 +445,11 @@ platform-ci-health:
 
 platform-woodpecker-repair:
 	@$(MAKE) platform-argocd-service-repair
-	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini \
-		ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker
+	@PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=false \
+	PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=false \
+	PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=false \
+	ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini \
+		ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker --skip-tags harbor
 	@set -o pipefail; \
 		repair_log="$$(mktemp)"; \
 		trap 'rm -f "$$repair_log"' EXIT; \
@@ -459,6 +462,7 @@ platform-woodpecker-repair:
 		fi; \
 		service_path_repair=false; \
 		longhorn_runtime_repair=false; \
+		application_config_repair=false; \
 		longhorn_bootstrap_ran=false; \
 		if grep -Eq 'reason=postgres-endpoint-path-unreachable|cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)|failed calling webhook.*(cnpg|mcluster)|mcluster\.cnpg\.io.*context deadline exceeded|Instance Status Extraction Error: HTTP communication issue|:8000/(readyz|healthz|startupz).*(i/o timeout|context deadline exceeded|Client\.Timeout exceeded)' "$$repair_log"; then \
 			service_path_repair=true; \
@@ -467,10 +471,16 @@ platform-woodpecker-repair:
 			grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|VolumeBinding.*binding volumes: context deadline exceeded|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
 			longhorn_runtime_repair=true; \
 		fi; \
-		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair"; \
-		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ]; then \
-			echo "Woodpecker repair failed without a recognized PostgreSQL service-path or Longhorn CSI classification; automatic fallback skipped." >&2; \
+		if grep -Eq 'reason=woodpecker-postgres-ca-(bundle|mount|file|controller|container)-missing|open /etc/ssl/platform-postgres/ca-certificates\\.crt: no such file or directory' "$$repair_log"; then \
+			application_config_repair=true; \
+		fi; \
+		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair application_config=$$application_config_repair"; \
+		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ]; then \
+			echo "Woodpecker repair failed without a recognized PostgreSQL service-path, Longhorn CSI, or application trust-bundle classification; automatic fallback skipped." >&2; \
 			exit "$$repair_rc"; \
+		fi; \
+		if [ "$$application_config_repair" = "true" ]; then \
+			echo "Woodpecker PostgreSQL trust-bundle configuration failed; refreshing the bundle and repairing the server mount before retry."; \
 		fi; \
 		if [ "$$service_path_repair" = "true" ]; then \
 			echo "Woodpecker PostgreSQL or CloudNativePG service path failed; applying all-node CNI/firewalld recovery."; \
