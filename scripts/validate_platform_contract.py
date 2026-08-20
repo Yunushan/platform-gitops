@@ -4400,6 +4400,14 @@ def main() -> None:
         "woodpecker-default-agent-secret",
         "woodpecker_default_agent_secret_sync=updated",
         "env_value_from_secrets=",
+        "Ensure Woodpecker PostgreSQL trust bundle mount before restart",
+        "ensure_bundle_resource",
+        "bundles.trust.cert-manager.io",
+        "woodpecker_postgres_ca_bundle_resource=created",
+        "materialize_from_cert_manager_root",
+        "platform-internal-root-ca",
+        "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca",
+        "woodpecker-postgres-ca-source-missing",
     ):
         require_text(
             woodpecker_repair_text,

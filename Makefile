@@ -471,7 +471,7 @@ platform-woodpecker-repair:
 			grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|VolumeBinding.*binding volumes: context deadline exceeded|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
 			longhorn_runtime_repair=true; \
 		fi; \
-		if grep -Eq 'reason=woodpecker-postgres-ca-(bundle|mount|file|controller|container)-missing|open /etc/ssl/platform-postgres/ca-certificates\\.crt: no such file or directory' "$$repair_log"; then \
+		if grep -Eq 'reason=woodpecker-postgres-ca-(bundle|mount|file|controller|container|source)-missing|open /etc/ssl/platform-postgres/ca-certificates\\.crt: no such file or directory' "$$repair_log"; then \
 			application_config_repair=true; \
 		fi; \
 		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair application_config=$$application_config_repair"; \
