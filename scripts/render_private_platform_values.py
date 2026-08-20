@@ -1737,6 +1737,9 @@ def woodpecker_bootstrap_values(
     - name: platform-postgres-ca
       configMap:
         name: platform-internal-roots
+        items:
+          - key: ca-certificates.crt
+            path: ca-certificates.crt
   extraVolumeMounts:
     - name: platform-postgres-ca
       mountPath: /etc/ssl/platform-postgres
