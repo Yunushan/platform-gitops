@@ -141,6 +141,8 @@ stuck_longhorn_attachment_repair = root / "scripts/repair_stuck_longhorn_attachm
 unregistered_longhorn_replica_path_repair = root / "scripts/repair_unregistered_longhorn_replica_paths.py"
 longhorn_bootstrap_playbook = root / "ansible/playbooks/bootstrap-longhorn.yml"
 longhorn_bootstrap_runner = root / "scripts/bootstrap/run-longhorn-bootstrap.sh"
+longhorn_crd_repair_runner = root / "scripts/bootstrap/run-longhorn-crd-repair.sh"
+local_helm_helper = root / "scripts/bootstrap/ensure-local-helm.sh"
 platform_app_health_runner = root / "scripts/bootstrap/run-platform-app-health.sh"
 dns_repair_playbook = root / "ansible/playbooks/repair-cluster-dns.yml"
 firewalld_cleanup_script = root / "scripts/cleanup_firewalld_cni_interfaces.py"
@@ -4386,6 +4388,39 @@ def main() -> None:
         "@bash scripts/bootstrap/run-longhorn-bootstrap.sh",
         "platform-longhorn-bootstrap must load private deployment settings",
     )
+    local_helm_helper_text = read(local_helm_helper)
+    for needle in (
+        "ensure_local_helm",
+        "PLATFORM_AUTO_INSTALL_LOCAL_HELM",
+        "PLATFORM_LOCAL_TOOL_CACHE_DIR",
+        "scripts/bootstrap/install-ci-tools.sh",
+        '"${tool_dir}" helm',
+    ):
+        require_text(
+            local_helm_helper_text,
+            needle,
+            f"Longhorn localhost Helm bootstrap must cover {needle}",
+        )
+    for runner, playbook in (
+        (longhorn_bootstrap_runner, "ansible/playbooks/bootstrap-longhorn.yml"),
+        (longhorn_crd_repair_runner, "ansible/playbooks/repair-longhorn-crds.yml"),
+    ):
+        runner_text = read(runner)
+        for needle in (
+            "scripts/bootstrap/ensure-local-helm.sh",
+            "ensure_local_helm",
+            playbook,
+        ):
+            require_text(
+                runner_text,
+                needle,
+                f"{runner.relative_to(root)} must cover {needle}",
+            )
+    require_text(
+        makefile_text,
+        "@bash scripts/bootstrap/run-longhorn-crd-repair.sh",
+        "platform-longhorn-crd-repair must provision local Helm safely",
+    )
     woodpecker_repair_text = read(woodpecker_repair_playbook)
     for needle in (
         'role}" = "replica"',
@@ -4429,8 +4464,12 @@ def main() -> None:
         "materialize_from_postgres_server_ca",
         "serverCASecret",
         "platform-postgres-server-tls",
+        "platform-postgres-ca",
+        "cnpg.io/cluster=platform-postgres",
         "woodpecker_postgres_ca_bundle=materialized-from-postgres-server-ca",
         "platform-internal-root-ca",
+        "configmap/platform-internal-root-ca",
+        "root-ca.pem",
         "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca",
         "woodpecker-postgres-ca-source-missing",
     ):

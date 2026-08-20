@@ -61,6 +61,9 @@ RKE2_BOOTSTRAP_SCRIPTS = (
 )
 KYVERNO_CLI_INSTALLER = ROOT / "scripts/bootstrap/install-kyverno-cli.sh"
 CI_TOOL_INSTALLER = ROOT / "scripts/bootstrap/install-ci-tools.sh"
+LOCAL_HELM_HELPER = ROOT / "scripts/bootstrap/ensure-local-helm.sh"
+LONGHORN_BOOTSTRAP_RUNNER = ROOT / "scripts/bootstrap/run-longhorn-bootstrap.sh"
+LONGHORN_CRD_REPAIR_RUNNER = ROOT / "scripts/bootstrap/run-longhorn-crd-repair.sh"
 ARGOCD_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-argocd.yml"
 INGRESS_BOOTSTRAP = ROOT / "ansible/playbooks/deploy-platform-ingress.yml"
 LONGHORN_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-longhorn.yml"
@@ -697,6 +700,43 @@ def main() -> int:
                         f"{playbook.relative_to(ROOT)} must not use runtime "
                         f"Longhorn artifact input: {forbidden}"
                     )
+        except AssertionError as exc:
+            problems.append(str(exc))
+
+    for helper, required in (
+        (
+            LOCAL_HELM_HELPER,
+            (
+                "ensure_local_helm",
+                "PLATFORM_AUTO_INSTALL_LOCAL_HELM",
+                "PLATFORM_LOCAL_TOOL_CACHE_DIR",
+                "scripts/bootstrap/install-ci-tools.sh",
+                '"${tool_dir}" helm',
+            ),
+        ),
+        (
+            LONGHORN_BOOTSTRAP_RUNNER,
+            (
+                "scripts/bootstrap/ensure-local-helm.sh",
+                "ensure_local_helm",
+                "ansible/playbooks/bootstrap-longhorn.yml",
+            ),
+        ),
+        (
+            LONGHORN_CRD_REPAIR_RUNNER,
+            (
+                "scripts/bootstrap/ensure-local-helm.sh",
+                "ensure_local_helm",
+                "ansible/playbooks/repair-longhorn-crds.yml",
+            ),
+        ),
+    ):
+        try:
+            assert_contains(
+                read(helper),
+                *required,
+                label=str(helper.relative_to(ROOT)),
+            )
         except AssertionError as exc:
             problems.append(str(exc))
 

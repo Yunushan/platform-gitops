@@ -2029,6 +2029,28 @@
           if "$K" --kubeconfig "$C" get bundle/platform-internal-roots >/dev/null 2>&1; then
             return 0
           fi
+
+          bundle_source_kind=
+          bundle_source_key=
+          if "$K" --kubeconfig "$C" -n cert-manager get configmap/platform-internal-root-ca \
+            -o jsonpath='{.data.root-ca\.pem}' 2>/dev/null | grep -q 'BEGIN CERTIFICATE'; then
+            bundle_source_kind=configMap
+            bundle_source_key=root-ca.pem
+          elif [ -n "$("$K" --kubeconfig "$C" -n cert-manager \
+            get secret/platform-internal-root-ca \
+            -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)" ]; then
+            bundle_source_kind=secret
+            bundle_source_key=tls.crt
+          elif [ -n "$("$K" --kubeconfig "$C" -n cert-manager \
+            get secret/platform-internal-root-ca \
+            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)" ]; then
+            bundle_source_kind=secret
+            bundle_source_key=ca.crt
+          else
+            echo "woodpecker_postgres_ca_bundle_resource=deferred reason=cert-manager-root-source-missing"
+            return 0
+          fi
+
           printf '%s\n' \
             'apiVersion: trust.cert-manager.io/v1alpha1' \
             'kind: Bundle' \
@@ -2037,9 +2059,9 @@
             'spec:' \
             '  sources:' \
             '    - useDefaultCAs: true' \
-            '    - secret:' \
+            "    - ${bundle_source_kind}:" \
             '        name: platform-internal-root-ca' \
-            '        key: tls.crt' \
+            "        key: ${bundle_source_key}" \
             '  target:' \
             '    configMap:' \
             '      key: ca-certificates.crt' \
@@ -2048,14 +2070,12 @@
             '          app.kubernetes.io/part-of: platform-pki' \
             '          platform.gitops/trust-bundle: internal-roots' \
             | "$K" --kubeconfig "$C" apply -f - >/dev/null 2>&1 || return 1
-          echo "woodpecker_postgres_ca_bundle_resource=created"
+          echo "woodpecker_postgres_ca_bundle_resource=created source=${bundle_source_kind}:${bundle_source_key}"
         }
 
-        materialize_bundle_data() {
-          source_data="$1"
-          source_label="$2"
-          if ! printf '%s' "${source_data}" | base64 -d > "${bundle_file}" ||
-            ! grep -q 'BEGIN CERTIFICATE' "${bundle_file}"; then
+        materialize_bundle_file() {
+          source_label="$1"
+          if ! grep -q 'BEGIN CERTIFICATE' "${bundle_file}"; then
             return 1
           fi
           if ! "$K" --kubeconfig "$C" -n "$namespace" create configmap platform-internal-roots \
@@ -2073,52 +2093,107 @@
           return 0
         }
 
-        materialize_from_postgres_server_ca() {
-          server_ca_secret="$($K --kubeconfig "$C" -n platform-databases \
-            get cluster.postgresql.cnpg.io/platform-postgres \
-            -o jsonpath='{.spec.certificates.serverCASecret}' 2>/dev/null || true)"
-          server_ca_secret="${server_ca_secret:-platform-postgres-server-tls}"
-          source_data="$($K --kubeconfig "$C" -n platform-databases \
-            get "secret/${server_ca_secret}" \
-            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
-          if [ -z "${source_data}" ]; then
+        materialize_bundle_data() {
+          source_data="$1"
+          source_label="$2"
+          if ! printf '%s' "${source_data}" | base64 -d > "${bundle_file}"; then
             return 1
           fi
-          if materialize_bundle_data "${source_data}" \
-            "platform-databases/${server_ca_secret}:ca.crt"; then
-            echo "woodpecker_postgres_ca_bundle=materialized-from-postgres-server-ca secret=${server_ca_secret}"
-            return 0
+          materialize_bundle_file "${source_label}"
+        }
+
+        materialize_bundle_text() {
+          source_text="$1"
+          source_label="$2"
+          if ! printf '%s\n' "${source_text}" > "${bundle_file}"; then
+            return 1
           fi
+          materialize_bundle_file "${source_label}"
+        }
+
+        postgres_ca_secret_candidates() {
+          configured_secret="$($K --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.spec.certificates.serverCASecret}' 2>/dev/null || true)"
+          {
+            printf '%s\n' \
+              "${configured_secret}" \
+              platform-postgres-server-tls \
+              platform-postgres-ca \
+              platform-postgres-server
+            "$K" --kubeconfig "$C" -n platform-databases get secrets \
+              -l cnpg.io/cluster=platform-postgres \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+          } | awk 'NF && !seen[$0]++'
+        }
+
+        materialize_from_postgres_server_ca() {
+          while IFS= read -r server_ca_secret; do
+            [ -n "${server_ca_secret}" ] || continue
+            source_data="$($K --kubeconfig "$C" -n platform-databases \
+              get "secret/${server_ca_secret}" \
+              -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+            if [ -n "${source_data}" ] && materialize_bundle_data "${source_data}" \
+              "platform-databases/${server_ca_secret}:ca.crt"; then
+              echo "woodpecker_postgres_ca_bundle=materialized-from-postgres-server-ca secret=${server_ca_secret}"
+              return 0
+            fi
+          done < <(postgres_ca_secret_candidates)
           return 1
         }
 
         materialize_from_cert_manager_root() {
-          source_data="$($K --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca \
-            -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
-          if [ -z "${source_data}" ]; then
-            source_data="$($K --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca \
-              -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
-          fi
-          if [ -z "${source_data}" ]; then
-            return 1
-          fi
-          if materialize_bundle_data "${source_data}" \
-            "cert-manager/platform-internal-root-ca"; then
-            echo "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca"
-            return 0
-          fi
+          for source_key in tls.crt ca.crt; do
+            source_data="$($K --kubeconfig "$C" -n cert-manager \
+              get secret/platform-internal-root-ca \
+              -o "jsonpath={.data.${source_key//./\\.}}" 2>/dev/null || true)"
+            if [ -n "${source_data}" ] && materialize_bundle_data "${source_data}" \
+              "cert-manager/secret/platform-internal-root-ca:${source_key}"; then
+              echo "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca source=secret:${source_key}"
+              return 0
+            fi
+          done
+
+          for source_key in root-ca.pem ca.crt tls.crt; do
+            source_text="$($K --kubeconfig "$C" -n cert-manager \
+              get configmap/platform-internal-root-ca \
+              -o "jsonpath={.data.${source_key//./\\.}}" 2>/dev/null || true)"
+            if printf '%s' "${source_text}" | grep -q 'BEGIN CERTIFICATE' &&
+              materialize_bundle_text "${source_text}" \
+                "cert-manager/configmap/platform-internal-root-ca:${source_key}"; then
+              echo "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca source=configmap:${source_key}"
+              return 0
+            fi
+          done
           return 1
         }
 
         postgres_server_ca_available() {
-          server_ca_secret="$($K --kubeconfig "$C" -n platform-databases \
-            get cluster.postgresql.cnpg.io/platform-postgres \
-            -o jsonpath='{.spec.certificates.serverCASecret}' 2>/dev/null || true)"
-          server_ca_secret="${server_ca_secret:-platform-postgres-server-tls}"
-          source_data="$($K --kubeconfig "$C" -n platform-databases \
-            get "secret/${server_ca_secret}" \
-            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
-          [ -n "${source_data}" ]
+          while IFS= read -r server_ca_secret; do
+            [ -n "${server_ca_secret}" ] || continue
+            source_data="$($K --kubeconfig "$C" -n platform-databases \
+              get "secret/${server_ca_secret}" \
+              -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+            if [ -n "${source_data}" ]; then
+              return 0
+            fi
+          done < <(postgres_ca_secret_candidates)
+          return 1
+        }
+
+        print_postgres_ca_candidate_state() {
+          while IFS= read -r server_ca_secret; do
+            [ -n "${server_ca_secret}" ] || continue
+            source_keys="$($K --kubeconfig "$C" -n platform-databases \
+              get "secret/${server_ca_secret}" \
+              -o go-template='{{ "{{" }} range $key, $_ := .data {{ "}}" }}{{ "{{" }} $key {{ "}}" }} {{ "{{" }} end {{ "}}" }}' \
+              2>/dev/null || true)"
+            if [ -n "${source_keys}" ]; then
+              echo "woodpecker_postgres_ca_candidate=platform-databases/${server_ca_secret} keys=${source_keys}"
+            else
+              echo "woodpecker_postgres_ca_candidate=platform-databases/${server_ca_secret} state=absent-or-empty"
+            fi
+          done < <(postgres_ca_secret_candidates)
         }
 
         ensure_bundle_resource ||
@@ -2156,8 +2231,10 @@
 
         if [ "${bundle_ready}" != "true" ]; then
           echo "woodpecker_postgres_ca_bundle=missing"
+          print_postgres_ca_candidate_state
           if postgres_server_ca_available ||
-            "$K" --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca >/dev/null 2>&1 ||
+            "$K" --kubeconfig "$C" -n cert-manager get configmap/platform-internal-root-ca >/dev/null 2>&1; then
             echo "result=fail reason=woodpecker-postgres-ca-bundle-missing"
           else
             echo "result=fail reason=woodpecker-postgres-ca-source-missing"

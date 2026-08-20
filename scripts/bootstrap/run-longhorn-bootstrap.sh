@@ -20,6 +20,12 @@ fi
 . scripts/bootstrap/load-env-file.sh
 load_env_file "${env_file}" preserve-existing
 
+# The playbook renders the vendored CRDs on delegated localhost. Keep that
+# render self-contained even when the operator workstation has no Helm binary.
+# shellcheck source=scripts/bootstrap/ensure-local-helm.sh
+. scripts/bootstrap/ensure-local-helm.sh
+ensure_local_helm
+
 export ANSIBLE_TIMEOUT="${ANSIBLE_TIMEOUT:-20}"
 exec ansible-playbook \
   -i inventory/hosts.local.ini \
