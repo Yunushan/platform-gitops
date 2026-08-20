@@ -2021,7 +2021,7 @@
 
         # The declarative Bundle is preferred. During a partial bootstrap or
         # while Argo CD is still on an older revision, recover the target from
-        # cert-manager's public CA certificate so the application can start.
+        # the cert-manager public CA certificate so the application can start.
         ensure_bundle_resource() {
           if ! "$K" --kubeconfig "$C" get crd bundles.trust.cert-manager.io >/dev/null 2>&1; then
             return 0
