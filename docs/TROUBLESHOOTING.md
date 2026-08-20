@@ -723,6 +723,13 @@ chart and applies only that local output. Runtime overrides such as a remote CRD
 manifest URL are intentionally unsupported, preventing cluster-scoped recovery
 from trusting mutable network content.
 
+Both `platform-longhorn-crd-repair` and the full Longhorn bootstrap need Helm
+only for this local render. If Helm is absent, their runners automatically
+install the repository's checksum-pinned version under
+`${XDG_CACHE_HOME:-$HOME/.cache}/platform-gitops/tools`. Set
+`PLATFORM_AUTO_INSTALL_LOCAL_HELM=false` to require a preinstalled Helm binary,
+or set `PLATFORM_LOCAL_TOOL_CACHE_DIR` to use an approved local tool cache.
+
 If `kubectl apply` reports `PriorityClass "longhorn-critical" is invalid:
 value: Forbidden: may not be changed in an update`, leave the existing
 PriorityClass value alone. The bootstrap now only patches Helm ownership

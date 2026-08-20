@@ -440,8 +440,12 @@ def main() -> int:
         "materialize_from_postgres_server_ca",
         "serverCASecret",
         "platform-postgres-server-tls",
+        "platform-postgres-ca",
+        "cnpg.io/cluster=platform-postgres",
         "woodpecker_postgres_ca_bundle=materialized-from-postgres-server-ca",
         "materialize_from_cert_manager_root",
+        "configmap/platform-internal-root-ca",
+        "root-ca.pem",
     ):
         require(woodpecker_repair, needle, "Woodpecker PostgreSQL CA recovery")
     forbid(

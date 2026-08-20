@@ -625,7 +625,7 @@ platform-longhorn-runtime-repair:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-longhorn-runtime.yml
 
 platform-longhorn-crd-repair:
-	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-longhorn-crds.yml
+	@bash scripts/bootstrap/run-longhorn-crd-repair.sh
 
 platform-forgejo-diagnose: platform-inventory-preflight
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/diagnose-forgejo.yml
