@@ -2021,7 +2021,7 @@
 
         # The declarative Bundle is preferred. During a partial bootstrap or
         # while Argo CD is still on an older revision, recover the target from
-        # cert-manager's public CA certificate so the application can start.
+        # the cert-manager public CA certificate so the application can start.
         ensure_bundle_resource() {
           if ! "$K" --kubeconfig "$C" get crd bundles.trust.cert-manager.io >/dev/null 2>&1; then
             return 0
@@ -2065,13 +2065,17 @@
             ! grep -q 'BEGIN CERTIFICATE' "${bundle_file}"; then
             return 1
           fi
-          "$K" --kubeconfig "$C" -n "$namespace" create configmap platform-internal-roots \
+          if ! "$K" --kubeconfig "$C" -n "$namespace" create configmap platform-internal-roots \
             --from-file=ca-certificates.crt="${bundle_file}" \
             --dry-run=client -o yaml |
-            "$K" --kubeconfig "$C" apply -f - >/dev/null
-          "$K" --kubeconfig "$C" -n "$namespace" label configmap/platform-internal-roots \
+            "$K" --kubeconfig "$C" apply -f - >/dev/null; then
+            return 1
+          fi
+          if ! "$K" --kubeconfig "$C" -n "$namespace" label configmap/platform-internal-roots \
             app.kubernetes.io/part-of=platform-pki \
-            platform.gitops/trust-bundle=internal-roots --overwrite >/dev/null
+            platform.gitops/trust-bundle=internal-roots --overwrite >/dev/null; then
+            return 1
+          fi
           echo "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca"
           return 0
         }
