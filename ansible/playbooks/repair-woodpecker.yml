@@ -2021,7 +2021,7 @@
 
         # The declarative Bundle is preferred. During a partial bootstrap or
         # while Argo CD is still on an older revision, recover the target from
-        # the cert-manager public CA certificate so the application can start.
+        # the active PostgreSQL server CA or the cert-manager root certificate.
         ensure_bundle_resource() {
           if ! "$K" --kubeconfig "$C" get crd bundles.trust.cert-manager.io >/dev/null 2>&1; then
             return 0
@@ -2051,16 +2051,9 @@
           echo "woodpecker_postgres_ca_bundle_resource=created"
         }
 
-        materialize_from_cert_manager_root() {
-          source_data="$($K --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca \
-            -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
-          if [ -z "${source_data}" ]; then
-            source_data="$($K --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca \
-              -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
-          fi
-          if [ -z "${source_data}" ]; then
-            return 1
-          fi
+        materialize_bundle_data() {
+          source_data="$1"
+          source_label="$2"
           if ! printf '%s' "${source_data}" | base64 -d > "${bundle_file}" ||
             ! grep -q 'BEGIN CERTIFICATE' "${bundle_file}"; then
             return 1
@@ -2076,8 +2069,56 @@
             platform.gitops/trust-bundle=internal-roots --overwrite >/dev/null; then
             return 1
           fi
-          echo "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca"
+          echo "woodpecker_postgres_ca_bundle=materialized source=${source_label}"
           return 0
+        }
+
+        materialize_from_postgres_server_ca() {
+          server_ca_secret="$($K --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.spec.certificates.serverCASecret}' 2>/dev/null || true)"
+          server_ca_secret="${server_ca_secret:-platform-postgres-server-tls}"
+          source_data="$($K --kubeconfig "$C" -n platform-databases \
+            get "secret/${server_ca_secret}" \
+            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+          if [ -z "${source_data}" ]; then
+            return 1
+          fi
+          if materialize_bundle_data "${source_data}" \
+            "platform-databases/${server_ca_secret}:ca.crt"; then
+            echo "woodpecker_postgres_ca_bundle=materialized-from-postgres-server-ca secret=${server_ca_secret}"
+            return 0
+          fi
+          return 1
+        }
+
+        materialize_from_cert_manager_root() {
+          source_data="$($K --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca \
+            -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
+          if [ -z "${source_data}" ]; then
+            source_data="$($K --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca \
+              -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+          fi
+          if [ -z "${source_data}" ]; then
+            return 1
+          fi
+          if materialize_bundle_data "${source_data}" \
+            "cert-manager/platform-internal-root-ca"; then
+            echo "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca"
+            return 0
+          fi
+          return 1
+        }
+
+        postgres_server_ca_available() {
+          server_ca_secret="$($K --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.spec.certificates.serverCASecret}' 2>/dev/null || true)"
+          server_ca_secret="${server_ca_secret:-platform-postgres-server-tls}"
+          source_data="$($K --kubeconfig "$C" -n platform-databases \
+            get "secret/${server_ca_secret}" \
+            -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+          [ -n "${source_data}" ]
         }
 
         ensure_bundle_resource ||
@@ -2093,22 +2134,30 @@
             bundle_ready=true
             break
           fi
-          if [ "${refresh_requested}" != "true" ] &&
-            "$K" --kubeconfig "$C" -n argocd get application/trust-manager >/dev/null 2>&1; then
-            "$K" --kubeconfig "$C" -n argocd annotate application/trust-manager \
-              argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
+          if [ "${refresh_requested}" != "true" ]; then
+            for application in cert-manager trust-manager; do
+              if "$K" --kubeconfig "$C" -n argocd get "application/${application}" >/dev/null 2>&1; then
+                "$K" --kubeconfig "$C" -n argocd annotate "application/${application}" \
+                  argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1 || true
+              fi
+            done
             refresh_requested=true
           fi
-          if [ "${attempt}" -ge 3 ] && materialize_from_cert_manager_root; then
-            bundle_ready=true
-            break
+          if [ "${attempt}" -ge 3 ]; then
+            # The CA attached to the active PostgreSQL server certificate is the
+            # authoritative recovery source when the bootstrap root is absent.
+            if materialize_from_postgres_server_ca || materialize_from_cert_manager_root; then
+              bundle_ready=true
+              break
+            fi
           fi
           sleep 5
         done
 
         if [ "${bundle_ready}" != "true" ]; then
           echo "woodpecker_postgres_ca_bundle=missing"
-          if "$K" --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca >/dev/null 2>&1; then
+          if postgres_server_ca_available ||
+            "$K" --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca >/dev/null 2>&1; then
             echo "result=fail reason=woodpecker-postgres-ca-bundle-missing"
           else
             echo "result=fail reason=woodpecker-postgres-ca-source-missing"
@@ -2155,7 +2204,7 @@
         executable: /bin/bash
       register: platform_woodpecker_postgres_ca_mount_repair
       changed_when: >-
-        'woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca' in
+        'woodpecker_postgres_ca_bundle=materialized' in
         platform_woodpecker_postgres_ca_mount_repair.stdout or
         'woodpecker_postgres_ca_mount=patched' in
         platform_woodpecker_postgres_ca_mount_repair.stdout

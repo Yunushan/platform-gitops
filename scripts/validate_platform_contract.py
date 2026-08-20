@@ -129,6 +129,7 @@ stale_premium_root_app = root / "gitops/bootstrap/root-app-premium-3node.yaml"
 health_playbook = root / "ansible/playbooks/verify-platform-app-health.yml"
 service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-service-path-consumers.yml"
 woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
+woodpecker_gitops_source_reconciler = root / "scripts/bootstrap/reconcile-woodpecker-gitops-source.sh"
 woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpecker-service-path-nodes.yml"
 cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
@@ -4032,6 +4033,9 @@ def main() -> None:
         "reason=postgres-endpoint-path-unreachable",
         "cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)",
         "driver name driver\\.longhorn\\.io not found",
+        "CSINode .* does not contain driver driver\\.longhorn\\.io",
+        "FailedAttachVolume.*unable to attach volume .*node .* is not ready",
+        "DeadlineExceeded desc = volume .* failed to attach",
         "AttachVolume\\.Attach failed.*volume .*not ready for workloads",
         "reason=woodpecker-server-replica-volume-not-ready",
         "VolumeBinding.*binding volumes: context deadline exceeded",
@@ -4051,6 +4055,7 @@ def main() -> None:
         "documented Cilium VXLAN remote-ICMP-success/TCP-timeout condition",
         "guarded rolling RKE2 restart",
         "automatic fallback skipped",
+        "scripts/bootstrap/reconcile-woodpecker-gitops-source.sh",
     ):
         require_text(makefile_text, needle, f"platform-woodpecker-repair must cover {needle}")
     woodpecker_repair_target = re.search(
@@ -4075,6 +4080,22 @@ def main() -> None:
         fail("platform-woodpecker-repair must reconcile only Woodpecker application secrets")
     if "@$(MAKE) platform-app-secrets" in woodpecker_repair_body:
         fail("platform-woodpecker-repair must not enforce unrelated platform application secrets")
+    woodpecker_gitops_source_reconciler_text = read(woodpecker_gitops_source_reconciler)
+    for needle in (
+        "PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS",
+        "PLATFORM_SEED_SYNC_PULL",
+        "PLATFORM_SEED_SYNC_PUSH_ORIGIN",
+        "PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true",
+        "PLATFORM_AUTO_COMMIT=true",
+        "git status --porcelain --untracked-files=normal",
+        "make platform-seed-git-sync",
+        "woodpecker_gitops_source_sync=synced",
+    ):
+        require_text(
+            woodpecker_gitops_source_reconciler_text,
+            needle,
+            f"Woodpecker GitOps source reconciliation must preserve {needle}",
+        )
     for task_name in (
         "Generate or preserve Woodpecker shared agent secret",
         "Generate or preserve Woodpecker database datasource secret",
@@ -4405,6 +4426,10 @@ def main() -> None:
         "bundles.trust.cert-manager.io",
         "woodpecker_postgres_ca_bundle_resource=created",
         "materialize_from_cert_manager_root",
+        "materialize_from_postgres_server_ca",
+        "serverCASecret",
+        "platform-postgres-server-tls",
+        "woodpecker_postgres_ca_bundle=materialized-from-postgres-server-ca",
         "platform-internal-root-ca",
         "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca",
         "woodpecker-postgres-ca-source-missing",

@@ -450,6 +450,7 @@ platform-woodpecker-repair:
 	PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=false \
 	ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini \
 		ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker --skip-tags harbor
+	@bash scripts/bootstrap/reconcile-woodpecker-gitops-source.sh
 	@set -o pipefail; \
 		repair_log="$$(mktemp)"; \
 		trap 'rm -f "$$repair_log"' EXIT; \
@@ -468,7 +469,7 @@ platform-woodpecker-repair:
 			service_path_repair=true; \
 		fi; \
 		if grep -Fq 'reason=woodpecker-server-replica-volume-not-ready' "$$repair_log" || \
-			grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|VolumeBinding.*binding volumes: context deadline exceeded|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
+			grep -Eq 'driver name driver\.longhorn\.io not found in the list of registered CSI drivers|CSINode .* does not contain driver driver\.longhorn\.io|MountVolume\.(MountDevice|SetUp) failed.*driver\.longhorn\.io|AttachVolume\.Attach failed.*volume .*not ready for workloads|FailedAttachVolume.*unable to attach volume .*node .* is not ready|DeadlineExceeded desc = volume .* failed to attach|VolumeBinding.*binding volumes: context deadline exceeded|reason=longhorn-csi-(plugin|registration)|DiskFilesystemChanged' "$$repair_log"; then \
 			longhorn_runtime_repair=true; \
 		fi; \
 		if grep -Eq 'reason=woodpecker-postgres-ca-(bundle|mount|file|controller|container|source)-missing|open /etc/ssl/platform-postgres/ca-certificates\\.crt: no such file or directory' "$$repair_log"; then \
@@ -508,7 +509,7 @@ platform-woodpecker-repair:
 			exit 0; \
 		fi; \
 		if [ "$$longhorn_runtime_repair" = "true" ] && \
-			grep -Eq 'reason=woodpecker-server-replica-volume-not-ready|AttachVolume\.Attach failed.*volume .*not ready for workloads|actualSize=0.*robustness=faulted' "$$repair_log"; then \
+			grep -Eq 'reason=woodpecker-server-replica-volume-not-ready|AttachVolume\.Attach failed.*volume .*not ready for workloads|CSINode .* does not contain driver driver\.longhorn\.io|FailedAttachVolume.*unable to attach volume .*node .* is not ready|DeadlineExceeded desc = volume .* failed to attach|actualSize=0.*robustness=faulted' "$$repair_log"; then \
 			if [ "$$longhorn_bootstrap_ran" != "true" ]; then \
 				echo "A replacement zero-byte Woodpecker volume is still faulted after runtime recovery; applying guarded Longhorn disk bootstrap."; \
 				$(MAKE) platform-longhorn-bootstrap; \
