@@ -85,6 +85,15 @@ reconciles only Woodpecker's agent, database, and Forgejo OAuth secrets, so an
 unrelated Harbor S3 or backup credential cannot block this focused workflow.
 Use `make platform-app-secrets` to enforce the complete production secret gate.
 
+When ignored `private/seed-git.env` exists, the repair first renders the private
+values from a clean working tree and synchronizes the current deployment branch
+to the temporary seed Git source read by Argo CD. This makes a recovered
+PostgreSQL CA mount declarative instead of leaving a live-only patch that Argo CD
+could revert. Source-remote pull and push remain disabled for this focused
+reconciliation. Set `PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=false` only when an
+external process owns the Argo CD source; use `true` to require the private seed
+environment instead of the default `auto` detection.
+
 The premium renderer does not use the chart-generated
 `woodpecker-default-agent-secret`. That chart secret depends on random Helm
 rendering and can change during an Argo CD comparison. Instead,
@@ -145,6 +154,13 @@ runtime, force-refresh the CSI sidecars for an attach-readiness fault, and
 remove only empty duplicate disk registrations. It then retries the Woodpecker
 repair once. This focused target does not enforce cluster-wide Longhorn
 capacity.
+
+If trust-manager has not materialized `woodpecker/platform-internal-roots`, the
+repair first uses the `ca.crt` from CloudNativePG's active `serverCASecret`, then
+falls back to `cert-manager/platform-internal-root-ca`. It validates that the
+decoded value contains a PEM certificate before creating the ConfigMap and
+never disables PostgreSQL certificate verification. If neither authoritative
+source exists, the repair still fails closed.
 
 The premium CloudNativePG profile keeps its mutating and validating webhooks
 enabled with `failurePolicy: Ignore`. Healthy requests still pass through both

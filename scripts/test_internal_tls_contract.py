@@ -437,6 +437,19 @@ def main() -> int:
     ):
         require(woodpecker, needle, "Woodpecker PostgreSQL TLS values")
     for needle in (
+        "materialize_from_postgres_server_ca",
+        "serverCASecret",
+        "platform-postgres-server-tls",
+        "woodpecker_postgres_ca_bundle=materialized-from-postgres-server-ca",
+        "materialize_from_cert_manager_root",
+    ):
+        require(woodpecker_repair, needle, "Woodpecker PostgreSQL CA recovery")
+    forbid(
+        woodpecker_repair,
+        "WOODPECKER_FORGEJO_SKIP_VERIFY: true",
+        "Woodpecker PostgreSQL CA recovery",
+    )
+    for needle in (
         "sslmode=verify-full&sslrootcert=/etc/ssl/platform-postgres/ca-certificates.crt",
         "name: platform-internal-roots",
         "mountPath: /etc/ssl/platform-postgres",
