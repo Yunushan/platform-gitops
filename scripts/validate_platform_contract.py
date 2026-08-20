@@ -4472,6 +4472,17 @@ def main() -> None:
         "root-ca.pem",
         "woodpecker_postgres_ca_bundle=materialized-from-cert-manager-root-ca",
         "woodpecker-postgres-ca-source-missing",
+        "Recycle stale Woodpecker server Pods after PostgreSQL CA mount repair",
+        "woodpecker_postgres_ca_pod_recycle=recycled",
+        "woodpecker-postgres-ca-pod-recycle-last-ready-server",
+        "ready_servers_other_than",
+        "wait_for_ready_ca_pod",
+        "previous_uid",
+        "sort -t '|' -k1,1n -k2,2nr",
+        "pvc=retained",
+        "rollout_failed=0",
+        "wait_controller server statefulset/woodpecker-server deployment/woodpecker-server || rollout_failed=1",
+        "wait_controller agent statefulset/woodpecker-agent deployment/woodpecker-agent || rollout_failed=1",
     ):
         require_text(
             woodpecker_repair_text,

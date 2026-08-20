@@ -2310,6 +2310,176 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
+    - name: Recycle stale Woodpecker server Pods after PostgreSQL CA mount repair
+      ansible.builtin.shell: |
+        set -uo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        NAMESPACE=woodpecker
+        STS=woodpecker-server
+        SELECTOR='app.kubernetes.io/instance=woodpecker,app.kubernetes.io/name=server'
+        TIMEOUT={{ platform_woodpecker_repair_timeout_effective }}
+        deadline=$((SECONDS + TIMEOUT))
+
+        if ! "$K" --kubeconfig "$C" -n "$NAMESPACE" get "statefulset/${STS}" >/dev/null 2>&1; then
+          echo "woodpecker_postgres_ca_pod_recycle=skipped reason=statefulset-absent"
+          exit 0
+        fi
+
+        bundle_value="$($K --kubeconfig "$C" -n "$NAMESPACE" \
+          get configmap/platform-internal-roots \
+          -o jsonpath='{.data.ca-certificates\.crt}' 2>/dev/null || true)"
+        template_volume="$($K --kubeconfig "$C" -n "$NAMESPACE" get "statefulset/${STS}" \
+          -o jsonpath='{.spec.template.spec.volumes[?(@.name=="platform-postgres-ca")].configMap.name}' \
+          2>/dev/null || true)"
+        template_mount="$($K --kubeconfig "$C" -n "$NAMESPACE" get "statefulset/${STS}" \
+          -o jsonpath='{range .spec.template.spec.containers[*].volumeMounts[?(@.name=="platform-postgres-ca")]}{.mountPath}{"\n"}{end}' \
+          2>/dev/null || true)"
+        replicas="$($K --kubeconfig "$C" -n "$NAMESPACE" get "statefulset/${STS}" \
+          -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
+        bundle_ready=false
+        case "$bundle_value" in
+          *'BEGIN CERTIFICATE'*) bundle_ready=true ;;
+        esac
+        if [ "$bundle_ready" != "true" ] || [ "$template_volume" != "platform-internal-roots" ] ||
+          ! printf '%s\n' "$template_mount" | grep -qx '/etc/ssl/platform-postgres'; then
+          echo "result=fail reason=woodpecker-postgres-ca-recycle-prerequisite-missing bundle=$([ -n "$bundle_value" ] && echo present || echo absent) templateVolume=${template_volume:-absent} templateMount=${template_mount:-absent}"
+          exit 1
+        fi
+        case "$replicas" in
+          ''|*[!0-9]*)
+            echo "result=fail reason=woodpecker-postgres-ca-replica-count-invalid replicas=${replicas:-absent}"
+            exit 1
+            ;;
+        esac
+
+        pod_ready() {
+          pod="$1"
+          [ "$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)" = "True" ]
+        }
+
+        pod_has_ca_contract() {
+          pod="$1"
+          volume="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
+            -o jsonpath='{.spec.volumes[?(@.name=="platform-postgres-ca")].configMap.name}' \
+            2>/dev/null || true)"
+          mount="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
+            -o jsonpath='{range .spec.containers[*].volumeMounts[?(@.name=="platform-postgres-ca")]}{.mountPath}{"\n"}{end}' \
+            2>/dev/null || true)"
+          [ "$volume" = "platform-internal-roots" ] &&
+            printf '%s\n' "$mount" | grep -qx '/etc/ssl/platform-postgres'
+        }
+
+        ready_servers_other_than() {
+          excluded="$1"
+          count=0
+          while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            [ "$candidate" != "$excluded" ] || continue
+            if pod_ready "$candidate"; then
+              count=$((count + 1))
+            fi
+          done < <("$K" --kubeconfig "$C" -n "$NAMESPACE" get pods -l "$SELECTOR" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+          printf '%s\n' "$count"
+        }
+
+        wait_for_ready_ca_pod() {
+          pod="$1"
+          previous_uid="$2"
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            current_uid="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ -n "$current_uid" ] &&
+              { [ -z "$previous_uid" ] || [ "$current_uid" != "$previous_uid" ]; } &&
+              pod_has_ca_contract "$pod" && pod_ready "$pod"; then
+              echo "woodpecker_postgres_ca_pod_recycle=ready pod=${pod} uid=${current_uid}"
+              return 0
+            fi
+            sleep 5
+          done
+          phase="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+          echo "result=fail reason=woodpecker-postgres-ca-pod-recycle-timeout pod=${pod} phase=${phase:-absent}"
+          "$K" --kubeconfig "$C" -n "$NAMESPACE" describe "pod/${pod}" 2>/dev/null |
+            sed -n '/Events:/,$p' | tail -40 || true
+          return 1
+        }
+
+        candidates="$(mktemp)"
+        trap 'rm -f "$candidates"' EXIT
+        for ordinal in $(seq 0 $((replicas - 1))); do
+          pod="${STS}-${ordinal}"
+          if pod_has_ca_contract "$pod"; then
+            continue
+          fi
+          if pod_ready "$pod"; then
+            priority=1
+            ready=true
+          else
+            priority=0
+            ready=false
+          fi
+          printf '%s|%09d|%s\n' "$priority" "$ordinal" "$pod" >> "$candidates"
+          echo "woodpecker_postgres_ca_pod_recycle=candidate pod=${pod} ready=${ready} ordinal=${ordinal}"
+        done
+
+        if [ ! -s "$candidates" ]; then
+          echo "woodpecker_postgres_ca_pod_recycle=not-needed"
+          exit 0
+        fi
+
+        while IFS='|' read -r _priority _ordinal pod; do
+          [ -n "$pod" ] || continue
+
+          # The StatefulSet controller may advance while an earlier ordinal is
+          # being repaired. Never delete a replacement that already has the CA.
+          if pod_has_ca_contract "$pod"; then
+            if pod_ready "$pod"; then
+              echo "woodpecker_postgres_ca_pod_recycle=already-reconciled pod=${pod}"
+              continue
+            fi
+            if ! wait_for_ready_ca_pod "$pod" ""; then
+              exit 1
+            fi
+            continue
+          fi
+
+          if pod_ready "$pod"; then
+            ready_others="$(ready_servers_other_than "$pod")"
+            if [ "$ready_others" -lt 1 ]; then
+              echo "result=fail reason=woodpecker-postgres-ca-pod-recycle-last-ready-server pod=${pod} action=retain"
+              exit 1
+            fi
+          fi
+
+          previous_uid="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
+            -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+          if [ -n "$previous_uid" ]; then
+            echo "woodpecker_postgres_ca_pod_recycle=recycled pod=${pod} action=delete-pod pvc=retained"
+            "$K" --kubeconfig "$C" -n "$NAMESPACE" delete "pod/${pod}" \
+              --ignore-not-found=true --wait=false
+          else
+            echo "woodpecker_postgres_ca_pod_recycle=awaiting-replacement pod=${pod} pvc=retained"
+          fi
+          if ! wait_for_ready_ca_pod "$pod" "$previous_uid"; then
+            exit 1
+          fi
+        done < <(sort -t '|' -k1,1n -k2,2nr "$candidates")
+      args:
+        executable: /bin/bash
+      register: platform_woodpecker_postgres_ca_pod_recycle
+      changed_when: >-
+        'woodpecker_postgres_ca_pod_recycle=recycled' in
+        platform_woodpecker_postgres_ca_pod_recycle.stdout
+      failed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: >-
+        ((platform_woodpecker_postgres_ca_mount_repair | default({})).rc |
+        default(1) | int) == 0
+
     - name: Wait for Woodpecker server and agents after repair
       ansible.builtin.shell: |
         set -o pipefail
@@ -2335,8 +2505,10 @@
           echo "result=fail reason=missing-woodpecker-${role}-controller"
           return 1
         }
-        wait_controller server statefulset/woodpecker-server deployment/woodpecker-server
-        wait_controller agent statefulset/woodpecker-agent deployment/woodpecker-agent
+        rollout_failed=0
+        wait_controller server statefulset/woodpecker-server deployment/woodpecker-server || rollout_failed=1
+        wait_controller agent statefulset/woodpecker-agent deployment/woodpecker-agent || rollout_failed=1
+        exit "$rollout_failed"
       args:
         executable: /bin/bash
       register: platform_woodpecker_rollout_wait
@@ -2543,6 +2715,7 @@
       run_once: true
       when: >
         ((platform_woodpecker_postgres_ca_mount_repair | default({})).rc | default(0) | int != 0) or
+        ((platform_woodpecker_postgres_ca_pod_recycle | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_server_replica_volume_repair | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_argocd_sync_wait | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_rollout_wait | default({})).rc | default(0) | int != 0) or
@@ -2592,6 +2765,13 @@
           stderr:
           {{ (platform_woodpecker_postgres_ca_mount_repair | default({})).stderr | default('not run') }}
 
+          PostgreSQL trust-bundle Pod recycle:
+          rc={{ (platform_woodpecker_postgres_ca_pod_recycle | default({})).rc | default('not run') }}
+          stdout:
+          {{ (platform_woodpecker_postgres_ca_pod_recycle | default({})).stdout | default('not run') }}
+          stderr:
+          {{ (platform_woodpecker_postgres_ca_pod_recycle | default({})).stderr | default('not run') }}
+
           If runtime verification shows `woodpecker-image-tag-mismatch`, the
           Argo CD source still contains stale rendered Woodpecker values. For
           example, `woodpecker-server:3.16.0` must be rendered and synced as
@@ -2605,6 +2785,7 @@
       run_once: true
       when: >
         ((platform_woodpecker_postgres_ca_mount_repair | default({})).rc | default(0) | int != 0) or
+        ((platform_woodpecker_postgres_ca_pod_recycle | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_server_replica_volume_repair | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_argocd_sync_wait | default({})).rc | default(0) | int != 0) or
         ((platform_woodpecker_rollout_wait | default({})).rc | default(0) | int != 0) or
