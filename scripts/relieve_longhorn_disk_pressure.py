@@ -65,6 +65,12 @@ def condition_is_true(conditions: list[JsonObject], condition_type: str) -> bool
     )
 
 
+def disk_path(disk_spec: JsonObject, disk_status: JsonObject) -> str:
+    return str(
+        disk_spec.get("path") or disk_status.get("diskPath") or ""
+    ).strip()
+
+
 def disk_usable_capacity(
     disk_spec: JsonObject,
     disk_status: JsonObject,
@@ -111,8 +117,8 @@ def discover_disks(
         for disk_name, disk_spec in spec_disks.items():
             disk_status = status_disks.get(disk_name) or {}
             disk_id = disk_status.get("diskUUID", "")
-            disk_path = disk_spec.get("path") or disk_status.get("diskPath") or ""
-            if not disk_id or not disk_path:
+            current_disk_path = disk_path(disk_spec, disk_status)
+            if not disk_id or not current_disk_path:
                 continue
             if not condition_is_true(disk_status.get("conditions") or [], "Ready"):
                 continue
@@ -126,7 +132,7 @@ def discover_disks(
                 node_name=node_name,
                 disk_name=disk_name,
                 disk_id=disk_id,
-                disk_path=disk_path,
+                disk_path=current_disk_path,
                 storage_available=integer(disk_status.get("storageAvailable")),
                 usable_capacity=usable,
             )
@@ -357,8 +363,10 @@ def root_filesystem_metrics() -> tuple[int, int, int]:
 
 
 def path_shares_root(path: str) -> bool:
+    if not path:
+        return False
     try:
-        return os.stat(path).st_dev == os.stat("/").st_dev
+        return os.stat(os.path.realpath(path)).st_dev == os.stat("/").st_dev
     except OSError:
         return False
 
@@ -621,8 +629,8 @@ def physical_replica_sizes(
     status_disks = node.get("status", {}).get("diskStatus") or {}
     disk_paths_by_id = {
         (status_disks.get(name) or {}).get("diskUUID", ""): (
-            spec_disks.get(name) or {}
-        ).get("path", "")
+            disk_path(spec_disks.get(name) or {}, status_disks.get(name) or {})
+        )
         for name in root_shared_disk_names
     }
     result: dict[str, int] = {}
@@ -707,10 +715,13 @@ def run(args: argparse.Namespace) -> int:
         nodes, replicas, volumes = runtime_objects(kube)
         source_node = find_node(nodes, args.node)
         spec_disks = source_node.get("spec", {}).get("disks") or {}
+        status_disks = source_node.get("status", {}).get("diskStatus") or {}
         root_shared_disk_names = {
             disk_name
             for disk_name, disk_spec in spec_disks.items()
-            if path_shares_root(disk_spec.get("path", ""))
+            if path_shares_root(
+                disk_path(disk_spec, status_disks.get(disk_name) or {})
+            )
         }
         if not root_shared_disk_names:
             print(

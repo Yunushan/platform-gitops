@@ -17,6 +17,7 @@ from relieve_longhorn_disk_pressure import (  # noqa: E402
     Disk,
     EvacuationPlan,
     build_plan,
+    disk_path,
     original_disk_state,
     request_evacuation,
     restore_disk_state,
@@ -147,6 +148,8 @@ def assert_rejected(reason: str, mutate) -> None:
 
 
 def verify_planner() -> None:
+    if disk_path({}, {"diskPath": "/var/lib/longhorn"}) != "/var/lib/longhorn":
+        raise AssertionError("planner did not use the Longhorn status disk path")
     plan, reason = evaluate()
     if plan is None:
         raise AssertionError(f"expected evacuation plan, got {reason}")
