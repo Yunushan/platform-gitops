@@ -316,6 +316,10 @@ def verify_repository_integration() -> None:
         raise AssertionError(
             "pressure helper cannot resume saved state after pressure clears"
         )
+    if "retries: 3" not in playbook or "in [0, 42]" not in playbook:
+        raise AssertionError(
+            "pressure-state inspection must retry transient node privilege failures"
+        )
 
 
 def main() -> int:
