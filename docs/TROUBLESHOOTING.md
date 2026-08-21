@@ -87,11 +87,15 @@ Use `make platform-app-secrets` to enforce the complete production secret gate.
 
 Before those steps, the target runs the guarded node-storage cleanup in
 pressure-only mode and waits for `DiskPressure` to clear. It prunes unused
-Docker artifacts, stale GitLab Runner cache, and unused images from every
-responsive RKE2 or standalone containerd CRI endpoint. It also performs a
-bounded trim on mounted Longhorn XFS/EXT4 filesystems so deleted guest data can
-release backing blocks. Running containers and their images remain protected by
-CRI, and Longhorn replicas, PVCs, and valid snapshots are never deleted.
+Docker artifacts, stale GitLab Runner cache, and unused images from responsive
+CRI endpoints on pressured nodes. Because a Longhorn replica can occupy the
+pressured node while its volume is attached elsewhere, it performs a bounded
+trim on mounted Longhorn XFS/EXT4 filesystems across all RKE2 servers whenever
+any server has pressure. It also reconciles safe Longhorn orphan and
+system-snapshot cleanup settings, then waits through the orphan grace period on
+Ready nodes. Running containers and their images remain protected by CRI, and
+Longhorn replicas, PVCs, application data, and valid snapshots are never
+deleted.
 If pressure remains, the target prints the kubelet condition, filesystems,
 largest `/var/lib` consumers, and runtime services before failing closed. The
 premium profile keeps three server and three agent replicas with hard hostname

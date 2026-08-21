@@ -64,13 +64,17 @@ make platform-node-storage-cleanup
 ```
 
 `make platform-forgejo-repair` and `make platform-woodpecker-repair`
-automatically enable this guarded cache cleanup only on nodes where Kubernetes
-reports `DiskPressure=True`, wait for pressure to clear, and then continue the
-focused repair. Under pressure they also run `crictl rmi --prune` against every
-responsive RKE2 or standalone containerd CRI socket. CRI retains images used by
-existing containers; an unused image may need to be pulled again later. Active
-runner volumes, ordinary Docker volumes, Longhorn data, and PVC data are never
-selected.
+automatically enable this guarded cleanup, wait for pressure to clear, and then
+continue the focused repair. Image, cache, package, journal, and temporary-file
+cleanup remains limited to nodes where Kubernetes reports
+`DiskPressure=True`. Longhorn volumes are different: a replica can consume the
+pressured node while its filesystem is attached on another node. When any RKE2
+server has pressure, the playbook therefore runs bounded `fstrim` on eligible
+mounted Longhorn XFS/EXT4 filesystems across every server. It also runs
+`crictl rmi --prune` against every responsive CRI socket on each pressured
+node. CRI retains images used by existing containers; an unused image may need
+to be pulled again later. Active runner volumes, ordinary Docker volumes,
+Longhorn files, PVC data, and valid snapshots are never selected for deletion.
 
 The Longhorn profile schedules a weekly `filesystem-trim` recurring job for
 volumes in the default recurring-job group. It explicitly keeps
@@ -79,6 +83,14 @@ snapshots for removal. Longhorn 1.12 orphan cleanup uses the supported
 `orphanResourceAutoDeletion` setting with a five-minute grace period; only
 resources that Longhorn itself classifies as orphaned are eligible, and
 resources on down or unknown nodes remain protected.
+
+During pressure recovery the playbook reconciles those safe settings in the
+live cluster before trimming. It also enables cleanup of Longhorn's own
+system-generated rebuild snapshots and recurring-backup snapshots, then waits
+up to seven minutes for eligible `replica-data` and `instance` orphans on Ready
+nodes. Override that bounded wait with
+`PLATFORM_NODE_STORAGE_LONGHORN_ORPHAN_WAIT_TIMEOUT`; values below 300 seconds
+are rejected because they would be shorter than the orphan grace period.
 
 If pressure remains after the bounded wait, the playbook prints the kubelet
 condition, taints, filesystems, largest `/var/lib` consumers, runtime service
@@ -99,8 +111,9 @@ verified.
 
 ## What This Does Not Fix
 
-If the root filesystem is full because Longhorn replica data is on
-`/var/lib/longhorn`, cache pruning will recover only cache space. Do not delete
+If the root filesystem is full because referenced Longhorn replica data is on
+`/var/lib/longhorn`, cache pruning, cluster-wide filesystem trim, and orphan
+cleanup can recover only blocks that are genuinely unused. Do not delete
 replica files to force space recovery. Instead, add a dedicated disk, add it as
 a Longhorn disk, then migrate or rebuild replicas through Longhorn. Review
 unused PVCs, old snapshots, backup retention, and registry/MinIO retention in
