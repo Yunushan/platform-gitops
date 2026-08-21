@@ -4478,6 +4478,7 @@ def main() -> None:
         "ready_servers_other_than",
         "wait_for_ready_ca_pod",
         "previous_uid",
+        "ownerReferences[?(@.kind==\"StatefulSet\")].name",
         "sort -t '|' -k1,1n -k2,2nr",
         "pvc=retained",
         "rollout_failed=0",
@@ -4489,6 +4490,8 @@ def main() -> None:
             needle,
             f"Woodpecker failed-replica cleanup must preserve its data-safety gate: {needle}",
         )
+    if "for ordinal in $(seq 0 $((replicas - 1)))" in woodpecker_repair_text:
+        fail("Woodpecker CA Pod recycling must only enqueue existing StatefulSet Pods")
     if 'delete "pvc/${current_primary}"' in woodpecker_repair_text:
         fail("stale CNPG primary recovery must never delete its PVC")
     dns_repair_text = read(dns_repair_playbook)

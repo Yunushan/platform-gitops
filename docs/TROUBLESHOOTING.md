@@ -167,6 +167,9 @@ still lacks it, `platform-woodpecker-repair` recycles stale server Pods one at a
 time, starting with the highest unready ordinal. Every PVC is retained, each
 replacement must contain the CA mount and become Ready before repair continues,
 and the last Ready server is never removed without another Ready replica.
+Candidate discovery only includes existing Pods owned by the StatefulSet, so an
+`OrderedReady` rollout never waits for a higher ordinal that has not been
+created yet.
 
 The premium CloudNativePG profile keeps its mutating and validating webhooks
 enabled with `failurePolicy: Ignore`. Healthy requests still pass through both
