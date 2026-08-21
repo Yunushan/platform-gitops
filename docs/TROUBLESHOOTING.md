@@ -517,6 +517,12 @@ points Argo CD at those services, restarts the Argo CD workloads, and refreshes
 Longhorn and Forgejo. It is useful when ordinary ClusterIP routing is unhealthy
 but pod-to-pod routing is still working.
 
+Legacy Traefik chart resources are classified and pruned only after the Argo CD
+controllers, repo server, and application retry path have stabilized. The
+pruner waits for a newly observed reconciliation and refuses resources outside
+its explicit legacy allowlist, so an unavailable application controller cannot
+block its own service-path repair with a stale hard-refresh annotation.
+
 If the controller then times out to a pod IP such as `10.42.x.x:8081`, the
 cluster still has a pod-to-pod path problem. The repair target defaults to a
 bootstrap node-local and host-network fallback for Argo CD's controller,

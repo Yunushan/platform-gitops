@@ -152,6 +152,9 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "Prune known stale Traefik chart resources",
         "PLATFORM_ARGOCD_PRUNE_LEGACY_TRAEFIK",
         "unexpected-prune-candidates",
+        ".status.reconciledAt",
+        "wait_for_reconciliation",
+        "hard-refresh-not-reconciled",
         '("networking.k8s.io", "IngressClass", "", "platform-traefik")',
         "action=prune-requested",
         "prune=true",
@@ -190,6 +193,11 @@ def validate_argocd_cleanup_contract() -> list[str]:
     for fragment in required_fragments:
         if fragment not in text:
             errors.append(f"stale Argo CD cleanup is missing idempotent fragment: {fragment}")
+    retry_index = text.find("Retry failed Argo CD application operations after service repair")
+    prune_index = text.find("Prune known stale Traefik chart resources")
+    readiness_index = text.find("Verify final Argo CD core readiness after application retries")
+    if not (retry_index < prune_index < readiness_index):
+        errors.append("legacy Traefik pruning must run after Argo CD repair and application retries")
     return errors
 
 

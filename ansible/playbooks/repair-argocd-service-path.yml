@@ -247,144 +247,6 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
 
-    - name: Prune known stale Traefik chart resources
-      ansible.builtin.shell: |
-        set -o pipefail
-        K=/var/lib/rancher/rke2/bin/kubectl
-        C=/etc/rancher/rke2/rke2.yaml
-        APP_SYNC_TIMEOUT={{ platform_argocd_service_repair_app_sync_timeout_effective }}
-
-        if ! "$K" --kubeconfig "$C" -n argocd get application/traefik >/dev/null 2>&1; then
-          echo "application=traefik action=skip reason=not-found"
-          exit 0
-        fi
-
-        wait_for_idle() {
-          deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
-          while [ "$(date +%s)" -lt "${deadline}" ]; do
-            state="$($K --kubeconfig "$C" -n argocd get application/traefik \
-              -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/refresh}{"|"}{.operation.sync.revision}{"|"}{.status.operationState.phase}' \
-              2>/dev/null || true)"
-            refresh="$(printf '%s' "${state}" | cut -d'|' -f1)"
-            requested_revision="$(printf '%s' "${state}" | cut -d'|' -f2)"
-            phase="$(printf '%s' "${state}" | cut -d'|' -f3)"
-            if [ -z "${refresh}" ] && [ -z "${requested_revision}" ] && \
-              [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
-              return 0
-            fi
-            sleep 5
-          done
-          return 1
-        }
-
-        "$K" --kubeconfig "$C" -n argocd annotate application/traefik \
-          argocd.argoproj.io/refresh=hard --overwrite >/dev/null
-        if ! wait_for_idle; then
-          echo "application=traefik action=stop reason=hard-refresh-timeout" >&2
-          exit 1
-        fi
-
-        app_json="$(mktemp)"
-        trap 'rm -f "${app_json}"' EXIT
-        "$K" --kubeconfig "$C" -n argocd get application/traefik -o json >"${app_json}"
-
-        set +e
-        python3 - "${app_json}" <<'PY'
-        import json
-        import sys
-
-        with open(sys.argv[1], encoding="utf-8") as handle:
-            application = json.load(handle)
-
-        allowed = {
-            ("", "ServiceAccount", "traefik", "traefik"),
-            ("networking.k8s.io", "IngressClass", "", "platform-traefik"),
-            ("policy", "PodDisruptionBudget", "traefik", "traefik"),
-            ("rbac.authorization.k8s.io", "ClusterRole", "", "traefik-traefik"),
-            ("rbac.authorization.k8s.io", "ClusterRoleBinding", "", "traefik-traefik"),
-        }
-        stale = {
-            (
-                resource.get("group", ""),
-                resource.get("kind", ""),
-                resource.get("namespace", ""),
-                resource.get("name", ""),
-            )
-            for resource in application.get("status", {}).get("resources", [])
-            if resource.get("requiresPruning") is True
-        }
-        if not stale:
-            print("application=traefik action=keep reason=no-prune-candidates")
-            raise SystemExit(0)
-
-        unexpected = stale - allowed
-        for group, kind, namespace, name in sorted(stale):
-            classification = "unexpected" if (group, kind, namespace, name) in unexpected else "legacy"
-            print(
-                "application=traefik prune_candidate="
-                f"{group or 'core'}/{kind}/{namespace or 'cluster'}/{name} classification={classification}"
-            )
-        if unexpected:
-            print("application=traefik action=stop reason=unexpected-prune-candidates", file=sys.stderr)
-            raise SystemExit(42)
-        raise SystemExit(10)
-        PY
-        classify_rc=$?
-        set -e
-
-        case "${classify_rc}" in
-          0)
-            exit 0
-            ;;
-          10)
-            ;;
-          42)
-            echo "Refusing to prune Traefik because Argo CD reported resources outside the known legacy chart identity set." >&2
-            exit 1
-            ;;
-          *)
-            echo "Unable to classify Traefik prune candidates (rc=${classify_rc})." >&2
-            exit 1
-            ;;
-        esac
-
-        revision="$($K --kubeconfig "$C" -n argocd get application/traefik \
-          -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
-        revision="${revision:-main}"
-        "$K" --kubeconfig "$C" -n argocd patch application/traefik --type merge \
-          -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":true}}}' "${revision}")" >/dev/null
-        echo "application=traefik action=prune-requested revision=${revision} prune=true"
-
-        deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
-        while [ "$(date +%s)" -lt "${deadline}" ]; do
-          state="$($K --kubeconfig "$C" -n argocd get application/traefik \
-            -o jsonpath='{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
-            2>/dev/null || true)"
-          requested_revision="$(printf '%s' "${state}" | cut -d'|' -f1)"
-          phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
-          sync_status="$(printf '%s' "${state}" | cut -d'|' -f3)"
-          case "${phase}" in
-            Error|Failed)
-              echo "application=traefik action=stop reason=prune-sync-${phase} sync=${sync_status:-unknown}" >&2
-              exit 1
-              ;;
-          esac
-          if [ -z "${requested_revision}" ] && [ "${phase}" = "Succeeded" ] && [ "${sync_status}" = "Synced" ]; then
-            echo "application=traefik action=prune-finished phase=${phase} sync=${sync_status}"
-            exit 0
-          fi
-          sleep 5
-        done
-
-        echo "application=traefik action=stop reason=prune-sync-timeout" >&2
-        exit 1
-      args:
-        executable: /bin/bash
-      register: platform_argocd_legacy_traefik_prune
-      changed_when: "'action=prune-requested' in platform_argocd_legacy_traefik_prune.stdout"
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
-      when: platform_argocd_prune_legacy_traefik_effective | bool
 
     - name: Patch active Argo CD command parameters and restart active workloads
       ansible.builtin.shell: |
@@ -1154,6 +1016,164 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: platform_argocd_service_repair_refresh_apps_effective | bool
+
+    - name: Prune known stale Traefik chart resources
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        APP_SYNC_TIMEOUT={{ platform_argocd_service_repair_app_sync_timeout_effective }}
+
+        if ! "$K" --kubeconfig "$C" -n argocd get application/traefik >/dev/null 2>&1; then
+          echo "application=traefik action=skip reason=not-found"
+          exit 0
+        fi
+
+        wait_for_reconciliation() {
+          baseline_reconciled_at="$1"
+          last_state="not-observed"
+          deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+            state="$($K --kubeconfig "$C" -n argocd get application/traefik \
+              -o jsonpath='{.status.reconciledAt}{"|"}{.metadata.annotations.argocd\.argoproj\.io/refresh}{"|"}{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
+              2>/dev/null || true)"
+            last_state="${state}"
+            reconciled_at="$(printf '%s' "${state}" | cut -d'|' -f1)"
+            refresh="$(printf '%s' "${state}" | cut -d'|' -f2)"
+            requested_revision="$(printf '%s' "${state}" | cut -d'|' -f3)"
+            phase="$(printf '%s' "${state}" | cut -d'|' -f4)"
+            sync_status="$(printf '%s' "${state}" | cut -d'|' -f5)"
+            reconciliation_observed=false
+            if [ -z "${refresh}" ] || \
+              { [ -n "${reconciled_at}" ] && [ "${reconciled_at}" != "${baseline_reconciled_at}" ]; }; then
+              reconciliation_observed=true
+            fi
+            if [ "${reconciliation_observed}" = "true" ] && [ -z "${requested_revision}" ] && \
+              [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
+              echo "application=traefik action=hard-refresh-finished reconciledAt=${reconciled_at:-unknown} phase=${phase:-none} sync=${sync_status:-unknown}"
+              return 0
+            fi
+            sleep 5
+          done
+          echo "application=traefik action=hard-refresh-timeout baselineReconciledAt=${baseline_reconciled_at:-none} lastState=${last_state}" >&2
+          return 1
+        }
+
+        baseline_reconciled_at="$($K --kubeconfig "$C" -n argocd get application/traefik \
+          -o jsonpath='{.status.reconciledAt}' 2>/dev/null || true)"
+        if ! "$K" --kubeconfig "$C" -n argocd annotate application/traefik \
+          argocd.argoproj.io/refresh=hard --overwrite >/dev/null; then
+          echo "application=traefik action=stop reason=hard-refresh-request-failed" >&2
+          exit 1
+        fi
+        if ! wait_for_reconciliation "${baseline_reconciled_at}"; then
+          echo "application=traefik action=stop reason=hard-refresh-not-reconciled" >&2
+          exit 1
+        fi
+
+        app_json="$(mktemp)"
+        trap 'rm -f "${app_json}"' EXIT
+        "$K" --kubeconfig "$C" -n argocd get application/traefik -o json >"${app_json}"
+
+        set +e
+        python3 - "${app_json}" <<'PY'
+        import json
+        import sys
+
+        with open(sys.argv[1], encoding="utf-8") as handle:
+            application = json.load(handle)
+
+        allowed = {
+            ("", "ServiceAccount", "traefik", "traefik"),
+            ("networking.k8s.io", "IngressClass", "", "platform-traefik"),
+            ("policy", "PodDisruptionBudget", "traefik", "traefik"),
+            ("rbac.authorization.k8s.io", "ClusterRole", "", "traefik-traefik"),
+            ("rbac.authorization.k8s.io", "ClusterRoleBinding", "", "traefik-traefik"),
+        }
+        stale = {
+            (
+                resource.get("group", ""),
+                resource.get("kind", ""),
+                resource.get("namespace", ""),
+                resource.get("name", ""),
+            )
+            for resource in application.get("status", {}).get("resources", [])
+            if resource.get("requiresPruning") is True
+        }
+        if not stale:
+            print("application=traefik action=keep reason=no-prune-candidates")
+            raise SystemExit(0)
+
+        unexpected = stale - allowed
+        for group, kind, namespace, name in sorted(stale):
+            classification = "unexpected" if (group, kind, namespace, name) in unexpected else "legacy"
+            print(
+                "application=traefik prune_candidate="
+                f"{group or 'core'}/{kind}/{namespace or 'cluster'}/{name} classification={classification}"
+            )
+        if unexpected:
+            print("application=traefik action=stop reason=unexpected-prune-candidates", file=sys.stderr)
+            raise SystemExit(42)
+        raise SystemExit(10)
+        PY
+        classify_rc=$?
+        set -e
+
+        case "${classify_rc}" in
+          0)
+            exit 0
+            ;;
+          10)
+            ;;
+          42)
+            echo "Refusing to prune Traefik because Argo CD reported resources outside the known legacy chart identity set." >&2
+            exit 1
+            ;;
+          *)
+            echo "Unable to classify Traefik prune candidates (rc=${classify_rc})." >&2
+            exit 1
+            ;;
+        esac
+
+        revision="$($K --kubeconfig "$C" -n argocd get application/traefik \
+          -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+        revision="${revision:-main}"
+        "$K" --kubeconfig "$C" -n argocd patch application/traefik --type merge \
+          -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":true}}}' "${revision}")" >/dev/null
+        echo "application=traefik action=prune-requested revision=${revision} prune=true"
+
+        deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          state="$($K --kubeconfig "$C" -n argocd get application/traefik \
+            -o jsonpath='{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
+            2>/dev/null || true)"
+          requested_revision="$(printf '%s' "${state}" | cut -d'|' -f1)"
+          phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
+          sync_status="$(printf '%s' "${state}" | cut -d'|' -f3)"
+          case "${phase}" in
+            Error|Failed)
+              if [ -z "${requested_revision}" ]; then
+                echo "application=traefik action=stop reason=prune-sync-${phase} sync=${sync_status:-unknown}" >&2
+                exit 1
+              fi
+              ;;
+          esac
+          if [ -z "${requested_revision}" ] && [ "${phase}" = "Succeeded" ] && [ "${sync_status}" = "Synced" ]; then
+            echo "application=traefik action=prune-finished phase=${phase} sync=${sync_status}"
+            exit 0
+          fi
+          sleep 5
+        done
+
+        echo "application=traefik action=stop reason=prune-sync-timeout lastState=${state:-not-observed}" >&2
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_argocd_legacy_traefik_prune
+      changed_when: "'action=prune-requested' in platform_argocd_legacy_traefik_prune.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_argocd_prune_legacy_traefik_effective | bool
 
     - name: Verify final Argo CD core readiness after application retries
       ansible.builtin.shell: |
