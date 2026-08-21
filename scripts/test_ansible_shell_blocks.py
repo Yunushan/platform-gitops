@@ -131,6 +131,17 @@ def validate_free_form_comment_quotes(path: Path) -> list[str]:
     return errors
 
 
+def validate_jinja_bash_collisions(path: Path) -> list[str]:
+    errors: list[str] = []
+    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if "${#" in line:
+            errors.append(
+                f"{path.relative_to(ROOT)}:{line_no}: Bash parameter-length "
+                "syntax starts a Jinja comment; use an explicit counter"
+            )
+    return errors
+
+
 def validate_argocd_cleanup_contract() -> list[str]:
     text = ARGOCD_REPAIR_PLAYBOOK.read_text(encoding="utf-8")
     errors: list[str] = []
@@ -294,12 +305,6 @@ def validate_longhorn_embedded_python() -> list[str]:
 
 
 def main() -> int:
-    try:
-        _, flavor = bash_executable()
-    except BashRuntimeUnavailable as exc:
-        print(f"Ansible inline shell syntax validation skipped: {exc}; bash is required for Ansible inline shell syntax validation.")
-        return 0
-
     playbook_contract_errors = (
         validate_argocd_cleanup_contract()
         + validate_coredns_rollout_contract()
@@ -307,6 +312,7 @@ def main() -> int:
     )
     for path in playbooks():
         playbook_contract_errors.extend(validate_free_form_comment_quotes(path))
+        playbook_contract_errors.extend(validate_jinja_bash_collisions(path))
     if len(shell_blocks(OPENBAO_READINESS_PLAYBOOK)) != 1:
         playbook_contract_errors.append(
             "OpenBao readiness playbook shell cmd block is not covered by syntax validation"
@@ -316,6 +322,12 @@ def main() -> int:
         for error in playbook_contract_errors:
             print(f" - {error}")
         return 1
+
+    try:
+        _, flavor = bash_executable()
+    except BashRuntimeUnavailable as exc:
+        print(f"Ansible inline shell syntax validation skipped: {exc}; bash is required for Ansible inline shell syntax validation.")
+        return 0
 
     failures: list[tuple[Path, int, str]] = []
     block_count = 0

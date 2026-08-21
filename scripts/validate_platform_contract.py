@@ -3681,6 +3681,11 @@ def main() -> None:
             needle,
             f"guarded node storage pressure recovery must cover {needle}",
         )
+    if "${#" in node_storage_cleanup_text:
+        fail(
+            "node storage cleanup embeds Bash parameter-length syntax that "
+            "Jinja parses as an unclosed comment"
+        )
     forgejo_repair_target = re.search(
         r"(?m)^platform-forgejo-repair:[^\n]*\n(?P<body>(?:\t[^\n]*\n)+)",
         makefile_text,

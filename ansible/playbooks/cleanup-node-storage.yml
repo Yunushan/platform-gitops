@@ -175,12 +175,14 @@
         fi
 
         endpoints=()
+        endpoint_count=0
         for socket in /run/k3s/containerd/containerd.sock /run/containerd/containerd.sock; do
           if [ -S "${socket}" ]; then
             endpoints+=("unix://${socket}")
+            endpoint_count=$((endpoint_count + 1))
           fi
         done
-        if [ "${#endpoints[@]}" -eq 0 ]; then
+        if [ "${endpoint_count}" -eq 0 ]; then
           echo 'cri_image_prune=skipped reason=no-containerd-cri-socket'
           exit 0
         fi
