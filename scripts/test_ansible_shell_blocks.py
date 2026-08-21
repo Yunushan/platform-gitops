@@ -180,9 +180,13 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT",
         'APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"',
         "action=hard-refresh-requested",
+        "PLATFORM_ARGOCD_SERVICE_REPAIR_REFRESH_TIMEOUT",
         "declare -A refresh_baseline_reconciled_at",
         "refresh_deadline",
         "refresh_last_state",
+        "action=clear-preexisting-refresh",
+        "reason=hard-refresh-unacknowledged",
+        "Explain skipped legacy Traefik prune after unacknowledged refresh",
         "Retry failed Argo CD application operations after service repair",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT",
@@ -210,6 +214,9 @@ def validate_argocd_cleanup_contract() -> list[str]:
             ".status.reconciledAt",
             "refresh_apps+=(\"${app}\")",
             "reason=hard-refresh-not-reconciled",
+            '[ "${sync_status}" = "Synced" ]',
+            '""|Succeeded) stable=true',
+            "argocd.argoproj.io/refresh-",
         ):
             if fragment not in refresh_block:
                 errors.append(f"Argo CD shared refresh wait is missing fragment: {fragment}")

@@ -8,6 +8,7 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_argocd_service_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_TIMEOUT') }}"
     platform_argocd_service_repair_refresh_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_REFRESH_APPS') }}"
+    platform_argocd_service_repair_refresh_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_REFRESH_TIMEOUT') }}"
     platform_argocd_service_repair_node_local_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_NODE_LOCAL') }}"
     platform_argocd_service_repair_host_network_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_HOST_NETWORK') }}"
     platform_argocd_service_repair_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_ROLLOUT_TIMEOUT') }}"
@@ -23,6 +24,7 @@
     platform_argocd_prune_legacy_traefik_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_PRUNE_LEGACY_TRAEFIK') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
+    platform_argocd_service_repair_refresh_timeout_effective: "{{ platform_argocd_service_repair_refresh_timeout | default(platform_argocd_service_repair_refresh_timeout_from_env, true) | default(120, true) | int }}"
     platform_argocd_service_repair_node_local_effective: "{{ platform_argocd_service_repair_node_local | default(platform_argocd_service_repair_node_local_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_host_network_effective: "{{ platform_argocd_service_repair_host_network | default(platform_argocd_service_repair_host_network_from_env, true) | default(true, true) | bool }}"
     platform_argocd_service_repair_rollout_timeout_effective: "{{ platform_argocd_service_repair_rollout_timeout | default(platform_argocd_service_repair_rollout_timeout_from_env, true) | default(60, true) | int }}"
@@ -898,7 +900,7 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"
-        APP_SYNC_TIMEOUT={{ platform_argocd_service_repair_app_sync_timeout_effective }}
+        REFRESH_TIMEOUT={{ platform_argocd_service_repair_refresh_timeout_effective }}
 
         declare -a refresh_apps=()
         declare -A refresh_baseline_reconciled_at=()
@@ -913,8 +915,20 @@
             echo "application=${app} action=skip-refresh reason=not-found"
             continue
           fi
-          baseline_reconciled_at="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-            -o jsonpath='{.status.reconciledAt}' 2>/dev/null || true)"
+          baseline_state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.status.reconciledAt}{"|"}{.metadata.annotations.argocd\.argoproj\.io/refresh}' \
+            2>/dev/null || true)"
+          baseline_reconciled_at="$(printf '%s' "${baseline_state}" | cut -d'|' -f1)"
+          preexisting_refresh="$(printf '%s' "${baseline_state}" | cut -d'|' -f2)"
+          if [ -n "${preexisting_refresh}" ]; then
+            if ! "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+              argocd.argoproj.io/refresh- >/dev/null; then
+              echo "application=${app} action=stop reason=preexisting-refresh-cleanup-failed value=${preexisting_refresh}" >&2
+              failed=1
+              continue
+            fi
+            echo "application=${app} action=clear-preexisting-refresh value=${preexisting_refresh}"
+          fi
           if ! "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
             argocd.argoproj.io/refresh=hard --overwrite; then
             echo "application=${app} action=stop reason=hard-refresh-request-failed" >&2
@@ -928,7 +942,7 @@
           refresh_last_state["${app}"]=not-observed
         done
 
-        refresh_deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
+        refresh_deadline="$(( $(date +%s) + REFRESH_TIMEOUT ))"
         while [ "$(date +%s)" -lt "${refresh_deadline}" ]; do
           pending_count=0
           for app in "${refresh_apps[@]}"; do
@@ -954,6 +968,14 @@
             if [ "${reconciliation_observed}" = "true" ] && [ -z "${requested_revision}" ] && \
               [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
               echo "application=${app} action=hard-refresh-finished reconciledAt=${reconciled_at:-unknown} phase=${phase:-none} sync=${sync_status:-unknown}"
+              if [ -n "${refresh}" ]; then
+                if "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+                  argocd.argoproj.io/refresh- >/dev/null 2>&1; then
+                  echo "application=${app} action=clear-refresh reason=reconciled-at-advanced"
+                else
+                  echo "application=${app} action=warn reason=refresh-cleanup-failed" >&2
+                fi
+              fi
               refresh_pending["${app}"]=false
               pending_count="$((pending_count - 1))"
             fi
@@ -966,8 +988,27 @@
 
         for app in "${refresh_apps[@]}"; do
           if [ "${refresh_pending[${app}]:-false}" = "true" ]; then
-            echo "application=${app} action=stop reason=hard-refresh-not-reconciled timeout=${APP_SYNC_TIMEOUT}s baselineReconciledAt=${refresh_baseline_reconciled_at[${app}]:-none} lastState=${refresh_last_state[${app}]:-not-observed}" >&2
-            failed=1
+            state="${refresh_last_state[${app}]:-}"
+            requested_revision="$(printf '%s' "${state}" | cut -d'|' -f3)"
+            phase="$(printf '%s' "${state}" | cut -d'|' -f4)"
+            sync_status="$(printf '%s' "${state}" | cut -d'|' -f5)"
+            cleanup=failed
+            if "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+              argocd.argoproj.io/refresh- >/dev/null 2>&1; then
+              cleanup=cleared
+            fi
+            stable=false
+            if [ -z "${requested_revision}" ] && [ "${sync_status}" = "Synced" ]; then
+              case "${phase}" in
+                ""|Succeeded) stable=true ;;
+              esac
+            fi
+            if [ "${stable}" = "true" ]; then
+              echo "application=${app} action=continue reason=hard-refresh-unacknowledged timeout=${REFRESH_TIMEOUT}s cleanup=${cleanup} phase=${phase:-none} sync=${sync_status}"
+            else
+              echo "application=${app} action=stop reason=hard-refresh-not-reconciled timeout=${REFRESH_TIMEOUT}s cleanup=${cleanup} baselineReconciledAt=${refresh_baseline_reconciled_at[${app}]:-none} lastState=${state:-not-observed}" >&2
+              failed=1
+            fi
           fi
         done
         exit "${failed}"
@@ -1059,6 +1100,19 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: platform_argocd_service_repair_refresh_apps_effective | bool
+
+    - name: Explain skipped legacy Traefik prune after unacknowledged refresh
+      ansible.builtin.debug:
+        msg: >-
+          Skipping legacy Traefik pruning because Argo CD did not acknowledge
+          the requested Traefik hard refresh. The application remains idle and
+          Synced, but pruning from an unrefreshed resource inventory is unsafe.
+      run_once: true
+      when:
+        - platform_argocd_prune_legacy_traefik_effective | bool
+        - >-
+          'application=traefik action=continue reason=hard-refresh-unacknowledged'
+          in (platform_argocd_service_path_app_refresh.stdout | default(''))
 
     - name: Prune known stale Traefik chart resources
       ansible.builtin.shell: |
@@ -1216,7 +1270,11 @@
       changed_when: "'action=prune-requested' in platform_argocd_legacy_traefik_prune.stdout"
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
-      when: platform_argocd_prune_legacy_traefik_effective | bool
+      when:
+        - platform_argocd_prune_legacy_traefik_effective | bool
+        - >-
+          'application=traefik action=continue reason=hard-refresh-unacknowledged'
+          not in (platform_argocd_service_path_app_refresh.stdout | default(''))
 
     - name: Verify final Argo CD core readiness after application retries
       ansible.builtin.shell: |

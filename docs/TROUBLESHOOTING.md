@@ -523,9 +523,14 @@ pruner waits for a newly observed reconciliation and refuses resources outside
 its explicit legacy allowlist, so an unavailable application controller cannot
 block its own service-path repair with a stale hard-refresh annotation.
 Platform application hard refreshes are requested together and monitored within
-one shared timeout. Completion accepts either controller consumption of the
-refresh annotation or an advanced `status.reconciledAt`, while still waiting for
-any active sync operation to finish.
+one shared timeout, which defaults to 120 seconds and can be changed with
+`PLATFORM_ARGOCD_SERVICE_REPAIR_REFRESH_TIMEOUT`. The repair clears a stale
+refresh hint before issuing a new one. Completion accepts either controller
+consumption of the refresh annotation or an advanced `status.reconciledAt`, while
+still waiting for any active sync operation to finish. If Argo CD does not
+acknowledge the hint but the application remains idle and `Synced`, the hint is
+removed and repair continues. Legacy Traefik pruning is skipped in that case so
+the repair never prunes from an unrefreshed resource inventory.
 
 If the controller then times out to a pod IP such as `10.42.x.x:8081`, the
 cluster still has a pod-to-pod path problem. The repair target defaults to a
