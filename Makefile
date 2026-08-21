@@ -736,10 +736,10 @@ platform-inventory-preflight:
 	@$(PYTHON) scripts/prepare_local_inventory.py --inventory inventory/hosts.local.ini
 
 platform-node-storage-diagnose: platform-inventory-preflight
-	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/cleanup-node-storage.yml $(if $(HOST),--limit $(HOST),)
+	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-60} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/cleanup-node-storage.yml $(if $(HOST),--limit $(HOST),)
 
 platform-node-storage-cleanup: platform-inventory-preflight
-	@PLATFORM_NODE_STORAGE_CLEANUP=true ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/cleanup-node-storage.yml $(if $(HOST),--limit $(HOST),)
+	@PLATFORM_NODE_STORAGE_CLEANUP=true ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-60} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/cleanup-node-storage.yml $(if $(HOST),--limit $(HOST),)
 
 rke2-network-check:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/rke2-network-check.yml

@@ -76,6 +76,11 @@ node. CRI retains images used by existing containers; an unused image may need
 to be pulled again later. Active runner volumes, ordinary Docker volumes,
 Longhorn files, PVC data, and valid snapshots are never selected for deletion.
 
+The storage diagnose and cleanup targets use a 60-second Ansible host timeout by
+default because a node under disk pressure can respond slowly during SSH
+privilege escalation. Override it explicitly with `ANSIBLE_TIMEOUT` when the
+environment requires a different bound.
+
 Root-backed Longhorn disks reserve 25 percent free space. This keeps Longhorn's
 scheduling floor above Kubernetes' usual root-filesystem pressure boundary;
 the old 10 percent floor could permit replica growth after kubelet had already
