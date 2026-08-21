@@ -303,7 +303,9 @@
                     replicaAutoBalance: best-effort
                     storageOverProvisioningPercentage: {{ platform_longhorn_storage_over_provisioning_percentage_effective }}
                     storageMinimalAvailablePercentage: 10
-                    orphanAutoDeletion: true
+                    orphanResourceAutoDeletion: "replica-data;instance"
+                    orphanResourceAutoDeletionGracePeriod: 300
+                    removeSnapshotsDuringFilesystemTrim: false
                     concurrentAutomaticEngineUpgradePerNodeLimit: 1
                   longhornManager:
                     priorityClass: longhorn-critical

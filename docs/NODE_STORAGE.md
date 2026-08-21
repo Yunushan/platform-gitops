@@ -28,7 +28,9 @@ on the same filesystem as an extra disk, by design.
 ## Safe Cleanup
 
 The guarded cleanup target removes only unused RKE2 container images, package
-manager caches, and system-managed temporary files:
+manager caches, and system-managed temporary files. On mounted Longhorn XFS or
+EXT4 filesystems it also issues a bounded `fstrim`, which releases blocks that
+the guest filesystem has already marked unused without deleting files:
 
 ```bash
 make platform-node-storage-cleanup
@@ -70,10 +72,19 @@ existing containers; an unused image may need to be pulled again later. Active
 runner volumes, ordinary Docker volumes, Longhorn data, and PVC data are never
 selected.
 
+The Longhorn profile schedules a weekly `filesystem-trim` recurring job for
+volumes in the default recurring-job group. It explicitly keeps
+`removeSnapshotsDuringFilesystemTrim=false`, so trim never marks valid user
+snapshots for removal. Longhorn 1.12 orphan cleanup uses the supported
+`orphanResourceAutoDeletion` setting with a five-minute grace period; only
+resources that Longhorn itself classifies as orphaned are eligible, and
+resources on down or unknown nodes remain protected.
+
 If pressure remains after the bounded wait, the playbook prints the kubelet
 condition, taints, filesystems, largest `/var/lib` consumers, runtime service
-state, and deleted files still held open before failing. This is intentionally
-not converted into automatic Longhorn or arbitrary volume deletion.
+state, Longhorn volume allocation and orphan inventory, and deleted files still
+held open before failing. This is intentionally not converted into automatic
+PVC, snapshot, referenced Longhorn replica, or arbitrary volume deletion.
 
 The focused Longhorn runtime repair also validates the v1 instance-manager data
 plane on every Ready Longhorn node. If an attaching data-bearing RWO volume has

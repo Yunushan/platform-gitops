@@ -17,6 +17,8 @@
     platform_node_storage_wait_for_pressure_clear_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR') }}"
     platform_node_storage_pressure_clear_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_PRESSURE_CLEAR_TIMEOUT') }}"
     platform_node_storage_journal_vacuum_size_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_JOURNAL_VACUUM_SIZE') }}"
+    platform_node_storage_longhorn_trim_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_TRIM') }}"
+    platform_node_storage_longhorn_trim_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_TRIM_TIMEOUT') }}"
     platform_node_storage_longhorn_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
     platform_node_storage_cleanup_effective: "{{ platform_node_storage_cleanup | default(platform_node_storage_cleanup_from_env, true) | default(false, true) | bool }}"
     platform_node_storage_cri_prune_effective: "{{ platform_node_storage_cri_prune | default(platform_node_storage_cri_prune_from_env, true) | default(true, true) | bool }}"
@@ -30,6 +32,8 @@
     platform_node_storage_wait_for_pressure_clear_effective: "{{ platform_node_storage_wait_for_pressure_clear | default(platform_node_storage_wait_for_pressure_clear_from_env, true) | default(false, true) | bool }}"
     platform_node_storage_pressure_clear_timeout_effective: "{{ platform_node_storage_pressure_clear_timeout | default(platform_node_storage_pressure_clear_timeout_from_env, true) | default(300, true) | int }}"
     platform_node_storage_journal_vacuum_size_effective: "{{ platform_node_storage_journal_vacuum_size | default(platform_node_storage_journal_vacuum_size_from_env, true) | default('0', true) }}"
+    platform_node_storage_longhorn_trim_effective: "{{ platform_node_storage_longhorn_trim | default(platform_node_storage_longhorn_trim_from_env, true) | default(true, true) | bool }}"
+    platform_node_storage_longhorn_trim_timeout_effective: "{{ platform_node_storage_longhorn_trim_timeout | default(platform_node_storage_longhorn_trim_timeout_from_env, true) | default(60, true) | int }}"
     platform_node_storage_longhorn_path_effective: "{{ platform_node_storage_longhorn_path | default(platform_node_storage_longhorn_path_from_env, true) | default('/var/lib/longhorn', true) }}"
 
   tasks:
@@ -39,6 +43,7 @@
           - platform_node_storage_docker_prune_until_effective is match('^[0-9]+[smhdw]$')
           - platform_node_storage_gitlab_runner_cache_prune_until_effective is match('^[0-9]+[smhdw]$')
           - platform_node_storage_pressure_clear_timeout_effective | int >= 30
+          - platform_node_storage_longhorn_trim_timeout_effective | int >= 10
           - platform_node_storage_journal_vacuum_size_effective == '0' or platform_node_storage_journal_vacuum_size_effective is match('^[0-9]+[KMG]$')
           - platform_node_storage_longhorn_path_effective.startswith('/')
         fail_msg: >-
@@ -244,6 +249,56 @@
         executable: /bin/bash
       changed_when: "'dnf_clean=completed' in platform_node_storage_dnf_clean.stdout"
 
+    - name: Trim mounted Longhorn filesystems during guarded cleanup
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ "{{ platform_node_storage_should_cleanup | bool | lower }}" != "true" ] ||
+          [ "{{ platform_node_storage_longhorn_trim_effective | bool | lower }}" != "true" ]; then
+          echo 'longhorn_filesystem_trim=skipped'
+          exit 0
+        fi
+        if ! command -v findmnt >/dev/null 2>&1 ||
+          ! command -v fstrim >/dev/null 2>&1 ||
+          ! command -v timeout >/dev/null 2>&1; then
+          echo 'longhorn_filesystem_trim=skipped reason=required-tool-unavailable'
+          exit 0
+        fi
+
+        candidates=0
+        completed=0
+        failed=0
+        while read -r source target fstype; do
+          [ -n "${source}" ] && [ -n "${target}" ] || continue
+          case "${target}" in
+            /var/lib/kubelet/plugins/kubernetes.io/csi/driver.longhorn.io/*/globalmount | \
+              /var/lib/kubelet/pods/*/volumes/kubernetes.io~csi/*/mount) ;;
+            *) continue ;;
+          esac
+          candidates=$((candidates + 1))
+          echo "longhorn_filesystem_trim=started source=${source} target=${target} fstype=${fstype}"
+          if timeout {{ platform_node_storage_longhorn_trim_timeout_effective | int }} \
+            fstrim --verbose "${target}"; then
+            completed=$((completed + 1))
+            echo "longhorn_filesystem_trim=volume-completed source=${source}"
+          else
+            rc=$?
+            failed=$((failed + 1))
+            echo "longhorn_filesystem_trim=volume-skipped source=${source} rc=${rc}"
+          fi
+        done < <(findmnt -rn -t ext4,xfs -o SOURCE,TARGET,FSTYPE | awk '!seen[$1]++')
+
+        if [ "${candidates}" -eq 0 ]; then
+          echo 'longhorn_filesystem_trim=not-needed reason=no-mounted-longhorn-filesystem'
+          exit 0
+        fi
+        echo "longhorn_filesystem_trim=completed volumes=${completed} skipped=${failed}"
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_longhorn_trim
+      changed_when: >-
+        'longhorn_filesystem_trim=volume-completed' in
+        platform_node_storage_longhorn_trim.stdout
+
     - name: Clean system-managed temporary files
       ansible.builtin.shell: |
         set -o pipefail
@@ -445,6 +500,27 @@
           du -x -d 1 -B1 /var/lib 2>/dev/null | sort -n | tail -20 || true
         fi
 
+        echo '===== Largest Longhorn replica paths (bytes) ====='
+        if [ -d "${longhorn_path}/replicas" ]; then
+          if command -v timeout >/dev/null 2>&1; then
+            timeout 120 du -x -d 1 -B1 "${longhorn_path}/replicas" 2>/dev/null | sort -n | tail -20 || true
+          else
+            du -x -d 1 -B1 "${longhorn_path}/replicas" 2>/dev/null | sort -n | tail -20 || true
+          fi
+        else
+          echo 'longhorn_replicas_path=absent'
+        fi
+
+        echo '===== Longhorn volume allocation ====='
+        "${K}" --kubeconfig "${C}" -n longhorn-system get volumes.longhorn.io \
+          -o custom-columns=NAME:.metadata.name,SIZE:.spec.size,ACTUAL:.status.actualSize,STATE:.status.state,ROBUSTNESS:.status.robustness,NODE:.status.currentNodeID \
+          --no-headers 2>/dev/null || true
+
+        echo '===== Longhorn orphan resources ====='
+        "${K}" --kubeconfig "${C}" -n longhorn-system get orphans.longhorn.io \
+          -o custom-columns=NAME:.metadata.name,TYPE:.spec.orphanType,NODE:.spec.nodeID \
+          --no-headers 2>/dev/null || true
+
         echo '===== Runtime services ====='
         for service in rke2-server containerd docker; do
           printf '%s=' "${service}"
@@ -478,13 +554,16 @@
       ansible.builtin.fail:
         msg: |
           Kubernetes DiskPressure remains active on {{ inventory_hostname }}
-          after unused images, caches, package metadata, and temporary files
-          eligible under the configured policy were reclaimed.
+          after unused images, caches, package metadata, temporary files, and
+          unused blocks from mounted Longhorn filesystems eligible under the
+          configured policy were reclaimed.
 
           The cleanup intentionally retained Longhorn replicas, snapshots,
           PVC data, active container images, and referenced Docker volumes.
-          Review the focused diagnostics above. If the Longhorn path shares
-          `/`, add a dedicated Longhorn disk or remove unused PVCs/snapshots
+          Review the focused diagnostics above. Longhorn orphan resources are
+          reclaimed by Longhorn itself after its configured grace period. If
+          referenced Longhorn volumes dominate and the path shares `/`, add a
+          dedicated Longhorn disk or remove confirmed-unused PVCs/snapshots
           through Kubernetes and Longhorn. If another runtime store dominates,
           verify that runtime is still required before removing its data.
 
