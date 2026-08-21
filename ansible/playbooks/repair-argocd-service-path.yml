@@ -900,34 +900,77 @@
         APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"
         APP_SYNC_TIMEOUT={{ platform_argocd_service_repair_app_sync_timeout_effective }}
 
-        wait_for_refresh() {
-          app="$1"
-          deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
-          while [ "$(date +%s)" -lt "${deadline}" ]; do
-            refresh="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-              -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/refresh}' 2>/dev/null || true)"
-            phase="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-              -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
-            if [ -z "${refresh}" ] && [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
-              echo "application=${app} action=hard-refresh-finished phase=${phase:-none}"
-              return 0
-            fi
-            sleep 5
-          done
-          echo "application=${app} action=hard-refresh-timeout timeout=${APP_SYNC_TIMEOUT}s"
-          return 1
-        }
+        declare -a refresh_apps=()
+        declare -A refresh_baseline_reconciled_at=()
+        declare -A refresh_pending=()
+        declare -A refresh_last_state=()
+        failed=0
 
+        # Request every refresh first so one stuck application cannot consume a
+        # full timeout before the remaining applications are even notified.
         for app in ${APPS}; do
           if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
             echo "application=${app} action=skip-refresh reason=not-found"
             continue
           fi
-          "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
-            argocd.argoproj.io/refresh=hard --overwrite
+          baseline_reconciled_at="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.status.reconciledAt}' 2>/dev/null || true)"
+          if ! "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+            argocd.argoproj.io/refresh=hard --overwrite; then
+            echo "application=${app} action=stop reason=hard-refresh-request-failed" >&2
+            failed=1
+            continue
+          fi
           echo "application=${app} action=hard-refresh-requested"
-          wait_for_refresh "${app}"
+          refresh_apps+=("${app}")
+          refresh_baseline_reconciled_at["${app}"]="${baseline_reconciled_at}"
+          refresh_pending["${app}"]=true
+          refresh_last_state["${app}"]=not-observed
         done
+
+        refresh_deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
+        while [ "$(date +%s)" -lt "${refresh_deadline}" ]; do
+          pending_count=0
+          for app in "${refresh_apps[@]}"; do
+            if [ "${refresh_pending[${app}]:-false}" != "true" ]; then
+              continue
+            fi
+            pending_count="$((pending_count + 1))"
+            state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+              -o jsonpath='{.status.reconciledAt}{"|"}{.metadata.annotations.argocd\.argoproj\.io/refresh}{"|"}{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
+              2>/dev/null || true)"
+            refresh_last_state["${app}"]="${state:-unavailable}"
+            reconciled_at="$(printf '%s' "${state}" | cut -d'|' -f1)"
+            refresh="$(printf '%s' "${state}" | cut -d'|' -f2)"
+            requested_revision="$(printf '%s' "${state}" | cut -d'|' -f3)"
+            phase="$(printf '%s' "${state}" | cut -d'|' -f4)"
+            sync_status="$(printf '%s' "${state}" | cut -d'|' -f5)"
+            baseline_reconciled_at="${refresh_baseline_reconciled_at[${app}]:-}"
+            reconciliation_observed=false
+            if [ -z "${refresh}" ] || \
+              { [ -n "${reconciled_at}" ] && [ "${reconciled_at}" != "${baseline_reconciled_at}" ]; }; then
+              reconciliation_observed=true
+            fi
+            if [ "${reconciliation_observed}" = "true" ] && [ -z "${requested_revision}" ] && \
+              [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
+              echo "application=${app} action=hard-refresh-finished reconciledAt=${reconciled_at:-unknown} phase=${phase:-none} sync=${sync_status:-unknown}"
+              refresh_pending["${app}"]=false
+              pending_count="$((pending_count - 1))"
+            fi
+          done
+          if [ "${pending_count}" -eq 0 ]; then
+            break
+          fi
+          sleep 5
+        done
+
+        for app in "${refresh_apps[@]}"; do
+          if [ "${refresh_pending[${app}]:-false}" = "true" ]; then
+            echo "application=${app} action=stop reason=hard-refresh-not-reconciled timeout=${APP_SYNC_TIMEOUT}s baselineReconciledAt=${refresh_baseline_reconciled_at[${app}]:-none} lastState=${refresh_last_state[${app}]:-not-observed}" >&2
+            failed=1
+          fi
+        done
+        exit "${failed}"
       args:
         executable: /bin/bash
       register: platform_argocd_service_path_app_refresh
