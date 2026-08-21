@@ -2355,10 +2355,14 @@
           volume="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
             -o jsonpath='{.spec.volumes[?(@.name=="platform-postgres-ca")].configMap.name}' \
             2>/dev/null || true)"
+          item_path="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
+            -o jsonpath='{.spec.volumes[?(@.name=="platform-postgres-ca")].configMap.items[?(@.key=="ca-certificates.crt")].path}' \
+            2>/dev/null || true)"
           mount="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
             -o jsonpath='{range .spec.containers[*].volumeMounts[?(@.name=="platform-postgres-ca")]}{.mountPath}{"\n"}{end}' \
             2>/dev/null || true)"
           [ "$volume" = "platform-internal-roots" ] &&
+            [ "$item_path" = "ca-certificates.crt" ] &&
             printf '%s\n' "$mount" | grep -qx '/etc/ssl/platform-postgres'
         }
 
@@ -2511,6 +2515,33 @@
         rollout_failed=0
         wait_controller server statefulset/woodpecker-server deployment/woodpecker-server || rollout_failed=1
         wait_controller agent statefulset/woodpecker-agent deployment/woodpecker-agent || rollout_failed=1
+        if [ "$rollout_failed" -ne 0 ]; then
+          scheduling_events="$(mktemp)"
+          trap 'rm -f "$scheduling_events"' EXIT
+          while IFS='|' read -r pod phase; do
+            [ -n "$pod" ] || continue
+            [ "$phase" = "Pending" ] || continue
+            case "$pod" in
+              woodpecker-server-*|woodpecker-agent-*) ;;
+              *) continue ;;
+            esac
+            echo "===== scheduling events pod/${pod} =====" | tee -a "$scheduling_events"
+            "$K" --kubeconfig "$C" -n woodpecker describe "pod/${pod}" 2>&1 |
+              sed -n '/Events:/,$p' | tail -40 | tee -a "$scheduling_events" || true
+          done < <("$K" --kubeconfig "$C" -n woodpecker get pods \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"\n"}{end}' \
+            2>/dev/null || true)
+
+          if grep -Eqi 'Insufficient (cpu|memory)|Too many pods' "$scheduling_events"; then
+            echo "result=fail reason=woodpecker-scheduling-capacity-insufficient"
+          fi
+          if grep -Eqi 'untolerated taint|had taint' "$scheduling_events"; then
+            echo "result=fail reason=woodpecker-scheduling-blocked-by-node-taint"
+          fi
+          echo "===== node scheduling capacity ====="
+          "$K" --kubeconfig "$C" get nodes \
+            -o custom-columns='NAME:.metadata.name,CPU:.status.allocatable.cpu,MEMORY:.status.allocatable.memory,PODS:.status.allocatable.pods,TAINTS:.spec.taints' || true
+        fi
         exit "$rollout_failed"
       args:
         executable: /bin/bash
@@ -2600,6 +2631,16 @@
           echo "result=fail reason=woodpecker-server-has-no-ready-endpoints"
           failed=1
         fi
+        ca_bundle="$($K --kubeconfig "$C" -n woodpecker \
+          get configmap/platform-internal-roots \
+          -o jsonpath='{.data.ca-certificates\.crt}' 2>/dev/null || true)"
+        case "${ca_bundle}" in
+          *'BEGIN CERTIFICATE'*) ;;
+          *)
+            echo "result=fail reason=woodpecker-postgres-ca-configmap-invalid"
+            failed=1
+            ;;
+        esac
         server_pods="$($K --kubeconfig "$C" -n woodpecker get pods \
           -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep '^woodpecker-server-' || true)"
         for pod in ${server_pods}; do
@@ -2608,11 +2649,36 @@
           if [ "${pod_phase}" != "Running" ]; then
             continue
           fi
-          if "$K" --kubeconfig "$C" -n woodpecker exec "pod/${pod}" -c server -- \
-            test -s /etc/ssl/platform-postgres/ca-certificates.crt >/dev/null 2>&1; then
-            echo "woodpecker_postgres_ca_bundle pod=${pod} result=ok"
-          else
+          pod_volume="$($K --kubeconfig "$C" -n woodpecker get pod "$pod" \
+            -o jsonpath='{.spec.volumes[?(@.name=="platform-postgres-ca")].configMap.name}' \
+            2>/dev/null || true)"
+          pod_item_path="$($K --kubeconfig "$C" -n woodpecker get pod "$pod" \
+            -o jsonpath='{.spec.volumes[?(@.name=="platform-postgres-ca")].configMap.items[?(@.key=="ca-certificates.crt")].path}' \
+            2>/dev/null || true)"
+          pod_mount="$($K --kubeconfig "$C" -n woodpecker get pod "$pod" \
+            -o jsonpath='{range .spec.containers[?(@.name=="server")].volumeMounts[?(@.name=="platform-postgres-ca")]}{.mountPath}{"\n"}{end}' \
+            2>/dev/null || true)"
+          if [ "${pod_volume}" != "platform-internal-roots" ] ||
+            [ "${pod_item_path}" != "ca-certificates.crt" ] ||
+            ! printf '%s\n' "${pod_mount}" | grep -qx '/etc/ssl/platform-postgres'; then
             echo "woodpecker_postgres_ca_bundle pod=${pod} result=fail"
+            echo "result=fail reason=woodpecker-postgres-ca-file-missing pod=${pod}"
+            failed=1
+            continue
+          fi
+
+          ca_probe_output="$($K --kubeconfig "$C" -n woodpecker \
+            exec "pod/${pod}" -c server -- \
+            test -s /etc/ssl/platform-postgres/ca-certificates.crt 2>&1)"
+          ca_probe_rc=$?
+          if [ "${ca_probe_rc}" -eq 0 ]; then
+            echo "woodpecker_postgres_ca_bundle pod=${pod} result=ok verification=container-file"
+          elif printf '%s\n' "${ca_probe_output}" |
+            grep -Eqi 'exec: "test": executable file not found|executable file not found.*test'; then
+            echo "woodpecker_postgres_ca_bundle pod=${pod} result=ok verification=projected-volume-contract reason=container-probe-tool-unavailable"
+          else
+            probe_detail="$(printf '%s' "${ca_probe_output}" | tr '\n' ' ' | cut -c 1-300)"
+            echo "woodpecker_postgres_ca_bundle pod=${pod} result=fail detail=${probe_detail:-empty-or-missing}"
             echo "result=fail reason=woodpecker-postgres-ca-file-missing pod=${pod}"
             failed=1
           fi

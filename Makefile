@@ -444,6 +444,12 @@ platform-ci-health:
 	ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-app-health.yml
 
 platform-woodpecker-repair:
+	@PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true \
+		PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR=true \
+		PLATFORM_NODE_STORAGE_CRI_PRUNE=false \
+		PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true \
+		PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true \
+		$(MAKE) platform-node-storage-cleanup
 	@$(MAKE) platform-argocd-service-repair
 	@PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=false \
 	PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=false \
@@ -464,6 +470,7 @@ platform-woodpecker-repair:
 		service_path_repair=false; \
 		longhorn_runtime_repair=false; \
 		application_config_repair=false; \
+		scheduling_capacity=false; \
 		longhorn_bootstrap_ran=false; \
 		if grep -Eq 'reason=postgres-endpoint-path-unreachable|cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)|failed calling webhook.*(cnpg|mcluster)|mcluster\.cnpg\.io.*context deadline exceeded|Instance Status Extraction Error: HTTP communication issue|:8000/(readyz|healthz|startupz).*(i/o timeout|context deadline exceeded|Client\.Timeout exceeded)' "$$repair_log"; then \
 			service_path_repair=true; \
@@ -475,9 +482,16 @@ platform-woodpecker-repair:
 		if grep -Eq 'reason=woodpecker-postgres-ca-(bundle|mount|file|controller|container|source)-missing|open /etc/ssl/platform-postgres/ca-certificates\\.crt: no such file or directory' "$$repair_log"; then \
 			application_config_repair=true; \
 		fi; \
-		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair application_config=$$application_config_repair"; \
-		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ]; then \
-			echo "Woodpecker repair failed without a recognized PostgreSQL service-path, Longhorn CSI, or application trust-bundle classification; automatic fallback skipped." >&2; \
+		if grep -Eq 'reason=woodpecker-scheduling-capacity-insufficient|reason=woodpecker-scheduling-blocked-by-node-taint' "$$repair_log"; then \
+			scheduling_capacity=true; \
+		fi; \
+		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair application_config=$$application_config_repair scheduling_capacity=$$scheduling_capacity"; \
+		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ] && [ "$$scheduling_capacity" != "true" ]; then \
+			echo "Woodpecker repair failed without a recognized PostgreSQL service-path, Longhorn CSI, application trust-bundle, or scheduling-capacity classification; automatic fallback skipped." >&2; \
+			exit "$$repair_rc"; \
+		fi; \
+		if [ "$$scheduling_capacity" = "true" ] && [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ]; then \
+			echo "Woodpecker remains unschedulable after guarded disk-pressure cleanup. Add allocatable CPU or remove the reported non-DiskPressure taint; automatic repair will not reduce three-node HA or weaken hard topology spread." >&2; \
 			exit "$$repair_rc"; \
 		fi; \
 		if [ "$$application_config_repair" = "true" ]; then \
@@ -539,6 +553,9 @@ platform-woodpecker-repair:
 			echo "Retrying Woodpecker repair after guarded rolling node recovery."; \
 			ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-woodpecker.yml; \
 			exit $$?; \
+		fi; \
+		if grep -Eq 'reason=woodpecker-scheduling-capacity-insufficient|reason=woodpecker-scheduling-blocked-by-node-taint' "$$repair_log"; then \
+			echo "Woodpecker is still unschedulable after classified prerequisite recovery. Add node capacity or remove the reported non-DiskPressure taint; three-node HA and hard topology spread were preserved." >&2; \
 		fi; \
 		exit "$$retry_rc"
 	@$(MAKE) platform-service-path-consumers-repair

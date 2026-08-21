@@ -450,6 +450,11 @@ def main() -> int:
         "woodpecker_postgres_ca_pod_recycle=recycled",
         "woodpecker-postgres-ca-pod-recycle-last-ready-server",
         "ownerReferences[?(@.kind==\"StatefulSet\")].name",
+        "configMap.items[?(@.key==\"ca-certificates.crt\")].path",
+        "reason=woodpecker-postgres-ca-configmap-invalid",
+        "verification=container-file",
+        "verification=projected-volume-contract",
+        "reason=container-probe-tool-unavailable",
         "pvc=retained",
     ):
         require(woodpecker_repair, needle, "Woodpecker PostgreSQL CA recovery")
