@@ -446,7 +446,7 @@ platform-ci-health:
 platform-woodpecker-repair:
 	@PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true \
 		PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR=true \
-		PLATFORM_NODE_STORAGE_CRI_PRUNE=false \
+		PLATFORM_NODE_STORAGE_CRI_PRUNE=true \
 		PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true \
 		PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true \
 		$(MAKE) platform-node-storage-cleanup
@@ -650,7 +650,7 @@ platform-forgejo-diagnose: platform-inventory-preflight
 platform-forgejo-repair: platform-inventory-preflight
 	@PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true \
 		PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR=true \
-		PLATFORM_NODE_STORAGE_CRI_PRUNE=false \
+		PLATFORM_NODE_STORAGE_CRI_PRUNE=true \
 		PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true \
 		PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true \
 		$(MAKE) platform-node-storage-cleanup

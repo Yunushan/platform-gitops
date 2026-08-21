@@ -3667,6 +3667,14 @@ def main() -> None:
         "reason=container-reference-present",
         "action=delete-stale-gitlab-runner-cache",
         "Wait for Kubernetes DiskPressure to clear after guarded cleanup",
+        "/run/k3s/containerd/containerd.sock",
+        "/run/containerd/containerd.sock",
+        "--image-endpoint",
+        "cri_image_prune=completed endpoints=",
+        "Collect persistent DiskPressure diagnostics after safe cleanup",
+        "longhorn_default_path_shares_root=true",
+        "Stop when safe cleanup cannot clear Kubernetes DiskPressure",
+        "The cleanup intentionally retained Longhorn replicas",
     ):
         require_text(
             node_storage_cleanup_text,
@@ -3691,7 +3699,7 @@ def main() -> None:
     for needle in (
         "PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true",
         "PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR=true",
-        "PLATFORM_NODE_STORAGE_CRI_PRUNE=false",
+        "PLATFORM_NODE_STORAGE_CRI_PRUNE=true",
         "PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true",
         "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true",
     ):
@@ -4059,7 +4067,7 @@ def main() -> None:
         "Woodpecker prerequisite classification:",
         "PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true",
         "PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR=true",
-        "PLATFORM_NODE_STORAGE_CRI_PRUNE=false",
+        "PLATFORM_NODE_STORAGE_CRI_PRUNE=true",
         "PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true",
         "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true",
         "$(MAKE) platform-node-storage-cleanup",

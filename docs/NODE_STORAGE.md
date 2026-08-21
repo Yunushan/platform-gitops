@@ -61,12 +61,19 @@ PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE_UNTIL=168h \
 make platform-node-storage-cleanup
 ```
 
-`make platform-forgejo-repair` automatically enables this guarded cache cleanup
-only on nodes where Kubernetes reports `DiskPressure=True`, waits for pressure
-to clear, then repairs Longhorn and retries Forgejo. It preserves RKE2 images
-needed by the recovery so Longhorn is not delayed by avoidable image pulls.
-Active runner volumes, ordinary Docker volumes, Longhorn data, and PVC data are
-never selected.
+`make platform-forgejo-repair` and `make platform-woodpecker-repair`
+automatically enable this guarded cache cleanup only on nodes where Kubernetes
+reports `DiskPressure=True`, wait for pressure to clear, and then continue the
+focused repair. Under pressure they also run `crictl rmi --prune` against every
+responsive RKE2 or standalone containerd CRI socket. CRI retains images used by
+existing containers; an unused image may need to be pulled again later. Active
+runner volumes, ordinary Docker volumes, Longhorn data, and PVC data are never
+selected.
+
+If pressure remains after the bounded wait, the playbook prints the kubelet
+condition, taints, filesystems, largest `/var/lib` consumers, runtime service
+state, and deleted files still held open before failing. This is intentionally
+not converted into automatic Longhorn or arbitrary volume deletion.
 
 The focused Longhorn runtime repair also validates the v1 instance-manager data
 plane on every Ready Longhorn node. If an attaching data-bearing RWO volume has
