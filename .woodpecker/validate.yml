@@ -85,6 +85,7 @@ steps:
       - python scripts/test_empty_faulted_longhorn_claim_repair.py
       - python scripts/test_stuck_longhorn_attachment_repair.py
       - python scripts/test_unregistered_longhorn_replica_path_repair.py
+      - python scripts/test_longhorn_disk_pressure_relief.py
       - python scripts/test_docs_make_targets.py
       - python scripts/test_markdown_links.py
       - python scripts/test_example_templates.py

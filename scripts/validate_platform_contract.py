@@ -136,6 +136,7 @@ woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpe
 cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 node_storage_cleanup_playbook = root / "ansible/playbooks/cleanup-node-storage.yml"
+longhorn_disk_pressure_relief = root / "scripts/relieve_longhorn_disk_pressure.py"
 forgejo_storage_repair_playbook = root / "ansible/playbooks/repair-forgejo-storage.yml"
 forgejo_ingress_publish_playbook = root / "ansible/playbooks/publish-forgejo-ingress.yml"
 empty_faulted_longhorn_claim_repair = root / "scripts/repair_empty_faulted_longhorn_claims.py"
@@ -1364,7 +1365,7 @@ def main() -> None:
         "defaultDataLocality: best-effort",
         "replicaAutoBalance: best-effort",
         "storageOverProvisioningPercentage: 100",
-        "storageMinimalAvailablePercentage: 10",
+        "storageMinimalAvailablePercentage: 25",
         'orphanResourceAutoDeletion: "replica-data;instance"',
         "orphanResourceAutoDeletionGracePeriod: 300",
         "removeSnapshotsDuringFilesystemTrim: false",
@@ -1386,7 +1387,7 @@ def main() -> None:
         "defaultReplicaCount: 2",
         "defaultDataLocality: best-effort",
         "replicaAutoBalance: best-effort",
-        "storageMinimalAvailablePercentage: 10",
+        "storageMinimalAvailablePercentage: 25",
         'orphanResourceAutoDeletion: "replica-data;instance"',
         "orphanResourceAutoDeletionGracePeriod: 300",
         "removeSnapshotsDuringFilesystemTrim: false",
@@ -3689,12 +3690,16 @@ def main() -> None:
         "PLATFORM_NODE_STORAGE_LONGHORN_TRIM",
         "PLATFORM_NODE_STORAGE_LONGHORN_TRIM_TIMEOUT",
         "PLATFORM_NODE_STORAGE_LONGHORN_ORPHAN_WAIT_TIMEOUT",
+        "PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION",
+        "PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION_TIMEOUT",
+        "PLATFORM_NODE_STORAGE_LONGHORN_TARGET_FREE_PERCENTAGE",
         "Inspect Kubernetes DiskPressure before cleanup",
         "Detect DiskPressure anywhere in the RKE2 server set",
         "Select nodes eligible for Longhorn filesystem trim",
         "platform_node_storage_should_trim_longhorn",
         "Reconcile pressure-safe Longhorn reclamation settings",
         "orphan-resource-auto-deletion=replica-data;instance",
+        "storage-minimal-available-percentage=25",
         "auto-cleanup-system-generated-snapshot=true",
         "auto-cleanup-recurring-job-backup-snapshot=true",
         "--filter dangling=true",
@@ -3704,6 +3709,11 @@ def main() -> None:
         "reason=container-reference-present",
         "action=delete-stale-gitlab-runner-cache",
         "Wait for Kubernetes DiskPressure to clear after guarded cleanup",
+        "Inspect resumable Longhorn root-pressure evacuation state",
+        "Evacuate Longhorn replicas from pressured root-backed disks",
+        "relieve_longhorn_disk_pressure.py",
+        "longhorn_pressure_evacuation=completed",
+        "Wait for Kubernetes DiskPressure to clear after Longhorn evacuation",
         "/run/k3s/containerd/containerd.sock",
         "/run/containerd/containerd.sock",
         "--image-endpoint",
@@ -3723,6 +3733,27 @@ def main() -> None:
             node_storage_cleanup_text,
             needle,
             f"guarded node storage pressure recovery must cover {needle}",
+        )
+    longhorn_disk_pressure_relief_text = read(longhorn_disk_pressure_relief)
+    for needle in (
+        'ANNOTATION = "platform.gitops.io/root-pressure-eviction"',
+        "minimum_available_percentage",
+        "remaining_capacity",
+        'volume_status.get("robustness") == "faulted"',
+        'volume_spec.get("cloneMode") == "linked-clone"',
+        'integer(volume_spec.get("numberOfReplicas")) < 2',
+        '"allowScheduling": False',
+        '"evictionRequested": True',
+        "patch_longhorn_replica",
+        'candidate.replica_name: False',
+        "restore_disk_state",
+        'pressure == "False"',
+        "evictionState=retained-for-resume",
+    ):
+        require_text(
+            longhorn_disk_pressure_relief_text,
+            needle,
+            f"Longhorn root-pressure relief must retain its safety contract: {needle}",
         )
     if "${#" in node_storage_cleanup_text:
         fail(
@@ -3751,6 +3782,7 @@ def main() -> None:
         "PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true",
         "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true",
         "PLATFORM_NODE_STORAGE_LONGHORN_TRIM=true",
+        "PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=true",
     ):
         require_text(
             forgejo_repair_body,
@@ -4120,6 +4152,7 @@ def main() -> None:
         "PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true",
         "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true",
         "PLATFORM_NODE_STORAGE_LONGHORN_TRIM=true",
+        "PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=true",
         "$(MAKE) platform-node-storage-cleanup",
         "will not reduce three-node HA or weaken hard topology spread",
         "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART=true",
