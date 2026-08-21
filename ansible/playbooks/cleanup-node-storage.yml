@@ -19,6 +19,7 @@
     platform_node_storage_journal_vacuum_size_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_JOURNAL_VACUUM_SIZE') }}"
     platform_node_storage_longhorn_trim_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_TRIM') }}"
     platform_node_storage_longhorn_trim_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_TRIM_TIMEOUT') }}"
+    platform_node_storage_longhorn_orphan_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_ORPHAN_WAIT_TIMEOUT') }}"
     platform_node_storage_longhorn_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
     platform_node_storage_cleanup_effective: "{{ platform_node_storage_cleanup | default(platform_node_storage_cleanup_from_env, true) | default(false, true) | bool }}"
     platform_node_storage_cri_prune_effective: "{{ platform_node_storage_cri_prune | default(platform_node_storage_cri_prune_from_env, true) | default(true, true) | bool }}"
@@ -34,6 +35,7 @@
     platform_node_storage_journal_vacuum_size_effective: "{{ platform_node_storage_journal_vacuum_size | default(platform_node_storage_journal_vacuum_size_from_env, true) | default('0', true) }}"
     platform_node_storage_longhorn_trim_effective: "{{ platform_node_storage_longhorn_trim | default(platform_node_storage_longhorn_trim_from_env, true) | default(true, true) | bool }}"
     platform_node_storage_longhorn_trim_timeout_effective: "{{ platform_node_storage_longhorn_trim_timeout | default(platform_node_storage_longhorn_trim_timeout_from_env, true) | default(60, true) | int }}"
+    platform_node_storage_longhorn_orphan_wait_timeout_effective: "{{ platform_node_storage_longhorn_orphan_wait_timeout | default(platform_node_storage_longhorn_orphan_wait_timeout_from_env, true) | default(420, true) | int }}"
     platform_node_storage_longhorn_path_effective: "{{ platform_node_storage_longhorn_path | default(platform_node_storage_longhorn_path_from_env, true) | default('/var/lib/longhorn', true) }}"
 
   tasks:
@@ -44,6 +46,7 @@
           - platform_node_storage_gitlab_runner_cache_prune_until_effective is match('^[0-9]+[smhdw]$')
           - platform_node_storage_pressure_clear_timeout_effective | int >= 30
           - platform_node_storage_longhorn_trim_timeout_effective | int >= 10
+          - platform_node_storage_longhorn_orphan_wait_timeout_effective | int >= 300
           - platform_node_storage_journal_vacuum_size_effective == '0' or platform_node_storage_journal_vacuum_size_effective is match('^[0-9]+[KMG]$')
           - platform_node_storage_longhorn_path_effective.startswith('/')
         fail_msg: >-
@@ -94,6 +97,87 @@
               or (platform_node_storage_pressure_before.rc == 42)
             )
           }}
+
+    - name: Initialize cluster DiskPressure classification
+      ansible.builtin.set_fact:
+        platform_node_storage_cluster_has_pressure: false
+
+    - name: Detect DiskPressure anywhere in the RKE2 server set
+      ansible.builtin.set_fact:
+        platform_node_storage_cluster_has_pressure: true
+      loop: "{{ ansible_play_hosts_all }}"
+      when:
+        - >-
+          (hostvars[item].get('platform_node_storage_pressure_before', {}).get('rc', -1) | int) == 42
+
+    - name: Select nodes eligible for Longhorn filesystem trim
+      ansible.builtin.set_fact:
+        platform_node_storage_should_trim_longhorn: >-
+          {{
+            (platform_node_storage_cleanup_effective | bool)
+            and (platform_node_storage_longhorn_trim_effective | bool)
+            and (
+              not (platform_node_storage_pressure_only_effective | bool)
+              or (platform_node_storage_cluster_has_pressure | bool)
+            )
+          }}
+
+    - name: Reconcile pressure-safe Longhorn reclamation settings
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        if ! "${K}" --kubeconfig "${C}" get namespace/longhorn-system >/dev/null 2>&1; then
+          echo 'longhorn_reclamation_settings=skipped reason=namespace-absent'
+          exit 0
+        fi
+
+        changed=0
+        for pair in \
+          'orphan-resource-auto-deletion=replica-data;instance' \
+          'orphan-resource-auto-deletion-grace-period=300' \
+          'remove-snapshots-during-filesystem-trim=false' \
+          'auto-cleanup-system-generated-snapshot=true' \
+          'auto-cleanup-recurring-job-backup-snapshot=true'
+        do
+          setting="${pair%%=*}"
+          desired="${pair#*=}"
+          if ! "${K}" --kubeconfig "${C}" -n longhorn-system get \
+            "settings.longhorn.io/${setting}" >/dev/null 2>&1; then
+            echo "longhorn_setting=${setting} action=skip reason=setting-absent"
+            continue
+          fi
+          current="$("${K}" --kubeconfig "${C}" -n longhorn-system get \
+            "settings.longhorn.io/${setting}" -o jsonpath='{.value}')"
+          if [ "${current}" = "${desired}" ]; then
+            echo "longhorn_setting=${setting} action=retain value=${current}"
+            continue
+          fi
+          "${K}" --kubeconfig "${C}" -n longhorn-system patch \
+            "settings.longhorn.io/${setting}" --type=merge \
+            -p "{\"value\":\"${desired}\"}" >/dev/null
+          observed="$("${K}" --kubeconfig "${C}" -n longhorn-system get \
+            "settings.longhorn.io/${setting}" -o jsonpath='{.value}')"
+          if [ "${observed}" != "${desired}" ]; then
+            echo "longhorn_setting=${setting} result=fail desired=${desired} observed=${observed:-missing}" >&2
+            exit 1
+          fi
+          echo "longhorn_setting=${setting} action=reconcile previous=${current:-unset} value=${observed}"
+          changed=1
+        done
+        echo "longhorn_reclamation_settings=reconciled changed=${changed}"
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_longhorn_reclamation_settings
+      changed_when: >-
+        'action=reconcile' in
+        platform_node_storage_longhorn_reclamation_settings.stdout
+      run_once: true
+      delegate_to: "{{ groups['rke2_servers'][0] }}"
+      when:
+        - platform_node_storage_cleanup_effective | bool
+        - platform_node_storage_cluster_has_pressure | bool
 
     - name: Collect root and Longhorn filesystem usage
       ansible.builtin.shell: |
@@ -252,8 +336,7 @@
     - name: Trim mounted Longhorn filesystems during guarded cleanup
       ansible.builtin.shell: |
         set -o pipefail
-        if [ "{{ platform_node_storage_should_cleanup | bool | lower }}" != "true" ] ||
-          [ "{{ platform_node_storage_longhorn_trim_effective | bool | lower }}" != "true" ]; then
+        if [ "{{ platform_node_storage_should_trim_longhorn | bool | lower }}" != "true" ]; then
           echo 'longhorn_filesystem_trim=skipped'
           exit 0
         fi
@@ -298,6 +381,74 @@
       changed_when: >-
         'longhorn_filesystem_trim=volume-completed' in
         platform_node_storage_longhorn_trim.stdout
+
+    - name: Wait for Longhorn to reclaim eligible orphan data
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        TIMEOUT={{ platform_node_storage_longhorn_orphan_wait_timeout_effective | int }}
+
+        if ! "${K}" --kubeconfig "${C}" -n longhorn-system get \
+          orphans.longhorn.io >/dev/null 2>&1; then
+          echo 'longhorn_orphan_reclamation=skipped reason=resource-unavailable'
+          exit 0
+        fi
+
+        ready_nodes="$("${K}" --kubeconfig "${C}" -n longhorn-system get \
+          nodes.longhorn.io \
+          -o jsonpath='{range .items[*]}{.metadata.name}|{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' \
+          2>/dev/null | awk -F'|' '$1 != "" && $2 == "True" { print $1 }')"
+
+        eligible_orphans() {
+          "${K}" --kubeconfig "${C}" -n longhorn-system get \
+            orphans.longhorn.io \
+            -o jsonpath='{range .items[*]}{.metadata.name}|{.spec.orphanType}|{.spec.nodeID}|{.metadata.deletionTimestamp}{"\n"}{end}' \
+            2>/dev/null |
+            while IFS='|' read -r name orphan_type node_id deletion_timestamp; do
+              [ -n "${name}" ] || continue
+              case "${orphan_type}" in
+                replica-data | instance) ;;
+                *) continue ;;
+              esac
+              [ -z "${deletion_timestamp}" ] || continue
+              if printf '%s\n' "${ready_nodes}" | grep -Fx "${node_id}" >/dev/null; then
+                printf '%s\n' "${name}"
+              fi
+            done
+        }
+
+        pending="$(eligible_orphans)"
+        if [ -z "${pending}" ]; then
+          echo 'longhorn_orphan_reclamation=not-needed reason=no-eligible-orphans-on-ready-nodes'
+          exit 0
+        fi
+
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          pending="$(eligible_orphans)"
+          if [ -z "${pending}" ]; then
+            echo 'longhorn_orphan_reclamation=completed'
+            exit 0
+          fi
+          count="$(printf '%s\n' "${pending}" | awk 'NF { count++ } END { print count + 0 }')"
+          echo "longhorn_orphan_reclamation=waiting eligible=${count}"
+          sleep 10
+        done
+
+        count="$(printf '%s\n' "${pending}" | awk 'NF { count++ } END { print count + 0 }')"
+        echo "longhorn_orphan_reclamation=deferred eligible=${count} timeout=${TIMEOUT}s"
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_longhorn_orphan_reclamation
+      changed_when: >-
+        'longhorn_orphan_reclamation=completed' in
+        platform_node_storage_longhorn_orphan_reclamation.stdout
+      run_once: true
+      delegate_to: "{{ groups['rke2_servers'][0] }}"
+      when:
+        - platform_node_storage_cleanup_effective | bool
+        - platform_node_storage_cluster_has_pressure | bool
 
     - name: Clean system-managed temporary files
       ansible.builtin.shell: |
@@ -521,6 +672,20 @@
           -o custom-columns=NAME:.metadata.name,TYPE:.spec.orphanType,NODE:.spec.nodeID \
           --no-headers 2>/dev/null || true
 
+        echo '===== Longhorn reclamation settings ====='
+        for setting in \
+          orphan-resource-auto-deletion \
+          orphan-resource-auto-deletion-grace-period \
+          remove-snapshots-during-filesystem-trim \
+          auto-cleanup-system-generated-snapshot \
+          auto-cleanup-recurring-job-backup-snapshot
+        do
+          value="$("${K}" --kubeconfig "${C}" -n longhorn-system get \
+            "settings.longhorn.io/${setting}" -o jsonpath='{.value}' \
+            2>/dev/null || true)"
+          printf '%s=%s\n' "${setting}" "${value:-unavailable}"
+        done
+
         echo '===== Runtime services ====='
         for service in rke2-server containerd docker; do
           printf '%s=' "${service}"
@@ -555,17 +720,19 @@
         msg: |
           Kubernetes DiskPressure remains active on {{ inventory_hostname }}
           after unused images, caches, package metadata, temporary files, and
-          unused blocks from mounted Longhorn filesystems eligible under the
-          configured policy were reclaimed.
+          unused blocks from mounted Longhorn filesystems across the RKE2
+          server set eligible under the configured policy were reclaimed.
 
           The cleanup intentionally retained Longhorn replicas, snapshots,
           PVC data, active container images, and referenced Docker volumes.
-          Review the focused diagnostics above. Longhorn orphan resources are
-          reclaimed by Longhorn itself after its configured grace period. If
-          referenced Longhorn volumes dominate and the path shares `/`, add a
-          dedicated Longhorn disk or remove confirmed-unused PVCs/snapshots
-          through Kubernetes and Longhorn. If another runtime store dominates,
-          verify that runtime is still required before removing its data.
+          It also reconciled Longhorn's safe orphan and system-snapshot cleanup
+          settings and allowed eligible orphans on Ready nodes their configured
+          grace period. Review the focused diagnostics above. If referenced
+          Longhorn volumes or valid snapshots dominate and the path shares `/`,
+          no further unattended deletion is safe: add a dedicated Longhorn disk
+          or remove confirmed-unused PVCs/snapshots through Kubernetes and
+          Longhorn. If another runtime store dominates, verify that runtime is
+          still required before removing its data.
 
           Rerun `make platform-node-storage-cleanup` after capacity is restored,
           then rerun the original focused repair command.

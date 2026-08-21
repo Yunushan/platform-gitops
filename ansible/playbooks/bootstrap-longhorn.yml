@@ -306,6 +306,8 @@
                     orphanResourceAutoDeletion: "replica-data;instance"
                     orphanResourceAutoDeletionGracePeriod: 300
                     removeSnapshotsDuringFilesystemTrim: false
+                    autoCleanupSystemGeneratedSnapshot: true
+                    autoCleanupRecurringJobBackupSnapshot: true
                     concurrentAutomaticEngineUpgradePerNodeLimit: 1
                   longhornManager:
                     priorityClass: longhorn-critical
