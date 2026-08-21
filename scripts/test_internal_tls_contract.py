@@ -449,6 +449,7 @@ def main() -> int:
         "Recycle stale Woodpecker server Pods after PostgreSQL CA mount repair",
         "woodpecker_postgres_ca_pod_recycle=recycled",
         "woodpecker-postgres-ca-pod-recycle-last-ready-server",
+        "ownerReferences[?(@.kind==\"StatefulSet\")].name",
         "pvc=retained",
     ):
         require(woodpecker_repair, needle, "Woodpecker PostgreSQL CA recovery")
@@ -456,6 +457,11 @@ def main() -> int:
         woodpecker_repair,
         "WOODPECKER_FORGEJO_SKIP_VERIFY: true",
         "Woodpecker PostgreSQL CA recovery",
+    )
+    forbid(
+        woodpecker_repair,
+        "for ordinal in $(seq 0 $((replicas - 1)))",
+        "Woodpecker PostgreSQL CA Pod candidate discovery",
     )
     for needle in (
         "sslmode=verify-full&sslrootcert=/etc/ssl/platform-postgres/ca-certificates.crt",

@@ -2335,8 +2335,6 @@
         template_mount="$($K --kubeconfig "$C" -n "$NAMESPACE" get "statefulset/${STS}" \
           -o jsonpath='{range .spec.template.spec.containers[*].volumeMounts[?(@.name=="platform-postgres-ca")]}{.mountPath}{"\n"}{end}' \
           2>/dev/null || true)"
-        replicas="$($K --kubeconfig "$C" -n "$NAMESPACE" get "statefulset/${STS}" \
-          -o jsonpath='{.spec.replicas}' 2>/dev/null || true)"
         bundle_ready=false
         case "$bundle_value" in
           *'BEGIN CERTIFICATE'*) bundle_ready=true ;;
@@ -2346,13 +2344,6 @@
           echo "result=fail reason=woodpecker-postgres-ca-recycle-prerequisite-missing bundle=$([ -n "$bundle_value" ] && echo present || echo absent) templateVolume=${template_volume:-absent} templateMount=${template_mount:-absent}"
           exit 1
         fi
-        case "$replicas" in
-          ''|*[!0-9]*)
-            echo "result=fail reason=woodpecker-postgres-ca-replica-count-invalid replicas=${replicas:-absent}"
-            exit 1
-            ;;
-        esac
-
         pod_ready() {
           pod="$1"
           [ "$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
@@ -2409,8 +2400,19 @@
 
         candidates="$(mktemp)"
         trap 'rm -f "$candidates"' EXIT
-        for ordinal in $(seq 0 $((replicas - 1))); do
-          pod="${STS}-${ordinal}"
+        while IFS= read -r pod; do
+          [ -n "$pod" ] || continue
+          case "$pod" in
+            "${STS}-"*) ordinal="${pod#${STS}-}" ;;
+            *) continue ;;
+          esac
+          case "$ordinal" in
+            ''|*[!0-9]*) continue ;;
+          esac
+          owner="$($K --kubeconfig "$C" -n "$NAMESPACE" get "pod/${pod}" \
+            -o jsonpath='{.metadata.ownerReferences[?(@.kind=="StatefulSet")].name}' \
+            2>/dev/null || true)"
+          [ "$owner" = "$STS" ] || continue
           if pod_has_ca_contract "$pod"; then
             continue
           fi
@@ -2423,7 +2425,8 @@
           fi
           printf '%s|%09d|%s\n' "$priority" "$ordinal" "$pod" >> "$candidates"
           echo "woodpecker_postgres_ca_pod_recycle=candidate pod=${pod} ready=${ready} ordinal=${ordinal}"
-        done
+        done < <("$K" --kubeconfig "$C" -n "$NAMESPACE" get pods -l "$SELECTOR" \
+          -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
 
         if [ ! -s "$candidates" ]; then
           echo "woodpecker_postgres_ca_pod_recycle=not-needed"
