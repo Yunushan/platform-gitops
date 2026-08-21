@@ -1247,17 +1247,30 @@ def main() -> None:
         "traefik.ingress.kubernetes.io/router.tls: \"true\"",
         "secretName: woodpecker-tls",
         "persistentVolume:\n    enabled: true\n    size: 10Gi\n    storageClass: longhorn-standard-encrypted",
-        "  resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
+        "  resources:\n    requests:\n      cpu: 50m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
         "WOODPECKER_BACKEND: kubernetes",
         "WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker",
         "WOODPECKER_BACKEND_K8S_STORAGE_CLASS: longhorn-standard-encrypted",
         "WOODPECKER_BACKEND_K8S_VOLUME_SIZE: 10G",
         "WOODPECKER_BACKEND_K8S_STORAGE_RWX: \"false\"",
         "WOODPECKER_MAX_WORKFLOWS: \"2\"",
+        "extraVolumes:\n    - name: agent-config\n      emptyDir: {}",
+        "extraVolumeMounts:\n    - name: agent-config\n      mountPath: /etc/woodpecker",
         "persistence:\n    enabled: false",
-        "  resources:\n    requests:\n      cpu: 250m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
+        "  resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
     ):
         require_text(premium_woodpecker_text, needle, f"premium Woodpecker profile must include {needle.splitlines()[0]}")
+    for needle in (
+        "podSecurityContext:\n    runAsNonRoot: true\n    fsGroup: 1000\n    seccompProfile:\n      type: RuntimeDefault",
+        "securityContext:\n    allowPrivilegeEscalation: false\n    capabilities:\n      drop:\n        - ALL\n    runAsNonRoot: true\n    runAsUser: 1000\n    runAsGroup: 1000",
+    ):
+        if premium_woodpecker_text.count(needle) != 2:
+            fail(f"premium Woodpecker profile must apply the server and agent security contract twice: {needle.splitlines()[0]}")
+    reject_text(
+        premium_woodpecker_text,
+        "limits:\n      cpu:",
+        "premium Woodpecker profile must leave CPU burst capacity uncapped",
+    )
     if count_yaml_list_scalar(premium_woodpecker_text, "woodpecker-agent-secret") != 2:
         fail("premium Woodpecker profile must map the same managed agent secret into server and agent")
     premium_woodpecker_kustomization_text = read(premium_woodpecker_kustomization)
@@ -4040,8 +4053,17 @@ def main() -> None:
         "DeadlineExceeded desc = volume .* failed to attach",
         "AttachVolume\\.Attach failed.*volume .*not ready for workloads",
         "reason=woodpecker-server-replica-volume-not-ready",
+        "reason=woodpecker-scheduling-capacity-insufficient",
+        "reason=woodpecker-scheduling-blocked-by-node-taint",
         "VolumeBinding.*binding volumes: context deadline exceeded",
         "Woodpecker prerequisite classification:",
+        "PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true",
+        "PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR=true",
+        "PLATFORM_NODE_STORAGE_CRI_PRUNE=false",
+        "PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true",
+        "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true",
+        "$(MAKE) platform-node-storage-cleanup",
+        "will not reduce three-node HA or weaken hard topology spread",
         "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART=true",
         "$(MAKE) platform-longhorn-runtime-repair",
         'longhorn_runtime_rc="$$?"',
@@ -4071,11 +4093,16 @@ def main() -> None:
     consumer_refresh = "@$(MAKE) platform-service-path-consumers-repair"
     strict_repair = "ansible/playbooks/repair-woodpecker.yml"
     focused_secret_repair = "ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker"
+    pressure_cleanup = "$(MAKE) platform-node-storage-cleanup"
     first_consumer_refresh = woodpecker_repair_body.find(consumer_refresh)
     strict_repair_index = woodpecker_repair_body.find(strict_repair)
     argocd_repair_index = woodpecker_repair_body.find(argocd_repair)
-    if not (0 <= argocd_repair_index < strict_repair_index):
-        fail("platform-woodpecker-repair must repair Argo CD and its shared service paths before Woodpecker")
+    pressure_cleanup_index = woodpecker_repair_body.find(pressure_cleanup)
+    if not (0 <= pressure_cleanup_index < argocd_repair_index < strict_repair_index):
+        fail(
+            "platform-woodpecker-repair must clear disk pressure, then repair Argo CD and its "
+            "shared service paths before Woodpecker"
+        )
     if "@$(MAKE) platform-dns-repair" in woodpecker_repair_body:
         fail("platform-woodpecker-repair must not duplicate the Argo CD DNS/API service-path preflight")
     if focused_secret_repair not in woodpecker_repair_body:
@@ -4479,11 +4506,18 @@ def main() -> None:
         "wait_for_ready_ca_pod",
         "previous_uid",
         "ownerReferences[?(@.kind==\"StatefulSet\")].name",
+        "configMap.items[?(@.key==\"ca-certificates.crt\")].path",
         "sort -t '|' -k1,1n -k2,2nr",
         "pvc=retained",
         "rollout_failed=0",
         "wait_controller server statefulset/woodpecker-server deployment/woodpecker-server || rollout_failed=1",
         "wait_controller agent statefulset/woodpecker-agent deployment/woodpecker-agent || rollout_failed=1",
+        "reason=woodpecker-scheduling-capacity-insufficient",
+        "reason=woodpecker-scheduling-blocked-by-node-taint",
+        "reason=woodpecker-postgres-ca-configmap-invalid",
+        "verification=container-file",
+        "verification=projected-volume-contract",
+        "reason=container-probe-tool-unavailable",
     ):
         require_text(
             woodpecker_repair_text,

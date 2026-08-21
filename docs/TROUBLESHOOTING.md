@@ -85,6 +85,16 @@ reconciles only Woodpecker's agent, database, and Forgejo OAuth secrets, so an
 unrelated Harbor S3 or backup credential cannot block this focused workflow.
 Use `make platform-app-secrets` to enforce the complete production secret gate.
 
+Before those steps, the target runs the guarded node-storage cleanup in
+pressure-only mode and waits for `DiskPressure` to clear. It can prune unused
+Docker artifacts and stale GitLab Runner cache, but it does not prune the RKE2
+CRI store or delete Longhorn replicas. The premium profile keeps three server
+and three agent replicas with hard hostname spreading. Its idle CPU requests
+are `50m` per server and `100m` per agent, with no CPU limit, so workloads can
+still burst. If the scheduler still reports insufficient CPU or a non-pressure
+taint, repair fails with that classification and does not reduce HA or weaken
+the topology policy automatically.
+
 When ignored `private/seed-git.env` exists, the repair first renders the private
 values from a clean working tree and synchronizes the current deployment branch
 to the temporary seed Git source read by Argo CD. This makes a recovered
@@ -170,6 +180,16 @@ and the last Ready server is never removed without another Ready replica.
 Candidate discovery only includes existing Pods owned by the StatefulSet, so an
 `OrderedReady` rollout never waits for a higher ordinal that has not been
 created yet.
+
+Runtime CA verification checks the PEM-bearing ConfigMap plus the exact Pod
+volume item and server mount before probing the file in the container. Some
+minimal Woodpecker images do not include a standalone `test` executable. Only
+that specific tool-unavailable error may fall back to the validated Kubernetes
+projected-volume contract; a missing ConfigMap key, wrong item path, wrong
+mount, empty file, or any other exec failure still fails closed. The premium
+agent also receives a writable ephemeral `/etc/woodpecker` directory while
+both roles enforce non-root execution, dropped capabilities, and the runtime
+default seccomp profile.
 
 The premium CloudNativePG profile keeps its mutating and validating webhooks
 enabled with `failurePolicy: Ignore`. Healthy requests still pass through both
