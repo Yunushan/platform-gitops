@@ -174,20 +174,54 @@
           exit 0
         fi
 
-        crictl_args=(--timeout 60s)
-        if [ -S /run/k3s/containerd/containerd.sock ]; then
-          crictl_args+=(--runtime-endpoint unix:///run/k3s/containerd/containerd.sock)
-        elif [ -S /run/containerd/containerd.sock ]; then
-          crictl_args+=(--runtime-endpoint unix:///run/containerd/containerd.sock)
+        endpoints=()
+        for socket in /run/k3s/containerd/containerd.sock /run/containerd/containerd.sock; do
+          if [ -S "${socket}" ]; then
+            endpoints+=("unix://${socket}")
+          fi
+        done
+        if [ "${#endpoints[@]}" -eq 0 ]; then
+          echo 'cri_image_prune=skipped reason=no-containerd-cri-socket'
+          exit 0
         fi
 
-        echo 'cri_image_prune=started'
-        "${CRICTL}" "${crictl_args[@]}" rmi --prune
-        echo 'cri_image_prune=completed'
+        responsive=0
+        completed=0
+        failed=0
+        for endpoint in "${endpoints[@]}"; do
+          crictl_args=(
+            --timeout 60s
+            --runtime-endpoint "${endpoint}"
+            --image-endpoint "${endpoint}"
+          )
+          if ! "${CRICTL}" "${crictl_args[@]}" info >/dev/null 2>&1; then
+            echo "cri_image_prune=skipped endpoint=${endpoint} reason=cri-endpoint-unresponsive"
+            continue
+          fi
+          responsive=$((responsive + 1))
+          echo "cri_image_prune=started endpoint=${endpoint}"
+          if prune_output="$("${CRICTL}" "${crictl_args[@]}" rmi --prune 2>&1)"; then
+            printf '%s\n' "${prune_output}"
+            echo "cri_image_prune=endpoint-completed endpoint=${endpoint}"
+            completed=$((completed + 1))
+          else
+            printf '%s\n' "${prune_output}" >&2
+            echo "cri_image_prune=endpoint-failed endpoint=${endpoint}" >&2
+            failed=1
+          fi
+        done
+        if [ "${responsive}" -eq 0 ]; then
+          echo 'cri_image_prune=skipped reason=no-responsive-cri-endpoint'
+          exit 0
+        fi
+        if [ "${failed}" -ne 0 ]; then
+          exit 1
+        fi
+        echo "cri_image_prune=completed endpoints=${completed}"
       args:
         executable: /bin/bash
       register: platform_node_storage_cri_prune
-      changed_when: "'cri_image_prune=completed' in platform_node_storage_cri_prune.stdout"
+      changed_when: "'cri_image_prune=completed endpoints=' in platform_node_storage_cri_prune.stdout"
 
     - name: Clean package-manager caches
       ansible.builtin.shell: |
@@ -374,9 +408,90 @@
       delay: 10
       until: platform_node_storage_pressure_after.rc == 0
       changed_when: false
+      failed_when: false
       when:
         - platform_node_storage_wait_for_pressure_clear_effective | bool
         - platform_node_storage_pressure_before.rc == 42
+
+    - name: Collect persistent DiskPressure diagnostics after safe cleanup
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        longhorn_path={{ platform_node_storage_longhorn_path_effective | quote }}
+
+        echo '===== Kubernetes DiskPressure ====='
+        "${K}" --kubeconfig "${C}" get node {{ inventory_hostname | quote }} \
+          -o jsonpath='{range .status.conditions[?(@.type=="DiskPressure")]}status={.status} reason={.reason} message={.message}{"\n"}{end}' || true
+        "${K}" --kubeconfig "${C}" get node {{ inventory_hostname | quote }} \
+          -o jsonpath='taints={.spec.taints}{"\n"}' || true
+
+        echo '===== Filesystems ====='
+        df -hT / "${longhorn_path}" 2>/dev/null || df -hT /
+        root_device="$(df -P / | awk 'NR == 2 { print $1 }')"
+        longhorn_device="$(df -P "${longhorn_path}" 2>/dev/null | awk 'NR == 2 { print $1 }')"
+        if [ -n "${longhorn_device}" ] && [ "${root_device}" = "${longhorn_device}" ]; then
+          echo 'longhorn_default_path_shares_root=true'
+        else
+          echo 'longhorn_default_path_shares_root=false'
+        fi
+
+        echo '===== Largest /var/lib consumers (bytes) ====='
+        if command -v timeout >/dev/null 2>&1; then
+          timeout 120 du -x -d 1 -B1 /var/lib 2>/dev/null | sort -n | tail -20 || true
+        else
+          du -x -d 1 -B1 /var/lib 2>/dev/null | sort -n | tail -20 || true
+        fi
+
+        echo '===== Runtime services ====='
+        for service in rke2-server containerd docker; do
+          printf '%s=' "${service}"
+          systemctl is-active "${service}" 2>/dev/null || true
+        done
+
+        echo '===== Deleted files still held open ====='
+        if command -v lsof >/dev/null 2>&1; then
+          lsof +L1 2>/dev/null | sort -k7,7n | tail -20 || true
+        else
+          echo 'lsof=unavailable'
+        fi
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_persistent_pressure_diagnostics
+      changed_when: false
+      failed_when: false
+      when:
+        - platform_node_storage_wait_for_pressure_clear_effective | bool
+        - platform_node_storage_pressure_before.rc == 42
+        - (platform_node_storage_pressure_after.rc | default(1) | int) != 0
+
+    - name: Print persistent DiskPressure diagnostics
+      ansible.builtin.debug:
+        var: platform_node_storage_persistent_pressure_diagnostics.stdout_lines
+      when:
+        - (platform_node_storage_persistent_pressure_diagnostics | default({})).stdout is defined
+        - platform_node_storage_persistent_pressure_diagnostics.stdout | length > 0
+
+    - name: Stop when safe cleanup cannot clear Kubernetes DiskPressure
+      ansible.builtin.fail:
+        msg: |
+          Kubernetes DiskPressure remains active on {{ inventory_hostname }}
+          after unused images, caches, package metadata, and temporary files
+          eligible under the configured policy were reclaimed.
+
+          The cleanup intentionally retained Longhorn replicas, snapshots,
+          PVC data, active container images, and referenced Docker volumes.
+          Review the focused diagnostics above. If the Longhorn path shares
+          `/`, add a dedicated Longhorn disk or remove unused PVCs/snapshots
+          through Kubernetes and Longhorn. If another runtime store dominates,
+          verify that runtime is still required before removing its data.
+
+          Rerun `make platform-node-storage-cleanup` after capacity is restored,
+          then rerun the original focused repair command.
+      when:
+        - platform_node_storage_wait_for_pressure_clear_effective | bool
+        - platform_node_storage_pressure_before.rc == 42
+        - (platform_node_storage_pressure_after.rc | default(1) | int) != 0
 
     - name: Collect root filesystem usage after cleanup
       ansible.builtin.shell: |

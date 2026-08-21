@@ -86,14 +86,17 @@ unrelated Harbor S3 or backup credential cannot block this focused workflow.
 Use `make platform-app-secrets` to enforce the complete production secret gate.
 
 Before those steps, the target runs the guarded node-storage cleanup in
-pressure-only mode and waits for `DiskPressure` to clear. It can prune unused
-Docker artifacts and stale GitLab Runner cache, but it does not prune the RKE2
-CRI store or delete Longhorn replicas. The premium profile keeps three server
-and three agent replicas with hard hostname spreading. Its idle CPU requests
-are `50m` per server and `100m` per agent, with no CPU limit, so workloads can
-still burst. If the scheduler still reports insufficient CPU or a non-pressure
-taint, repair fails with that classification and does not reduce HA or weaken
-the topology policy automatically.
+pressure-only mode and waits for `DiskPressure` to clear. It prunes unused
+Docker artifacts, stale GitLab Runner cache, and unused images from every
+responsive RKE2 or standalone containerd CRI endpoint. Running containers and
+their images remain protected by CRI, and Longhorn replicas are never deleted.
+If pressure remains, the target prints the kubelet condition, filesystems,
+largest `/var/lib` consumers, and runtime services before failing closed. The
+premium profile keeps three server and three agent replicas with hard hostname
+spreading. Its idle CPU requests are `50m` per server and `100m` per agent,
+with no CPU limit, so workloads can still burst. If the scheduler still reports
+insufficient CPU or a non-pressure taint, repair fails with that classification
+and does not reduce HA or weaken the topology policy automatically.
 
 When ignored `private/seed-git.env` exists, the repair first renders the private
 values from a clean working tree and synchronizes the current deployment branch
