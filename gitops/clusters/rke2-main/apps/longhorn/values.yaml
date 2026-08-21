@@ -14,7 +14,9 @@ defaultSettings:
   replicaAutoBalance: best-effort
   storageOverProvisioningPercentage: 100
   storageMinimalAvailablePercentage: 10
-  orphanAutoDeletion: true
+  orphanResourceAutoDeletion: "replica-data;instance"
+  orphanResourceAutoDeletionGracePeriod: 300
+  removeSnapshotsDuringFilesystemTrim: false
   concurrentAutomaticEngineUpgradePerNodeLimit: 1
 
 longhornManager:

@@ -113,6 +113,8 @@ premium_external_secrets_values = root / "gitops/clusters/rke2-main/premium-3nod
 premium_openbao_values = root / "gitops/clusters/rke2-main/premium-3node/apps/openbao/values.yaml"
 base_longhorn_values = root / "gitops/clusters/rke2-main/apps/longhorn/values.yaml"
 premium_longhorn_values = root / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/values.yaml"
+base_longhorn_trim_job = root / "gitops/clusters/rke2-main/apps/longhorn/filesystem-trim-recurring-job.yaml"
+premium_longhorn_trim_job = root / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/filesystem-trim-recurring-job.yaml"
 premium_longhorn_storageclasses = root / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/storageclasses.yaml"
 premium_longhorn_priorityclasses = root / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/priorityclasses.yaml"
 base_monitoring_values = root / "gitops/clusters/rke2-main/apps/monitoring/values.yaml"
@@ -1363,11 +1365,15 @@ def main() -> None:
         "replicaAutoBalance: best-effort",
         "storageOverProvisioningPercentage: 100",
         "storageMinimalAvailablePercentage: 10",
-        "orphanAutoDeletion: true",
+        'orphanResourceAutoDeletion: "replica-data;instance"',
+        "orphanResourceAutoDeletionGracePeriod: 300",
+        "removeSnapshotsDuringFilesystemTrim: false",
         "concurrentAutomaticEngineUpgradePerNodeLimit: 1",
         "longhornManager:\n  resources:\n    requests:\n      cpu: 250m\n      memory: 512Mi\n    limits:\n      memory: 1Gi",
     ):
         require_text(base_longhorn_text, needle, f"base Longhorn profile must include {needle.splitlines()[0]}")
+    if "orphanAutoDeletion:" in base_longhorn_text:
+        fail("base Longhorn profile uses the obsolete orphanAutoDeletion chart key")
 
     premium_longhorn_text = read(premium_longhorn_values)
     for needle in (
@@ -1379,7 +1385,9 @@ def main() -> None:
         "defaultDataLocality: best-effort",
         "replicaAutoBalance: best-effort",
         "storageMinimalAvailablePercentage: 10",
-        "orphanAutoDeletion: true",
+        'orphanResourceAutoDeletion: "replica-data;instance"',
+        "orphanResourceAutoDeletionGracePeriod: 300",
+        "removeSnapshotsDuringFilesystemTrim: false",
         "concurrentAutomaticEngineUpgradePerNodeLimit: 1",
         "longhornManager:\n  priorityClass: longhorn-critical\n  resources:\n    requests:\n      cpu: 250m\n      memory: 512Mi\n    limits:\n      memory: 1Gi",
         "longhornDriver:\n  priorityClass: longhorn-critical",
@@ -1389,6 +1397,21 @@ def main() -> None:
             needle,
             f"premium Longhorn profile must include {needle.splitlines()[0]}",
         )
+    if "orphanAutoDeletion:" in premium_longhorn_text:
+        fail("premium Longhorn profile uses the obsolete orphanAutoDeletion chart key")
+    for label, trim_job in (
+        ("base", base_longhorn_trim_job),
+        ("premium", premium_longhorn_trim_job),
+    ):
+        trim_job_text = read(trim_job)
+        for needle in (
+            "kind: RecurringJob",
+            "name: platform-filesystem-trim",
+            "task: filesystem-trim",
+            "groups:\n    - default",
+            "concurrency: 1",
+        ):
+            require_text(trim_job_text, needle, f"{label} Longhorn trim job must include {needle}")
     configured_over_provisioning = configured_longhorn_storage_over_provisioning_percentage()
     rendered_over_provisioning = yaml_integer_scalar(
         premium_longhorn_text,
@@ -3659,6 +3682,8 @@ def main() -> None:
         "PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR",
         "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE",
         "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE_UNTIL",
+        "PLATFORM_NODE_STORAGE_LONGHORN_TRIM",
+        "PLATFORM_NODE_STORAGE_LONGHORN_TRIM_TIMEOUT",
         "Inspect Kubernetes DiskPressure before cleanup",
         "--filter dangling=true",
         "label=com.gitlab.gitlab-runner.type=cache",
@@ -3671,8 +3696,12 @@ def main() -> None:
         "/run/containerd/containerd.sock",
         "--image-endpoint",
         "cri_image_prune=completed endpoints=",
+        "Trim mounted Longhorn filesystems during guarded cleanup",
+        "longhorn_filesystem_trim=volume-completed",
         "Collect persistent DiskPressure diagnostics after safe cleanup",
         "longhorn_default_path_shares_root=true",
+        "Longhorn volume allocation",
+        "Longhorn orphan resources",
         "Stop when safe cleanup cannot clear Kubernetes DiskPressure",
         "The cleanup intentionally retained Longhorn replicas",
     ):
@@ -3707,6 +3736,7 @@ def main() -> None:
         "PLATFORM_NODE_STORAGE_CRI_PRUNE=true",
         "PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true",
         "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true",
+        "PLATFORM_NODE_STORAGE_LONGHORN_TRIM=true",
     ):
         require_text(
             forgejo_repair_body,
@@ -4075,6 +4105,7 @@ def main() -> None:
         "PLATFORM_NODE_STORAGE_CRI_PRUNE=true",
         "PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true",
         "PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true",
+        "PLATFORM_NODE_STORAGE_LONGHORN_TRIM=true",
         "$(MAKE) platform-node-storage-cleanup",
         "will not reduce three-node HA or weaken hard topology spread",
         "PLATFORM_LONGHORN_RUNTIME_FORCE_RESTART=true",
@@ -4377,6 +4408,9 @@ def main() -> None:
         "allVolumeProvisioningPercentage",
         "releasedVolumeCount",
         "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE",
+        'orphanResourceAutoDeletion: "replica-data;instance"',
+        "orphanResourceAutoDeletionGracePeriod: 300",
+        "removeSnapshotsDuringFilesystemTrim: false",
         "Reconcile live Longhorn storage overprovisioning setting",
         "settings.longhorn.io/${setting}",
         "reason=longhorn-live-setting-reconciliation-failed",
