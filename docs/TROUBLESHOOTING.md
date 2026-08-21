@@ -522,6 +522,10 @@ controllers, repo server, and application retry path have stabilized. The
 pruner waits for a newly observed reconciliation and refuses resources outside
 its explicit legacy allowlist, so an unavailable application controller cannot
 block its own service-path repair with a stale hard-refresh annotation.
+Platform application hard refreshes are requested together and monitored within
+one shared timeout. Completion accepts either controller consumption of the
+refresh annotation or an advanced `status.reconciledAt`, while still waiting for
+any active sync operation to finish.
 
 If the controller then times out to a pod IP such as `10.42.x.x:8081`, the
 cluster still has a pod-to-pod path problem. The repair target defaults to a

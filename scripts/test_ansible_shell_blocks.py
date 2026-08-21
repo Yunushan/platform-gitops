@@ -180,6 +180,9 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT",
         'APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"',
         "action=hard-refresh-requested",
+        "declare -A refresh_baseline_reconciled_at",
+        "refresh_deadline",
+        "refresh_last_state",
         "Retry failed Argo CD application operations after service repair",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT",
@@ -193,9 +196,23 @@ def validate_argocd_cleanup_contract() -> list[str]:
     for fragment in required_fragments:
         if fragment not in text:
             errors.append(f"stale Argo CD cleanup is missing idempotent fragment: {fragment}")
+    refresh_index = text.find("Refresh platform applications after Argo CD service repair")
     retry_index = text.find("Retry failed Argo CD application operations after service repair")
     prune_index = text.find("Prune known stale Traefik chart resources")
     readiness_index = text.find("Verify final Argo CD core readiness after application retries")
+    if refresh_index < 0 or retry_index < 0:
+        errors.append("Argo CD application refresh and retry tasks must both exist")
+    else:
+        refresh_block = text[refresh_index:retry_index]
+        if "wait_for_refresh()" in refresh_block:
+            errors.append("Argo CD application refreshes must not wait serially per application")
+        for fragment in (
+            ".status.reconciledAt",
+            "refresh_apps+=(\"${app}\")",
+            "reason=hard-refresh-not-reconciled",
+        ):
+            if fragment not in refresh_block:
+                errors.append(f"Argo CD shared refresh wait is missing fragment: {fragment}")
     if not (retry_index < prune_index < readiness_index):
         errors.append("legacy Traefik pruning must run after Argo CD repair and application retries")
     return errors
