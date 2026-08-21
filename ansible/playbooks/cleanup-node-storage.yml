@@ -20,6 +20,9 @@
     platform_node_storage_longhorn_trim_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_TRIM') }}"
     platform_node_storage_longhorn_trim_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_TRIM_TIMEOUT') }}"
     platform_node_storage_longhorn_orphan_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_ORPHAN_WAIT_TIMEOUT') }}"
+    platform_node_storage_longhorn_pressure_eviction_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION') }}"
+    platform_node_storage_longhorn_pressure_eviction_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION_TIMEOUT') }}"
+    platform_node_storage_longhorn_target_free_percentage_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NODE_STORAGE_LONGHORN_TARGET_FREE_PERCENTAGE') }}"
     platform_node_storage_longhorn_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
     platform_node_storage_cleanup_effective: "{{ platform_node_storage_cleanup | default(platform_node_storage_cleanup_from_env, true) | default(false, true) | bool }}"
     platform_node_storage_cri_prune_effective: "{{ platform_node_storage_cri_prune | default(platform_node_storage_cri_prune_from_env, true) | default(true, true) | bool }}"
@@ -36,6 +39,9 @@
     platform_node_storage_longhorn_trim_effective: "{{ platform_node_storage_longhorn_trim | default(platform_node_storage_longhorn_trim_from_env, true) | default(true, true) | bool }}"
     platform_node_storage_longhorn_trim_timeout_effective: "{{ platform_node_storage_longhorn_trim_timeout | default(platform_node_storage_longhorn_trim_timeout_from_env, true) | default(60, true) | int }}"
     platform_node_storage_longhorn_orphan_wait_timeout_effective: "{{ platform_node_storage_longhorn_orphan_wait_timeout | default(platform_node_storage_longhorn_orphan_wait_timeout_from_env, true) | default(420, true) | int }}"
+    platform_node_storage_longhorn_pressure_eviction_effective: "{{ platform_node_storage_longhorn_pressure_eviction | default(platform_node_storage_longhorn_pressure_eviction_from_env, true) | default(true, true) | bool }}"
+    platform_node_storage_longhorn_pressure_eviction_timeout_effective: "{{ platform_node_storage_longhorn_pressure_eviction_timeout | default(platform_node_storage_longhorn_pressure_eviction_timeout_from_env, true) | default(1200, true) | int }}"
+    platform_node_storage_longhorn_target_free_percentage_effective: "{{ platform_node_storage_longhorn_target_free_percentage | default(platform_node_storage_longhorn_target_free_percentage_from_env, true) | default(20, true) | int }}"
     platform_node_storage_longhorn_path_effective: "{{ platform_node_storage_longhorn_path | default(platform_node_storage_longhorn_path_from_env, true) | default('/var/lib/longhorn', true) }}"
 
   tasks:
@@ -47,6 +53,9 @@
           - platform_node_storage_pressure_clear_timeout_effective | int >= 30
           - platform_node_storage_longhorn_trim_timeout_effective | int >= 10
           - platform_node_storage_longhorn_orphan_wait_timeout_effective | int >= 300
+          - platform_node_storage_longhorn_pressure_eviction_timeout_effective | int >= 300
+          - platform_node_storage_longhorn_target_free_percentage_effective | int >= 15
+          - platform_node_storage_longhorn_target_free_percentage_effective | int <= 50
           - platform_node_storage_journal_vacuum_size_effective == '0' or platform_node_storage_journal_vacuum_size_effective is match('^[0-9]+[KMG]$')
           - platform_node_storage_longhorn_path_effective.startswith('/')
         fail_msg: >-
@@ -137,6 +146,7 @@
         for pair in \
           'orphan-resource-auto-deletion=replica-data;instance' \
           'orphan-resource-auto-deletion-grace-period=300' \
+          'storage-minimal-available-percentage=25' \
           'remove-snapshots-during-filesystem-trim=false' \
           'auto-cleanup-system-generated-snapshot=true' \
           'auto-cleanup-recurring-job-backup-snapshot=true'
@@ -621,6 +631,123 @@
         - platform_node_storage_wait_for_pressure_clear_effective | bool
         - platform_node_storage_pressure_before.rc == 42
 
+    - name: Inspect resumable Longhorn root-pressure evacuation state
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        annotation="$("${K}" --kubeconfig "${C}" -n longhorn-system get \
+          "nodes.longhorn.io/{{ inventory_hostname }}" \
+          -o jsonpath='{.metadata.annotations.platform\.gitops\.io/root-pressure-eviction}' \
+          2>/dev/null || true)"
+        if [ -n "${annotation}" ]; then
+          echo 'longhorn_pressure_evacuation_state=present'
+          exit 42
+        fi
+        echo 'longhorn_pressure_evacuation_state=absent'
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_longhorn_pressure_state_before
+      changed_when: false
+      failed_when: false
+      when:
+        - platform_node_storage_cleanup_effective | bool
+        - platform_node_storage_longhorn_pressure_eviction_effective | bool
+
+    - name: Run guarded Longhorn root-pressure evacuation
+      block:
+        - name: Create private Longhorn pressure helper directory
+          ansible.builtin.tempfile:
+            state: directory
+            path: /var/tmp
+            prefix: platform-longhorn-pressure-
+          register: platform_node_storage_longhorn_pressure_helper_dir
+
+        - name: Stage bounded Longhorn pressure helper bundle
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+            dest: "{{ platform_node_storage_longhorn_pressure_helper_dir.path }}/{{ item }}"
+            mode: "0600"
+          loop:
+            - relieve_longhorn_disk_pressure.py
+            - bounded_subprocess.py
+            - strict_json.py
+            - subprocess_timeout.py
+
+        - name: Evacuate Longhorn replicas from pressured root-backed disks
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ platform_node_storage_longhorn_pressure_helper_dir.path }}/relieve_longhorn_disk_pressure.py"
+              - --node
+              - "{{ inventory_hostname }}"
+              - --timeout
+              - "{{ platform_node_storage_longhorn_pressure_eviction_timeout_effective | int }}"
+              - --target-free-percentage
+              - "{{ platform_node_storage_longhorn_target_free_percentage_effective | int }}"
+          register: platform_node_storage_longhorn_pressure_eviction
+          changed_when: >-
+            ('longhorn_pressure_evacuation=requested' in
+            (platform_node_storage_longhorn_pressure_eviction.stdout | default('')))
+            or
+            ('longhorn_pressure_evacuation=completed' in
+            (platform_node_storage_longhorn_pressure_eviction.stdout | default('')))
+          throttle: 1
+      always:
+        - name: Remove private Longhorn pressure helper directory
+          ansible.builtin.file:
+            path: "{{ platform_node_storage_longhorn_pressure_helper_dir.path }}"
+            state: absent
+          when:
+            - (platform_node_storage_longhorn_pressure_helper_dir | default({})).path is defined
+      when:
+        - platform_node_storage_cleanup_effective | bool
+        - platform_node_storage_longhorn_pressure_eviction_effective | bool
+        - >-
+          (platform_node_storage_cluster_has_pressure | bool)
+          or
+          ((platform_node_storage_longhorn_pressure_state_before.rc | default(0) | int) == 42)
+
+    - name: Print guarded Longhorn pressure evacuation result
+      ansible.builtin.debug:
+        var: platform_node_storage_longhorn_pressure_eviction.stdout_lines
+      when:
+        - (platform_node_storage_longhorn_pressure_eviction | default({})).stdout is defined
+        - platform_node_storage_longhorn_pressure_eviction.stdout | length > 0
+
+    - name: Wait for Kubernetes DiskPressure to clear after Longhorn evacuation
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        pressure="$("${K}" --kubeconfig "${C}" get node {{ inventory_hostname | quote }} \
+          -o jsonpath='{.status.conditions[?(@.type=="DiskPressure")].status}')"
+        root_usage="$(df -P / | awk 'NR == 2 { print $5 }')"
+        printf 'node=%s disk_pressure=%s root_used=%s\n' \
+          {{ inventory_hostname | quote }} "${pressure:-unknown}" "${root_usage:-unknown}"
+        test "${pressure}" != True
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_pressure_after_evacuation
+      retries: "{{ (((platform_node_storage_pressure_clear_timeout_effective | int) / 10) | round(0, 'ceil') | int) + 1 }}"
+      delay: 10
+      until: platform_node_storage_pressure_after_evacuation.rc == 0
+      changed_when: false
+      failed_when: false
+      when:
+        - platform_node_storage_wait_for_pressure_clear_effective | bool
+        - platform_node_storage_pressure_before.rc == 42
+        - (platform_node_storage_pressure_after.rc | default(1) | int) != 0
+
+    - name: Select final Kubernetes DiskPressure result
+      ansible.builtin.set_fact:
+        platform_node_storage_pressure_final_rc: >-
+          {{
+            platform_node_storage_pressure_after_evacuation.rc
+            | default(platform_node_storage_pressure_after.rc | default(1), true)
+            | int
+          }}
+
     - name: Collect persistent DiskPressure diagnostics after safe cleanup
       ansible.builtin.shell: |
         set -o pipefail
@@ -667,6 +794,34 @@
           -o custom-columns=NAME:.metadata.name,SIZE:.spec.size,ACTUAL:.status.actualSize,STATE:.status.state,ROBUSTNESS:.status.robustness,NODE:.status.currentNodeID \
           --no-headers 2>/dev/null || true
 
+        echo '===== Longhorn pressure evacuation state ====='
+        "${K}" --kubeconfig "${C}" -n longhorn-system get \
+          "nodes.longhorn.io/{{ inventory_hostname }}" -o json 2>/dev/null |
+          python3 -c '
+        import json
+        import sys
+
+        node = json.load(sys.stdin)
+        annotation = (
+            node.get("metadata", {})
+            .get("annotations", {})
+            .get("platform.gitops.io/root-pressure-eviction", "absent")
+        )
+        print(f"root_pressure_eviction_annotation={annotation}")
+        for name, disk in sorted((node.get("spec", {}).get("disks") or {}).items()):
+            print(
+                "disk={} path={} allowScheduling={} evictionRequested={}".format(
+                    name,
+                    disk.get("path", "?"),
+                    disk.get("allowScheduling", False),
+                    disk.get("evictionRequested", False),
+                )
+            )
+        ' || true
+        "${K}" --kubeconfig "${C}" -n longhorn-system get replicas.longhorn.io \
+          -o custom-columns=NAME:.metadata.name,VOLUME:.spec.volumeName,NODE:.spec.nodeID,DISK:.spec.diskID,EVICTION:.spec.evictionRequested,FAILED:.spec.failedAt \
+          --no-headers 2>/dev/null | awk '$3 == "{{ inventory_hostname }}"' || true
+
         echo '===== Longhorn orphan resources ====='
         "${K}" --kubeconfig "${C}" -n longhorn-system get orphans.longhorn.io \
           -o custom-columns=NAME:.metadata.name,TYPE:.spec.orphanType,NODE:.spec.nodeID \
@@ -676,6 +831,7 @@
         for setting in \
           orphan-resource-auto-deletion \
           orphan-resource-auto-deletion-grace-period \
+          storage-minimal-available-percentage \
           remove-snapshots-during-filesystem-trim \
           auto-cleanup-system-generated-snapshot \
           auto-cleanup-recurring-job-backup-snapshot
@@ -706,7 +862,7 @@
       when:
         - platform_node_storage_wait_for_pressure_clear_effective | bool
         - platform_node_storage_pressure_before.rc == 42
-        - (platform_node_storage_pressure_after.rc | default(1) | int) != 0
+        - platform_node_storage_pressure_final_rc | int != 0
 
     - name: Print persistent DiskPressure diagnostics
       ansible.builtin.debug:
@@ -726,20 +882,28 @@
           The cleanup intentionally retained Longhorn replicas, snapshots,
           PVC data, active container images, and referenced Docker volumes.
           It also reconciled Longhorn's safe orphan and system-snapshot cleanup
-          settings and allowed eligible orphans on Ready nodes their configured
-          grace period. Review the focused diagnostics above. If referenced
-          Longhorn volumes or valid snapshots dominate and the path shares `/`,
-          no further unattended deletion is safe: add a dedicated Longhorn disk
-          or remove confirmed-unused PVCs/snapshots through Kubernetes and
-          Longhorn. If another runtime store dominates, verify that runtime is
-          still required before removing its data.
+          settings, reserved 25 percent free space, and allowed eligible orphans
+          on Ready nodes their configured grace period. When alternate Longhorn
+          capacity passed the scheduler and replica-safety checks, the cleanup
+          also requested native disk eviction and retained resumable state until
+          Kubernetes pressure cleared. No replica directory was deleted.
+
+          Longhorn pressure evacuation result:
+          {{ platform_node_storage_longhorn_pressure_eviction.stdout | default('not run') }}
+
+          Review the focused diagnostics above. A deferred evacuation names the
+          missing capacity or safety prerequisite. Add a dedicated Longhorn disk
+          when alternate capacity is absent, or remove confirmed-unused PVCs and
+          snapshots through Kubernetes and Longhorn after backup verification.
+          If another runtime store dominates, verify that runtime is still
+          required before removing its data.
 
           Rerun `make platform-node-storage-cleanup` after capacity is restored,
           then rerun the original focused repair command.
       when:
         - platform_node_storage_wait_for_pressure_clear_effective | bool
         - platform_node_storage_pressure_before.rc == 42
-        - (platform_node_storage_pressure_after.rc | default(1) | int) != 0
+        - platform_node_storage_pressure_final_rc | int != 0
 
     - name: Collect root filesystem usage after cleanup
       ansible.builtin.shell: |

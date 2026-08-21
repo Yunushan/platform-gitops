@@ -10,7 +10,7 @@ defaultSettings:
   defaultDataLocality: best-effort
   replicaAutoBalance: best-effort
   storageOverProvisioningPercentage: 100
-  storageMinimalAvailablePercentage: 10
+  storageMinimalAvailablePercentage: 25
   orphanResourceAutoDeletion: "replica-data;instance"
   orphanResourceAutoDeletionGracePeriod: 300
   removeSnapshotsDuringFilesystemTrim: false

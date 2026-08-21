@@ -76,6 +76,11 @@ node. CRI retains images used by existing containers; an unused image may need
 to be pulled again later. Active runner volumes, ordinary Docker volumes,
 Longhorn files, PVC data, and valid snapshots are never selected for deletion.
 
+Root-backed Longhorn disks reserve 25 percent free space. This keeps Longhorn's
+scheduling floor above Kubernetes' usual root-filesystem pressure boundary;
+the old 10 percent floor could permit replica growth after kubelet had already
+started applying `DiskPressure` eviction controls.
+
 The Longhorn profile schedules a weekly `filesystem-trim` recurring job for
 volumes in the default recurring-job group. It explicitly keeps
 `removeSnapshotsDuringFilesystemTrim=false`, so trim never marks valid user
@@ -91,6 +96,41 @@ up to seven minutes for eligible `replica-data` and `instance` orphans on Ready
 nodes. Override that bounded wait with
 `PLATFORM_NODE_STORAGE_LONGHORN_ORPHAN_WAIT_TIMEOUT`; values below 300 seconds
 are rejected because they would be shorter than the orphan grace period.
+
+If those non-data cleanup steps cannot clear pressure, the cleanup performs a
+second guarded phase. It inventories Longhorn nodes, disks, volumes, replicas,
+and the allocated blocks of local replica directories. It requests Longhorn's
+native disk eviction only when all of these conditions hold:
+
+- the Longhorn data path is on the pressured root filesystem;
+- another Ready and schedulable node has both physical and provisioned
+  capacity for a replacement replica;
+- replica node anti-affinity can still be satisfied;
+- the volume is not faulted, a linked clone, or configured with fewer than two
+  replicas; and
+- the estimated reclaimable blocks can restore the configured root free-space
+  target.
+
+Longhorn creates and verifies replacement replicas before removing source
+replicas. The playbook disables new scheduling on the source disk, requests
+disk eviction plus direct eviction for only the capacity-planned replicas,
+records the original disk and replica state in
+`platform.gitops.io/root-pressure-eviction`, and restores that state after
+Kubernetes reports `DiskPressure=False`. If the bounded wait expires, it leaves
+the annotated eviction request in place so the next run can resume safely. It
+never removes replica directories, PVCs, or snapshots.
+
+The automatic phase is enabled by default during cleanup. Operators can tune
+the bounded wait and target or explicitly disable evacuation:
+
+```bash
+PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION_TIMEOUT=1800 \
+PLATFORM_NODE_STORAGE_LONGHORN_TARGET_FREE_PERCENTAGE=20 \
+make platform-node-storage-cleanup
+
+PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=false \
+make platform-node-storage-cleanup
+```
 
 If pressure remains after the bounded wait, the playbook prints the kubelet
 condition, taints, filesystems, largest `/var/lib` consumers, runtime service
@@ -113,8 +153,10 @@ verified.
 
 If the root filesystem is full because referenced Longhorn replica data is on
 `/var/lib/longhorn`, cache pruning, cluster-wide filesystem trim, and orphan
-cleanup can recover only blocks that are genuinely unused. Do not delete
-replica files to force space recovery. Instead, add a dedicated disk, add it as
-a Longhorn disk, then migrate or rebuild replicas through Longhorn. Review
-unused PVCs, old snapshots, backup retention, and registry/MinIO retention in
-their application APIs before approving any data deletion.
+cleanup can recover only blocks that are genuinely unused. Guarded evacuation
+also requires enough alternate scheduler capacity and replica placement room.
+Do not delete replica files to force space recovery. If evacuation reports a
+capacity or anti-affinity prerequisite, add a dedicated disk, add it as a
+Longhorn disk, then let Longhorn migrate or rebuild replicas. Review unused
+PVCs, old snapshots, backup retention, and registry/MinIO retention in their
+application APIs before approving any data deletion.

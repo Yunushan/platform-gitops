@@ -450,6 +450,7 @@ platform-woodpecker-repair:
 		PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true \
 		PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true \
 		PLATFORM_NODE_STORAGE_LONGHORN_TRIM=true \
+		PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=true \
 		$(MAKE) platform-node-storage-cleanup
 	@$(MAKE) platform-argocd-service-repair
 	@PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=false \
@@ -655,6 +656,7 @@ platform-forgejo-repair: platform-inventory-preflight
 		PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true \
 		PLATFORM_NODE_STORAGE_GITLAB_RUNNER_CACHE_PRUNE=true \
 		PLATFORM_NODE_STORAGE_LONGHORN_TRIM=true \
+		PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=true \
 		$(MAKE) platform-node-storage-cleanup
 	@$(MAKE) platform-longhorn-runtime-repair
 	@$(MAKE) platform-forgejo-storage-repair
