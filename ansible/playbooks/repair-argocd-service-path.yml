@@ -909,8 +909,10 @@
             continue
           fi
 
-          automated="$($K --kubeconfig "$C" -n argocd get "application/${app}" \
-            -o jsonpath='{.spec.syncPolicy.automated.prune}{"|"}{.spec.syncPolicy.automated.selfHeal}{"|"}{.spec.syncPolicy.automated.allowEmpty}' \
+          application_json="$($K --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o json 2>/dev/null || true)"
+          automated="$(printf '%s' "${application_json}" | /usr/bin/python3 -c \
+            'import json, sys; data = json.load(sys.stdin); automated = ((data.get("spec") or {}).get("syncPolicy") or {}).get("automated") or {}; flag = lambda value: "true" if value is True else ("false" if value is False else ""); print("|".join(flag(automated.get(key)) for key in ("prune", "selfHeal", "allowEmpty")))' \
             2>/dev/null || true)"
           if [ "${automated}" != "true|true|false" ]; then
             "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type=merge \
@@ -920,9 +922,10 @@
             app_changed=1
           fi
 
-          options_json="$($K --kubeconfig "$C" -n argocd get "application/${app}" \
-            -o jsonpath='{.spec.syncPolicy.syncOptions}' 2>/dev/null || true)"
-          if [ -z "${options_json}" ] || [ "${options_json}" = "<nil>" ]; then
+          options_json="$(printf '%s' "${application_json}" | /usr/bin/python3 -c \
+            'import json, sys; data = json.load(sys.stdin); policy = (data.get("spec") or {}).get("syncPolicy") or {}; print(json.dumps(policy.get("syncOptions"), separators=(",", ":")))' \
+            2>/dev/null || true)"
+          if [ -z "${options_json}" ] || [ "${options_json}" = "null" ]; then
             "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type=merge \
               -p '{"spec":{"syncPolicy":{"syncOptions":[]}}}' >/dev/null
             options_json='[]'

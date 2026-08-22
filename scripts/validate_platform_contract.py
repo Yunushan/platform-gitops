@@ -2341,7 +2341,9 @@ def main() -> None:
         "automated.prune=true",
         "automated.selfHeal=true",
         "automated.allowEmpty=false",
+        "application_json",
         "sync_options_json",
+        "json.dumps(policy.get(\"syncOptions\") or []",
         "Prune=confirm",
         "PruneLast=true",
         "PrunePropagationPolicy=foreground",
@@ -2353,8 +2355,12 @@ def main() -> None:
             needle,
             f"platform-app-health must verify live Argo CD guarded pruning: {needle}",
         )
-    if "range .spec.syncPolicy.syncOptions[*]" in health_text:
-        fail("platform-app-health must not use kubectl's non-portable syncOptions wildcard JSONPath")
+    for nonportable_sync_options_query in (
+        "range .spec.syncPolicy.syncOptions[*]",
+        "jsonpath='{.spec.syncPolicy.syncOptions}'",
+    ):
+        if nonportable_sync_options_query in health_text:
+            fail("platform-app-health must parse syncOptions from the Application JSON document")
     for needle in (
         "forgejo_replicas=",
         "rollout_strategy=",
@@ -4187,7 +4193,9 @@ def main() -> None:
     for needle in (
         "PLATFORM_ARGOCD_SERVICE_REPAIR_GUARDED_PRUNE",
         "Reconcile guarded pruning for refreshed Argo CD applications",
+        "application_json",
         "options_json",
+        "json.dumps(policy.get(\"syncOptions\")",
         "Prune=confirm",
         "PruneLast=true",
         "PrunePropagationPolicy=foreground",
@@ -4198,8 +4206,12 @@ def main() -> None:
             needle,
             f"Argo CD service repair must preserve guarded application pruning: {needle}",
         )
-    if "range .spec.syncPolicy.syncOptions[*]" in argocd_service_repair_text:
-        fail("Argo CD service repair must not use kubectl's non-portable syncOptions wildcard JSONPath")
+    for nonportable_sync_options_query in (
+        "range .spec.syncPolicy.syncOptions[*]",
+        "jsonpath='{.spec.syncPolicy.syncOptions}'",
+    ):
+        if nonportable_sync_options_query in argocd_service_repair_text:
+            fail("Argo CD service repair must parse syncOptions from the Application JSON document")
     if "platform-woodpecker-repair:" not in makefile_text:
         fail("Makefile is missing platform-woodpecker-repair target")
     for needle in (
