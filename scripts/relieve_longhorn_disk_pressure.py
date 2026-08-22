@@ -548,8 +548,9 @@ def request_evacuation(
     node_name: str,
     state: JsonObject,
 ) -> None:
+    # Whole-disk eviction would expand the bounded plan to every source replica.
     disk_patch = {
-        disk_name: {"allowScheduling": False, "evictionRequested": True}
+        disk_name: {"allowScheduling": False, "evictionRequested": False}
         for disk_name in state["disks"]
     }
     kube.patch_longhorn_node(
@@ -596,6 +597,23 @@ def disk_replica_count(node: JsonObject, disk_names: set[str]) -> int:
     return sum(
         len((status_disks.get(name) or {}).get("scheduledReplica") or {})
         for name in disk_names
+    )
+
+
+def selected_replica_count(
+    replicas: list[JsonObject],
+    *,
+    node_name: str,
+    disk_ids: set[str],
+    replica_names: set[str],
+) -> int:
+    return sum(
+        1
+        for replica in replicas
+        if replica.get("metadata", {}).get("name") in replica_names
+        and not replica.get("metadata", {}).get("deletionTimestamp")
+        and replica.get("spec", {}).get("nodeID") == node_name
+        and replica.get("spec", {}).get("diskID") in disk_ids
     )
 
 
@@ -784,7 +802,7 @@ def run(args: argparse.Namespace) -> int:
         )
 
     deadline = time.monotonic() + args.timeout
-    previous_state: tuple[str, int, int] | None = None
+    previous_state: tuple[str, int, int, int] | None = None
     while time.monotonic() < deadline:
         pressure = kubernetes_disk_pressure(kube, args.node)
         _, _, free_percentage = root_filesystem_metrics()
@@ -792,13 +810,34 @@ def run(args: argparse.Namespace) -> int:
             "-n", "longhorn-system", "get", "nodes.longhorn.io"
         ).get("items", [])
         current_node = find_node(nodes, args.node)
-        replica_count = disk_replica_count(current_node, disk_names)
-        current_state = (pressure, free_percentage, replica_count)
+        disk_replicas = disk_replica_count(current_node, disk_names)
+        status_disks = current_node.get("status", {}).get("diskStatus") or {}
+        source_disk_ids = {
+            (status_disks.get(name) or {}).get("diskUUID", "")
+            for name in disk_names
+        } - {""}
+        replicas = kube.get_json(
+            "-n", "longhorn-system", "get", "replicas.longhorn.io"
+        ).get("items", [])
+        selected_replicas = selected_replica_count(
+            replicas,
+            node_name=args.node,
+            disk_ids=source_disk_ids,
+            replica_names=set(state.get("replicas", {})),
+        )
+        current_state = (
+            pressure,
+            free_percentage,
+            selected_replicas,
+            disk_replicas,
+        )
         if current_state != previous_state:
             print(
                 "longhorn_pressure_evacuation=waiting "
                 f"node={args.node} diskPressure={pressure} "
-                f"rootFreePercent={free_percentage} replicas={replica_count}"
+                f"rootFreePercent={free_percentage} "
+                f"selectedReplicas={selected_replicas} "
+                f"diskReplicas={disk_replicas}"
             )
             previous_state = current_state
         if pressure == "False":

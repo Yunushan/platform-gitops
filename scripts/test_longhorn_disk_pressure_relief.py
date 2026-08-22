@@ -22,6 +22,7 @@ from relieve_longhorn_disk_pressure import (  # noqa: E402
     physical_replica_sizes,
     request_evacuation,
     restore_disk_state,
+    selected_replica_count,
 )
 
 
@@ -296,7 +297,7 @@ def verify_evacuation_state_round_trip() -> None:
     if ANNOTATION not in request_patch["metadata"]["annotations"]:
         raise AssertionError("evacuation request did not persist recovery state")
     requested_disk = request_patch["spec"]["disks"]["default-disk"]
-    if requested_disk != {"allowScheduling": False, "evictionRequested": True}:
+    if requested_disk != {"allowScheduling": False, "evictionRequested": False}:
         raise AssertionError("evacuation request used an unsafe disk state")
     if restore_patch["metadata"]["annotations"][ANNOTATION] is not None:
         raise AssertionError("evacuation restore did not remove recovery state")
@@ -314,6 +315,31 @@ def verify_evacuation_state_round_trip() -> None:
     restore_disk_state(recorder, "node-1", state, removed_disk_node)
     if "spec" in recorder.patches[0][1]:
         raise AssertionError("restore recreated a disk removed by an operator")
+
+
+def verify_selected_replica_progress() -> None:
+    replicas = fixtures()["replicas"]
+    selected = {"pvc-large-r-1"}
+    count = selected_replica_count(
+        replicas,
+        node_name="node-1",
+        disk_ids={"disk-node-1"},
+        replica_names=selected,
+    )
+    if count != 1:
+        raise AssertionError("selected source replica was not counted")
+
+    moved = copy.deepcopy(replicas)
+    moved[0]["spec"]["nodeID"] = "node-2"
+    moved[0]["spec"]["diskID"] = "disk-node-2"
+    count = selected_replica_count(
+        moved,
+        node_name="node-1",
+        disk_ids={"disk-node-1"},
+        replica_names=selected,
+    )
+    if count != 0:
+        raise AssertionError("moved selected replica still counted on source disk")
 
 
 def verify_repository_integration() -> None:
@@ -346,6 +372,7 @@ def verify_repository_integration() -> None:
 def main() -> int:
     verify_planner()
     verify_evacuation_state_round_trip()
+    verify_selected_replica_progress()
     verify_repository_integration()
     print("Longhorn disk pressure relief self-test passed.")
     return 0
