@@ -639,11 +639,11 @@ def physical_replica_sizes(
         spec = replica.get("spec", {})
         name = metadata.get("name", "")
         directory = spec.get("dataDirectoryName", "")
-        disk_path = disk_paths_by_id.get(spec.get("diskID", ""), "")
-        if not name or not directory or not disk_path:
+        replica_disk_path = disk_paths_by_id.get(spec.get("diskID", ""), "")
+        if not name or not directory or not replica_disk_path:
             continue
         result[name] = allocated_directory_bytes(
-            Path(disk_path) / "replicas" / directory
+            Path(replica_disk_path) / "replicas" / directory
         )
     return result
 
