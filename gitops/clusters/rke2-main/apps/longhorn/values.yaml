@@ -22,6 +22,10 @@ defaultSettings:
   concurrentAutomaticEngineUpgradePerNodeLimit: 1
 
 longhornManager:
+  tolerations:
+    - key: node.kubernetes.io/disk-pressure
+      operator: Exists
+      effect: NoSchedule
   resources:
     requests:
       cpu: 250m

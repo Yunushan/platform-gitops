@@ -17,7 +17,10 @@ make platform-node-storage-diagnose
 The report prints root usage, the filesystem backing
 `PLATFORM_LONGHORN_DEFAULT_DISK_PATH`, the largest root directories, journal
 and container-log usage, and whether the Longhorn default path shares the root
-filesystem.
+filesystem. It also separates thin-provisioned requested capacity from logical
+volume data and estimated replicated data, then identifies the largest PVCs.
+Snapshots, metadata, and stale unregistered replica directories are additional
+physical usage and are deliberately not mislabeled as live logical data.
 
 When `longhorn_default_path_shares_root=true`, the cluster is storing Longhorn
 replicas on the operating-system disk. The durable fix is to attach a separate
@@ -119,9 +122,10 @@ directory. Every one of these gates must pass:
 - Kubernetes reports `Ready=True` and `DiskPressure=True`, with memory, PID,
   and network conditions clear. The manager topology must match the active
   Longhorn nodes and a strict majority of managers must be Ready on distinct
-  nodes. The local manager may be unready only while its containers remain
-  running and the Longhorn Node reports `Ready=False` specifically because of
-  `KubernetesNodePressure`;
+  nodes. The local manager may be unready or offline only when the Longhorn
+  Node reports `Ready=False` specifically because of
+  `KubernetesNodePressure`; the detached volume controller owner must still be
+  one of the Ready manager nodes;
 - Longhorn's supported `replica-data` orphan policy and at least a five-minute
   grace period are active, while the candidate is at least the configured age
   and allocated-size floor;
@@ -145,6 +149,11 @@ entire state a third time, checks open files again, and only then removes the
 quarantined directory. A crash leaves the recognizable quarantine name for a
 later run to revalidate. At most one directory is reclaimed per node and run.
 Registered replicas, PVCs, snapshots, and attached data are never deleted.
+
+The Longhorn manager DaemonSet tolerates Kubernetes' disk-pressure
+`NoSchedule` taint. This permits a replacement manager to start during
+recovery; it does not bypass Longhorn disk scheduling safeguards or make
+application workloads eligible for the pressured node.
 
 This phase is enabled by default. It can be disabled or made more conservative:
 

@@ -295,10 +295,14 @@ def verify_candidate_guards() -> ReclaimCandidate:
         pressure_degrade_without_quorum,
         "longhorn-manager-control-plane-quorum-unavailable",
     )
-    assert_rejected(
-        pressure_degrade_with_stopped_manager,
-        "longhorn-manager-process-not-running-on-pressure-node",
+    offline_candidate, offline_reason = evaluate(
+        pressure_degrade_with_stopped_manager
     )
+    if offline_candidate is None:
+        raise AssertionError(
+            "offline pressure-node manager with a ready quorum was rejected: "
+            + offline_reason
+        )
     assert_rejected(
         lambda data: data["manager_pods"].pop(),
         "longhorn-manager-topology-not-safe",

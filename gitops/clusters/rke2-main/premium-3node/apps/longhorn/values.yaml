@@ -20,6 +20,10 @@ defaultSettings:
 
 longhornManager:
   priorityClass: longhorn-critical
+  tolerations:
+    - key: node.kubernetes.io/disk-pressure
+      operator: Exists
+      effect: NoSchedule
   resources:
     requests:
       cpu: 250m

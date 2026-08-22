@@ -1373,7 +1373,9 @@ def main() -> None:
         "autoCleanupSystemGeneratedSnapshot: true",
         "autoCleanupRecurringJobBackupSnapshot: true",
         "concurrentAutomaticEngineUpgradePerNodeLimit: 1",
-        "longhornManager:\n  resources:\n    requests:\n      cpu: 250m\n      memory: 512Mi\n    limits:\n      memory: 1Gi",
+        "longhornManager:",
+        "tolerations:\n    - key: node.kubernetes.io/disk-pressure\n      operator: Exists\n      effect: NoSchedule",
+        "resources:\n    requests:\n      cpu: 250m\n      memory: 512Mi\n    limits:\n      memory: 1Gi",
     ):
         require_text(base_longhorn_text, needle, f"base Longhorn profile must include {needle.splitlines()[0]}")
     if "orphanAutoDeletion:" in base_longhorn_text:
@@ -1395,7 +1397,9 @@ def main() -> None:
         "autoCleanupSystemGeneratedSnapshot: true",
         "autoCleanupRecurringJobBackupSnapshot: true",
         "concurrentAutomaticEngineUpgradePerNodeLimit: 1",
-        "longhornManager:\n  priorityClass: longhorn-critical\n  resources:\n    requests:\n      cpu: 250m\n      memory: 512Mi\n    limits:\n      memory: 1Gi",
+        "longhornManager:\n  priorityClass: longhorn-critical",
+        "tolerations:\n    - key: node.kubernetes.io/disk-pressure\n      operator: Exists\n      effect: NoSchedule",
+        "resources:\n    requests:\n      cpu: 250m\n      memory: 512Mi\n    limits:\n      memory: 1Gi",
         "longhornDriver:\n  priorityClass: longhorn-critical",
     ):
         require_text(
@@ -3730,6 +3734,9 @@ def main() -> None:
         "no-eligible-orphans-on-ready-nodes",
         "Collect persistent DiskPressure diagnostics after safe cleanup",
         "longhorn_default_path_shares_root=true",
+        "Summarize Longhorn logical and replicated storage allocation",
+        "longhorn_storage_accounting=ok volumes=",
+        "estimatedReplicaBytes=logical-data-times-replica-count",
         "Longhorn volume allocation",
         "Longhorn orphan resources",
         "Stop when safe cleanup cannot clear Kubernetes DiskPressure",
