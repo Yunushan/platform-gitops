@@ -181,6 +181,8 @@ jobs:
         run: python scripts/test_unregistered_longhorn_replica_path_repair.py
       - name: Test Longhorn disk pressure relief
         run: python scripts/test_longhorn_disk_pressure_relief.py
+      - name: Test stale Longhorn replica reclamation
+        run: python scripts/test_stale_longhorn_replica_reclaim.py
       - name: Test documented make targets
         run: python scripts/test_docs_make_targets.py
       - name: Test Markdown links
