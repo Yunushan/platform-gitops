@@ -137,6 +137,7 @@ cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-v
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
 node_storage_cleanup_playbook = root / "ansible/playbooks/cleanup-node-storage.yml"
 longhorn_disk_pressure_relief = root / "scripts/relieve_longhorn_disk_pressure.py"
+stale_longhorn_replica_reclaimer = root / "scripts/reclaim_stale_longhorn_replica_data.py"
 forgejo_storage_repair_playbook = root / "ansible/playbooks/repair-forgejo-storage.yml"
 forgejo_ingress_publish_playbook = root / "ansible/playbooks/publish-forgejo-ingress.yml"
 empty_faulted_longhorn_claim_repair = root / "scripts/repair_empty_faulted_longhorn_claims.py"
@@ -3693,6 +3694,10 @@ def main() -> None:
         "PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION",
         "PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION_TIMEOUT",
         "PLATFORM_NODE_STORAGE_LONGHORN_TARGET_FREE_PERCENTAGE",
+        "PLATFORM_NODE_STORAGE_LONGHORN_STALE_REPLICA_RECLAIM",
+        "PLATFORM_NODE_STORAGE_LONGHORN_STALE_REPLICA_MIN_AGE",
+        "PLATFORM_NODE_STORAGE_LONGHORN_STALE_REPLICA_MIN_BYTES",
+        "PLATFORM_NODE_STORAGE_LONGHORN_STALE_REPLICA_SETTLE_SECONDS",
         "Inspect Kubernetes DiskPressure before cleanup",
         "Detect DiskPressure anywhere in the RKE2 server set",
         "Select nodes eligible for Longhorn filesystem trim",
@@ -3709,11 +3714,12 @@ def main() -> None:
         "reason=container-reference-present",
         "action=delete-stale-gitlab-runner-cache",
         "Wait for Kubernetes DiskPressure to clear after guarded cleanup",
-        "Inspect resumable Longhorn root-pressure evacuation state",
-        "Evacuate Longhorn replicas from pressured root-backed disks",
+        "Inspect legacy Longhorn root-pressure recovery state",
+        "Restore unsupported legacy Longhorn pressure eviction state",
         "relieve_longhorn_disk_pressure.py",
-        "longhorn_pressure_evacuation=completed",
-        "Wait for Kubernetes DiskPressure to clear after Longhorn evacuation",
+        "Reclaim one proven stale Longhorn replica directory",
+        "reclaim_stale_longhorn_replica_data.py",
+        "longhorn_stale_replica_reclaim=completed",
         "/run/k3s/containerd/containerd.sock",
         "/run/containerd/containerd.sock",
         "--image-endpoint",
@@ -3727,7 +3733,7 @@ def main() -> None:
         "Longhorn volume allocation",
         "Longhorn orphan resources",
         "Stop when safe cleanup cannot clear Kubernetes DiskPressure",
-        "The cleanup intentionally retained Longhorn replicas",
+        "The cleanup intentionally retained registered Longhorn replicas",
     ):
         require_text(
             node_storage_cleanup_text,
@@ -3737,24 +3743,43 @@ def main() -> None:
     longhorn_disk_pressure_relief_text = read(longhorn_disk_pressure_relief)
     for needle in (
         'ANNOTATION = "platform.gitops.io/root-pressure-eviction"',
-        "minimum_available_percentage",
-        "remaining_capacity",
-        'volume_status.get("robustness") == "faulted"',
-        'volume_spec.get("cloneMode") == "linked-clone"',
-        'integer(volume_spec.get("numberOfReplicas")) < 2',
-        '"allowScheduling": False',
-        'disk_name: {"allowScheduling": False, "evictionRequested": False}',
         "patch_longhorn_replica",
-        "selectedReplicas=",
-        'candidate.replica_name: False',
-        "restore_disk_state",
-        'pressure == "False"',
-        "evictionState=retained-for-resume",
+        "restore_legacy_state",
+        "longhorn_pressure_evacuation=legacy-state-restored",
+        "longhorn-node-not-ready-during-kubernetes-disk-pressure",
+        "eviction_requested is not False",
     ):
         require_text(
             longhorn_disk_pressure_relief_text,
             needle,
             f"Longhorn root-pressure relief must retain its safety contract: {needle}",
+        )
+    if re.search(
+        r"patch_longhorn_replica\([^,\n]+,\s*True\)",
+        longhorn_disk_pressure_relief_text,
+    ):
+        fail("Longhorn root-pressure relief must not start replica eviction")
+    stale_longhorn_replica_reclaimer_text = read(stale_longhorn_replica_reclaimer)
+    for needle in (
+        "TOMBSTONE_SUFFIX",
+        "MAX_DIRECTORY_ENTRIES",
+        "LEGACY_PRESSURE_ANNOTATION",
+        '"replica-data"',
+        "current-replica-count-does-not-match-desired",
+        "current-replica-health-history-not-safe",
+        "volume-engine-not-fully-stopped",
+        "persistent-volume-claim-has-pod-reference",
+        "kubernetes-volume-attachment-present",
+        "directory_has_open_files",
+        "shutil.rmtree.avoids_symlink_attacks",
+        "quarantine_candidate",
+        "multiple-proven-unregistered-replica-directories",
+        "longhorn_stale_replica_reclaim=completed",
+    ):
+        require_text(
+            stale_longhorn_replica_reclaimer_text,
+            needle,
+            f"stale Longhorn replica reclamation must fail closed: {needle}",
         )
     if "${#" in node_storage_cleanup_text:
         fail(

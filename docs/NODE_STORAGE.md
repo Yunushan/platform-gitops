@@ -27,7 +27,7 @@ on the same filesystem as an extra disk, by design.
 
 ## Safe Cleanup
 
-The guarded cleanup target removes only unused RKE2 container images, package
+The guarded cleanup target removes unused RKE2 container images, package
 manager caches, and system-managed temporary files. On mounted Longhorn XFS or
 EXT4 filesystems it also issues a bounded `fstrim`, which releases blocks that
 the guest filesystem has already marked unused without deleting files:
@@ -36,9 +36,11 @@ the guest filesystem has already marked unused without deleting files:
 make platform-node-storage-cleanup
 ```
 
-It never deletes Longhorn data, PVCs, snapshots, volume heads, or mounted
-application files. Docker cleanup and journal deletion require explicit
-retention choices:
+It never deletes registered Longhorn replicas, PVCs, snapshots, volume heads,
+or mounted application files. A separate fail-closed recovery phase can remove
+one old replica directory only when repeated cluster-state checks prove that it
+is an unregistered duplicate of a fully redundant detached volume. Docker
+cleanup and journal deletion require explicit retention choices:
 
 ```bash
 PLATFORM_NODE_STORAGE_DOCKER_PRUNE=true \
@@ -74,7 +76,8 @@ mounted Longhorn XFS/EXT4 filesystems across every server. It also runs
 `crictl rmi --prune` against every responsive CRI socket on each pressured
 node. CRI retains images used by existing containers; an unused image may need
 to be pulled again later. Active runner volumes, ordinary Docker volumes,
-Longhorn files, PVC data, and valid snapshots are never selected for deletion.
+registered Longhorn replicas, PVC data, and valid snapshots are never selected
+for deletion.
 
 The storage diagnose and cleanup targets use a 60-second Ansible host timeout by
 default because a node under disk pressure can respond slowly during SSH
@@ -102,40 +105,51 @@ nodes. Override that bounded wait with
 `PLATFORM_NODE_STORAGE_LONGHORN_ORPHAN_WAIT_TIMEOUT`; values below 300 seconds
 are rejected because they would be shorter than the orphan grace period.
 
-If those non-data cleanup steps cannot clear pressure, the cleanup performs a
-second guarded phase. It inventories Longhorn nodes, disks, volumes, replicas,
-and the allocated blocks of local replica directories. It requests Longhorn's
-native disk eviction only when all of these conditions hold:
+Kubernetes `DiskPressure` makes the corresponding Longhorn node unavailable.
+Longhorn then cannot complete replica eviction or ordinary orphan deletion on
+that node. Waiting for native eviction while pressure remains is therefore a
+circular recovery path. The cleanup restores any request left by the legacy
+pressure-eviction helper and does not start a new Longhorn eviction under
+active Kubernetes pressure.
 
-- the Longhorn data path is on the pressured root filesystem;
-- another Ready and schedulable node has both physical and provisioned
-  capacity for a replacement replica;
-- replica node anti-affinity can still be satisfied;
-- the volume is not faulted, a linked clone, or configured with fewer than two
-  replicas; and
-- the estimated reclaimable blocks can restore the configured root free-space
-  target.
+When Longhorn's orphan controller cannot process an old duplicate on that
+unavailable node, the cleanup can reclaim one proven-unregistered replica-data
+directory. Every one of these gates must pass:
 
-Longhorn creates and verifies replacement replicas before removing source
-replicas. The playbook disables new scheduling on the source disk without
-requesting whole-disk eviction, then directly requests eviction only for the
-capacity-planned replicas. This prevents a plan sized for one replica from
-accidentally starting an evacuation of every replica on the disk. It records
-the original disk and replica state in
-`platform.gitops.io/root-pressure-eviction`, and restores that state after
-Kubernetes reports `DiskPressure=False`. If the bounded wait expires, it leaves
-the annotated eviction request in place so the next run can resume safely. It
-never removes replica directories, PVCs, or snapshots.
+- Kubernetes reports `Ready=True` and `DiskPressure=True`, with memory, PID,
+  and network conditions clear, and the local Longhorn manager is Ready;
+- Longhorn's supported `replica-data` orphan policy and at least a five-minute
+  grace period are active, while the candidate is at least the configured age
+  and allocated-size floor;
+- the strict `pvc-UUID-8hex` directory is on a registered Longhorn filesystem
+  disk that shares `/`, is absent from every current Replica CR, and has exactly
+  one registered sibling replica directory for the same volume on that disk;
+- the v1 volume is detached, data-bearing, not migrating, cloning, restoring,
+  or deleting, and has at least two desired replicas;
+- the number of current Replica CRs exactly matches the desired count, all are
+  active, healthy-history, registered, and placed on distinct nodes;
+- every engine is stopped and unassigned, Longhorn has no attachment ticket,
+  Kubernetes has no `VolumeAttachment`, and no Pod references the bound PVC;
+  and
+- exactly one candidate passes globally on that node during the run.
 
-The automatic phase is enabled by default during cleanup. Operators can tune
-the bounded wait and target or explicitly disable evacuation:
+The helper inventories the cluster twice around a bounded settle period and
+requires an identical candidate fingerprint. It checks `/proc` for open files,
+atomically renames the directory to a hidden quarantine name, inventories the
+entire state a third time, checks open files again, and only then removes the
+quarantined directory. A crash leaves the recognizable quarantine name for a
+later run to revalidate. At most one directory is reclaimed per node and run.
+Registered replicas, PVCs, snapshots, and attached data are never deleted.
+
+This phase is enabled by default. It can be disabled or made more conservative:
 
 ```bash
-PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION_TIMEOUT=1800 \
-PLATFORM_NODE_STORAGE_LONGHORN_TARGET_FREE_PERCENTAGE=20 \
+PLATFORM_NODE_STORAGE_LONGHORN_STALE_REPLICA_MIN_AGE=7200 \
+PLATFORM_NODE_STORAGE_LONGHORN_STALE_REPLICA_MIN_BYTES=1073741824 \
+PLATFORM_NODE_STORAGE_LONGHORN_STALE_REPLICA_SETTLE_SECONDS=30 \
 make platform-node-storage-cleanup
 
-PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=false \
+PLATFORM_NODE_STORAGE_LONGHORN_STALE_REPLICA_RECLAIM=false \
 make platform-node-storage-cleanup
 ```
 
@@ -144,9 +158,11 @@ make platform-node-storage-cleanup
 An application cluster with no user repositories or pipelines is not an empty
 storage cluster. PostgreSQL, Harbor, monitoring, Loki, MinIO, Forgejo,
 Woodpecker, and the other platform services initialize PVCs, and Longhorn keeps
-the configured replica copies and snapshots for those volumes. The allocated
+the configured replica copies and snapshots for those volumes. Most allocated
 blocks under `/var/lib/longhorn/replicas` are therefore real platform data even
-when application-level user data is still zero.
+when application-level user data is still zero. A directory with no matching
+Replica CR can also be stale physical data; only the guarded proof above may
+classify and reclaim that special case automatically.
 
 The bootstrap uses `/home/longhorn` automatically only when `/home` is a
 different filesystem with enough free capacity. It deliberately rejects that
@@ -155,9 +171,9 @@ host with one 200 GiB disk entirely allocated to the root logical volume, the
 installer cannot manufacture independent Longhorn capacity; the safe choices
 are to add a dedicated disk to each node or provision the operating-system
 layout with a separate storage filesystem before production data is created.
-The guarded pressure repair can rebalance replicas to other nodes when their
-Longhorn disks have sufficient scheduler and physical headroom, but it never
-deletes referenced PVC data to make a single disk appear empty.
+Longhorn can rebalance replicas after pressure clears and alternate disks have
+sufficient scheduler and physical headroom. The guarded cleanup never deletes
+referenced PVC data to make a single disk appear empty.
 
 If pressure remains after the bounded wait, the playbook prints the kubelet
 condition, taints, filesystems, largest `/var/lib` consumers, runtime service
@@ -179,11 +195,11 @@ verified.
 ## What This Does Not Fix
 
 If the root filesystem is full because referenced Longhorn replica data is on
-`/var/lib/longhorn`, cache pruning, cluster-wide filesystem trim, and orphan
-cleanup can recover only blocks that are genuinely unused. Guarded evacuation
-also requires enough alternate scheduler capacity and replica placement room.
-Do not delete replica files to force space recovery. If evacuation reports a
-capacity or anti-affinity prerequisite, add a dedicated disk, add it as a
-Longhorn disk, then let Longhorn migrate or rebuild replicas. Review unused
-PVCs, old snapshots, backup retention, and registry/MinIO retention in their
-application APIs before approving any data deletion.
+`/var/lib/longhorn`, cache pruning, cluster-wide filesystem trim, orphan
+cleanup, and duplicate reclamation can recover only blocks that are genuinely
+unused. Do not delete replica files to force space recovery. When no single
+directory passes the strict duplicate proof, add a dedicated disk, add it as a
+Longhorn disk, clear pressure with additional capacity, and let Longhorn migrate
+or rebuild replicas. Review unused PVCs, old snapshots, backup retention, and
+registry/MinIO retention in their application APIs before approving any data
+deletion.

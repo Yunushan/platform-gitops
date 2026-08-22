@@ -97,6 +97,7 @@ VALIDATION_SCRIPTS = (
     "scripts/test_stuck_longhorn_attachment_repair.py",
     "scripts/test_unregistered_longhorn_replica_path_repair.py",
     "scripts/test_longhorn_disk_pressure_relief.py",
+    "scripts/test_stale_longhorn_replica_reclaim.py",
     "scripts/test_docs_make_targets.py",
     "scripts/test_markdown_links.py",
     "scripts/test_example_templates.py",
