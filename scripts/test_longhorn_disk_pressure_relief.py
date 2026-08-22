@@ -167,6 +167,21 @@ def verify_planner() -> None:
     if plan.candidates[0].destination_nodes != ("node-3",):
         raise AssertionError("planner ignored existing replica node anti-affinity")
 
+    def mark_pressured_source_not_ready(data):
+        source = data["nodes"][0]
+        source["status"]["conditions"][0]["status"] = "False"
+        for condition in source["status"]["diskStatus"]["default-disk"][
+            "conditions"
+        ]:
+            condition["status"] = "False"
+
+    plan, reason = evaluate(mark_pressured_source_not_ready)
+    if plan is None:
+        raise AssertionError(
+            "non-ready pressured source disk was not eligible for evacuation: "
+            f"{reason}"
+        )
+
     assert_rejected(
         "alternate-schedulable-longhorn-disk-absent",
         lambda data: [

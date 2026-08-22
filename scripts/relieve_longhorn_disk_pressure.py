@@ -110,8 +110,9 @@ def discover_disks(
         node_status = node.get("status", {})
         if not node_name or metadata.get("deletionTimestamp"):
             continue
-        if not condition_is_true(node_status.get("conditions") or [], "Ready"):
-            continue
+        node_ready = condition_is_true(
+            node_status.get("conditions") or [], "Ready"
+        )
         spec_disks = node_spec.get("disks") or {}
         status_disks = node_status.get("diskStatus") or {}
         for disk_name, disk_spec in spec_disks.items():
@@ -119,8 +120,6 @@ def discover_disks(
             disk_id = disk_status.get("diskUUID", "")
             current_disk_path = disk_path(disk_spec, disk_status)
             if not disk_id or not current_disk_path:
-                continue
-            if not condition_is_true(disk_status.get("conditions") or [], "Ready"):
                 continue
             usable = disk_usable_capacity(
                 disk_spec,
@@ -140,6 +139,12 @@ def discover_disks(
                 source_disks.append(disk)
                 continue
             if node_name == source_node:
+                continue
+            if not node_ready:
+                continue
+            if not condition_is_true(
+                disk_status.get("conditions") or [], "Ready"
+            ):
                 continue
             if not node_spec.get("allowScheduling", False):
                 continue
@@ -178,7 +183,7 @@ def build_plan(
         over_provisioning_percentage=over_provisioning_percentage,
     )
     if not source_disks:
-        return None, "ready-root-shared-longhorn-disk-absent"
+        return None, "root-shared-longhorn-source-disk-absent"
     if not destination_disks:
         return None, "alternate-schedulable-longhorn-disk-absent"
 
