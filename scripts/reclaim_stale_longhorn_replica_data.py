@@ -98,23 +98,109 @@ def integer(value: Any, default: int = 0) -> int:
         return default
 
 
-def condition_status(obj: JsonObject, condition_type: str) -> str:
+def condition_entry(obj: JsonObject, condition_type: str) -> JsonObject:
     for condition in obj.get("status", {}).get("conditions") or []:
         if condition.get("type") == condition_type:
-            return str(condition.get("status", "Unknown"))
-    return "Unknown"
+            return condition
+    return {}
 
 
-def pod_is_ready(pod: JsonObject) -> bool:
+def condition_status(obj: JsonObject, condition_type: str) -> str:
+    return str(condition_entry(obj, condition_type).get("status", "Unknown"))
+
+
+def condition_reason(obj: JsonObject, condition_type: str) -> str:
+    return str(condition_entry(obj, condition_type).get("reason", ""))
+
+
+def pod_has_running_containers(pod: JsonObject) -> bool:
     if pod.get("metadata", {}).get("deletionTimestamp"):
         return False
     if pod.get("status", {}).get("phase") != "Running":
         return False
     containers = pod.get("spec", {}).get("containers") or []
-    statuses = pod.get("status", {}).get("containerStatuses") or []
+    statuses = {
+        str(status.get("name", "")): status
+        for status in pod.get("status", {}).get("containerStatuses") or []
+    }
     return bool(containers) and len(statuses) == len(containers) and all(
-        status.get("ready") is True for status in statuses
+        container.get("name") in statuses
+        and (statuses[container.get("name")].get("state") or {}).get("running")
+        is not None
+        for container in containers
     )
+
+
+def pod_is_ready(pod: JsonObject) -> bool:
+    if not pod_has_running_containers(pod):
+        return False
+    containers = pod.get("spec", {}).get("containers") or []
+    statuses = {
+        str(status.get("name", "")): status
+        for status in pod.get("status", {}).get("containerStatuses") or []
+    }
+    return all(
+        statuses[container.get("name")].get("ready") is True
+        for container in containers
+    )
+
+
+def ready_manager_nodes(
+    *,
+    node_name: str,
+    local_longhorn_node: JsonObject,
+    manager_pods: list[JsonObject],
+    nodes: list[JsonObject],
+) -> tuple[set[str], str]:
+    longhorn_node_names = {
+        str(node.get("metadata", {}).get("name", ""))
+        for node in nodes
+        if node.get("metadata", {}).get("name")
+        and not node.get("metadata", {}).get("deletionTimestamp")
+    }
+    if node_name not in longhorn_node_names:
+        return set(), "longhorn-manager-topology-not-safe"
+
+    managers_by_node: dict[str, list[JsonObject]] = {}
+    for pod in manager_pods:
+        if pod.get("metadata", {}).get("deletionTimestamp"):
+            continue
+        manager_node = str(pod.get("spec", {}).get("nodeName", ""))
+        if not manager_node or manager_node not in longhorn_node_names:
+            return set(), "longhorn-manager-topology-not-safe"
+        managers_by_node.setdefault(manager_node, []).append(pod)
+    if set(managers_by_node) != longhorn_node_names or any(
+        len(pods) != 1 for pods in managers_by_node.values()
+    ):
+        return set(), "longhorn-manager-topology-not-safe"
+
+    ready_nodes = {
+        manager_node
+        for manager_node, pods in managers_by_node.items()
+        if pod_is_ready(pods[0])
+    }
+    quorum = len(longhorn_node_names) // 2 + 1
+    if len(ready_nodes) < quorum:
+        return set(), "longhorn-manager-control-plane-quorum-unavailable"
+
+    local_manager = managers_by_node[node_name][0]
+    local_longhorn_ready = condition_status(local_longhorn_node, "Ready")
+    local_longhorn_reason = condition_reason(local_longhorn_node, "Ready")
+    if local_longhorn_ready not in {"True", "False"}:
+        return set(), "longhorn-node-ready-state-not-observed"
+    if local_longhorn_ready == "False" and (
+        local_longhorn_reason != "KubernetesNodePressure"
+    ):
+        return set(), "longhorn-manager-unready-not-caused-by-kubernetes-pressure"
+    if node_name not in ready_nodes:
+        if not pod_has_running_containers(local_manager):
+            return set(), "longhorn-manager-process-not-running-on-pressure-node"
+        if not (
+            local_longhorn_ready == "False"
+            and local_longhorn_reason == "KubernetesNodePressure"
+        ):
+            return set(), "longhorn-manager-unready-not-caused-by-kubernetes-pressure"
+    return ready_nodes, "longhorn-manager-control-plane-safe"
 
 
 def parse_directory_name(name: str) -> tuple[str, str, bool] | None:
@@ -338,6 +424,7 @@ def evaluate_directory(
     pvcs: list[JsonObject],
     pods: list[JsonObject],
     nodes: list[JsonObject],
+    ready_manager_node_names: set[str],
     directories: list[ReplicaDirectory],
     now_ns: int,
     minimum_age_seconds: int,
@@ -366,6 +453,8 @@ def evaluate_directory(
     spec = volume.get("spec", {})
     status = volume.get("status", {})
     desired_replicas = integer(spec.get("numberOfReplicas"))
+    if str(status.get("ownerID", "")) not in ready_manager_node_names:
+        return None, "volume-controller-owner-not-ready"
     if (
         spec.get("dataEngine", "v1") not in {"", "v1"}
         or status.get("state") != "detached"
@@ -549,13 +638,14 @@ def select_candidate(
         .get(LEGACY_PRESSURE_ANNOTATION)
     ):
         return None, "legacy-pressure-eviction-state-present"
-    ready_managers = [
-        pod
-        for pod in manager_pods
-        if pod.get("spec", {}).get("nodeName") == node_name and pod_is_ready(pod)
-    ]
-    if not ready_managers:
-        return None, "longhorn-manager-not-ready-on-node"
+    ready_manager_node_names, manager_reason = ready_manager_nodes(
+        node_name=node_name,
+        local_longhorn_node=local_longhorn_nodes[0],
+        manager_pods=manager_pods,
+        nodes=nodes,
+    )
+    if not ready_manager_node_names:
+        return None, manager_reason
     deletion_modes = {
         item.strip()
         for item in settings.get("orphan-resource-auto-deletion", "").split(";")
@@ -581,6 +671,7 @@ def select_candidate(
             pvcs=pvcs,
             pods=pods,
             nodes=nodes,
+            ready_manager_node_names=ready_manager_node_names,
             directories=directories,
             now_ns=now_ns,
             minimum_age_seconds=effective_age,

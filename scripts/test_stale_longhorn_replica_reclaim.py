@@ -43,6 +43,9 @@ def longhorn_node(name: str, disk_id: str):
             }
         },
         "status": {
+            "conditions": [
+                {"type": "Ready", "status": "True", "reason": ""},
+            ],
             "diskStatus": {
                 "default-disk": {
                     "diskPath": "/var/lib/longhorn",
@@ -50,6 +53,24 @@ def longhorn_node(name: str, disk_id: str):
                     "diskUUID": disk_id,
                 }
             }
+        },
+    }
+
+
+def manager_pod(name: str, *, ready: bool = True, running: bool = True):
+    state = (
+        {"running": {"startedAt": "2026-08-22T00:00:00Z"}}
+        if running
+        else {"waiting": {"reason": "CrashLoopBackOff"}}
+    )
+    return {
+        "metadata": {"name": f"longhorn-manager-{name}"},
+        "spec": {"nodeName": name, "containers": [{"name": "manager"}]},
+        "status": {
+            "phase": "Running",
+            "containerStatuses": [
+                {"name": "manager", "ready": ready, "state": state}
+            ],
         },
     }
 
@@ -106,14 +127,9 @@ def fixtures():
             }
         },
         "manager_pods": [
-            {
-                "metadata": {"name": "longhorn-manager-node-1"},
-                "spec": {"nodeName": "node-1", "containers": [{"name": "manager"}]},
-                "status": {
-                    "phase": "Running",
-                    "containerStatuses": [{"name": "manager", "ready": True}],
-                },
-            }
+            manager_pod("node-1"),
+            manager_pod("node-2"),
+            manager_pod("node-3"),
         ],
         "settings": {
             "orphan-resource-auto-deletion": "replica-data;instance",
@@ -139,6 +155,7 @@ def fixtures():
                         "pvcName": "archive",
                         "pvName": VOLUME,
                     },
+                    "ownerID": "node-2",
                     "restoreRequired": False,
                     "robustness": "unknown",
                     "state": "detached",
@@ -222,10 +239,31 @@ def evaluate(mutate=None):
     return select_candidate(**data)
 
 
-def assert_rejected(mutate) -> None:
-    candidate, _ = evaluate(mutate)
+def assert_rejected(mutate, expected_reason: str | None = None) -> None:
+    candidate, reason = evaluate(mutate)
     if candidate is not None:
         raise AssertionError(f"unsafe stale directory candidate accepted: {candidate}")
+    if expected_reason is not None and reason != expected_reason:
+        raise AssertionError(f"expected rejection {expected_reason}, got {reason}")
+
+
+def pressure_degrade_local_manager(data) -> None:
+    data["manager_pods"][0]["status"]["containerStatuses"][0]["ready"] = False
+    data["nodes"][0]["status"]["conditions"][0].update(
+        status="False", reason="KubernetesNodePressure"
+    )
+
+
+def pressure_degrade_without_quorum(data) -> None:
+    pressure_degrade_local_manager(data)
+    data["manager_pods"][1]["status"]["containerStatuses"][0]["ready"] = False
+
+
+def pressure_degrade_with_stopped_manager(data) -> None:
+    pressure_degrade_local_manager(data)
+    data["manager_pods"][0]["status"]["containerStatuses"][0]["state"] = {
+        "waiting": {"reason": "CrashLoopBackOff"}
+    }
 
 
 def verify_candidate_guards() -> ReclaimCandidate:
@@ -235,6 +273,13 @@ def verify_candidate_guards() -> ReclaimCandidate:
     if candidate.directory.directory_name != f"{VOLUME}-8e679fdc":
         raise AssertionError("reclaimer selected the registered replica directory")
 
+    degraded_candidate, degraded_reason = evaluate(pressure_degrade_local_manager)
+    if degraded_candidate is None:
+        raise AssertionError(
+            "pressure-degraded local manager with a ready quorum was rejected: "
+            + degraded_reason
+        )
+
     assert_rejected(
         lambda data: data["kube_node"]["status"]["conditions"][0].update(
             status="False"
@@ -243,7 +288,23 @@ def verify_candidate_guards() -> ReclaimCandidate:
     assert_rejected(
         lambda data: data["manager_pods"][0]["status"]["containerStatuses"][
             0
-        ].update(ready=False)
+        ].update(ready=False),
+        "longhorn-manager-unready-not-caused-by-kubernetes-pressure",
+    )
+    assert_rejected(
+        pressure_degrade_without_quorum,
+        "longhorn-manager-control-plane-quorum-unavailable",
+    )
+    assert_rejected(
+        pressure_degrade_with_stopped_manager,
+        "longhorn-manager-process-not-running-on-pressure-node",
+    )
+    assert_rejected(
+        lambda data: data["manager_pods"].pop(),
+        "longhorn-manager-topology-not-safe",
+    )
+    assert_rejected(
+        lambda data: data["volumes"][0]["status"].update(ownerID="node-9")
     )
     assert_rejected(
         lambda data: data["settings"].update(

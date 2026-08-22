@@ -117,7 +117,11 @@ unavailable node, the cleanup can reclaim one proven-unregistered replica-data
 directory. Every one of these gates must pass:
 
 - Kubernetes reports `Ready=True` and `DiskPressure=True`, with memory, PID,
-  and network conditions clear, and the local Longhorn manager is Ready;
+  and network conditions clear. The manager topology must match the active
+  Longhorn nodes and a strict majority of managers must be Ready on distinct
+  nodes. The local manager may be unready only while its containers remain
+  running and the Longhorn Node reports `Ready=False` specifically because of
+  `KubernetesNodePressure`;
 - Longhorn's supported `replica-data` orphan policy and at least a five-minute
   grace period are active, while the candidate is at least the configured age
   and allocated-size floor;
@@ -125,7 +129,8 @@ directory. Every one of these gates must pass:
   disk that shares `/`, is absent from every current Replica CR, and has exactly
   one registered sibling replica directory for the same volume on that disk;
 - the v1 volume is detached, data-bearing, not migrating, cloning, restoring,
-  or deleting, and has at least two desired replicas;
+  or deleting, has at least two desired replicas, and its controller owner is
+  one of the Ready manager nodes;
 - the number of current Replica CRs exactly matches the desired count, all are
   active, healthy-history, registered, and placed on distinct nodes;
 - every engine is stopped and unassigned, Longhorn has no attachment ticket,
