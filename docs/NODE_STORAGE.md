@@ -124,8 +124,9 @@ directory. Every one of these gates must pass:
   Longhorn nodes and a strict majority of managers must be Ready on distinct
   nodes. The local manager may be unready or offline only when the Longhorn
   Node reports `Ready=False` specifically because of
-  `KubernetesNodePressure`; the detached volume controller owner must still be
-  one of the Ready manager nodes;
+  `KubernetesNodePressure`. A stale detached-volume owner may name that local
+  node only when its manager has no running containers and the strict majority
+  of managers remains Ready;
 - Longhorn's supported `replica-data` orphan policy and at least a five-minute
   grace period are active, while the candidate is at least the configured age
   and allocated-size floor;
@@ -134,20 +135,25 @@ directory. Every one of these gates must pass:
   one registered sibling replica directory for the same volume on that disk;
 - the v1 volume is detached, data-bearing, not migrating, cloning, restoring,
   or deleting, has at least two desired replicas, and its controller owner is
-  one of the Ready manager nodes;
+  either a Ready manager or the proven-offline local pressure-node manager;
 - the number of current Replica CRs exactly matches the desired count, all are
-  active, healthy-history, registered, and placed on distinct nodes;
+  active, stopped, unassigned, healthy-history, registered, and placed on
+  distinct nodes;
 - every engine is stopped and unassigned, Longhorn has no attachment ticket,
-  Kubernetes has no `VolumeAttachment`, and no Pod references the bound PVC;
-  and
+  and Kubernetes has no `VolumeAttachment`. A Pod may reference the bound PVC
+  only while it is Pending, unscheduled, unnominated, and has no running
+  container; and
 - exactly one candidate passes globally on that node during the run.
 
 The helper inventories the cluster twice around a bounded settle period and
 requires an identical candidate fingerprint. It checks `/proc` for open files,
 atomically renames the directory to a hidden quarantine name, inventories the
 entire state a third time, checks open files again, and only then removes the
-quarantined directory. A crash leaves the recognizable quarantine name for a
-later run to revalidate. At most one directory is reclaimed per node and run.
+quarantined directory. If state changes after quarantine, the helper restores
+the original name and defers cleanup. A crash leaves the recognizable
+quarantine name for a later run to revalidate. At most one directory is
+reclaimed per node and run. The helper also provides `--dry-run`, which performs
+the first two inventories and open-file check without renaming or deleting data.
 Registered replicas, PVCs, snapshots, and attached data are never deleted.
 
 The Longhorn manager DaemonSet tolerates Kubernetes' disk-pressure

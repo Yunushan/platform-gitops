@@ -21,6 +21,7 @@
     platform_argocd_health_probe_recovery_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT') }}"
     platform_argocd_service_repair_retry_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS') }}"
     platform_argocd_service_repair_app_sync_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT') }}"
+    platform_argocd_service_repair_guarded_prune_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_GUARDED_PRUNE') }}"
     platform_argocd_prune_legacy_traefik_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_PRUNE_LEGACY_TRAEFIK') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_refresh_apps_effective: "{{ platform_argocd_service_repair_refresh_apps | default(platform_argocd_service_repair_refresh_apps_from_env, true) | default(true, true) | bool }}"
@@ -37,6 +38,7 @@
     platform_argocd_health_probe_recovery_timeout_effective: "{{ platform_argocd_health_probe_recovery_timeout | default(platform_argocd_health_probe_recovery_timeout_from_env, true) | default(600, true) | int }}"
     platform_argocd_service_repair_retry_apps_effective: "{{ platform_argocd_service_repair_retry_apps | default(platform_argocd_service_repair_retry_apps_from_env, true) | default('argocd-ha traefik woodpecker', true) }}"
     platform_argocd_service_repair_app_sync_timeout_effective: "{{ platform_argocd_service_repair_app_sync_timeout | default(platform_argocd_service_repair_app_sync_timeout_from_env, true) | default(600, true) | int }}"
+    platform_argocd_service_repair_guarded_prune_effective: "{{ platform_argocd_service_repair_guarded_prune | default(platform_argocd_service_repair_guarded_prune_from_env, true) | default(true, true) | bool }}"
     platform_argocd_prune_legacy_traefik_effective: "{{ platform_argocd_prune_legacy_traefik | default(platform_argocd_prune_legacy_traefik_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Show current Argo CD service path state
@@ -893,6 +895,65 @@
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: platform_argocd_cleanup_stale_bootstrap_effective | bool
+
+    - name: Reconcile guarded pruning for refreshed Argo CD applications
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+        APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"
+        for app in ${APPS}; do
+          app_changed=0
+          if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" >/dev/null 2>&1; then
+            echo "application=${app} action=skip-guarded-prune reason=not-found"
+            continue
+          fi
+
+          automated="$($K --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.spec.syncPolicy.automated.prune}{"|"}{.spec.syncPolicy.automated.selfHeal}{"|"}{.spec.syncPolicy.automated.allowEmpty}' \
+            2>/dev/null || true)"
+          if [ "${automated}" != "true|true|false" ]; then
+            "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type=merge \
+              -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true,"allowEmpty":false}}}}' \
+              >/dev/null
+            echo "application=${app} action=reconciled-guarded-prune field=automated"
+            app_changed=1
+          fi
+
+          options_json="$($K --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.spec.syncPolicy.syncOptions}' 2>/dev/null || true)"
+          if [ -z "${options_json}" ] || [ "${options_json}" = "<nil>" ]; then
+            "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type=merge \
+              -p '{"spec":{"syncPolicy":{"syncOptions":[]}}}' >/dev/null
+            options_json='[]'
+          fi
+
+          for option in \
+            CreateNamespace=true \
+            Prune=confirm \
+            PruneLast=true \
+            PrunePropagationPolicy=foreground; do
+            if printf '%s\n' "${options_json}" | grep -Fq -- "\"${option}\""; then
+              continue
+            fi
+            "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type=json \
+              -p "[{\"op\":\"add\",\"path\":\"/spec/syncPolicy/syncOptions/-\",\"value\":\"${option}\"}]" \
+              >/dev/null
+            echo "application=${app} action=reconciled-guarded-prune syncOption=${option}"
+            app_changed=1
+          done
+
+          if [ "${app_changed}" -eq 0 ]; then
+            echo "application=${app} action=guarded-prune-already-current"
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: platform_argocd_guarded_prune_reconcile
+      changed_when: "'action=reconciled-guarded-prune' in platform_argocd_guarded_prune_reconcile.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_argocd_service_repair_guarded_prune_effective | bool
 
     - name: Refresh platform applications after Argo CD service repair
       ansible.builtin.shell: |

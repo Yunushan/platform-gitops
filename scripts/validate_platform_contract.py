@@ -129,6 +129,7 @@ base_step_ca_values = root / "gitops/clusters/rke2-main/apps/step-ca/values.yaml
 premium_step_ca_values = root / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml"
 stale_premium_root_app = root / "gitops/bootstrap/root-app-premium-3node.yaml"
 health_playbook = root / "ansible/playbooks/verify-platform-app-health.yml"
+argocd_service_repair_playbook = root / "ansible/playbooks/repair-argocd-service-path.yml"
 service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-service-path-consumers.yml"
 woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
 woodpecker_gitops_source_reconciler = root / "scripts/bootstrap/reconcile-woodpecker-gitops-source.sh"
@@ -2105,6 +2106,19 @@ def main() -> None:
         fail("platform-app-health must expose whether existing Argo CD Applications are included in app health checks")
     if "platform_app_health_include_existing_apps_effective" not in health_text:
         fail("platform-app-health must default existing Argo CD Application inclusion through an effective variable")
+    for needle in (
+        "PLATFORM_APP_HEALTH_DISCOVER_LIVE_HOSTS",
+        "platform_app_health_discover_live_hosts_effective",
+        "Discover focused GUI hosts from uniquely named live Ingresses",
+        "^(argo-cd-argocd-server|argocd-server)$",
+        "^(woodpecker-server|woodpecker)$",
+        "Use live focused GUI hosts only when no explicit host is configured",
+    ):
+        require_text(
+            health_text,
+            needle,
+            f"platform-app-health live host discovery must remain narrow and opt-in: {needle}",
+        )
     if "PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO" not in health_text:
         fail("platform-app-health must expose temporary seed Git/source repository enforcement")
     if "platform_app_health_forbid_temporary_repo_effective" not in health_text:
@@ -2327,6 +2341,7 @@ def main() -> None:
         "automated.prune=true",
         "automated.selfHeal=true",
         "automated.allowEmpty=false",
+        "sync_options_json",
         "Prune=confirm",
         "PruneLast=true",
         "PrunePropagationPolicy=foreground",
@@ -2338,6 +2353,8 @@ def main() -> None:
             needle,
             f"platform-app-health must verify live Argo CD guarded pruning: {needle}",
         )
+    if "range .spec.syncPolicy.syncOptions[*]" in health_text:
+        fail("platform-app-health must not use kubectl's non-portable syncOptions wildcard JSONPath")
     for needle in (
         "forgejo_replicas=",
         "rollout_strategy=",
@@ -3778,12 +3795,15 @@ def main() -> None:
         "longhorn-manager-unready-not-caused-by-kubernetes-pressure",
         "volume-controller-owner-not-ready",
         "volume-engine-not-fully-stopped",
-        "persistent-volume-claim-has-pod-reference",
+        "inactive_pressure_owner_node_names",
+        "persistent-volume-claim-has-active-pod-reference",
         "kubernetes-volume-attachment-present",
         "directory_has_open_files",
         "shutil.rmtree.avoids_symlink_attacks",
         "quarantine_candidate",
+        "restore_quarantined_candidate",
         "multiple-proven-unregistered-replica-directories",
+        "longhorn_stale_replica_reclaim=verified-only",
         "longhorn_stale_replica_reclaim=completed",
     ):
         require_text(
@@ -4127,13 +4147,15 @@ def main() -> None:
         "PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false",
         'PLATFORM_APP_HEALTH_NAMESPACES="argocd traefik woodpecker"',
         'PLATFORM_APP_HEALTH_GUI_APPS="argocd woodpecker"',
+        "PLATFORM_APP_HEALTH_DISCOVER_LIVE_HOSTS=true",
         "PLATFORM_APP_HEALTH_ARGOCD_RUNTIME=true",
+        "PLATFORM_APP_HEALTH_SSO=false",
         "PLATFORM_APP_HEALTH_REGISTRY_API=false",
         "PLATFORM_APP_HEALTH_MONITORING_API=false",
         "PLATFORM_APP_HEALTH_LOKI_API=false",
         "PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE=false",
         "PLATFORM_APP_HEALTH_VELERO_SCHEDULES=false",
-        "ansible/playbooks/verify-platform-app-health.yml",
+        "bash scripts/bootstrap/run-platform-app-health.sh",
     ):
         require_text(makefile_text, needle, f"platform-ci-health must pin focused health behavior: {needle}")
     if "PYTHON ?= python3" not in makefile_text:
@@ -4161,6 +4183,23 @@ def main() -> None:
     argocd_playbook_index = argocd_repair_body.find("ansible/playbooks/repair-argocd-service-path.yml")
     if not (0 <= argocd_dns_repair_index < argocd_playbook_index):
         fail("platform-argocd-service-repair must preflight shared DNS and API service paths")
+    argocd_service_repair_text = read(argocd_service_repair_playbook)
+    for needle in (
+        "PLATFORM_ARGOCD_SERVICE_REPAIR_GUARDED_PRUNE",
+        "Reconcile guarded pruning for refreshed Argo CD applications",
+        "options_json",
+        "Prune=confirm",
+        "PruneLast=true",
+        "PrunePropagationPolicy=foreground",
+        "/spec/syncPolicy/syncOptions/-",
+    ):
+        require_text(
+            argocd_service_repair_text,
+            needle,
+            f"Argo CD service repair must preserve guarded application pruning: {needle}",
+        )
+    if "range .spec.syncPolicy.syncOptions[*]" in argocd_service_repair_text:
+        fail("Argo CD service repair must not use kubectl's non-portable syncOptions wildcard JSONPath")
     if "platform-woodpecker-repair:" not in makefile_text:
         fail("Makefile is missing platform-woodpecker-repair target")
     for needle in (

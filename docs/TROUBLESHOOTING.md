@@ -63,6 +63,13 @@ debugging `502`, `504`, or Woodpecker agent `CrashLoopBackOff`, use:
 make platform-ci-health
 ```
 
+This focused gate loads any ignored deployment environment, excludes unrelated
+SSO-secret enforcement, and checks only Argo CD, Traefik, and Woodpecker. If an
+Argo CD or Woodpecker hostname was not explicitly configured, it can select the
+single host from the exact live application Ingress name. It fails closed on
+ambiguous or malformed routes. `make platform-app-health` does not use this
+fallback and remains the strict production-wide gate.
+
 If Woodpecker server and agent pods report different or unexpected versions,
 confirm the rendered values pin the Woodpecker server and agent image
 repositories plus `WOODPECKER_IMAGE_TAG` (`v3.16.0` by default), then sync the
@@ -84,6 +91,13 @@ service-path consumers, and then runs `make platform-ci-health`. The repair
 reconciles only Woodpecker's agent, database, and Forgejo OAuth secrets, so an
 unrelated Harbor S3 or backup credential cannot block this focused workflow.
 Use `make platform-app-secrets` to enforce the complete production secret gate.
+
+The Argo CD repair phase also reconciles `prune=true`, `selfHeal=true`,
+`allowEmpty=false`, and approval-gated foreground prune options for the exact
+applications it refreshes. Existing application-specific sync options are
+preserved. An emergency diagnostic can opt out with
+`PLATFORM_ARGOCD_SERVICE_REPAIR_GUARDED_PRUNE=false`, but production recovery
+should leave the default enabled.
 
 Before those steps, the target runs the guarded node-storage cleanup in
 pressure-only mode and waits for `DiskPressure` to clear. It prunes unused
