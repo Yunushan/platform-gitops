@@ -648,8 +648,15 @@
       args:
         executable: /bin/bash
       register: platform_node_storage_longhorn_pressure_state_before
+      retries: 3
+      delay: 5
+      until: >-
+        (platform_node_storage_longhorn_pressure_state_before.rc | default(-1) | int)
+        in [0, 42]
       changed_when: false
-      failed_when: false
+      failed_when: >-
+        (platform_node_storage_longhorn_pressure_state_before.rc | default(-1) | int)
+        not in [0, 42]
       when:
         - platform_node_storage_cleanup_effective | bool
         - platform_node_storage_longhorn_pressure_eviction_effective | bool
