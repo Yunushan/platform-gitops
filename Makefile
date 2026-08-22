@@ -430,10 +430,12 @@ platform-ci-health:
 	PLATFORM_APP_HEALTH_FORBID_TEMPORARY_REPO=false \
 	PLATFORM_APP_HEALTH_NAMESPACES="argocd traefik woodpecker" \
 	PLATFORM_APP_HEALTH_GUI_APPS="argocd woodpecker" \
+	PLATFORM_APP_HEALTH_DISCOVER_LIVE_HOSTS=true \
 	PLATFORM_APP_HEALTH_STORAGE_CLASSES=skip \
 	PLATFORM_APP_HEALTH_ARGOCD_RUNTIME=true \
 	PLATFORM_APP_HEALTH_LONGHORN_RUNTIME=false \
 	PLATFORM_APP_HEALTH_CNPG_CLUSTERS=skip \
+	PLATFORM_APP_HEALTH_SSO=false \
 	PLATFORM_APP_HEALTH_STEP_CA_API=false \
 	PLATFORM_APP_HEALTH_REGISTRY_API=false \
 	PLATFORM_APP_HEALTH_MONITORING_API=false \
@@ -441,7 +443,7 @@ platform-ci-health:
 	PLATFORM_APP_HEALTH_VELERO_BACKUP_STORAGE=false \
 	PLATFORM_APP_HEALTH_VELERO_SCHEDULES=false \
 	ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} \
-	ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-app-health.yml
+	bash scripts/bootstrap/run-platform-app-health.sh
 
 platform-woodpecker-repair:
 	@PLATFORM_NODE_STORAGE_PRESSURE_ONLY=true \

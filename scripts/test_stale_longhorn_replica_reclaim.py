@@ -21,6 +21,7 @@ from reclaim_stale_longhorn_replica_data import (  # noqa: E402
     parse_directory_name,
     quarantine_candidate,
     remove_quarantined_candidate,
+    restore_quarantined_candidate,
     select_candidate,
 )
 
@@ -81,7 +82,7 @@ def replica(name: str, node: str, disk_id: str, directory: str):
         "spec": {
             "active": True,
             "dataDirectoryName": directory,
-            "desireState": "running",
+            "desireState": "stopped",
             "diskID": disk_id,
             "failedAt": "",
             "healthyAt": "2026-08-20T08:00:00Z",
@@ -90,7 +91,7 @@ def replica(name: str, node: str, disk_id: str, directory: str):
             "nodeID": node,
             "volumeName": VOLUME,
         },
-        "status": {"currentState": "stopped"},
+        "status": {"currentState": "stopped", "instanceManagerName": ""},
     }
 
 
@@ -266,6 +267,29 @@ def pressure_degrade_with_stopped_manager(data) -> None:
     }
 
 
+def add_pending_unscheduled_consumer(data) -> None:
+    data["pods"].append(
+        {
+            "metadata": {"name": "consumer", "namespace": "platform-data"},
+            "spec": {
+                "containers": [{"name": "consumer"}],
+                "volumes": [
+                    {"persistentVolumeClaim": {"claimName": "archive"}}
+                ],
+            },
+            "status": {"phase": "Pending"},
+        }
+    )
+
+
+def mirror_live_pressure_state(data) -> None:
+    pressure_degrade_with_stopped_manager(data)
+    data["volumes"][0]["spec"]["numberOfReplicas"] = 2
+    data["volumes"][0]["status"]["ownerID"] = "node-1"
+    data["replicas"].pop(1)
+    add_pending_unscheduled_consumer(data)
+
+
 def verify_candidate_guards() -> ReclaimCandidate:
     candidate, reason = evaluate()
     if candidate is None:
@@ -303,6 +327,18 @@ def verify_candidate_guards() -> ReclaimCandidate:
             "offline pressure-node manager with a ready quorum was rejected: "
             + offline_reason
         )
+    live_candidate, live_reason = evaluate(mirror_live_pressure_state)
+    if live_candidate is None:
+        raise AssertionError(
+            "detached live pressure state with an offline stale owner was rejected: "
+            + live_reason
+        )
+    assert_rejected(
+        lambda data: (
+            pressure_degrade_local_manager(data),
+            data["volumes"][0]["status"].update(ownerID="node-1"),
+        )
+    )
     assert_rejected(
         lambda data: data["manager_pods"].pop(),
         "longhorn-manager-topology-not-safe",
@@ -321,6 +357,9 @@ def verify_candidate_guards() -> ReclaimCandidate:
         )
     )
     assert_rejected(lambda data: data["replicas"][0]["spec"].update(failedAt="now"))
+    assert_rejected(
+        lambda data: data["replicas"][0]["spec"].update(desireState="running")
+    )
     assert_rejected(
         lambda data: data["replicas"][0]["spec"].update(evictionRequested=True)
     )
@@ -365,6 +404,17 @@ def verify_candidate_guards() -> ReclaimCandidate:
                     ]
                 },
             }
+        )
+    )
+    pending_candidate, pending_reason = evaluate(add_pending_unscheduled_consumer)
+    if pending_candidate is None:
+        raise AssertionError(
+            "pending unscheduled PVC consumer was rejected: " + pending_reason
+        )
+    assert_rejected(
+        lambda data: (
+            add_pending_unscheduled_consumer(data),
+            data["pods"][0]["spec"].update(nodeName="node-2"),
         )
     )
     assert_rejected(
@@ -447,6 +497,10 @@ def verify_quarantine_before_delete() -> None:
             raise AssertionError("stale directory was not atomically quarantined")
         if not live_path.exists():
             raise AssertionError("registered sibling changed during quarantine")
+        restored = restore_quarantined_candidate(quarantined)
+        if not stale_path.exists() or restored.directory.tombstone:
+            raise AssertionError("quarantined stale directory was not restored")
+        quarantined = quarantine_candidate(restored)
         remove_quarantined_candidate(quarantined, lambda _path: False)
         if quarantined.directory.path.exists():
             raise AssertionError("quarantined stale directory was retained")

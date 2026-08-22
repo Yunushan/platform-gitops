@@ -21,6 +21,7 @@
     platform_app_health_trust_bundles_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_TRUST_BUNDLES') }}"
     platform_app_health_cnpg_clusters_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_CNPG_CLUSTERS') }}"
     platform_app_health_gui_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_GUI_APPS') }}"
+    platform_app_health_discover_live_hosts_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_DISCOVER_LIVE_HOSTS') }}"
     platform_app_health_registry_api_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_REGISTRY_API') }}"
     platform_app_health_monitoring_api_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_MONITORING_API') }}"
     platform_app_health_step_ca_api_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_STEP_CA_API') }}"
@@ -86,6 +87,7 @@
     platform_app_health_trust_bundles_effective: "{{ platform_app_health_trust_bundles | default(platform_app_health_trust_bundles_from_env, true) | default('auto', true) }}"
     platform_app_health_cnpg_clusters_effective: "{{ platform_app_health_cnpg_clusters | default(platform_app_health_cnpg_clusters_from_env, true) | default('auto', true) }}"
     platform_app_health_gui_apps_effective: "{{ platform_app_health_gui_apps | default(platform_app_health_gui_apps_from_env, true) | default('argocd forgejo harbor woodpecker keycloak grafana prometheus', true) }}"
+    platform_app_health_discover_live_hosts_effective: "{{ platform_app_health_discover_live_hosts | default(platform_app_health_discover_live_hosts_from_env, true) | default(false, true) | bool }}"
     platform_app_health_registry_api_effective: "{{ platform_app_health_registry_api | default(platform_app_health_registry_api_from_env, true) | default(true, true) | bool }}"
     platform_app_health_monitoring_api_effective: "{{ platform_app_health_monitoring_api | default(platform_app_health_monitoring_api_from_env, true) | default(true, true) | bool }}"
     platform_app_health_step_ca_api_effective: "{{ platform_app_health_step_ca_api | default(platform_app_health_step_ca_api_from_env, true) | default(true, true) | bool }}"
@@ -184,6 +186,125 @@
           - platform_minio_root_secret_name_effective | length > 0
         fail_msg: "Set rke2_ingress_vip, platform_domain/rke2_platform_domain, platform_argocd_host, and platform_ci_host/platform_woodpecker_host."
       run_once: true
+
+    - name: Record configured focused GUI hosts before optional discovery
+      ansible.builtin.set_fact:
+        platform_app_health_argocd_host_before_discovery: "{{ platform_argocd_host_effective }}"
+        platform_app_health_woodpecker_host_before_discovery: "{{ platform_woodpecker_host_effective }}"
+        platform_app_health_argocd_host_is_explicit: >-
+          {{
+            (platform_argocd_host | default('', true) | string | trim | length > 0)
+            or (platform_argocd_host_from_env | default('', true) | string | trim | length > 0)
+          }}
+        platform_app_health_woodpecker_host_is_explicit: >-
+          {{
+            (platform_woodpecker_host | default('', true) | string | trim | length > 0)
+            or (platform_ci_host | default('', true) | string | trim | length > 0)
+            or (platform_woodpecker_host_from_env | default('', true) | string | trim | length > 0)
+            or (platform_ci_host_from_env | default('', true) | string | trim | length > 0)
+          }}
+      when: platform_app_health_discover_live_hosts_effective | bool
+
+    - name: Discover focused GUI hosts from uniquely named live Ingresses
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        discover_ingress_host() {
+          app="$1"
+          namespace="$2"
+          route_pattern="$3"
+          rows="$($K --kubeconfig "$C" -n "${namespace}" get ingress \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .spec.rules[*]}{.host}{","}{end}{"\n"}{end}' \
+            2>/dev/null || true)"
+          hosts="$({
+            while IFS='|' read -r route_name route_hosts; do
+              [ -n "${route_name}" ] || continue
+              if ! printf '%s\n' "${route_name}" | grep -Eq "${route_pattern}"; then
+                continue
+              fi
+              printf '%s' "${route_hosts}" | tr ',' '\n'
+            done <<<"${rows}"
+          } | sed '/^$/d' | sort -u)"
+          count="$(printf '%s\n' "${hosts}" | sed '/^$/d' | wc -l | tr -d ' ')"
+          if [ "${count}" -ne 1 ]; then
+            echo "application=${app} action=skip-live-host-discovery candidates=${count}" >&2
+            return 0
+          fi
+          host="$(printf '%s\n' "${hosts}" | head -n 1)"
+          if ! printf '%s\n' "${host}" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$'; then
+            echo "application=${app} action=skip-live-host-discovery reason=invalid-host" >&2
+            return 0
+          fi
+          printf '%s|%s\n' "${app}" "${host}"
+        }
+
+        discover_ingress_host argocd argocd '^(argo-cd-argocd-server|argocd-server)$'
+        discover_ingress_host woodpecker woodpecker '^(woodpecker-server|woodpecker)$'
+      args:
+        executable: /bin/bash
+      register: platform_app_health_live_host_discovery
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+      when: platform_app_health_discover_live_hosts_effective | bool
+
+    - name: Parse discovered focused GUI hosts
+      ansible.builtin.set_fact:
+        platform_app_health_argocd_host_discovered: >-
+          {{
+            (
+              platform_app_health_live_host_discovery.stdout_lines
+              | default([])
+              | select('match', '^argocd[|]')
+              | map('regex_replace', '^[^|]+[|]', '')
+              | list
+              | first
+            ) | default('')
+          }}
+        platform_app_health_woodpecker_host_discovered: >-
+          {{
+            (
+              platform_app_health_live_host_discovery.stdout_lines
+              | default([])
+              | select('match', '^woodpecker[|]')
+              | map('regex_replace', '^[^|]+[|]', '')
+              | list
+              | first
+            ) | default('')
+          }}
+      when: platform_app_health_discover_live_hosts_effective | bool
+
+    - name: Use live focused GUI hosts only when no explicit host is configured
+      ansible.builtin.set_fact:
+        platform_argocd_host: >-
+          {{
+            platform_app_health_argocd_host_before_discovery
+            if platform_app_health_argocd_host_is_explicit | bool
+            else platform_app_health_argocd_host_discovered
+              | default(platform_app_health_argocd_host_before_discovery, true)
+          }}
+        platform_woodpecker_host: >-
+          {{
+            platform_app_health_woodpecker_host_before_discovery
+            if platform_app_health_woodpecker_host_is_explicit | bool
+            else platform_app_health_woodpecker_host_discovered
+              | default(platform_app_health_woodpecker_host_before_discovery, true)
+          }}
+      when: platform_app_health_discover_live_hosts_effective | bool
+
+    - name: Show focused GUI host selection
+      ansible.builtin.debug:
+        msg:
+          - >-
+            argocd_host={{ platform_argocd_host_effective }}
+            source={{ 'configured' if platform_app_health_argocd_host_is_explicit | bool else ('live-ingress' if platform_app_health_argocd_host_discovered | length > 0 else 'default') }}
+          - >-
+            woodpecker_host={{ platform_woodpecker_host_effective }}
+            source={{ 'configured' if platform_app_health_woodpecker_host_is_explicit | bool else ('live-ingress' if platform_app_health_woodpecker_host_discovered | length > 0 else 'default') }}
+      run_once: true
+      when: platform_app_health_discover_live_hosts_effective | bool
 
     - name: Verify Argo CD platform application health
       ansible.builtin.shell: |
@@ -328,13 +449,17 @@
             continue
           fi
 
-          policy="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-            -o jsonpath='{.spec.syncPolicy.automated.prune}{"|"}{.spec.syncPolicy.automated.selfHeal}{"|"}{.spec.syncPolicy.automated.allowEmpty}{"\n"}' 2>/dev/null || true)"
+          application_json="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o json 2>/dev/null || true)"
+          policy="$(printf '%s' "${application_json}" | /usr/bin/python3 -c \
+            'import json, sys; data = json.load(sys.stdin); automated = ((data.get("spec") or {}).get("syncPolicy") or {}).get("automated") or {}; flag = lambda value: "true" if value is True else ("false" if value is False else ""); print("|".join(flag(automated.get(key)) for key in ("prune", "selfHeal", "allowEmpty")))' \
+            2>/dev/null || true)"
           prune="$(printf '%s' "${policy}" | cut -d'|' -f1)"
           self_heal="$(printf '%s' "${policy}" | cut -d'|' -f2)"
           allow_empty="$(printf '%s' "${policy}" | cut -d'|' -f3)"
-          sync_options="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-            -o jsonpath='{range .spec.syncPolicy.syncOptions[*]}{.}{"\n"}{end}' 2>/dev/null || true)"
+          sync_options_json="$(printf '%s' "${application_json}" | /usr/bin/python3 -c \
+            'import json, sys; data = json.load(sys.stdin); policy = (data.get("spec") or {}).get("syncPolicy") or {}; print(json.dumps(policy.get("syncOptions") or [], separators=(",", ":")))' \
+            2>/dev/null || true)"
           missing=""
 
           [ "${prune}" = "true" ] || missing="${missing} automated.prune=true"
@@ -344,7 +469,7 @@
             "Prune=confirm" \
             "PruneLast=true" \
             "PrunePropagationPolicy=foreground"; do
-            if ! printf '%s\n' "${sync_options}" | grep -Fqx -- "${option}"; then
+            if ! printf '%s\n' "${sync_options_json}" | grep -Fq -- "\"${option}\""; then
               missing="${missing} syncOption:${option}"
             fi
           done

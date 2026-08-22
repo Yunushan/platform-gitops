@@ -818,7 +818,13 @@ repo-server/Redis service endpoint checks, plus the Argo CD, Traefik, and
 Woodpecker namespace, backend, ingress, generated Woodpecker secret, HA
 replica, runtime image tag, and ClusterIP service-path checks, while skipping
 Harbor, monitoring, Loki, Velero, CloudNativePG, Longhorn runtime, and
-StorageClass enforcement. It also sets
+StorageClass enforcement. It loads the ignored deployment environment through
+the normal health runner, but does not require unrelated platform SSO secrets.
+When no Argo CD or Woodpecker host was explicitly configured, this focused gate
+accepts the single host on the exact live Argo CD and Woodpecker Ingress names.
+Ambiguous or malformed live routes are never selected. The full
+`platform-app-health` gate remains strict and does not enable this discovery.
+The focused gate also sets
 `PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS=false`, so unrelated existing Argo
 CD Applications do not block this focused repair check.
 
@@ -843,6 +849,10 @@ make platform-woodpecker-repair
 This focused repair reconciles only Woodpecker's agent, database, and Forgejo
 OAuth secrets. Run `make platform-app-secrets` separately when validating the
 complete production secret posture, including Harbor S3 and backup credentials.
+Its Argo CD service repair also restores approval-gated automated pruning on the
+applications it refreshes without replacing their existing sync options. Set
+`PLATFORM_ARGOCD_SERVICE_REPAIR_GUARDED_PRUNE=false` only for an intentional,
+temporary diagnostic run.
 
 Before final production registration, also prove the selected GitOps profile is
 fully rendered and has no unresolved placeholders:

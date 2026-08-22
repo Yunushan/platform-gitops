@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -151,7 +152,7 @@ def ready_manager_nodes(
     local_longhorn_node: JsonObject,
     manager_pods: list[JsonObject],
     nodes: list[JsonObject],
-) -> tuple[set[str], str]:
+) -> tuple[set[str], set[str], str]:
     longhorn_node_names = {
         str(node.get("metadata", {}).get("name", ""))
         for node in nodes
@@ -159,7 +160,7 @@ def ready_manager_nodes(
         and not node.get("metadata", {}).get("deletionTimestamp")
     }
     if node_name not in longhorn_node_names:
-        return set(), "longhorn-manager-topology-not-safe"
+        return set(), set(), "longhorn-manager-topology-not-safe"
 
     managers_by_node: dict[str, list[JsonObject]] = {}
     for pod in manager_pods:
@@ -167,12 +168,12 @@ def ready_manager_nodes(
             continue
         manager_node = str(pod.get("spec", {}).get("nodeName", ""))
         if not manager_node or manager_node not in longhorn_node_names:
-            return set(), "longhorn-manager-topology-not-safe"
+            return set(), set(), "longhorn-manager-topology-not-safe"
         managers_by_node.setdefault(manager_node, []).append(pod)
     if set(managers_by_node) != longhorn_node_names or any(
         len(pods) != 1 for pods in managers_by_node.values()
     ):
-        return set(), "longhorn-manager-topology-not-safe"
+        return set(), set(), "longhorn-manager-topology-not-safe"
 
     ready_nodes = {
         manager_node
@@ -181,23 +182,35 @@ def ready_manager_nodes(
     }
     quorum = len(longhorn_node_names) // 2 + 1
     if len(ready_nodes) < quorum:
-        return set(), "longhorn-manager-control-plane-quorum-unavailable"
+        return set(), set(), "longhorn-manager-control-plane-quorum-unavailable"
 
     local_longhorn_ready = condition_status(local_longhorn_node, "Ready")
     local_longhorn_reason = condition_reason(local_longhorn_node, "Ready")
     if local_longhorn_ready not in {"True", "False"}:
-        return set(), "longhorn-node-ready-state-not-observed"
+        return set(), set(), "longhorn-node-ready-state-not-observed"
     if local_longhorn_ready == "False" and (
         local_longhorn_reason != "KubernetesNodePressure"
     ):
-        return set(), "longhorn-manager-unready-not-caused-by-kubernetes-pressure"
+        return set(), set(), "longhorn-manager-unready-not-caused-by-kubernetes-pressure"
     if node_name not in ready_nodes:
         if not (
             local_longhorn_ready == "False"
             and local_longhorn_reason == "KubernetesNodePressure"
         ):
-            return set(), "longhorn-manager-unready-not-caused-by-kubernetes-pressure"
-    return ready_nodes, "longhorn-manager-control-plane-safe"
+            return set(), set(), "longhorn-manager-unready-not-caused-by-kubernetes-pressure"
+
+    inactive_pressure_owner_nodes: set[str] = set()
+    if (
+        local_longhorn_ready == "False"
+        and local_longhorn_reason == "KubernetesNodePressure"
+        and not pod_has_running_containers(managers_by_node[node_name][0])
+    ):
+        inactive_pressure_owner_nodes.add(node_name)
+    return (
+        ready_nodes,
+        inactive_pressure_owner_nodes,
+        "longhorn-manager-control-plane-safe",
+    )
 
 
 def parse_directory_name(name: str) -> tuple[str, str, bool] | None:
@@ -386,7 +399,7 @@ def replica_is_safe(
     return bool(
         not metadata.get("deletionTimestamp")
         and spec.get("active") is True
-        and spec.get("desireState") == "running"
+        and spec.get("desireState") == "stopped"
         and spec.get("evictionRequested", False) is False
         and not spec.get("failedAt")
         and replica_history_is_safe(replica)
@@ -395,7 +408,8 @@ def replica_is_safe(
         and parsed is not None
         and parsed[0] == spec.get("volumeName")
         and not parsed[2]
-        and status.get("currentState") in {"running", "stopped"}
+        and status.get("currentState") == "stopped"
+        and not status.get("instanceManagerName")
     )
 
 
@@ -405,6 +419,25 @@ def pod_uses_claim(pod: JsonObject, namespace: str, claim_name: str) -> bool:
     return any(
         volume.get("persistentVolumeClaim", {}).get("claimName") == claim_name
         for volume in pod.get("spec", {}).get("volumes", [])
+    )
+
+
+def pod_claim_reference_is_quiescent(
+    pod: JsonObject,
+    namespace: str,
+    claim_name: str,
+) -> bool:
+    if not pod_uses_claim(pod, namespace, claim_name):
+        return True
+    metadata = pod.get("metadata", {})
+    spec = pod.get("spec", {})
+    status = pod.get("status", {})
+    return bool(
+        not metadata.get("deletionTimestamp")
+        and status.get("phase") == "Pending"
+        and not spec.get("nodeName")
+        and not status.get("nominatedNodeName")
+        and not pod_has_running_containers(pod)
     )
 
 
@@ -422,6 +455,7 @@ def evaluate_directory(
     pods: list[JsonObject],
     nodes: list[JsonObject],
     ready_manager_node_names: set[str],
+    inactive_pressure_owner_node_names: set[str],
     directories: list[ReplicaDirectory],
     now_ns: int,
     minimum_age_seconds: int,
@@ -450,7 +484,10 @@ def evaluate_directory(
     spec = volume.get("spec", {})
     status = volume.get("status", {})
     desired_replicas = integer(spec.get("numberOfReplicas"))
-    if str(status.get("ownerID", "")) not in ready_manager_node_names:
+    owner_id = str(status.get("ownerID", ""))
+    if owner_id not in (
+        ready_manager_node_names | inactive_pressure_owner_node_names
+    ):
         return None, "volume-controller-owner-not-ready"
     if (
         spec.get("dataEngine", "v1") not in {"", "v1"}
@@ -570,8 +607,11 @@ def evaluate_directory(
         or claim_uid != pvc_uid
     ):
         return None, "persistent-volume-claim-not-safely-bound"
-    if any(pod_uses_claim(pod, namespace, pvc_name) for pod in pods):
-        return None, "persistent-volume-claim-has-pod-reference"
+    if any(
+        not pod_claim_reference_is_quiescent(pod, namespace, pvc_name)
+        for pod in pods
+    ):
+        return None, "persistent-volume-claim-has-active-pod-reference"
     if any(
         attachment.get("spec", {}).get("source", {}).get(
             "persistentVolumeName"
@@ -635,7 +675,11 @@ def select_candidate(
         .get(LEGACY_PRESSURE_ANNOTATION)
     ):
         return None, "legacy-pressure-eviction-state-present"
-    ready_manager_node_names, manager_reason = ready_manager_nodes(
+    (
+        ready_manager_node_names,
+        inactive_pressure_owner_node_names,
+        manager_reason,
+    ) = ready_manager_nodes(
         node_name=node_name,
         local_longhorn_node=local_longhorn_nodes[0],
         manager_pods=manager_pods,
@@ -669,6 +713,7 @@ def select_candidate(
             pods=pods,
             nodes=nodes,
             ready_manager_node_names=ready_manager_node_names,
+            inactive_pressure_owner_node_names=inactive_pressure_owner_node_names,
             directories=directories,
             now_ns=now_ns,
             minimum_age_seconds=effective_age,
@@ -679,7 +724,15 @@ def select_candidate(
         else:
             reasons.append(reason)
     if not eligible:
-        return None, "no-proven-unregistered-replica-directory"
+        counts = Counter(reasons)
+        summary = ",".join(
+            f"{reason}:{counts[reason]}" for reason in sorted(counts)
+        )
+        return (
+            None,
+            "no-proven-unregistered-replica-directory"
+            + (f";rejections={summary}" if summary else ""),
+        )
     if len(eligible) != 1:
         return None, "multiple-proven-unregistered-replica-directories"
     return eligible[0], "proven-unregistered-replica-directory"
@@ -754,6 +807,65 @@ def quarantine_candidate(candidate: ReclaimCandidate) -> ReclaimCandidate:
             device=directory.device,
             inode=directory.inode,
             tombstone=True,
+        ),
+        pvc_namespace=candidate.pvc_namespace,
+        pvc_name=candidate.pvc_name,
+        pv_name=candidate.pv_name,
+    )
+
+
+def restore_quarantined_candidate(candidate: ReclaimCandidate) -> ReclaimCandidate:
+    directory = candidate.directory
+    parsed = parse_directory_name(directory.path.name)
+    if not directory.tombstone or parsed is None or not parsed[2]:
+        raise RuntimeError("refusing to restore a non-quarantined replica directory")
+    current = directory_metrics(directory.path)
+    expected = (
+        directory.allocated_bytes,
+        directory.newest_mtime_ns,
+        directory.device,
+        directory.inode,
+    )
+    if current != expected:
+        raise RuntimeError("quarantined replica directory changed before restore")
+    original = directory.path.parent / directory.directory_name
+    if original.exists() or original.is_symlink():
+        raise RuntimeError("original replica directory reappeared before restore")
+    if os.name == "nt":
+        os.rename(directory.path, original)
+    else:
+        directory_fd = os.open(
+            directory.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        )
+        try:
+            os.rename(
+                directory.path.name,
+                original.name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+        finally:
+            os.close(directory_fd)
+    restored_stat = original.lstat()
+    if (
+        restored_stat.st_dev != directory.device
+        or restored_stat.st_ino != directory.inode
+        or not stat.S_ISDIR(restored_stat.st_mode)
+        or stat.S_ISLNK(restored_stat.st_mode)
+    ):
+        raise RuntimeError("restored replica directory identity changed")
+    return ReclaimCandidate(
+        directory=ReplicaDirectory(
+            volume_name=directory.volume_name,
+            directory_name=directory.directory_name,
+            path=original,
+            disk_name=directory.disk_name,
+            disk_id=directory.disk_id,
+            allocated_bytes=directory.allocated_bytes,
+            newest_mtime_ns=directory.newest_mtime_ns,
+            device=directory.device,
+            inode=directory.inode,
+            tombstone=False,
         ),
         pvc_namespace=candidate.pvc_namespace,
         pvc_name=candidate.pvc_name,
@@ -926,13 +1038,34 @@ def run(args: argparse.Namespace) -> int:
             f"node={args.node} reason=replica-directory-has-open-files"
         )
         return 0
+    if args.dry_run:
+        print(
+            "longhorn_stale_replica_reclaim=verified-only "
+            f"node={args.node} volume={second.directory.volume_name} "
+            f"pvc={second.pvc_namespace}/{second.pvc_name} "
+            f"pv={second.pv_name} "
+            f"directory={second.directory.directory_name} "
+            f"reclaimableBytes={second.directory.allocated_bytes}"
+        )
+        return 0
 
     quarantined = quarantine_candidate(second)
     third, reason = discover()
     if third is None or third.fingerprint() != quarantined.fingerprint():
-        raise RuntimeError(
-            "quarantined candidate failed final cluster-state verification: " + reason
+        restore_quarantined_candidate(quarantined)
+        print(
+            "longhorn_stale_replica_reclaim=deferred "
+            f"node={args.node} reason=cluster-state-changed-after-quarantine "
+            f"detail={reason}"
         )
+        return 0
+    if directory_has_open_files(quarantined.directory.path):
+        restore_quarantined_candidate(quarantined)
+        print(
+            "longhorn_stale_replica_reclaim=deferred "
+            f"node={args.node} reason=replica-directory-opened-after-quarantine"
+        )
+        return 0
     remove_quarantined_candidate(quarantined)
     print(
         "longhorn_stale_replica_reclaim=completed "
@@ -953,6 +1086,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--minimum-age-seconds", type=int, default=3600)
     result.add_argument("--minimum-reclaim-bytes", type=int, default=1024**3)
     result.add_argument("--settle-seconds", type=int, default=15)
+    result.add_argument("--dry-run", action="store_true")
     return result
 
 
