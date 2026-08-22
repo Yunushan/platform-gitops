@@ -270,6 +270,105 @@
       ansible.builtin.debug:
         var: platform_node_storage_before.stdout_lines
 
+    - name: Summarize Longhorn logical and replicated storage allocation
+      ansible.builtin.shell: |
+        set -o pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        if [ ! -x "${K}" ] || [ ! -r "${C}" ]; then
+          echo 'longhorn_storage_accounting=unavailable reason=kubectl-or-kubeconfig-unavailable'
+          exit 0
+        fi
+        if ! "${K}" --kubeconfig "${C}" -n longhorn-system get \
+          volumes.longhorn.io >/dev/null 2>&1; then
+          echo 'longhorn_storage_accounting=unavailable reason=longhorn-volumes-unavailable'
+          exit 0
+        fi
+
+        "${K}" --kubeconfig "${C}" -n longhorn-system get \
+          volumes.longhorn.io -o json |
+          python3 -c '
+        import json
+        import sys
+
+        def integer(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+
+        rows = []
+        for volume in json.load(sys.stdin).get("items", []):
+            metadata = volume.get("metadata", {})
+            spec = volume.get("spec", {})
+            status = volume.get("status", {})
+            kubernetes = status.get("kubernetesStatus") or {}
+            actual = integer(status.get("actualSize"))
+            replicas = max(1, integer(spec.get("numberOfReplicas")))
+            rows.append(
+                (
+                    str(metadata.get("name", "unknown")),
+                    integer(spec.get("size")),
+                    actual,
+                    replicas,
+                    str(status.get("state", "unknown")),
+                    str(kubernetes.get("namespace", "unknown")) or "unknown",
+                    str(kubernetes.get("pvcName", "unknown")) or "unknown",
+                    str(kubernetes.get("pvName", "unknown")) or "unknown",
+                )
+            )
+
+        requested = sum(row[1] for row in rows)
+        logical = sum(row[2] for row in rows)
+        replicated = sum(row[2] * row[3] for row in rows)
+        attached = [row for row in rows if row[4] == "attached"]
+        detached = [row for row in rows if row[4] == "detached"]
+        print(
+            "longhorn_storage_accounting=ok volumes={} requestedBytes={} "
+            "logicalActualBytes={} estimatedReplicaBytes={} "
+            "attachedVolumes={} attachedActualBytes={} "
+            "detachedVolumes={} detachedActualBytes={}".format(
+                len(rows),
+                requested,
+                logical,
+                replicated,
+                len(attached),
+                sum(row[2] for row in attached),
+                len(detached),
+                sum(row[2] for row in detached),
+            )
+        )
+        print(
+            "longhorn_storage_model=requestedBytes-is-thin-provisioned; "
+            "logicalActualBytes-is-live-volume-data; "
+            "estimatedReplicaBytes=logical-data-times-replica-count; "
+            "snapshots-metadata-and-unregistered-stale-data-are-additional"
+        )
+        for row in sorted(rows, key=lambda item: item[2], reverse=True)[:10]:
+            if row[2] <= 0:
+                continue
+            print(
+                "longhorn_volume={} pvc={}/{} pv={} state={} actualBytes={} "
+                "replicas={} estimatedReplicaBytes={}".format(
+                    row[0], row[5], row[6], row[7], row[4], row[2], row[3],
+                    row[2] * row[3]
+                )
+            )
+        '
+      args:
+        executable: /bin/bash
+      register: platform_node_storage_longhorn_accounting
+      changed_when: false
+      failed_when: false
+      run_once: true
+      delegate_to: "{{ groups['rke2_servers'][0] }}"
+
+    - name: Print Longhorn logical and replicated storage allocation
+      ansible.builtin.debug:
+        var: platform_node_storage_longhorn_accounting.stdout_lines
+      run_once: true
+
     - name: Reclaim unused RKE2 container images
       ansible.builtin.shell: |
         set -o pipefail
@@ -914,6 +1013,9 @@
 
           Guarded stale Longhorn replica-data result:
           {{ (platform_node_storage_longhorn_stale_replica_reclaim | default({})).stdout | default('not run') }}
+
+          Longhorn logical and replicated storage accounting:
+          {{ (hostvars[groups['rke2_servers'][0]].platform_node_storage_longhorn_accounting | default({})).stdout | default('unavailable') }}
 
           Review the focused diagnostics above. If no physical directory passes
           every duplicate-data safety gate, add a dedicated Longhorn disk or

@@ -183,7 +183,6 @@ def ready_manager_nodes(
     if len(ready_nodes) < quorum:
         return set(), "longhorn-manager-control-plane-quorum-unavailable"
 
-    local_manager = managers_by_node[node_name][0]
     local_longhorn_ready = condition_status(local_longhorn_node, "Ready")
     local_longhorn_reason = condition_reason(local_longhorn_node, "Ready")
     if local_longhorn_ready not in {"True", "False"}:
@@ -193,8 +192,6 @@ def ready_manager_nodes(
     ):
         return set(), "longhorn-manager-unready-not-caused-by-kubernetes-pressure"
     if node_name not in ready_nodes:
-        if not pod_has_running_containers(local_manager):
-            return set(), "longhorn-manager-process-not-running-on-pressure-node"
         if not (
             local_longhorn_ready == "False"
             and local_longhorn_reason == "KubernetesNodePressure"
@@ -909,6 +906,8 @@ def run(args: argparse.Namespace) -> int:
     print(
         "longhorn_stale_replica_reclaim=settling "
         f"node={args.node} volume={candidate.directory.volume_name} "
+        f"pvc={candidate.pvc_namespace}/{candidate.pvc_name} "
+        f"pv={candidate.pv_name} "
         f"directory={candidate.directory.directory_name} "
         f"allocatedBytes={candidate.directory.allocated_bytes}"
     )
@@ -938,6 +937,8 @@ def run(args: argparse.Namespace) -> int:
     print(
         "longhorn_stale_replica_reclaim=completed "
         f"node={args.node} volume={quarantined.directory.volume_name} "
+        f"pvc={quarantined.pvc_namespace}/{quarantined.pvc_name} "
+        f"pv={quarantined.pv_name} "
         f"directory={quarantined.directory.directory_name} "
         f"reclaimedBytes={quarantined.directory.allocated_bytes}"
     )
