@@ -117,9 +117,11 @@ native disk eviction only when all of these conditions hold:
   target.
 
 Longhorn creates and verifies replacement replicas before removing source
-replicas. The playbook disables new scheduling on the source disk, requests
-disk eviction plus direct eviction for only the capacity-planned replicas,
-records the original disk and replica state in
+replicas. The playbook disables new scheduling on the source disk without
+requesting whole-disk eviction, then directly requests eviction only for the
+capacity-planned replicas. This prevents a plan sized for one replica from
+accidentally starting an evacuation of every replica on the disk. It records
+the original disk and replica state in
 `platform.gitops.io/root-pressure-eviction`, and restores that state after
 Kubernetes reports `DiskPressure=False`. If the bounded wait expires, it leaves
 the annotated eviction request in place so the next run can resume safely. It
@@ -136,6 +138,26 @@ make platform-node-storage-cleanup
 PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=false \
 make platform-node-storage-cleanup
 ```
+
+## Root-backed installation capacity
+
+An application cluster with no user repositories or pipelines is not an empty
+storage cluster. PostgreSQL, Harbor, monitoring, Loki, MinIO, Forgejo,
+Woodpecker, and the other platform services initialize PVCs, and Longhorn keeps
+the configured replica copies and snapshots for those volumes. The allocated
+blocks under `/var/lib/longhorn/replicas` are therefore real platform data even
+when application-level user data is still zero.
+
+The bootstrap uses `/home/longhorn` automatically only when `/home` is a
+different filesystem with enough free capacity. It deliberately rejects that
+path when `/home` and `/var/lib/longhorn` resolve to the same filesystem. On a
+host with one 200 GiB disk entirely allocated to the root logical volume, the
+installer cannot manufacture independent Longhorn capacity; the safe choices
+are to add a dedicated disk to each node or provision the operating-system
+layout with a separate storage filesystem before production data is created.
+The guarded pressure repair can rebalance replicas to other nodes when their
+Longhorn disks have sufficient scheduler and physical headroom, but it never
+deletes referenced PVC data to make a single disk appear empty.
 
 If pressure remains after the bounded wait, the playbook prints the kubelet
 condition, taints, filesystems, largest `/var/lib` consumers, runtime service
