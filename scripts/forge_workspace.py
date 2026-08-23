@@ -18,7 +18,7 @@ import fnmatch
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 from typing import Any
@@ -717,6 +717,22 @@ def forgejo_user(destination: Endpoint, username: str) -> tuple[int, dict[str, A
     return request(destination, "GET", f"users/{quote(username, safe='')}", expected=(200, 404), return_status=True)
 
 
+def require_named_api_record(
+    status: int,
+    record: Any,
+    expected_name: str,
+    label: str,
+) -> dict[str, Any]:
+    if status != 200 or not isinstance(record, dict):
+        raise WorkspaceError(f"{label} {expected_name!r} was not readable after reconciliation")
+    actual_name = string(record.get("login") or record.get("username"))
+    if actual_name.casefold() != expected_name.casefold():
+        raise WorkspaceError(
+            f"{label} read-back mismatch: expected {expected_name!r}, got {actual_name or '<missing>'!r}"
+        )
+    return record
+
+
 def import_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str, Any]) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
     if config["mode"] != "managed":
@@ -728,8 +744,9 @@ def import_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str
         if not source_username or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True):
             continue
         target_username = mapped_name(plan, "users", source_username, source_username)
-        status, _existing = forgejo_user(destination, target_username)
+        status, current = forgejo_user(destination, target_username)
         if status == 200:
+            require_named_api_record(status, current, target_username, "Forgejo user")
             existing += 1
             continue
         env_map = config.get("password_env_by_username") or {}
@@ -747,12 +764,48 @@ def import_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str
             "send_notify": False,
         }
         request(destination, "POST", "admin/users", body=body, expected=(201, 200))
+        verified_status, verified_user = forgejo_user(destination, target_username)
+        require_named_api_record(verified_status, verified_user, target_username, "Forgejo user")
         created += 1
-    return {"mode": config["mode"], "created": created, "existing": existing, "verified": True}
+    return {
+        "mode": config["mode"],
+        "created": created,
+        "existing": existing,
+        "verified_count": created + existing,
+        "verified": True,
+    }
 
 
 def forgejo_org(destination: Endpoint, name: str) -> tuple[int, dict[str, Any]]:
     return request(destination, "GET", f"orgs/{quote(name, safe='')}", expected=(200, 404), return_status=True)
+
+
+def reconcile_team_membership(
+    destination: Endpoint,
+    teams: dict[int, int],
+    selected_level: int | None,
+    username: str,
+) -> None:
+    encoded_username = quote(username, safe="")
+    for level, team_id in teams.items():
+        member_path = f"teams/{team_id}/members/{encoded_username}"
+        if level == selected_level:
+            request(destination, "PUT", member_path, expected=(204, 200, 201))
+        else:
+            request(destination, "DELETE", member_path, expected=(204, 200, 404))
+
+    for level, team_id in teams.items():
+        members = list_pages(destination, f"teams/{team_id}/members")
+        present = any(
+            string(member.get("login") or member.get("username")).casefold() == username.casefold()
+            for member in members
+        )
+        if present != (level == selected_level):
+            expected = "present" if level == selected_level else "absent"
+            raise WorkspaceError(
+                f"Forgejo team membership read-back mismatch for {username!r} in team {team_id}: "
+                f"expected {expected}"
+            )
 
 
 def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -774,7 +827,7 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
         source_path = string(item.get("full_path"))
         default_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_path.replace("/", "-"))[:100] or "migrated"
         target_name = mapped_name(plan, "groups", source_path, default_name)
-        status, _existing = forgejo_org(destination, target_name)
+        status, current = forgejo_org(destination, target_name)
         if status == 404:
             body = {
                 "username": target_name,
@@ -785,7 +838,15 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
             request(destination, "POST", "orgs", body=body, expected=(201, 200))
             created += 1
         else:
+            require_named_api_record(status, current, target_name, "Forgejo organization")
             existing += 1
+        verified_status, verified_org = forgejo_org(destination, target_name)
+        require_named_api_record(
+            verified_status,
+            verified_org,
+            target_name,
+            "Forgejo organization",
+        )
         org_by_path[source_path] = target_name
         policy = string(group_configs["subgroup" if group_is_subgroup(plan, source_path) else "group"].get("members_mode") or "import").lower()
         if isinstance(mappings, dict):
@@ -813,17 +874,30 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
         for member in members:
             access_level = int(member.get("access_level") or 0)
             selected = next((level for level, _name, _permission in team_definitions if access_level >= level), None)
-            if selected is None:
-                continue
             username = mapped_name(plan, "users", string(member.get("username")), string(member.get("username")))
-            request(destination, "PUT", f"teams/{teams[selected]}/members/{quote(username, safe='')}", expected=(204, 200, 201))
-    return {"mode": "managed", "created": created, "existing": existing, "organizations": org_by_path, "verified": True}
+            if not username:
+                raise WorkspaceError(f"GitLab group {source_path!r} contains a member without a username")
+            reconcile_team_membership(destination, teams, selected, username)
+    return {
+        "mode": "managed",
+        "created": created,
+        "existing": existing,
+        "organizations": org_by_path,
+        "verified_count": created + existing,
+        "verified": True,
+    }
 
 
 def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> int:
     teams = list_pages(destination, f"orgs/{quote(org, safe='')}/teams")
     existing = next((item for item in teams if string(item.get("name")) == name), None)
     if existing and existing.get("id") is not None:
+        actual_permission = string(existing.get("permission")).lower()
+        if actual_permission != permission:
+            raise WorkspaceError(
+                f"Forgejo team {org}/{name} permission mismatch: "
+                f"expected {permission!r}, got {actual_permission or '<missing>'!r}"
+            )
         return int(existing["id"])
     body = {
         "name": name,
@@ -835,7 +909,15 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
     created = request(destination, "POST", f"orgs/{quote(org, safe='')}/teams", body=body, expected=(201, 200))
     if not isinstance(created, dict) or created.get("id") is None:
         raise WorkspaceError(f"Forgejo team create returned no id for {org}/{name}")
-    return int(created["id"])
+    team_id = int(created["id"])
+    verified_teams = list_pages(destination, f"orgs/{quote(org, safe='')}/teams")
+    verified = next(
+        (item for item in verified_teams if int(item.get("id") or 0) == team_id),
+        None,
+    )
+    if not verified or string(verified.get("permission")).lower() != permission:
+        raise WorkspaceError(f"Forgejo team {org}/{name} did not verify after creation")
+    return team_id
 
 
 def destination_authenticated_username(destination: Endpoint) -> str:
@@ -1064,6 +1146,79 @@ def prepare_ci_checkout(destination_url: str, repo_root: Path) -> None:
     migration.run_command(["git", "clone", "--quiet", destination_url, str(repo_root)], check=True)
 
 
+def safe_ci_destination(repo_root: Path, value: str) -> tuple[Path, str]:
+    normalized = value.replace("\\", "/").strip()
+    parts = normalized.split("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized)
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(ord(character) < 32 for character in normalized)
+    ):
+        raise WorkspaceError(f"unsafe CI destination path {value!r}")
+    relative = PurePosixPath(*parts).as_posix()
+    destination = repo_root.joinpath(*parts)
+    root_resolved = repo_root.resolve()
+    destination_resolved = destination.resolve(strict=False)
+    if root_resolved != destination_resolved and root_resolved not in destination_resolved.parents:
+        raise WorkspaceError(f"CI destination path escapes checkout: {value!r}")
+    return destination, relative
+
+
+def verify_ci_remote_files(repo_root: Path, rendered_files: list[tuple[str, str]]) -> list[dict[str, str]]:
+    migration.run_command(
+        ["git", "-C", str(repo_root), "fetch", "--quiet", "origin"],
+        check=True,
+    )
+    verified: list[dict[str, str]] = []
+    for path, expected_content in rendered_files:
+        result = migration.run_command(
+            ["git", "-C", str(repo_root), "show", f"origin/HEAD:{path}"],
+            check=True,
+        )
+        expected_digest = hashlib.sha256(expected_content.encode("utf-8")).hexdigest()
+        actual_digest = hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+        if actual_digest != expected_digest:
+            raise WorkspaceError(
+                f"converted CI read-back mismatch for {path!r}: "
+                f"expected sha256:{expected_digest}, got sha256:{actual_digest}"
+            )
+        verified.append({"path": path, "sha256": expected_digest})
+    return verified
+
+
+def commit_ci_changes(repo_root: Path, paths: list[str]) -> str:
+    migration.run_command(["git", "-C", str(repo_root), "add", *paths], check=True)
+    staged = migration.run_command(
+        ["git", "-C", str(repo_root), "diff", "--cached", "--quiet"],
+        check=False,
+    )
+    if staged.returncode == 0:
+        return "unchanged"
+    if staged.returncode != 1:
+        raise WorkspaceError(
+            f"git staged-change probe failed for {repo_root.name!r} with rc={staged.returncode}"
+        )
+    migration.run_command(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "-c",
+            "user.name=platform-forge-workspace",
+            "-c",
+            "user.email=forge-workspace@invalid",
+            "commit",
+            "-m",
+            "Import GitLab CI as Woodpecker workflow",
+        ],
+        check=True,
+    )
+    migration.run_command(["git", "-C", str(repo_root), "push", "origin", "HEAD"], check=True)
+    return "committed"
+
+
 def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("ci"), "surfaces.ci")
     if config["mode"] != "managed":
@@ -1082,8 +1237,8 @@ def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) ->
         rendered_files: list[tuple[str, str]] = []
         for file_item in project_item.get("files", []):
             source_path = string(file_item.get("path"))
-            destination_path = string(mappings.get(source_path))
-            if not destination_path:
+            configured_destination = string(mappings.get(source_path))
+            if not configured_destination:
                 continue
             content = file_item.get("content")
             if not isinstance(content, str):
@@ -1091,21 +1246,31 @@ def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) ->
             rendered, report = pipeline.convert_pipeline("gitlab", content, source_path, conversion_config)
             if not report.get("supported"):
                 raise WorkspaceError(f"GitLab pipeline {project_path}:{source_path} has unsupported constructs")
-            rendered_files.append((destination_path, rendered))
+            rendered_files.append((configured_destination, rendered))
         if not rendered_files:
             results.append({"project": project_path, "files": [], "verified": True, "action": "no-files"})
             continue
         destination_url = string(source_item["destination"]["git_url"])
         repo_root = work_dir / "ci" / re.sub(r"[^A-Za-z0-9_.-]+", "-", project_path)
         prepare_ci_checkout(destination_url, repo_root)
+        safe_rendered_files: list[tuple[str, str]] = []
         for path, content in rendered_files:
-            destination_file = repo_root / path
+            destination_file, safe_path = safe_ci_destination(repo_root, path)
             destination_file.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(destination_file, content)
-        migration.run_command(["git", "-C", str(repo_root), "add", *[path for path, _ in rendered_files]], check=True)
-        migration.run_command(["git", "-C", str(repo_root), "-c", "user.name=platform-forge-workspace", "-c", "user.email=forge-workspace@invalid", "commit", "-m", "Import GitLab CI as Woodpecker workflow"], check=True)
-        migration.run_command(["git", "-C", str(repo_root), "push", "origin", "HEAD"], check=True)
-        results.append({"project": project_path, "files": [path for path, _ in rendered_files], "verified": True, "action": "committed"})
+            safe_rendered_files.append((safe_path, content))
+        paths = [path for path, _content in safe_rendered_files]
+        action = commit_ci_changes(repo_root, paths)
+        verified_files = verify_ci_remote_files(repo_root, safe_rendered_files)
+        results.append(
+            {
+                "project": project_path,
+                "files": paths,
+                "verified_files": verified_files,
+                "verified": True,
+                "action": action,
+            }
+        )
     return {"mode": config["mode"], "items": results, "verified": all(item.get("verified") is True for item in results)}
 
 

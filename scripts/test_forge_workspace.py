@@ -136,6 +136,159 @@ def test_ci_checkout_is_retryable() -> None:
             raise AssertionError("existing CI checkout was not reset for retry")
 
 
+def test_managed_user_requires_readback() -> None:
+    plan = base_plan()
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [{"username": "alice", "public_email": "alice@example.test"}]
+            }
+        }
+    }
+    destination = object()
+    with (
+        mock.patch.dict(workspace.os.environ, {"IMPORT_PASSWORD": "temporary-password"}),
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            side_effect=[(404, {}), (200, {"login": "alice"})],
+        ) as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.import_users(plan, destination, snapshot)  # type: ignore[arg-type]
+    if result.get("verified") is not True or result.get("verified_count") != 1:
+        raise AssertionError(f"managed user was not proven by read-back: {result!r}")
+    if user_probe.call_count != 2:
+        raise AssertionError("new Forgejo user was not read back after creation")
+    if not any(call.args[1:3] == ("POST", "admin/users") for call in api_request.call_args_list):
+        raise AssertionError("Forgejo administrative user create was not requested")
+
+    with (
+        mock.patch.dict(workspace.os.environ, {"IMPORT_PASSWORD": "temporary-password"}),
+        mock.patch.object(workspace, "forgejo_user", side_effect=[(404, {}), (404, {})]),
+        mock.patch.object(workspace, "request"),
+    ):
+        try:
+            workspace.import_users(plan, destination, snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "not readable after reconciliation" not in str(exc):
+                raise AssertionError(f"unexpected user read-back failure: {exc}") from exc
+        else:
+            raise AssertionError("managed user import accepted a missing read-back")
+
+
+def test_team_membership_is_reconciled_and_verified() -> None:
+    destination = object()
+    teams = {50: 1, 40: 2, 30: 3, 20: 4, 10: 5}
+
+    def team_members(_destination: object, path: str, **_kwargs: object) -> list[dict[str, str]]:
+        return [{"login": "alice"}] if path == "teams/2/members" else []
+
+    with (
+        mock.patch.object(workspace, "request") as api_request,
+        mock.patch.object(workspace, "list_pages", side_effect=team_members),
+    ):
+        workspace.reconcile_team_membership(destination, teams, 40, "alice")  # type: ignore[arg-type]
+    methods = [call.args[1] for call in api_request.call_args_list]
+    if methods.count("PUT") != 1 or methods.count("DELETE") != 4:
+        raise AssertionError(f"team membership was not reconciled exactly: {methods!r}")
+
+    with (
+        mock.patch.object(workspace, "request"),
+        mock.patch.object(workspace, "list_pages", return_value=[]),
+    ):
+        try:
+            workspace.reconcile_team_membership(destination, teams, 40, "alice")  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "membership read-back mismatch" not in str(exc):
+                raise AssertionError(f"unexpected membership read-back failure: {exc}") from exc
+        else:
+            raise AssertionError("team membership import accepted a missing read-back")
+
+
+def test_team_permission_fails_closed() -> None:
+    with mock.patch.object(
+        workspace,
+        "list_pages",
+        return_value=[{"id": 7, "name": "gitlab-owners", "permission": "write"}],
+    ):
+        try:
+            workspace.ensure_team(object(), "platform", "gitlab-owners", "admin")  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "permission mismatch" not in str(exc):
+                raise AssertionError(f"unexpected team permission failure: {exc}") from exc
+        else:
+            raise AssertionError("team permission mismatch was accepted")
+
+
+def test_ci_destination_and_remote_proof() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        repo_root = Path(temp_dir) / "checkout"
+        repo_root.mkdir()
+        destination, relative = workspace.safe_ci_destination(repo_root, ".woodpecker/build.yml")
+        if destination != repo_root / ".woodpecker" / "build.yml" or relative != ".woodpecker/build.yml":
+            raise AssertionError("safe CI destination was normalized incorrectly")
+        for unsafe in ("../outside.yml", "/absolute.yml", "C:\\absolute.yml", "nested//empty.yml"):
+            try:
+                workspace.safe_ci_destination(repo_root, unsafe)
+            except workspace.WorkspaceError:
+                pass
+            else:
+                raise AssertionError(f"unsafe CI destination was accepted: {unsafe!r}")
+
+        content = "steps:\n  test:\n    image: alpine\n"
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        readback = mock.Mock(returncode=0, stdout=content, stderr="")
+        with mock.patch.object(
+            workspace.migration,
+            "run_command",
+            side_effect=[completed, readback],
+        ):
+            verified = workspace.verify_ci_remote_files(
+                repo_root,
+                [(".woodpecker/build.yml", content)],
+            )
+        if verified[0].get("sha256") != workspace.hashlib.sha256(content.encode("utf-8")).hexdigest():
+            raise AssertionError("CI remote proof did not include the expected digest")
+
+        wrong_readback = mock.Mock(returncode=0, stdout="different\n", stderr="")
+        with mock.patch.object(
+            workspace.migration,
+            "run_command",
+            side_effect=[completed, wrong_readback],
+        ):
+            try:
+                workspace.verify_ci_remote_files(repo_root, [(".woodpecker/build.yml", content)])
+            except workspace.WorkspaceError as exc:
+                if "read-back mismatch" not in str(exc):
+                    raise AssertionError(f"unexpected CI read-back failure: {exc}") from exc
+            else:
+                raise AssertionError("converted CI import accepted mismatched remote content")
+
+
+def test_ci_commit_is_idempotent() -> None:
+    repo_root = Path("checkout")
+    unchanged = mock.Mock(returncode=0, stdout="", stderr="")
+    with mock.patch.object(
+        workspace.migration,
+        "run_command",
+        side_effect=[mock.Mock(returncode=0), unchanged],
+    ) as run_command:
+        action = workspace.commit_ci_changes(repo_root, [".woodpecker.yml"])
+    if action != "unchanged" or run_command.call_count != 2:
+        raise AssertionError("unchanged CI import attempted to create another commit")
+
+    changed = mock.Mock(returncode=1, stdout="", stderr="")
+    with mock.patch.object(
+        workspace.migration,
+        "run_command",
+        side_effect=[mock.Mock(returncode=0), changed, mock.Mock(returncode=0), mock.Mock(returncode=0)],
+    ) as run_command:
+        action = workspace.commit_ci_changes(repo_root, [".woodpecker.yml"])
+    if action != "committed" or run_command.call_count != 4:
+        raise AssertionError("changed CI import did not commit and push exactly once")
+
+
 def test_pipeline_schedule_import_is_not_history_import() -> None:
     plan = base_plan()
     snapshot = {
@@ -180,6 +333,11 @@ def main() -> int:
     test_redaction_and_destination_url()
     test_selected_nested_group_is_a_root()
     test_ci_checkout_is_retryable()
+    test_managed_user_requires_readback()
+    test_team_membership_is_reconciled_and_verified()
+    test_team_permission_fails_closed()
+    test_ci_destination_and_remote_proof()
+    test_ci_commit_is_idempotent()
     test_pipeline_schedule_import_is_not_history_import()
     print("Forge workspace migration self-test passed.")
     return 0
