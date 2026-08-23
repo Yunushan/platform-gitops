@@ -38,6 +38,7 @@ def main() -> int:
         "hosts: rke2_servers[0]",
         "PLATFORM_CAPACITY_ROOT_FREE_PERCENT",
         "PLATFORM_CAPACITY_STORAGE_FREE_PERCENT",
+        "PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED",
         "PLATFORM_CAPACITY_MAX_CPU_PERCENT",
         "PLATFORM_CAPACITY_MAX_MEMORY_PERCENT",
         "PLATFORM_CAPACITY_MAX_PODS_PERCENT",
@@ -45,6 +46,7 @@ def main() -> int:
         "PLATFORM_STORAGE_ENCRYPTION_REQUIRED",
         "LONGHORN_ENCRYPTION_SECRET_NAME",
         "df -Pk",
+        "stat -f -c '%i'",
         'get nodes -o json',
         'get pods -A -o json',
         "nodes.longhorn.io",
@@ -56,6 +58,9 @@ def main() -> int:
         "init_cpu",
         "longhorn_schedulable_nodes",
         "filesystem-headroom-below-threshold",
+        "platform-storage-path-missing",
+        "platform-storage-filesystem-detection-failed",
+        "platform-storage-shares-root-filesystem",
         "ready-node-count-below-threshold",
         "cpu-requests-above-threshold",
         "memory-requests-above-threshold",
@@ -92,10 +97,15 @@ def main() -> int:
     require(makefile, "platform-capacity-verify:", "Makefile")
     require(
         production_check,
-        '"${make_command}" platform-capacity-verify',
+        'PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED=true "${make_command}" platform-capacity-verify',
         "production readiness gate",
     )
     require(planning, "make platform-capacity-verify", "capacity planning runbook")
+    require(
+        planning,
+        "PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED=true",
+        "capacity planning runbook",
+    )
     require(readiness, "make platform-capacity-verify", "production readiness runbook")
 
     print("Production capacity runtime contract passed.")

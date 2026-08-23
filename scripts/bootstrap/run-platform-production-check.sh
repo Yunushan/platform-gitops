@@ -74,7 +74,7 @@ PLATFORM_IMAGE_INTEGRITY_REQUIRED=true \
 "${make_command}" platform-internal-tls-verify
 "${make_command}" platform-openbao-verify
 PLATFORM_ALERT_DELIVERY_TEST=true "${make_command}" platform-observability-verify
-"${make_command}" platform-capacity-verify
+PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED=true "${make_command}" platform-capacity-verify
 # Keep the child health gate on the exact same selected private environment.
 PLATFORM_APP_HEALTH_ENV_FILE="${env_file}" PLATFORM_APP_HEALTH_MODE=production "${make_command}" platform-app-health
 "${make_command}" platform-data-protection

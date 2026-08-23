@@ -18,6 +18,7 @@ from bounded_file import read_bounded_text
 
 
 INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"
+FORGEJO_DEFAULT_IMAGE_TAG = "15.0.7"
 
 
 def read_inventory_vars(path: Path) -> dict[str, str]:
@@ -1542,9 +1543,12 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
 
     data_size = os.environ.get("FORGEJO_DATA_SIZE", "20Gi").strip() or "20Gi"
     storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical-encrypted").strip()
-    image_tag = os.environ.get("FORGEJO_IMAGE_TAG", "").strip()
-    if image_tag and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$", image_tag):
-        raise SystemExit("FORGEJO_IMAGE_TAG must be an immutable release tag such as 15.0.3-rootless")
+    image_tag = (
+        os.environ.get("FORGEJO_IMAGE_TAG", FORGEJO_DEFAULT_IMAGE_TAG).strip()
+        or FORGEJO_DEFAULT_IMAGE_TAG
+    )
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$", image_tag):
+        raise SystemExit("FORGEJO_IMAGE_TAG must be an immutable release tag such as 15.0.7-rootless")
     database_mode = (
         os.environ.get("FORGEJO_DATABASE_MODE")
         or os.environ.get("PLATFORM_SQL_DATABASE_MODE")
