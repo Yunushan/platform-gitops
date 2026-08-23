@@ -12,11 +12,20 @@ and export the named token variables. Each plan can contain multiple repository
 objects for a batch migration.
 
 The examples require and prove branches, tags, Git notes, the default branch,
-labels, milestones, portable releases, and portable issues/comments. Wiki and
-Git LFS use explicit `auto` policy. Provider-owned pull/merge request history,
-release assets, packages, projects, identities, permissions, protection rules,
-and webhooks are explicitly skipped and therefore are not part of a successful
+labels, milestones, portable releases, portable issues/comments, and portable
+same-repository pull or merge requests. The GitHub-to-Forgejo and
+GitLab-to-Forgejo plans also require the verified branch-protection subset;
+reverse directions explicitly skip it. Wiki and Git LFS use explicit `auto`
+policy. Release assets, packages, projects, identities, permissions, and
+webhooks are explicitly skipped and therefore are not part of a successful
 portable proof.
+
+Replace the GitHub example's exact `main` branch list with the complete approved
+scope. Replace the GitLab example's `Owners` value with a pre-created Forgejo
+team that represents GitLab Maintainers. Non-portable controls fail plan or
+runtime verification instead of being weakened silently. Migrated Forgejo rules
+apply to administrators, and the read-back proof includes Forgejo's independent
+stale-approval switch rather than leaving either control outside the digest.
 
 Run a plan with:
 

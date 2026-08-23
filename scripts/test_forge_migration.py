@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -108,6 +109,308 @@ def test_command_timeout_redacts_credentials() -> None:
         raise AssertionError("migration timeout diagnostic exposed URL credentials")
     if "<redacted>" not in message or "timed out after 7 seconds" not in message:
         raise AssertionError(f"migration timeout diagnostic was incomplete: {message}")
+
+
+def branch_protection_repo(
+    source_provider: str,
+    branch_protection: dict[str, object],
+) -> migration.RepoPlan:
+    _direction, repositories = migration.parse_plan(
+        {
+            "direction": f"{source_provider}-to-forgejo",
+            "repositories": [
+                {
+                    "name": f"{source_provider}-branch-protection",
+                    "source": {
+                        "url": f"https://{source_provider}.example.test/source/repository.git",
+                        "api_url": f"https://{source_provider}.example.test/api",
+                        "api_repository": "source/repository",
+                    },
+                    "destination": {
+                        "url": "https://forgejo.example.test/destination/repository.git",
+                        "api_url": "https://forgejo.example.test/api/v1",
+                        "api_repository": "destination/repository",
+                    },
+                    "metadata": {"branch_protection": branch_protection},
+                }
+            ],
+        }
+    )
+    return repositories[0]
+
+
+def test_github_branch_protection_migration() -> None:
+    repo = branch_protection_repo(
+        "github",
+        {
+            "mode": "required",
+            "branches": ["main", "release/stable"],
+        },
+    )
+    portable_rule = {
+        "restrictions": {"users": [], "teams": [], "apps": []},
+        "enforce_admins": {"enabled": True},
+        "required_status_checks": {
+            "strict": True,
+            "contexts": ["validate"],
+            "checks": [{"context": "CodeQL"}],
+        },
+        "required_pull_request_reviews": {
+            "dismissal_restrictions": {"users": [], "teams": [], "apps": []},
+            "bypass_pull_request_allowances": {"users": [], "teams": [], "apps": []},
+            "dismiss_stale_reviews": True,
+            "require_code_owner_reviews": False,
+            "require_last_push_approval": False,
+            "required_approving_review_count": 2,
+        },
+        "required_signatures": {"enabled": True},
+    }
+    github_rules = {
+        "main": deepcopy(portable_rule),
+        "release/stable": deepcopy(portable_rule),
+    }
+    expected_main = migration.normalize_github_branch_protection(
+        "main", github_rules["main"]
+    )
+    stale_main = deepcopy(expected_main)
+    stale_main["rule_name"] = "main"
+    stale_main["apply_to_admins"] = False
+    destination_rules: list[dict[str, object]] = [
+        stale_main,
+        {
+            **migration.empty_forgejo_branch_protection("destination-only"),
+            "rule_name": "destination-only",
+        },
+    ]
+    writes: list[tuple[str, str, dict[str, object]]] = []
+
+    def fake_request(
+        target: migration.ApiTarget,
+        method: str,
+        path: str,
+        body: dict[str, object] | None = None,
+        **_kwargs: object,
+    ) -> object:
+        if target.provider == "github" and method == "GET":
+            marker = "/branches/"
+            branch = unquote(path.split(marker, 1)[1].rsplit("/protection", 1)[0])
+            return deepcopy(github_rules[branch])
+        if target.provider != "forgejo":
+            raise AssertionError(f"unexpected branch-protection target: {target.provider}")
+        if method == "GET" and path.endswith("/branch_protections"):
+            return deepcopy(destination_rules)
+        if method == "POST" and path.endswith("/branch_protections"):
+            if body is None:
+                raise AssertionError("Forgejo branch-protection create omitted its body")
+            writes.append((method, path, deepcopy(body)))
+            destination_rules.append(deepcopy(body))
+            return deepcopy(body)
+        if method == "PATCH" and "/branch_protections/" in path:
+            if body is None:
+                raise AssertionError("Forgejo branch-protection update omitted its body")
+            name = unquote(path.rsplit("/", 1)[1])
+            writes.append((method, path, deepcopy(body)))
+            for index, existing in enumerate(destination_rules):
+                if str(existing.get("rule_name") or existing.get("branch_name")) == name:
+                    destination_rules[index] = {
+                        "branch_name": name,
+                        "rule_name": name,
+                        **deepcopy(body),
+                    }
+                    return deepcopy(destination_rules[index])
+            raise AssertionError(f"missing destination rule for PATCH {name}")
+        raise AssertionError(f"unexpected branch-protection API call: {method} {path}")
+
+    with mock.patch.object(migration, "api_request", side_effect=fake_request):
+        result = migration.migrate_branch_protections(repo)
+        verified = migration.verify_branch_protections(repo)
+
+    if result.get("verified") is not True or result.get("created") != 1 or result.get("updated") != 1:
+        raise AssertionError(f"GitHub branch-protection migration did not verify: {result}")
+    if result.get("extra") != ["destination-only"]:
+        raise AssertionError(f"destination-only branch rule was not reported: {result}")
+    if verified.get("verified") is not True:
+        raise AssertionError(f"GitHub branch-protection read-only verification failed: {verified}")
+    methods = sorted(method for method, _path, _body in writes)
+    if methods != ["PATCH", "POST"]:
+        raise AssertionError(f"expected one Forgejo create and update, got {writes}")
+    normalized_main = migration.normalize_forgejo_branch_protection(
+        next(rule for rule in destination_rules if rule.get("rule_name") == "main")
+    )
+    if normalized_main != expected_main:
+        raise AssertionError("Forgejo read-back did not preserve the portable GitHub rule")
+    if not normalized_main["apply_to_admins"]:
+        raise AssertionError("GitHub administrator enforcement was not preserved")
+    if normalized_main["ignore_stale_approvals"]:
+        raise AssertionError("Forgejo-only stale-approval behavior was unexpectedly enabled")
+    stale_drift = deepcopy(expected_main)
+    stale_drift["ignore_stale_approvals"] = True
+    stale_comparison = migration.compare_branch_protection_sets(
+        [expected_main], [stale_drift]
+    )
+    if stale_comparison.get("verified") is not False or stale_comparison.get(
+        "mismatched"
+    ) != ["main"]:
+        raise AssertionError("Forgejo stale-approval drift escaped the policy digest")
+
+
+def test_gitlab_branch_protection_migration() -> None:
+    repo = branch_protection_repo(
+        "gitlab",
+        {
+            "mode": "required",
+            "gitlab_maintainer_team": "Owners",
+        },
+    )
+    source_rules = [
+        {
+            "name": "main",
+            "push_access_levels": [{"access_level": 0}],
+            "merge_access_levels": [{"access_level": 40}],
+            "unprotect_access_levels": [{"access_level": 40}],
+            "allow_force_push": False,
+            "code_owner_approval_required": False,
+        }
+    ]
+    destination_rules: list[dict[str, object]] = []
+    posted: list[dict[str, object]] = []
+
+    def fake_request(
+        target: migration.ApiTarget,
+        method: str,
+        path: str,
+        body: dict[str, object] | None = None,
+        **_kwargs: object,
+    ) -> object:
+        if target.provider == "gitlab" and method == "GET" and path.endswith("/protected_branches"):
+            return deepcopy(source_rules)
+        if target.provider == "forgejo" and method == "GET" and path.endswith("/branch_protections"):
+            return deepcopy(destination_rules)
+        if target.provider == "forgejo" and method == "POST" and path.endswith("/branch_protections"):
+            if body is None:
+                raise AssertionError("Forgejo branch-protection create omitted its body")
+            posted.append(deepcopy(body))
+            destination_rules.append(deepcopy(body))
+            return deepcopy(body)
+        raise AssertionError(f"unexpected branch-protection API call: {method} {path}")
+
+    with mock.patch.object(migration, "api_request", side_effect=fake_request):
+        result = migration.migrate_branch_protections(repo)
+        verified = migration.verify_branch_protections(repo)
+
+    if result.get("verified") is not True or result.get("created") != 1:
+        raise AssertionError(f"GitLab branch-protection migration did not verify: {result}")
+    if verified.get("verified") is not True or len(posted) != 1:
+        raise AssertionError(f"GitLab branch-protection read-back failed: {verified}")
+    policy = migration.normalize_forgejo_branch_protection(posted[0])
+    if policy["enable_push"] or policy["enable_push_whitelist"]:
+        raise AssertionError("GitLab no-direct-push policy was weakened")
+    if not policy["enable_merge_whitelist"] or policy["merge_whitelist_teams"] != ["Owners"]:
+        raise AssertionError("GitLab Maintainers-only merge policy was not mapped to Owners")
+    if not policy["apply_to_admins"]:
+        raise AssertionError("GitLab branch policy was weakened by a Forgejo administrator bypass")
+
+
+def test_branch_protection_fails_closed() -> None:
+    github_repo = branch_protection_repo(
+        "github", {"mode": "required", "branches": ["main"]}
+    )
+    try:
+        migration.normalize_github_branch_protection(
+            "main",
+            {
+                "restrictions": None,
+                "enforce_admins": {"enabled": True},
+                "required_linear_history": {"enabled": True},
+            },
+        )
+    except migration.MigrationError as exc:
+        if "required_linear_history" not in str(exc):
+            raise AssertionError(f"unexpected GitHub fail-closed diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("non-portable GitHub linear-history rule unexpectedly passed")
+
+    try:
+        migration.normalize_github_branch_protection(
+            "main",
+            {
+                "restrictions": {
+                    "users": [{"login": "release-bot"}],
+                    "teams": [],
+                    "apps": [],
+                },
+                "enforce_admins": {"enabled": True},
+            },
+        )
+    except migration.MigrationError as exc:
+        if "push actor restrictions" not in str(exc):
+            raise AssertionError(f"unexpected GitHub actor diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("identity-specific GitHub push restriction unexpectedly passed")
+
+    missing_scope = branch_protection_repo("github", {"mode": "required"})
+    try:
+        migration.branch_protection_plan(missing_scope)
+    except migration.MigrationError as exc:
+        if "non-empty branches list" not in str(exc):
+            raise AssertionError(f"unexpected GitHub scope diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("GitHub branch protection without an explicit scope passed")
+
+    gitlab_repo = branch_protection_repo(
+        "gitlab",
+        {"mode": "required", "gitlab_maintainer_team": "Owners"},
+    )
+    try:
+        migration.normalize_gitlab_branch_protection(
+            gitlab_repo,
+            {
+                "name": "main",
+                "push_access_levels": [{"access_level": 40, "user_id": 7}],
+                "merge_access_levels": [{"access_level": 40}],
+                "unprotect_access_levels": [{"access_level": 40}],
+                "allow_force_push": False,
+                "code_owner_approval_required": False,
+            },
+        )
+    except migration.MigrationError as exc:
+        if "identity-specific access" not in str(exc):
+            raise AssertionError(f"unexpected GitLab fail-closed diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("identity-specific GitLab protection unexpectedly passed")
+
+    _direction, repositories = migration.parse_plan(
+        {
+            "direction": "forgejo-to-github",
+            "repositories": [
+                {
+                    "name": "unsupported-branch-direction",
+                    "source": {
+                        "url": "https://forgejo.example.test/source/repository.git",
+                        "api_url": "https://forgejo.example.test/api/v1",
+                        "api_repository": "source/repository",
+                    },
+                    "destination": {
+                        "url": "https://github.example.test/destination/repository.git",
+                        "api_url": "https://github.example.test/api",
+                        "api_repository": "destination/repository",
+                    },
+                    "metadata": {"branch_protection": "required"},
+                }
+            ],
+        }
+    )
+    try:
+        migration.branch_protection_plan(repositories[0])
+    except migration.MigrationError as exc:
+        if "Forgejo destination" not in str(exc):
+            raise AssertionError(f"unexpected provider-pair diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("unsupported branch-protection provider pair unexpectedly passed")
+
+    preview = migration.branch_protection_plan(github_repo)
+    if preview.get("status") != "planned" or preview.get("branches") != ["main"]:
+        raise AssertionError(f"portable branch-protection plan was not surfaced: {preview}")
 
 
 def normalize_fake_color(value: object) -> str:
@@ -1735,6 +2038,9 @@ def main() -> int:
     test_mirror_migration()
     test_eventually_consistent_metadata_comparison()
     test_command_timeout_redacts_credentials()
+    test_github_branch_protection_migration()
+    test_gitlab_branch_protection_migration()
+    test_branch_protection_fails_closed()
     test_metadata_migration_for_supported_directions()
     test_destination_repository_creation_for_supported_directions()
     test_batch_failure_writes_proof_and_continues()

@@ -14,9 +14,8 @@ coexistence transition, and final cutover are separate commands by design.
 ## Supported Directions
 
 The current migration helper supports the Git data plane, repository labels,
-repository milestones, portable releases, portable issues/comments, and open or
-closed same-repository pull or merge requests for
-these directions:
+repository milestones, portable releases, portable issues/comments, and open
+or closed same-repository pull or merge requests for these directions:
 
 - GitHub to Forgejo
 - GitLab to Forgejo
@@ -29,9 +28,9 @@ When Git LFS is selected and `git-lfs` is available, all objects are fetched,
 checked, and compared by content-addressed object ID and manifest digest.
 `lfs: "required"` fails when `git-lfs` is unavailable; `lfs: "auto"` records an
 explicit accepted skip in that case.
-Provider-internal refs such as GitHub
-`refs/pull/*` are deliberately excluded because they are not portable repository
-refs. Label migration copies and verifies the provider-common label fields:
+Provider-internal refs such as GitHub `refs/pull/*` are deliberately excluded
+because they are not portable repository refs. Label migration copies and
+verifies the provider-common label fields:
 name, color, and description. Milestone migration copies and verifies the
 provider-common milestone fields: title, description, open/closed state, and
 due date. Release migration copies and verifies tag name, normalized release
@@ -46,13 +45,34 @@ reviewers, approvals, reactions, and provider-owned authors/timestamps because
 recreating them would either rewrite destination Git history or claim identity
 that the destination forge cannot establish. Native source authors, timestamps,
 issue numbers, reactions, cross-links, and audit history are provider-owned
-fields and are not rewritten through normal forge APIs. Provider metadata such
-as release assets, packages, branch protection, teams, permissions, and webhooks
-is modeled in the migration plan but intentionally fails closed when marked
-required. Draft/prerelease state and original release timestamps are not portable
-across all three providers; they are outside the verified release surface. This
-prevents a partial repository mirror from being reported as a complete forge
-migration.
+fields and are not rewritten through normal forge APIs.
+
+Branch-protection migration supports GitHub or GitLab sources with a Forgejo
+destination. It writes only the provider-common subset and verifies every write
+by re-reading Forgejo and comparing normalized policy digests. Destination-only
+rules are reported and retained. GitHub plans must list every exact protected
+branch under `branch_protection.branches`; wildcard rules and repository
+rulesets cannot be enumerated safely through the GitHub branch-protection REST
+endpoint. GitHub identity restrictions, administrator exemptions, code-owner or
+last-push approval, linear-history, conversation-resolution, deletion, force
+push, lock, creation, and fork-sync controls fail closed. GitLab protected-branch
+patterns are enumerated automatically. Identity-specific GitLab users, groups,
+or deploy keys and force-push or code-owner controls also fail closed.
+Maintainers-only GitLab push or merge access requires an explicit
+`gitlab_maintainer_team` naming a pre-created Forgejo team; the migration never
+guesses identities or creates a broader permission. GitHub administrator
+enforcement maps to Forgejo's `apply_to_admins`; GitLab migrations enable that
+Forgejo control conservatively because GitLab exposes no portable administrator
+bypass switch. Forgejo's separate `ignore_stale_approvals` control remains
+disabled and, together with `apply_to_admins`, is included in the read-back
+digest so destination drift cannot silently weaken the verified rule.
+
+Provider metadata such as release assets, packages, teams, permissions, and
+webhooks is modeled in the migration plan but intentionally fails closed when
+marked required. Draft/prerelease state and original release timestamps are not
+portable across all three providers; they are outside the verified release
+surface. This prevents a partial repository mirror from being reported as a
+complete forge migration.
 
 ## Plan File
 
@@ -87,6 +107,10 @@ every intentionally skipped surface before approval.
       "wiki": "auto",
       "lfs": "auto",
       "metadata": {
+        "branch_protection": {
+          "mode": "required",
+          "gitlab_maintainer_team": "Owners"
+        },
         "labels": "required",
         "milestones": "required",
         "releases": "required",
@@ -98,6 +122,20 @@ every intentionally skipped surface before approval.
   ]
 }
 ```
+
+For GitHub sources, replace the GitLab team mapping with an exhaustive list of
+exact branches covered by the migration approval:
+
+```json
+"branch_protection": {
+  "mode": "required",
+  "branches": ["main", "release/stable"]
+}
+```
+
+The GitLab `Owners` team in the first example must already exist in the
+destination Forgejo organization with the intended members. Team and user
+creation remain separate identity-governance operations.
 
 Keep Git credentials in Git credential helpers, CI secrets, or temporary
 environment-scoped helpers. Keep API credentials in environment variables named
@@ -219,13 +257,14 @@ The proof is successful only when all selected repositories report
 `"verified": true`, every branch/tag/note ref matches between source and
 destination, and the default branch matches. When repository creation is managed, proof also records whether
 the destination was created or already existed and confirms it remains API
-readable. When labels, milestones, releases, or issues are enabled, proof also includes
-created/updated counts, source/destination metadata digests, missing items,
-mismatched items, and extra destination-only items. Issue proof also reports the
-number of comments created and per-issue missing/extra comment counts without
-printing comment bodies. Extra destination metadata is reported for review but
-does not fail verification unless it shadows a source item with different
-content or the destination issue is missing source comments.
+readable. When branch protection, labels, milestones, releases, or issues are
+enabled, proof also includes created/updated counts, source/destination metadata
+digests, missing items, mismatched items, and extra destination-only items.
+Issue proof also reports the number of comments created and per-issue
+missing/extra comment counts without printing comment bodies. Extra destination
+metadata is reported for review but does not fail verification unless it
+shadows a source item with different content or the destination issue is
+missing source comments.
 
 Repositories in one plan are isolated batch items. A failure in one repository
 does not prevent the remaining repositories from being attempted; the command
@@ -249,9 +288,15 @@ For a true full-fidelity migration, inventory the non-Git surfaces first:
 - Branch protection and rulesets
 - Users, teams, permissions, and CODEOWNERS
 
-Set supported surfaces such as `labels`, `milestones`, `releases`, `issues`, and the
-source-appropriate `pull_requests` or `merge_requests` key to `"required"` when
-they must be migrated and verified. Set unsupported required surfaces to
+Set supported surfaces such as `branch_protection`, `labels`, `milestones`,
+`releases`, `issues`, and the source-appropriate `pull_requests` or
+`merge_requests` key to `"required"` when they must be migrated and verified.
+Branch protection is a deliberately narrower provider-common contract, not a
+claim that GitHub rulesets, GitLab approval policies, or provider identities are
+portable. Any enabled source control outside that contract stops a required
+migration before branch-policy writes. Empty GitHub restriction lists are
+accepted, but any listed user, team, application, group, or deploy key fails
+closed. Set unsupported required surfaces to
 `"required"` in the plan while designing a provider-specific importer. The
 helper will fail and name the missing surface. Set a surface to `"skip"` only
 when the migration approval explicitly accepts that loss.

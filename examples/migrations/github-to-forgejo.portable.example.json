@@ -33,7 +33,12 @@
           "users": "skip",
           "teams": "skip",
           "permissions": "skip",
-          "branch_protection": "skip",
+          "branch_protection": {
+            "mode": "required",
+            "branches": [
+              "main"
+            ]
+          },
           "webhooks": "skip"
         }
     }

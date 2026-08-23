@@ -33,7 +33,10 @@
           "users": "skip",
           "teams": "skip",
           "permissions": "skip",
-          "branch_protection": "skip",
+          "branch_protection": {
+            "mode": "required",
+            "gitlab_maintainer_team": "Owners"
+          },
           "webhooks": "skip"
         }
     }
