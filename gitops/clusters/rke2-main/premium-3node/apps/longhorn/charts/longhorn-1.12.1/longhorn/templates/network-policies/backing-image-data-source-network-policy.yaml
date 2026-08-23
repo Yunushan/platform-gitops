@@ -1,13 +1,13 @@
-{{- if .Values.networkPolicies.enabled }}
+{{- if .Values.networkPolicies.restrictInternalTraffic }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: backing-image-manager
+  name: backing-image-data-source
   namespace: {{ include "release_namespace" . }}
 spec:
   podSelector:
     matchLabels:
-      longhorn.io/component: backing-image-manager
+      longhorn.io/component: backing-image-data-source
   policyTypes:
   - Ingress
   ingress:

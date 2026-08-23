@@ -22,13 +22,13 @@
     platform_longhorn_auto_extra_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_PATH') }}"
     platform_longhorn_auto_extra_disk_min_available_gib_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_MIN_AVAILABLE_GIB') }}"
     platform_longhorn_storage_over_provisioning_percentage_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE') }}"
-    platform_longhorn_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn"
+    platform_longhorn_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn"
     platform_longhorn_vendored_chart_metadata: "{{ lookup('ansible.builtin.file', platform_longhorn_vendored_chart_path ~ '/Chart.yaml') | from_yaml }}"
     platform_longhorn_vendored_chart_version: "{{ platform_longhorn_vendored_chart_metadata.version }}"
-    platform_longhorn_vendored_chart_archive_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn-1.12.0.tgz"
-    platform_longhorn_vendored_chart_archive_sha256: "388f4106c7f4e70d00a3d6b6b1f5062e952df59ee5ca75d61ec83bd2bdb3e1a3"
+    platform_longhorn_vendored_chart_archive_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn-1.12.1.tgz"
+    platform_longhorn_vendored_chart_archive_sha256: "d70764e2d6cce673482da4d91da5b44a9791cda842c1914f77e7806ad1cd94bb"
     platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) | default(platform_longhorn_vendored_chart_version, true) }}"
-    platform_longhorn_render_kube_version: "1.35.0"
+    platform_longhorn_render_kube_version: "1.36.0"
     platform_longhorn_chart_archive_max_bytes: 1048576
     platform_longhorn_crd_render_max_bytes: 4194304
     platform_longhorn_backup_target_effective: "{{ platform_longhorn_backup_target | default(platform_longhorn_backup_target_from_env, true) | default('', true) }}"

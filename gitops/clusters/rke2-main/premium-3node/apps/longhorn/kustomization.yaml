@@ -6,7 +6,7 @@ resources:
   - storageclasses.yaml
   - filesystem-trim-recurring-job.yaml
 helmGlobals:
-  chartHome: charts/longhorn-1.12.0
+  chartHome: charts/longhorn-1.12.1
 helmCharts:
   - name: longhorn
     releaseName: longhorn

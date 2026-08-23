@@ -185,13 +185,13 @@
       ]
     },
     {
-      "path": "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn",
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn",
       "repository": "https://charts.longhorn.io",
       "name": "longhorn",
-      "version": "1.12.0",
-      "packageSha256": "869bb20701b154473606f1e8967b27f34f2448a2dfe6eb8970f1cae6957384f5",
-      "upstreamTreeSha256": "07cf0e0fea3112738f1ee486888b5b25cd9cd2fa4589a87ff0f4e1ac0e7bd19a",
-      "treeSha256": "07cf0e0fea3112738f1ee486888b5b25cd9cd2fa4589a87ff0f4e1ac0e7bd19a",
+      "version": "1.12.1",
+      "packageSha256": "d70764e2d6cce673482da4d91da5b44a9791cda842c1914f77e7806ad1cd94bb",
+      "upstreamTreeSha256": "5763a12eeb12666511193bf59f9d5b61a763623d43f7482c3661508981df15c0",
+      "treeSha256": "5763a12eeb12666511193bf59f9d5b61a763623d43f7482c3661508981df15c0",
       "patches": []
     },
     {
