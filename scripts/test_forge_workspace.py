@@ -177,6 +177,34 @@ def test_managed_user_requires_readback() -> None:
             raise AssertionError("managed user import accepted a missing read-back")
 
 
+def test_user_mapping_collision_fails_before_mutation() -> None:
+    plan = base_plan()
+    plan["mappings"] = {"users": {"alice": "shared", "bob": "shared"}}
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [
+                    {"username": "alice", "public_email": "alice@example.test"},
+                    {"username": "bob", "public_email": "bob@example.test"},
+                ]
+            }
+        }
+    }
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "unique targets" not in str(exc):
+                raise AssertionError(f"unexpected user mapping collision diagnostic: {exc}") from exc
+        else:
+            raise AssertionError("duplicate Forgejo user target unexpectedly passed")
+    if user_probe.called or api_request.called:
+        raise AssertionError("user mapping collision was detected after destination mutation")
+
+
 def test_team_membership_is_reconciled_and_verified() -> None:
     destination = object()
     teams = {50: 1, 40: 2, 30: 3, 20: 4, 10: 5}
@@ -334,6 +362,7 @@ def main() -> int:
     test_selected_nested_group_is_a_root()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
+    test_user_mapping_collision_fails_before_mutation()
     test_team_membership_is_reconciled_and_verified()
     test_team_permission_fails_closed()
     test_ci_destination_and_remote_proof()

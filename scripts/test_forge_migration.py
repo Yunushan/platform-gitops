@@ -334,6 +334,25 @@ def test_branch_protection_fails_closed() -> None:
         migration.normalize_github_branch_protection(
             "main",
             {
+                "restrictions": {"users": [], "teams": [], "apps": []},
+                "enforce_admins": {"enabled": True},
+                "required_status_checks": {
+                    "strict": True,
+                    "contexts": [],
+                    "checks": [{"context": "validate", "app_id": 1234}],
+                },
+            },
+        )
+    except migration.MigrationError as exc:
+        if "app-bound" not in str(exc):
+            raise AssertionError(f"unexpected GitHub App-bound check diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("GitHub App-bound status check unexpectedly passed")
+
+    try:
+        migration.normalize_github_branch_protection(
+            "main",
+            {
                 "restrictions": {
                     "users": [{"login": "release-bot"}],
                     "teams": [],

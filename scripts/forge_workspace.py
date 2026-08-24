@@ -733,13 +733,42 @@ def require_named_api_record(
     return record
 
 
+def validate_unique_user_targets(
+    plan: dict[str, Any],
+    config: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> None:
+    targets: dict[str, str] = {}
+    for item in items:
+        source_username = string(item.get("username"))
+        if not source_username or (
+            bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
+        ):
+            continue
+        target_username = mapped_name(plan, "users", source_username, source_username)
+        if not target_username:
+            raise WorkspaceError(
+                f"user {source_username!r} maps to an empty Forgejo username"
+            )
+        target_key = target_username.casefold()
+        previous_source = targets.get(target_key)
+        if previous_source is not None and previous_source.casefold() != source_username.casefold():
+            raise WorkspaceError(
+                f"users {previous_source!r} and {source_username!r} map to the same "
+                f"Forgejo username {target_username!r}; user mappings must have unique targets"
+            )
+        targets[target_key] = source_username
+
+
 def import_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str, Any]) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
     if config["mode"] != "managed":
         return {"mode": config["mode"], "verified": config["mode"] in {"skip", "export", "mapped", "manual"}, "created": 0, "existing": 0}
     created = 0
     existing = 0
-    for item in snapshot["surfaces"].get("users", {}).get("items", []):
+    items = snapshot["surfaces"].get("users", {}).get("items", [])
+    validate_unique_user_targets(plan, config, items)
+    for item in items:
         source_username = string(item.get("username"))
         if not source_username or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True):
             continue

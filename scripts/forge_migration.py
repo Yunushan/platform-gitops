@@ -1331,6 +1331,11 @@ def normalize_github_branch_protection(
                     raise MigrationError(
                         f"GitHub branch protection {branch_name!r} has a malformed status check"
                     )
+                if check.get("app_id") is not None:
+                    raise MigrationError(
+                        f"GitHub branch {branch_name!r} has an app-bound required status check; "
+                        "Forgejo cannot preserve the GitHub App identity safely"
+                    )
                 contexts.append(str(check["context"]).strip())
         normalized["status_check_contexts"] = sorted(set(contexts), key=str.casefold)
         normalized["enable_status_check"] = True
