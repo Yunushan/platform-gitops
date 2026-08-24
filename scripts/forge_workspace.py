@@ -272,6 +272,15 @@ def validate_plan(plan: dict[str, Any]) -> None:
             raise WorkspaceError(
                 "surfaces.pipelines.import_history cannot be true: historical GitLab runs are export-only; use ci or schedules for import"
             )
+        if name == "pipelines":
+            schedule_mappings = config.get("schedule_mappings") or {}
+            if not isinstance(schedule_mappings, dict):
+                raise WorkspaceError("surfaces.pipelines.schedule_mappings must be an object")
+            for source_id, mapping in schedule_mappings.items():
+                if isinstance(mapping, dict) and bool_value(mapping.get("enabled")):
+                    raise WorkspaceError(
+                        f"surfaces.pipelines.schedule_mappings[{source_id!r}] cannot enable a schedule during workspace import; use the approved cutover controller"
+                    )
         if name == "ci" and config["mode"] == "managed" and not bool_value(config.get("include_content")):
             raise WorkspaceError("surfaces.ci.managed requires include_content=true for fail-closed conversion")
     services = plan.get("services") or {}
@@ -1419,11 +1428,14 @@ def import_pipelines(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
             if isinstance(configured, dict):
                 name = string(configured.get("name"))
                 branch = string(configured.get("branch"))
-                enabled = bool_value(configured.get("enabled"), bool_value(schedule.get("active"), True))
+                if bool_value(configured.get("enabled")):
+                    raise WorkspaceError(
+                        f"workspace schedule {project_path}:{source_id} cannot be enabled before cutover"
+                    )
             else:
                 name = string(configured) or f"gitlab-schedule-{source_id or hashlib.sha256(canonical_digest(schedule).encode()).hexdigest()[:12]}"
                 branch = ""
-                enabled = bool_value(schedule.get("active"), True)
+            enabled = False
             name = name or f"gitlab-schedule-{source_id}"
             cron = string(schedule.get("cron"))
             branch = branch or string(schedule.get("ref")) or string(project_snapshot["project"].get("default_branch") or "main")

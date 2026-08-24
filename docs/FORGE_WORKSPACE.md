@@ -78,8 +78,11 @@ instance-wide import.
   agent matches each declared label mapping. GitLab runner machines,
   registration tokens, executors, and host credentials are never copied.
 - **Pipelines:** pipeline runs and history are export-only. Managed pipeline
-  import recreates GitLab pipeline schedules as Woodpecker cron jobs. GitLab
-  trigger tokens and historical run state require an explicit manual design.
+  import recreates GitLab pipeline schedules as **disabled** Woodpecker cron
+  jobs. Workspace import rejects schedule activation; only the approved
+  cutover controller may enable them after source-CI freeze and verification.
+  GitLab trigger tokens and historical run state require an explicit manual
+  design.
 
 These boundaries reflect the different provider models: GitLab exposes users,
 groups, projects, runners, variables, schedules, and pipelines through separate

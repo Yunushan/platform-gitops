@@ -83,6 +83,12 @@ def test_selective_plan_contract() -> None:
     unsafe_history["surfaces"]["pipelines"]["import_history"] = True  # type: ignore[index]
     expect_error(unsafe_history, "historical GitLab runs are export-only")
 
+    unsafe_schedule_activation = copy.deepcopy(plan)
+    unsafe_schedule_activation["surfaces"]["pipelines"]["schedule_mappings"] = {  # type: ignore[index]
+        "4": {"name": "nightly", "enabled": True}
+    }
+    expect_error(unsafe_schedule_activation, "cannot enable a schedule during workspace import")
+
     members_without_users = copy.deepcopy(plan)
     members_without_users["surfaces"]["users"] = {"mode": "skip"}  # type: ignore[index]
     members_without_users["surfaces"]["groups"] = {"mode": "managed"}  # type: ignore[index]
@@ -429,8 +435,27 @@ def test_pipeline_schedule_import_is_not_history_import() -> None:
         result = workspace.import_pipelines(plan, snapshot)
     if result.get("verified") is not True or result.get("history_imported") is not False:
         raise AssertionError(f"pipeline schedule import result was not verified: {result!r}")
-    if upsert.call_args.args[1:] != (41, "gitlab-schedule-4", "0 2 * * *", "main", True):
+    if upsert.call_args.args[1:] != (41, "gitlab-schedule-4", "0 2 * * *", "main", False):
         raise AssertionError(f"unexpected Woodpecker cron mapping: {upsert.call_args!r}")
+
+    active_mapping = copy.deepcopy(plan)
+    active_mapping["surfaces"]["pipelines"]["schedule_mappings"] = {  # type: ignore[index]
+        "4": {"name": "nightly", "enabled": True}
+    }
+    with (
+        mock.patch.object(cutover, "service_target", return_value=fake_target),
+        mock.patch.object(cutover, "woodpecker_lookup", return_value={"id": 41}),
+        mock.patch.object(cutover, "woodpecker_cron_upsert") as active_upsert,
+    ):
+        try:
+            workspace.import_pipelines(active_mapping, snapshot)
+        except workspace.WorkspaceError as exc:
+            if "cannot be enabled before cutover" not in str(exc):
+                raise AssertionError(f"unexpected schedule activation diagnostic: {exc}") from exc
+        else:
+            raise AssertionError("workspace import unexpectedly enabled a schedule")
+    if active_upsert.called:
+        raise AssertionError("workspace import attempted to activate a schedule")
 
 
 def main() -> int:
