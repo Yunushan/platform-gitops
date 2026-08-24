@@ -20,6 +20,19 @@ APPLICATION_NAME_RE = re.compile(
 )
 VENDORED_PATH_PARTS = {"charts", "crds"}
 EXAMPLE_SUFFIXES = (".example.yaml", ".example.yml")
+KUSTOMIZATION_NAMES = {"kustomization.yaml", "kustomization.yml", "Kustomization"}
+LOCAL_PATH_SECTIONS = {"resources", "components", "patchesStrategicMerge"}
+TOP_LEVEL_KEY_RE = re.compile(r"^(?P<indent>\s*)(?P<key>[A-Za-z][A-Za-z0-9_-]*):\s*(?:#.*)?$")
+LIST_ITEM_RE = re.compile(r"^(?P<indent>\s*)-\s*(?P<value>[^#]+?)(?:\s+#.*)?$")
+VALUES_FILE_RE = re.compile(r"(?m)^\s+valuesFile:\s*(?P<value>[^#\s]+)")
+PATCH_ITEM_PATH_RE = re.compile(r"^\s*-\s+path:\s*(?P<value>[^#\s]+)")
+REQUIRED_PREMIUM_SUPPORT_FILES = (
+    "gitops/clusters/rke2-main/premium-3node/apps/cert-manager/internal-ca.yaml",
+    "gitops/clusters/rke2-main/premium-3node/apps/trust-manager/bundles.yaml",
+    "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/server-certificate.yaml",
+    "gitops/clusters/rke2-main/premium-3node/apps/harbor/ca-bundle-configmap-patch.yaml",
+    "gitops/clusters/rke2-main/premium-3node/apps/harbor/ca-bundle-configmap-statefulset-patch.yaml",
+)
 PROFILE_APP_FILES = {
     "default": "gitops/clusters/rke2-main/platform-apps.yaml",
     "premium-3node": "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml",
@@ -244,14 +257,264 @@ def profile_source_paths(repo_root: Path, profile: str) -> list[Path]:
     return [repo_root / entry for entry in includes if is_application_source(repo_root / entry)]
 
 
-def check_profile(repo_root: Path, profile: str) -> int:
+def strip_scalar(value: str) -> str:
+    return value.strip().strip("'\"")
+
+
+def is_static_local_ref(value: str) -> bool:
+    return bool(value) and "{{" not in value and "}}" not in value and "://" not in value
+
+
+def list_items_for_section(text: str, section: str) -> list[str]:
+    lines = text.splitlines()
+    items: list[str] = []
+    for index, line in enumerate(lines):
+        match = TOP_LEVEL_KEY_RE.match(line)
+        if not match or match.group("key") != section:
+            continue
+        section_indent = len(match.group("indent"))
+        for item_line in lines[index + 1 :]:
+            if not item_line.strip():
+                continue
+            item_indent = len(item_line) - len(item_line.lstrip())
+            if item_indent <= section_indent:
+                break
+            item_match = LIST_ITEM_RE.match(item_line)
+            if item_match:
+                items.append(strip_scalar(item_match.group("value")))
+        break
+    return items
+
+
+def helm_chart_home(lines: list[str]) -> str:
+    in_helm_globals = False
+    globals_indent = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if not in_helm_globals:
+            if stripped == "helmGlobals:":
+                in_helm_globals = True
+                globals_indent = indent
+            continue
+        if indent <= globals_indent:
+            return ""
+        if stripped.startswith("chartHome:"):
+            return strip_scalar(stripped.split(":", 1)[1])
+    return ""
+
+
+def parse_helm_charts(lines: list[str]) -> list[dict[str, str]]:
+    charts: list[dict[str, str]] = []
+    in_helm_charts = False
+    helm_indent = 0
+    current: dict[str, str] | None = None
+
+    def finish() -> None:
+        nonlocal current
+        if current is not None:
+            charts.append(current)
+        current = None
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if not in_helm_charts:
+            if stripped == "helmCharts:":
+                in_helm_charts = True
+                helm_indent = indent
+            continue
+        if indent <= helm_indent and not stripped.startswith("- "):
+            finish()
+            in_helm_charts = False
+            continue
+        if stripped.startswith("- "):
+            finish()
+            current = {}
+            field = stripped[2:]
+        elif current is not None:
+            field = stripped
+        else:
+            continue
+        if ":" not in field:
+            continue
+        key, value = field.split(":", 1)
+        current[key.strip()] = strip_scalar(value)
+    finish()
+    return charts
+
+
+def referenced_patch_paths(text: str) -> list[str]:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = TOP_LEVEL_KEY_RE.match(line)
+        if not match or match.group("key") != "patches":
+            continue
+        section_indent = len(match.group("indent"))
+        paths: list[str] = []
+        for item_line in lines[index + 1 :]:
+            if not item_line.strip():
+                continue
+            item_indent = len(item_line) - len(item_line.lstrip())
+            if item_indent <= section_indent:
+                break
+            item_match = PATCH_ITEM_PATH_RE.match(item_line)
+            if item_match:
+                paths.append(strip_scalar(item_match.group("value")))
+        return paths
+    return []
+
+
+def safe_local_target(kustomization: Path, raw_ref: str, repo_root: Path) -> Path | None:
+    if not is_static_local_ref(raw_ref) or raw_ref.startswith("/"):
+        return None
+    target = (kustomization.parent / raw_ref).resolve()
+    try:
+        target.relative_to(repo_root.resolve())
+    except ValueError:
+        return None
+    return target
+
+
+def kustomization_children(target: Path) -> list[Path]:
+    if target.is_file() and target.name in KUSTOMIZATION_NAMES:
+        return [target]
+    if not target.is_dir():
+        return []
+    return [target / name for name in KUSTOMIZATION_NAMES if (target / name).is_file()]
+
+
+def check_kustomization_structure(path: Path, repo_root: Path) -> list[str]:
+    findings: list[str] = []
+    pending = [path]
+    seen: set[Path] = set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        try:
+            text = read_bounded_text(current, encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            findings.append(f"{display_path(current, repo_root)}: cannot read Kustomization ({exc})")
+            continue
+
+        for section in LOCAL_PATH_SECTIONS:
+            for raw_ref in list_items_for_section(text, section):
+                if not is_static_local_ref(raw_ref):
+                    continue
+                target = safe_local_target(current, raw_ref, repo_root)
+                if target is None:
+                    findings.append(
+                        f"{display_path(current, repo_root)} references unsafe or out-of-tree {section}: {raw_ref}"
+                    )
+                    continue
+                if not target.exists():
+                    findings.append(f"{display_path(current, repo_root)} references missing {section}: {raw_ref}")
+                    continue
+                children = kustomization_children(target)
+                if target.is_dir() and not children:
+                    findings.append(
+                        f"{display_path(current, repo_root)} references {section} directory without Kustomization: {raw_ref}"
+                    )
+                pending.extend(children)
+
+        values_files = [strip_scalar(value) for value in VALUES_FILE_RE.findall(text)]
+        for raw_ref in values_files:
+            if not is_static_local_ref(raw_ref):
+                continue
+            target = safe_local_target(current, raw_ref, repo_root)
+            if target is None:
+                findings.append(f"{display_path(current, repo_root)} references unsafe local file: {raw_ref}")
+            elif not target.is_file():
+                findings.append(f"{display_path(current, repo_root)} references missing Helm valuesFile: {raw_ref}")
+        for raw_ref in referenced_patch_paths(text):
+            if not is_static_local_ref(raw_ref):
+                continue
+            target = safe_local_target(current, raw_ref, repo_root)
+            if target is None:
+                findings.append(f"{display_path(current, repo_root)} references unsafe local patch path: {raw_ref}")
+            elif not target.is_file():
+                findings.append(f"{display_path(current, repo_root)} references missing patch path: {raw_ref}")
+
+        lines = text.splitlines()
+        chart_home = helm_chart_home(lines)
+        charts = parse_helm_charts(lines)
+        for chart in charts:
+            name = chart.get("name", "<unknown>")
+            values_file = chart.get("valuesFile", "")
+            if values_file and is_static_local_ref(values_file):
+                target = safe_local_target(current, values_file, repo_root)
+                if target is None or not target.is_file():
+                    findings.append(
+                        f"{display_path(current, repo_root)} Helm chart {name} references missing valuesFile: {values_file}"
+                    )
+            if chart.get("repo") or not name:
+                continue
+            if not chart_home:
+                findings.append(
+                    f"{display_path(current, repo_root)} local Helm chart {name} requires helmGlobals.chartHome"
+                )
+                continue
+            chart_root = safe_local_target(current, chart_home, repo_root)
+            if chart_root is None or not chart_root.is_dir():
+                findings.append(
+                    f"{display_path(current, repo_root)} references missing Helm chart home: {chart_home}"
+                )
+                continue
+            chart_yaml = chart_root / name / "Chart.yaml"
+            if not chart_yaml.is_file():
+                findings.append(
+                    f"{display_path(current, repo_root)} local Helm chart {name} is missing Chart.yaml: "
+                    f"{display_path(chart_yaml, repo_root)}"
+                )
+    return findings
+
+
+def profile_structure_findings(repo_root: Path, profile: str, source_paths: list[Path]) -> list[str]:
+    findings: list[str] = []
+    seen_sources: set[Path] = set()
+    for source_path in source_paths:
+        source_path = source_path.resolve()
+        if source_path in seen_sources:
+            continue
+        seen_sources.add(source_path)
+        if not source_path.is_dir():
+            findings.append(f"{display_path(source_path, repo_root)}: missing application source directory")
+            continue
+        kustomizations = [source_path / name for name in KUSTOMIZATION_NAMES if (source_path / name).is_file()]
+        if not kustomizations:
+            findings.append(f"{display_path(source_path, repo_root)}: missing Kustomization")
+            continue
+        for kustomization in kustomizations:
+            findings.extend(check_kustomization_structure(kustomization, repo_root))
+
+    if profile == "premium-3node":
+        for relative_path in REQUIRED_PREMIUM_SUPPORT_FILES:
+            if not (repo_root / relative_path).is_file():
+                findings.append(f"{relative_path}: required premium internal-TLS support file is missing")
+    return findings
+
+
+def check_profile(
+    repo_root: Path,
+    profile: str,
+    *,
+    check_placeholders: bool = True,
+    require_structure: bool = False,
+) -> int:
     projects_dir = repo_root / "gitops/clusters/rke2-main/projects"
     findings: list[str] = []
     optional_apps = optional_application_names(repo_root, profile)
 
     if profile in PROFILE_APP_FILES:
         applications_file = repo_root / PROFILE_APP_FILES[profile]
-        findings.extend(scan_applications_file(applications_file, repo_root, optional_apps))
+        if check_placeholders:
+            findings.extend(scan_applications_file(applications_file, repo_root, optional_apps))
         source_paths = [
             path
             for path in application_source_paths(applications_file, repo_root)
@@ -260,7 +523,8 @@ def check_profile(repo_root: Path, profile: str) -> int:
     else:
         try:
             for profile_file in profile_dependency_files(repo_root, profile):
-                findings.extend(scan_path(profile_file, repo_root))
+                if check_placeholders:
+                    findings.extend(scan_path(profile_file, repo_root))
             source_paths = [
                 path
                 for path in profile_source_paths(repo_root, profile)
@@ -271,15 +535,18 @@ def check_profile(repo_root: Path, profile: str) -> int:
         if not source_paths:
             return fail(f"profile {profile!r} does not include any deployable GitOps application sources")
 
-    findings.extend(scan_path(projects_dir, repo_root, allow_repo_url=True))
-    for source_path in source_paths:
-        findings.extend(scan_path(source_path, repo_root))
+    if check_placeholders:
+        findings.extend(scan_path(projects_dir, repo_root, allow_repo_url=True))
+        for source_path in source_paths:
+            findings.extend(scan_path(source_path, repo_root))
+    if require_structure:
+        findings.extend(profile_structure_findings(repo_root, profile, source_paths))
 
     if findings:
-        print(
-            f"GitOps profile {profile!r} contains unresolved placeholders or missing paths.",
-            file=sys.stderr,
-        )
+        if require_structure:
+            print(f"GitOps profile {profile!r} is incomplete for deployment or contains unresolved placeholders.", file=sys.stderr)
+        else:
+            print(f"GitOps profile {profile!r} contains unresolved placeholders or missing paths.", file=sys.stderr)
         for finding in findings[:80]:
             print(f" - {finding}", file=sys.stderr)
         if len(findings) > 80:
@@ -310,11 +577,26 @@ def main() -> int:
         default="premium-3node",
         help="GitOps profile to check. Supports default, premium-3node, and catalog profiles in profiles/.",
     )
+    parser.add_argument(
+        "--require-structure",
+        action="store_true",
+        help="Require selected application trees, local Kustomize references, vendored charts, and premium TLS support files.",
+    )
+    parser.add_argument(
+        "--allow-placeholders",
+        action="store_true",
+        help="Skip placeholder scanning while retaining structural checks for template or skip-incomplete flows.",
+    )
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
     try:
-        return check_profile(repo_root, args.profile)
+        return check_profile(
+            repo_root,
+            args.profile,
+            check_placeholders=not args.allow_placeholders,
+            require_structure=args.require_structure,
+        )
     except ValueError as exc:
         return fail(str(exc))
 

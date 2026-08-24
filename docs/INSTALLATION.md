@@ -544,7 +544,11 @@ The unattended targets also default to `PLATFORM_RUN_PROFILE_CHECK=true`, so
 the selected GitOps registration mode is validated before any commit, push, or
 seed mirror update. In `strict` mode the full rendered profile must be complete.
 In the default `skip-incomplete` mode, the bootstrap validates that the
-deployable Application subset can be rendered before Argo CD receives it.
+deployable Application subset can be rendered before Argo CD receives it. Both
+modes also verify selected Kustomization resources, components, patch files,
+Helm values, vendored chart metadata, and premium internal-TLS support files;
+skip-incomplete permits unresolved template placeholders only, not missing
+application-tree files.
 They also keep `PLATFORM_RUN_NO_SECRETS=true`. Public template validation blocks
 internal hostnames, but first private deploy and first seed deploy default
 `PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES=true` so rendered private FQDNs

@@ -55,7 +55,7 @@ help:
 	@echo "  forge-transition-proof-verify  Verify stored transition PROOF integrity and acceptance"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env or inventory"
-	@echo "  platform-profile-check  Verify selected GitOps profile has no unresolved placeholders"
+	@echo "  platform-profile-check  Verify selected GitOps profile is structurally complete and has no unresolved placeholders"
 	@echo "  platform-bootstrap  Verify RKE2/API VIP, bootstrap Argo CD, configure app VIP when ready, and print access report"
 	@echo "  platform-first-deploy  First private GitOps deploy: bootstrap Argo CD, register repo credentials, publish ingress, and print status"
 	@echo "  platform-first-deploy-auto  Non-interactive first private deploy using private/first-deploy.env or exported variables"
@@ -350,7 +350,7 @@ platform-render-private-values:
 	@$(PYTHON) scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
 
 platform-profile-check:
-	@$(PYTHON) scripts/check_gitops_profile.py --repo-root . --profile "$${PLATFORM_PROFILE:-premium-3node}"
+	@$(PYTHON) scripts/check_gitops_profile.py --repo-root . --profile "$${PLATFORM_PROFILE:-premium-3node}" --require-structure
 
 platform-bootstrap:
 	@RKE2_VERIFY_API_VIP=false $(MAKE) rke2-verify
