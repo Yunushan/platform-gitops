@@ -79,6 +79,24 @@ CONTRACTS = [
         "rendered_needles": [
             "backupTargetCredentialSecret: longhorn-backup-custom",
         ],
+        "playbook_extra_needles": [
+            "existing_longhorn_access_key=",
+            "existing_longhorn_secret_key=",
+            "existing_longhorn_endpoint=",
+            "existing_longhorn_virtual_hosted_style=",
+            '[ -n "${existing_longhorn_access_key}" ]',
+            '[ -n "${existing_longhorn_secret_key}" ]',
+            '[ -n "${existing_longhorn_endpoint}" ]',
+            '[ -n "${existing_longhorn_virtual_hosted_style}" ]',
+            "longhorn_access_key=",
+            "longhorn_secret_key=",
+            "longhorn_endpoint=",
+            "longhorn_virtual_hosted_style=",
+            '[ -n "${longhorn_access_key}" ]',
+            '[ -n "${longhorn_secret_key}" ]',
+            '[ -n "${longhorn_endpoint}" ]',
+            '[ -n "${longhorn_virtual_hosted_style}" ]',
+        ],
     },
     {
         "label": "Longhorn volume encryption key",
@@ -444,6 +462,16 @@ CONTRACTS = [
             'accessKeyId: "${LOKI_S3_ACCESS_KEY_ID}"',
             'secretAccessKey: "${LOKI_S3_SECRET_ACCESS_KEY}"',
         ],
+        "playbook_extra_needles": [
+            "existing_loki_access_key=",
+            "existing_loki_secret_key=",
+            '[ -n "${existing_loki_access_key}" ]',
+            '[ -n "${existing_loki_secret_key}" ]',
+            "loki_access_key=",
+            "loki_secret_key=",
+            '[ -n "${loki_access_key}" ]',
+            '[ -n "${loki_secret_key}" ]',
+        ],
     },
     {
         "label": "CloudNativePG object storage",
@@ -466,6 +494,16 @@ CONTRACTS = [
             "key: ACCESS_KEY_ID",
             "key: SECRET_ACCESS_KEY",
         ],
+        "playbook_extra_needles": [
+            "existing_cnpg_access_key=",
+            "existing_cnpg_secret_key=",
+            '[ -n "${existing_cnpg_access_key}" ]',
+            '[ -n "${existing_cnpg_secret_key}" ]',
+            "cnpg_access_key=",
+            "cnpg_secret_key=",
+            '[ -n "${cnpg_access_key}" ]',
+            '[ -n "${cnpg_secret_key}" ]',
+        ],
     },
     {
         "label": "Velero cloud credentials",
@@ -478,6 +516,12 @@ CONTRACTS = [
         "rendered_app": "velero",
         "custom_secret": "velero-cloud-custom",
         "rendered_needles": ['existingSecret: "velero-cloud-custom"'],
+        "playbook_extra_needles": [
+            "current_credentials=",
+            '[ -n "${current_credentials}" ]',
+            "velero_credentials=",
+            '[ -n "${velero_credentials}" ]',
+        ],
     },
 ]
 
