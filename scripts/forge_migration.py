@@ -252,17 +252,24 @@ def strip_git_suffix(value: str) -> str:
     return value[:-4] if value.endswith(".git") else value
 
 
+def safe_urlsplit(value: str, label: str) -> Any:
+    try:
+        return urlsplit(value)
+    except ValueError as exc:
+        raise MigrationError(f"{label} must contain a valid URL") from exc
+
+
 def derive_api_repository(repo_url: str) -> str:
     if repo_url.startswith("git@") and ":" in repo_url:
         return strip_git_suffix(repo_url.split(":", 1)[1].strip("/"))
-    parts = urlsplit(repo_url)
+    parts = safe_urlsplit(repo_url, "repository URL")
     if parts.scheme in {"http", "https", "ssh", "git"} and parts.path:
         return strip_git_suffix(parts.path.strip("/"))
     return ""
 
 
 def infer_api_url(repo_url: str, provider: str) -> str:
-    parts = urlsplit(repo_url)
+    parts = safe_urlsplit(repo_url, "repository URL")
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         return ""
     host = parts.netloc

@@ -2040,7 +2040,7 @@ def test_plan_rejects_literal_credentials() -> None:
     migration.parse_plan(ssh_plan)
 
     malformed_url_plan = base_plan()
-    malformed_url_plan["repositories"][0]["source"]["url"] = "https://["  # type: ignore[index]
+    malformed_url_plan["repositories"][0]["source"]["url"] = "//["  # type: ignore[index]
     try:
         migration.parse_plan(malformed_url_plan)
     except migration.MigrationError as exc:
