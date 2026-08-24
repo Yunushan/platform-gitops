@@ -151,6 +151,10 @@ CONTRACTS = [
             'existingSecretAdminPassword: "harbor-admin-custom"',
             "existingSecretAdminPasswordKey: HARBOR_ADMIN_PASSWORD",
         ],
+        "playbook_extra_needles": [
+            'index .data "HARBOR_ADMIN_PASSWORD"',
+            "base64 -d | grep -q .",
+        ],
     },
     {
         "label": "Harbor secret key",
@@ -163,6 +167,10 @@ CONTRACTS = [
         "rendered_app": "harbor",
         "custom_secret": "harbor-key-custom",
         "rendered_needles": ['existingSecretSecretKey: "harbor-key-custom"'],
+        "playbook_extra_needles": [
+            'index .data "secretKey"',
+            "base64 -d | grep -q .",
+        ],
     },
     {
         "label": "Harbor external database password",
@@ -258,6 +266,11 @@ CONTRACTS = [
             'name: "forgejo-db-custom"',
             "key: password",
         ],
+        "playbook_extra_needles": [
+            'index .data "username"',
+            'index .data "password"',
+            "base64 -d | grep -q .",
+        ],
     },
     {
         "label": "Forgejo Redis URI",
@@ -312,6 +325,12 @@ CONTRACTS = [
         "rendered_app": "woodpecker",
         "custom_secret": "woodpecker-oauth-custom",
         "rendered_needles": ['- "woodpecker-oauth-custom"'],
+        "playbook_extra_needles": [
+            'index .data "WOODPECKER_FORGEJO_CLIENT"',
+            'index .data "WOODPECKER_FORGEJO_SECRET"',
+            '[ -n "${client_id}" ]',
+            '[ -n "${client_secret}" ]',
+        ],
     },
     {
         "label": "Woodpecker shared agent token",
@@ -354,6 +373,11 @@ CONTRACTS = [
         "rendered_needles": [
             'WOODPECKER_DATABASE_DRIVER: "postgres"',
             '- "woodpecker-db-custom"',
+        ],
+        "playbook_extra_needles": [
+            'index .data "WOODPECKER_DATABASE_DATASOURCE"',
+            'datasource="$($K --kubeconfig "$C"',
+            '[ -n "${datasource}" ]',
         ],
     },
     {
@@ -412,6 +436,11 @@ CONTRACTS = [
             'existingSecret: "grafana-admin-custom"',
             "userKey: admin-user",
             "passwordKey: admin-password",
+        ],
+        "playbook_extra_needles": [
+            'index .data "admin-user"',
+            'index .data "admin-password"',
+            "base64 -d | grep -q .",
         ],
     },
     {
@@ -681,6 +710,10 @@ def check_renderer_and_secret_playbook() -> None:
         "--from-literal=GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET=",
         "--from-literal=cookie-secret=",
         "app.kubernetes.io/part-of=argocd",
+        "secret_has_keys()",
+        "PLATFORM_SSO_PROMETHEUS_COOKIE_SECRET",
+        'secret_has_keys argocd "${ARGOCD_SECRET}" client-secret',
+        'secret_has_keys monitoring "${PROMETHEUS_SECRET}" client-secret cookie-secret',
     ):
         require_contains(playbook_text, needle, "platform SSO secret automation")
     for needle in (
