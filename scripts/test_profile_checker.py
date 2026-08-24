@@ -396,6 +396,19 @@ includes:
         if "<PROFILE_SUMMARY>" not in output:
             raise AssertionError(f"expected failure output to name inherited profile placeholder\n{output}")
 
+    for profile in ("default", "premium-3node", "gitea-woodpecker-argocd"):
+        rc, output = run_check(
+            checker,
+            ROOT,
+            profile,
+            check_placeholders=False,
+            require_structure=True,
+        )
+        if rc != 0:
+            raise AssertionError(
+                f"repository profile {profile!r} has an incomplete deployment tree\n{output}"
+            )
+
     print("GitOps profile checker self-test passed.")
     return 0
 
