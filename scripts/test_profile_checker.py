@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -191,6 +192,64 @@ def main() -> int:
             raise AssertionError(f"vendored chart/CRD placeholders should stay ignored\n{output}")
         if "IGNORED_EXAMPLE_PLACEHOLDER" in output:
             raise AssertionError(f"example placeholders should stay ignored\n{output}")
+        (repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/private-values.yaml").unlink()
+
+        write(
+            repo / "profiles/premium-3node.yaml",
+            """profile: premium-3node
+internal_ca_optional: step-ca
+""",
+        )
+        write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/kustomization.yaml",
+            """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+helmCharts:
+  - name: step-ca
+""",
+        )
+        write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml",
+            """ca:
+  name: <STEP_CA_NAME>
+""",
+        )
+        premium_apps = repo / "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
+        premium_apps.write_text(
+            premium_apps.read_text(encoding="utf-8")
+            + """---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: step-ca
+spec:
+  source:
+    repoURL: <THIS_REPO_URL>
+    path: gitops/clusters/rke2-main/premium-3node/apps/step-ca
+""",
+            encoding="utf-8",
+        )
+
+        previous_step_ca_mode = os.environ.get("STEP_CA_MODE")
+        try:
+            os.environ.pop("STEP_CA_MODE", None)
+            rc, output = run_check(checker, repo)
+            if rc != 0:
+                raise AssertionError(
+                    f"disabled optional step-ca should not block profile check\n{output}"
+                )
+
+            os.environ["STEP_CA_MODE"] = "bootstrap"
+            rc, output = run_check(checker, repo)
+            if rc == 0 or "<STEP_CA_NAME>" not in output:
+                raise AssertionError(
+                    f"enabled step-ca must be checked as a required application\n{output}"
+                )
+        finally:
+            if previous_step_ca_mode is None:
+                os.environ.pop("STEP_CA_MODE", None)
+            else:
+                os.environ["STEP_CA_MODE"] = previous_step_ca_mode
 
     with tempfile.TemporaryDirectory(prefix="platform-profile-check-missing-") as tmp:
         repo = Path(tmp)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -13,6 +14,9 @@ from bounded_file import read_bounded_text
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
 APPLICATION_PATH_RE = re.compile(
     r"""(?m)^\s+path:\s*(?P<quote>['"]?)(?P<path>[^'"\s#]+)(?P=quote)\s*(?:#.*)?$"""
+)
+APPLICATION_NAME_RE = re.compile(
+    r"""(?m)^\s{2}name:\s*(?P<quote>['"]?)(?P<name>[^'"\s#]+)(?P=quote)\s*(?:#.*)?$"""
 )
 VENDORED_PATH_PARTS = {"charts", "crds"}
 EXAMPLE_SUFFIXES = (".example.yaml", ".example.yml")
@@ -119,6 +123,55 @@ def application_source_paths(applications_file: Path, repo_root: Path) -> list[P
     return paths
 
 
+def optional_application_names(repo_root: Path, profile: str, seen: set[str] | None = None) -> set[str]:
+    """Return optional applications unless their feature is explicitly enabled."""
+    mode = os.environ.get("STEP_CA_MODE", "disabled").strip().lower()
+    if mode not in {"", "disabled", "skip", "false", "none", "bootstrap"}:
+        raise ValueError("STEP_CA_MODE currently supports disabled or bootstrap")
+    if mode == "bootstrap":
+        return set()
+
+    seen = seen or set()
+    if profile in seen:
+        raise ValueError(f"profile {profile!r} has an inheritance cycle")
+    seen.add(profile)
+
+    profile_file = repo_root / "profiles" / f"{profile}.yaml"
+    if not profile_file.exists():
+        return set()
+
+    scalars, lists = parse_simple_profile(profile_file)
+    optional = {
+        value.strip()
+        for value in [scalars.get("internal_ca_optional", ""), *lists.get("optional_applications", [])]
+        if value.strip()
+    }
+    inherited = scalars.get("inherits", "")
+    if inherited:
+        optional.update(optional_application_names(repo_root, inherited, seen))
+    return optional
+
+
+def scan_applications_file(
+    path: Path,
+    repo_root: Path,
+    optional_apps: set[str],
+) -> list[str]:
+    """Scan selected Application documents while excluding disabled optional apps."""
+    text = read_bounded_text(path, encoding="utf-8")
+    findings: list[str] = []
+    documents = [document for document in re.split(r"(?m)^---\s*$", text) if document.strip()]
+    for document in documents:
+        name_match = APPLICATION_NAME_RE.search(document)
+        if name_match and name_match.group("name") in optional_apps:
+            continue
+        for line_number, line in enumerate(document.splitlines(), start=1):
+            placeholders = unresolved_in_text(line, allow_repo_url=True)
+            if placeholders:
+                findings.append(f"{display_path(path, repo_root)}:{line_number}: {line.strip()}")
+    return findings
+
+
 def resolve_profile_entries(repo_root: Path, profile: str, seen: set[str] | None = None) -> tuple[list[str], list[str]]:
     if profile in PROFILE_APP_FILES:
         app_file = repo_root / PROFILE_APP_FILES[profile]
@@ -194,16 +247,25 @@ def profile_source_paths(repo_root: Path, profile: str) -> list[Path]:
 def check_profile(repo_root: Path, profile: str) -> int:
     projects_dir = repo_root / "gitops/clusters/rke2-main/projects"
     findings: list[str] = []
+    optional_apps = optional_application_names(repo_root, profile)
 
     if profile in PROFILE_APP_FILES:
         applications_file = repo_root / PROFILE_APP_FILES[profile]
-        findings.extend(scan_path(applications_file, repo_root, allow_repo_url=True))
-        source_paths = application_source_paths(applications_file, repo_root)
+        findings.extend(scan_applications_file(applications_file, repo_root, optional_apps))
+        source_paths = [
+            path
+            for path in application_source_paths(applications_file, repo_root)
+            if path.name not in optional_apps
+        ]
     else:
         try:
             for profile_file in profile_dependency_files(repo_root, profile):
                 findings.extend(scan_path(profile_file, repo_root))
-            source_paths = profile_source_paths(repo_root, profile)
+            source_paths = [
+                path
+                for path in profile_source_paths(repo_root, profile)
+                if path.name not in optional_apps
+            ]
         except ValueError as exc:
             return fail(str(exc))
         if not source_paths:
