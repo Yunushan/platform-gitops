@@ -1106,6 +1106,54 @@ def source_variable_query(metadata: dict[str, Any]) -> dict[str, str]:
     return {"filter[environment_scope]": string(metadata.get("environment_scope") or "*")}
 
 
+def planned_variable_imports(
+    plan: dict[str, Any],
+    project_path: str,
+    variables: Any,
+) -> list[dict[str, Any]]:
+    """Validate variable mappings before any Woodpecker mutation for a repo."""
+    if not isinstance(variables, list):
+        raise WorkspaceError(f"variables for {project_path} must be a list")
+    planned: list[dict[str, Any]] = []
+    targets: dict[str, str] = {}
+    for metadata in variables:
+        if not isinstance(metadata, dict):
+            raise WorkspaceError(f"variable metadata for {project_path} must be an object")
+        key = string(metadata.get("key"))
+        if not key:
+            raise WorkspaceError(f"variable metadata for {project_path} is missing key")
+        identity = variable_identity(metadata)
+        mapping = variable_mapping(plan, identity, key)
+        mode = string(mapping.get("mode") or "managed").lower()
+        if mode in {"skip", "skipped", "manual", "mapped"}:
+            planned.append({"metadata": metadata, "identity": identity, "mapping": mapping, "mode": mode})
+            continue
+        if mode != "managed":
+            raise WorkspaceError(f"unsupported variable mapping mode {mode!r} for {identity}")
+        target_name = string(mapping.get("target_name") or key)
+        if not target_name:
+            raise WorkspaceError(f"managed variable {identity} has no Woodpecker target name")
+        normalized_target = target_name.casefold()
+        previous_identity = targets.get(normalized_target)
+        if previous_identity is not None:
+            raise WorkspaceError(
+                f"variables for {project_path} map {previous_identity!r} and {identity!r} "
+                f"to the same Woodpecker secret {target_name!r}; provide unique full-identity mappings "
+                "or mark one mapping manual, mapped, or skip"
+            )
+        targets[normalized_target] = identity
+        planned.append(
+            {
+                "metadata": metadata,
+                "identity": identity,
+                "mapping": mapping,
+                "mode": mode,
+                "target_name": target_name,
+            }
+        )
+    return planned
+
+
 def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("variables"), "surfaces.variables")
     if config["mode"] != "managed":
@@ -1120,10 +1168,27 @@ def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
 
     wp = cutover.service_target("woodpecker", wp_config)
     results: list[dict[str, Any]] = []
+    planned_projects: list[tuple[str, dict[str, Any], list[dict[str, Any]]]] = []
     for project_item in snapshot["surfaces"].get("variables", {}).get("items", []):
         project_path = string(project_item.get("project"))
         project_snapshot = project_snapshot_for(snapshot, project_path)
         if not project_snapshot:
+            continue
+        planned = planned_variable_imports(plan, project_path, project_item.get("variables", []))
+        planned_projects.append((project_path, project_snapshot, planned))
+    for project_path, project_snapshot, planned in planned_projects:
+        managed_items = [item for item in planned if item["mode"] == "managed"]
+        for item in planned:
+            if item["mode"] in {"skip", "skipped", "manual", "mapped"}:
+                results.append(
+                    {
+                        "project": project_path,
+                        "identity": item["identity"],
+                        "mode": item["mode"],
+                        "verified": True,
+                    }
+                )
+        if not managed_items:
             continue
         owner = string(project_snapshot["destination"]["owner"])
         repo = string(project_snapshot["destination"]["repo"])
@@ -1134,16 +1199,11 @@ def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
         if repo_id <= 0:
             raise WorkspaceError(f"Woodpecker repository id is missing for {owner}/{repo}")
         source_project = string(project_snapshot["project"].get("id") or project_path)
-        for metadata in project_item.get("variables", []):
-            key = string(metadata.get("key"))
-            identity = variable_identity(metadata)
-            mapping = variable_mapping(plan, identity, key)
-            mode = string(mapping.get("mode") or "managed").lower()
-            if mode in {"skip", "skipped", "manual"}:
-                results.append({"project": project_path, "identity": identity, "mode": mode, "verified": True})
-                continue
-            if mode != "managed":
-                raise WorkspaceError(f"unsupported variable mapping mode {mode!r} for {identity}")
+        for item in managed_items:
+            metadata = item["metadata"]
+            identity = item["identity"]
+            mapping = item["mapping"]
+            mode = item["mode"]
             live = request(
                 source,
                 "GET",
@@ -1154,8 +1214,9 @@ def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
             value = string(live.get("value") if isinstance(live, dict) else "")
             if not value:
                 raise WorkspaceError(f"GitLab variable {identity} has no readable value; map it manually")
-            result = cutover.woodpecker_secret_upsert(wp, repo_id, string(mapping.get("target_name") or key), value)
-            results.append({"project": project_path, "identity": identity, "target_name": string(mapping.get("target_name") or key), "mode": mode, "verified": result.get("verified") is True})
+            target_name = item["target_name"]
+            result = cutover.woodpecker_secret_upsert(wp, repo_id, target_name, value)
+            results.append({"project": project_path, "identity": identity, "target_name": target_name, "mode": mode, "verified": result.get("verified") is True})
     return {"mode": config["mode"], "items": results, "verified": all(item.get("verified") is True for item in results)}
 
 

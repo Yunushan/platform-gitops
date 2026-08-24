@@ -60,7 +60,12 @@ instance-wide import.
 - **Variables:** project, group, and optional instance variables are read from
   GitLab at import time and stored as Woodpecker repository secrets. By default,
   project names are preserved; group and instance names receive `GL_GROUP_` or
-  `GL_INSTANCE_` prefixes unless a mapping supplies a target name.
+  `GL_INSTANCE_` prefixes unless a mapping supplies a target name. The importer
+  fails before writing secrets when two environment-scoped source variables
+  resolve to the same case-insensitive Woodpecker secret name. Use a full
+  identity mapping such as `project:DEPLOY_TOKEN:production` with a unique
+  `target_name`, or mark the mapping `manual`, `mapped`, or `skip` when the
+  source scope cannot be represented safely.
 - **CI:** selected `.gitlab-ci.yml` or `.gitlab/ci/*` files are converted by the
   fail-closed pipeline converter and committed to the destination repository as
   `.woodpecker.yml` (or an explicit destination path). Unsupported constructs

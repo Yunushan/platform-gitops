@@ -205,6 +205,83 @@ def test_user_mapping_collision_fails_before_mutation() -> None:
         raise AssertionError("user mapping collision was detected after destination mutation")
 
 
+def test_variable_environment_collision_fails_before_mutation() -> None:
+    plan = base_plan()
+    snapshot = {
+        "surfaces": {
+            "variables": {
+                "items": [
+                    {
+                        "project": "platform/control-plane",
+                        "variables": [
+                            {"source_scope": "project", "key": "DEPLOY_TOKEN", "environment_scope": "*"},
+                            {"source_scope": "project", "key": "DEPLOY_TOKEN", "environment_scope": "production"},
+                        ],
+                    }
+                ]
+            }
+        },
+        "indexes": {
+            "projects": [
+                {
+                    "project": {"path_with_namespace": "platform/control-plane", "id": 7},
+                    "destination": {"owner": "platform", "repo": "control-plane"},
+                }
+            ]
+        },
+    }
+    with (
+        mock.patch.object(cutover, "service_target", return_value=object()),
+        mock.patch.object(cutover, "woodpecker_lookup") as lookup,
+        mock.patch.object(cutover, "service_request") as service_request,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_variables(plan, snapshot)
+        except workspace.WorkspaceError as exc:
+            if "same Woodpecker secret" not in str(exc):
+                raise AssertionError(f"unexpected variable collision diagnostic: {exc}") from exc
+        else:
+            raise AssertionError("environment-scoped variable collision unexpectedly passed")
+    if lookup.called or service_request.called or api_request.called:
+        raise AssertionError("variable collision was detected after destination mutation")
+
+
+def test_mapped_variable_is_non_mutating() -> None:
+    plan = base_plan()
+    plan["mappings"] = {"variables": {"project:DEPLOY_TOKEN:*": {"mode": "mapped"}}}
+    snapshot = {
+        "surfaces": {
+            "variables": {
+                "items": [
+                    {
+                        "project": "platform/control-plane",
+                        "variables": [{"source_scope": "project", "key": "DEPLOY_TOKEN", "environment_scope": "*"}],
+                    }
+                ]
+            }
+        },
+        "indexes": {
+            "projects": [
+                {
+                    "project": {"path_with_namespace": "platform/control-plane", "id": 7},
+                    "destination": {"owner": "platform", "repo": "control-plane"},
+                }
+            ]
+        },
+    }
+    with (
+        mock.patch.object(cutover, "service_target", return_value=object()),
+        mock.patch.object(cutover, "woodpecker_lookup") as lookup,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.import_variables(plan, snapshot)
+    if result.get("verified") is not True or result.get("items") != [{"project": "platform/control-plane", "identity": "project:DEPLOY_TOKEN:*", "mode": "mapped", "verified": True}]:
+        raise AssertionError(f"mapped variable was not recorded as non-mutating: {result!r}")
+    if lookup.called or api_request.called:
+        raise AssertionError("mapped variable unexpectedly contacted a destination or source API")
+
+
 def test_team_membership_is_reconciled_and_verified() -> None:
     destination = object()
     teams = {50: 1, 40: 2, 30: 3, 20: 4, 10: 5}
@@ -363,6 +440,8 @@ def main() -> int:
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
     test_user_mapping_collision_fails_before_mutation()
+    test_variable_environment_collision_fails_before_mutation()
+    test_mapped_variable_is_non_mutating()
     test_team_membership_is_reconciled_and_verified()
     test_team_permission_fails_closed()
     test_ci_destination_and_remote_proof()
