@@ -202,6 +202,14 @@ CONTRACTS = [
         ],
         "secondary_rendered_app": "cnpg",
         "secondary_rendered_needles": ['name: "harbor"', 'name: "harbor-db-custom"'],
+        "playbook_extra_needles": [
+            "harbor_user=",
+            "harbor_password=",
+            "database_user=",
+            "database_password=",
+            '[ -n "${harbor_user}" ]',
+            '[ -n "${harbor_password}" ]',
+        ],
     },
     {
         "label": "Harbor external Redis password",
@@ -269,7 +277,16 @@ CONTRACTS = [
         "playbook_extra_needles": [
             'index .data "username"',
             'index .data "password"',
-            "base64 -d | grep -q .",
+            "existing_database_user=",
+            "existing_database_password=",
+            '[ -n "${existing_user}" ]',
+            '[ -n "${existing_password}" ]',
+            '[ -n "${existing_database_user}" ]',
+            '[ -n "${existing_database_password}" ]',
+            "forgejo_user=",
+            "forgejo_password=",
+            '[ -n "${forgejo_user}" ]',
+            '[ -n "${forgejo_password}" ]',
         ],
     },
     {
@@ -397,6 +414,12 @@ CONTRACTS = [
             'existingSecret: "keycloak-admin-custom"',
             'passwordSecretKey: "admin-password"',
         ],
+        "playbook_extra_needles": [
+            "admin_user=",
+            "admin_password=",
+            '[ -n "${admin_user}" ]',
+            '[ -n "${admin_password}" ]',
+        ],
     },
     {
         "label": "Keycloak external database password",
@@ -416,6 +439,14 @@ CONTRACTS = [
             'existingSecret: "keycloak-db-custom"',
             "existingSecretUserKey: username",
             "existingSecretPasswordKey: password",
+        ],
+        "playbook_extra_needles": [
+            "keycloak_user=",
+            "keycloak_password=",
+            "database_user=",
+            "database_password=",
+            '[ -n "${keycloak_user}" ]',
+            '[ -n "${keycloak_password}" ]',
         ],
     },
     {
@@ -475,6 +506,12 @@ CONTRACTS = [
         ],
         "secondary_rendered_app": "cnpg",
         "secondary_rendered_needles": ['name: "grafana"', 'name: "grafana-db-custom"'],
+        "playbook_extra_needles": [
+            "monitoring_user=",
+            "monitoring_password=",
+            '[ -n "${monitoring_user}" ]',
+            '[ -n "${monitoring_password}" ]',
+        ],
     },
     {
         "label": "Loki object storage",
