@@ -192,6 +192,12 @@ CONTRACTS = [
             'existingSecret: "harbor-redis-custom"',
             'name: "harbor-redis-url"',
         ],
+        "playbook_extra_needles": [
+            "existing_redis_password=",
+            '[ -n "${existing_redis_password}" ]',
+            "redis_password=",
+            '[ -n "${redis_password}" ]',
+        ],
     },
     {
         "label": "Harbor registry S3 credentials",
@@ -206,6 +212,16 @@ CONTRACTS = [
         "rendered_needles": [
             "imageChartStorage:\n    disableredirect: true\n    type: s3",
             'existingSecret: "harbor-s3-custom"',
+        ],
+        "playbook_extra_needles": [
+            "existing_s3_access_key=",
+            "existing_s3_secret_key=",
+            '[ -n "${existing_s3_access_key}" ]',
+            '[ -n "${existing_s3_secret_key}" ]',
+            "s3_access_key=",
+            "s3_secret_key=",
+            '[ -n "${s3_access_key}" ]',
+            '[ -n "${s3_secret_key}" ]',
         ],
     },
     {
