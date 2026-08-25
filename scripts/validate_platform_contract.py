@@ -140,6 +140,7 @@ node_storage_cleanup_playbook = root / "ansible/playbooks/cleanup-node-storage.y
 longhorn_disk_pressure_relief = root / "scripts/relieve_longhorn_disk_pressure.py"
 stale_longhorn_replica_reclaimer = root / "scripts/reclaim_stale_longhorn_replica_data.py"
 forgejo_storage_repair_playbook = root / "ansible/playbooks/repair-forgejo-storage.yml"
+forgejo_storage_repair_runner = root / "scripts/bootstrap/run-forgejo-storage-repair.sh"
 forgejo_ingress_publish_playbook = root / "ansible/playbooks/publish-forgejo-ingress.yml"
 empty_faulted_longhorn_claim_repair = root / "scripts/repair_empty_faulted_longhorn_claims.py"
 stuck_longhorn_attachment_repair = root / "scripts/repair_stuck_longhorn_attachments.py"
@@ -3710,6 +3711,7 @@ def main() -> None:
     makefile_text = read(makefile)
     node_storage_cleanup_text = read(node_storage_cleanup_playbook)
     forgejo_storage_repair_text = read(forgejo_storage_repair_playbook)
+    forgejo_storage_repair_runner_text = read(forgejo_storage_repair_runner)
     forgejo_ingress_publish_text = read(forgejo_ingress_publish_playbook)
     for needle in (
         "PLATFORM_NODE_STORAGE_PRESSURE_ONLY",
@@ -3866,6 +3868,23 @@ def main() -> None:
             needle,
             f"Forgejo storage repair must classify Longhorn attach failure: {needle}",
         )
+    for needle in (
+        "PLATFORM_FORGEJO_STORAGE_REPAIR_ENV_FILE",
+        "private/seed-git.env",
+        "private/first-deploy.env",
+        'load_env_file "${env_file}" preserve-existing',
+        "ansible/playbooks/repair-forgejo-storage.yml",
+    ):
+        require_text(
+            forgejo_storage_repair_runner_text,
+            needle,
+            f"Forgejo storage repair environment runner must cover {needle}",
+        )
+    require_text(
+        makefile_text,
+        "@bash scripts/bootstrap/run-forgejo-storage-repair.sh",
+        "platform-forgejo-storage-repair must load private deployment settings",
+    )
     for needle in (
         "platform_forgejo_ingress_endpoint_mode_check.rc is defined",
         "(platform_forgejo_ingress_final_check.rc | default(1) | int) != 0",

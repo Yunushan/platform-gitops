@@ -122,6 +122,7 @@ required = [
     'scripts/verify_production_approval.py',
     'scripts/verify_production_readiness_score.py',
     'scripts/bootstrap/run-platform-production-score.sh',
+    'scripts/bootstrap/run-forgejo-storage-repair.sh',
     'scripts/test_production_readiness_score.py',
     'scripts/test_backup_restore_runbook.py',
     'scripts/test_business_continuity.py',

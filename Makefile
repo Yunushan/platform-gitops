@@ -665,7 +665,7 @@ platform-forgejo-repair: platform-inventory-preflight
 	@$(MAKE) platform-forgejo-ingress
 
 platform-forgejo-storage-repair: platform-inventory-preflight
-	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/repair-forgejo-storage.yml
+	@bash scripts/bootstrap/run-forgejo-storage-repair.sh
 
 platform-forgejo-ingress: platform-inventory-preflight
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/publish-forgejo-ingress.yml
