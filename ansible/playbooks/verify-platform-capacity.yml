@@ -157,10 +157,12 @@
           {{ platform_capacity_max_memory_percent_effective }} \
           {{ platform_capacity_max_pods_percent_effective }} \
           {{ platform_capacity_longhorn_free_percent_effective }} \
-          {{ platform_capacity_min_ready_nodes_effective }} <<'PY'
+          {{ platform_capacity_min_ready_nodes_effective }} \
+          {{ platform_capacity_storage_path_effective | quote }} <<'PY'
         import json
         from decimal import Decimal
         from pathlib import Path
+        import os
         import re
         import sys
 
@@ -170,6 +172,7 @@
         max_pods = Decimal(sys.argv[4])
         min_longhorn_free = Decimal(sys.argv[5])
         min_ready_nodes = int(sys.argv[6])
+        configured_storage_path = os.path.normpath(sys.argv[7])
 
         decimal_units = {
             "": Decimal(1),
@@ -300,7 +303,14 @@
             available = Decimal(0)
             for item in longhorn.get("items", []):
                 node_name = item.get("metadata", {}).get("name", "")
-                for disk in item.get("status", {}).get("diskStatus", {}).values():
+                disk_statuses = item.get("status", {}).get("diskStatus", {})
+                disk_specs = item.get("spec", {}).get("disks", {})
+                for disk_name, disk in disk_statuses.items():
+                    disk_spec = disk_specs.get(disk_name, {})
+                    raw_disk_path = str(
+                        disk.get("diskPath") or disk_spec.get("path") or ""
+                    ).strip()
+                    disk_path = os.path.normpath(raw_disk_path) if raw_disk_path else ""
                     raw_conditions = disk.get("conditions") or []
                     if isinstance(raw_conditions, dict):
                         conditions = {
@@ -318,9 +328,26 @@
                             if isinstance(condition, dict)
                         }
                     if conditions.get("Ready") == "True" and conditions.get("Schedulable") == "True":
+                        if not disk_path:
+                            failures.append(
+                                "reason=longhorn-disk-path-missing "
+                                f"node={node_name} disk={disk_name}"
+                            )
+                            continue
+                        print(
+                            f"longhorn_disk_node={node_name} disk={disk_name} "
+                            f"path={disk_path} configured_path={configured_storage_path}"
+                        )
+                        if disk_path != configured_storage_path:
+                            failures.append(
+                                "reason=longhorn-disk-path-mismatch "
+                                f"node={node_name} disk={disk_name} "
+                                f"configured={configured_storage_path} actual={disk_path}"
+                            )
+                            continue
                         schedulable_nodes.add(node_name)
-                    maximum += Decimal(str(disk.get("storageMaximum", 0) or 0))
-                    available += Decimal(str(disk.get("storageAvailable", 0) or 0))
+                        maximum += Decimal(str(disk.get("storageMaximum", 0) or 0))
+                        available += Decimal(str(disk.get("storageAvailable", 0) or 0))
             free_percent = percent(available, maximum)
             print(
                 f"longhorn_schedulable_nodes={len(schedulable_nodes)} "
