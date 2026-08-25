@@ -747,6 +747,8 @@ def main() -> int:
             'WOODPECKER_SERVER_ADDR: ":8000"',
             'WOODPECKER_GRPC_ADDR: ":9000"',
             'WOODPECKER_LOG_LEVEL: "info"',
+            'WOODPECKER_DEFAULT_PIPELINE_TIMEOUT: "60"',
+            'WOODPECKER_MAX_PIPELINE_TIMEOUT: "120"',
             "failureThreshold: 30",
             '"woodpecker-db-test"',
             "createAgentSecret: false",
@@ -1074,6 +1076,8 @@ def main() -> int:
             'WOODPECKER_SERVER_ADDR: ":8000"',
             'WOODPECKER_GRPC_ADDR: ":9000"',
             'WOODPECKER_OPEN: "true"',
+            'WOODPECKER_DEFAULT_PIPELINE_TIMEOUT: "60"',
+            'WOODPECKER_MAX_PIPELINE_TIMEOUT: "120"',
             "failureThreshold: 30",
             "replicaCount: 1",
             "repository: woodpeckerci/woodpecker-server",
@@ -1109,6 +1113,16 @@ def main() -> int:
                     raise AssertionError(f"unexpected Woodpecker image tag validation error: {exc}") from exc
             else:
                 raise AssertionError("Woodpecker renderer accepted a mutable image tag")
+
+        invalid_timeout_env = dict(sqlite_env, WOODPECKER_MAX_PIPELINE_TIMEOUT="59")
+        with patched_env(invalid_timeout_env):
+            try:
+                renderer.render_woodpecker(sqlite_woodpecker_path, inventory)
+            except SystemExit as exc:
+                if "WOODPECKER_MAX_PIPELINE_TIMEOUT must be greater than or equal" not in str(exc):
+                    raise AssertionError(f"unexpected Woodpecker timeout validation error: {exc}") from exc
+            else:
+                raise AssertionError("Woodpecker renderer accepted a maximum timeout below the default")
 
     print("Private platform values renderer self-test passed.")
     return 0

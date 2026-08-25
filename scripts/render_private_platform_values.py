@@ -1740,6 +1740,8 @@ def woodpecker_bootstrap_values(
     database_mode: str,
     database_secret_name: str,
     log_level: str,
+    default_pipeline_timeout: str,
+    max_pipeline_timeout: str,
 ) -> str:
     postgres_mode = database_mode in {"postgres", "postgresql", "external"}
     replica_count = server_replicas if postgres_mode else "1"
@@ -1803,6 +1805,8 @@ server:
     WOODPECKER_SERVER_ADDR: ":8000"
     WOODPECKER_GRPC_ADDR: ":9000"
     WOODPECKER_LOG_LEVEL: {yaml_string(log_level)}
+    WOODPECKER_DEFAULT_PIPELINE_TIMEOUT: {yaml_string(default_pipeline_timeout)}
+    WOODPECKER_MAX_PIPELINE_TIMEOUT: {yaml_string(max_pipeline_timeout)}
   probes:
     liveness:
       timeoutSeconds: 10
@@ -1923,6 +1927,8 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     agent_secret_name = os.environ.get("WOODPECKER_AGENT_SECRET_NAME", "woodpecker-agent-secret").strip() or "woodpecker-agent-secret"
     image_tag = normalize_woodpecker_image_tag(os.environ.get("WOODPECKER_IMAGE_TAG", "v3.16.0").strip() or "v3.16.0")
     log_level = os.environ.get("WOODPECKER_LOG_LEVEL", "info").strip().lower() or "info"
+    default_pipeline_timeout = os.environ.get("WOODPECKER_DEFAULT_PIPELINE_TIMEOUT", "60").strip() or "60"
+    max_pipeline_timeout = os.environ.get("WOODPECKER_MAX_PIPELINE_TIMEOUT", "120").strip() or "120"
     database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "postgres").strip().lower() or "postgres"
     database_secret_name = os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip() or "woodpecker-database"
     default_server_replicas = "3" if database_mode in {"postgres", "postgresql", "external"} else "1"
@@ -1933,9 +1939,16 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     for name, value in (
         ("WOODPECKER_SERVER_REPLICAS", server_replicas),
         ("WOODPECKER_AGENT_REPLICAS", agent_replicas),
+        ("WOODPECKER_DEFAULT_PIPELINE_TIMEOUT", default_pipeline_timeout),
+        ("WOODPECKER_MAX_PIPELINE_TIMEOUT", max_pipeline_timeout),
     ):
         if not value.isdigit() or int(value) < 1:
             raise SystemExit(f"{name} must be a positive integer")
+    if int(max_pipeline_timeout) < int(default_pipeline_timeout):
+        raise SystemExit(
+            "WOODPECKER_MAX_PIPELINE_TIMEOUT must be greater than or equal to "
+            "WOODPECKER_DEFAULT_PIPELINE_TIMEOUT"
+        )
     if database_mode in {"postgres", "postgresql", "external"} and int(server_replicas) < 2:
         raise SystemExit("WOODPECKER_SERVER_REPLICAS must be at least 2 when WOODPECKER_DATABASE_MODE=postgres")
     if database_mode == "sqlite" and int(server_replicas) != 1:
@@ -1962,6 +1975,8 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
         database_mode,
         database_secret_name,
         log_level,
+        default_pipeline_timeout,
+        max_pipeline_timeout,
     )
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
