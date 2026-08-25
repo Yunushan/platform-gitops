@@ -155,11 +155,62 @@ def test_forgejo_image_matches_reviewed_chart(renderer) -> None:
             )
 
 
+def test_focused_woodpecker_cli_does_not_require_forgejo_storage(renderer) -> None:
+    """A Woodpecker-only render must preserve unrelated Forgejo values."""
+    with tempfile.TemporaryDirectory(prefix="platform-woodpecker-render-") as tmp:
+        repo = Path(tmp)
+        inventory_path = write(repo / "inventory/hosts.local.ini", TEST_INVENTORY)
+        forgejo_path = write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml",
+            "existing-forgejo-values\n",
+        )
+        woodpecker_path = write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"
+        )
+        public_key = write(repo / "private/cosign.pub", TEST_COSIGN_PUBLIC_KEY)
+        focused_env = synthetic_environment(public_key)
+        for key in (
+            "FORGEJO_S3_ENDPOINT",
+            "FORGEJO_OBJECT_STORAGE_ENDPOINT",
+            "OBJECT_STORAGE_ENDPOINT",
+            "LONGHORN_BACKUP_TARGET",
+            "BACKUP_OBJECT_STORAGE_ENDPOINT",
+        ):
+            focused_env.pop(key, None)
+
+        previous_cwd = Path.cwd()
+        previous_argv = sys.argv[:]
+        try:
+            os.chdir(repo)
+            sys.argv = [
+                str(RENDERER_PATH),
+                "--inventory",
+                str(inventory_path),
+                "--forgejo-values",
+                str(forgejo_path),
+                "--woodpecker-values",
+                str(woodpecker_path),
+                "--skip-forgejo",
+            ]
+            with patched_env(focused_env):
+                rc = renderer.main()
+        finally:
+            os.chdir(previous_cwd)
+            sys.argv = previous_argv
+
+        if rc != 0:
+            raise AssertionError("focused Woodpecker rendering returned a non-zero status")
+        if forgejo_path.read_text(encoding="utf-8") != "existing-forgejo-values\n":
+            raise AssertionError("focused Woodpecker rendering modified Forgejo values")
+        assert_contains(woodpecker_path, 'WOODPECKER_HOST: "https://ci.example.test"')
+
+
 def main() -> int:
     renderer = load_renderer()
     checker = load_checker()
     contract_validator = load_contract_validator()
     test_forgejo_image_matches_reviewed_chart(renderer)
+    test_focused_woodpecker_cli_does_not_require_forgejo_storage(renderer)
 
     with tempfile.TemporaryDirectory(prefix="platform-private-render-") as tmp:
         repo = Path(tmp)

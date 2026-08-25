@@ -3796,6 +3796,11 @@ def main() -> int:
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml"),
     )
     parser.add_argument(
+        "--skip-forgejo",
+        action="store_true",
+        help="Leave Forgejo values unchanged; useful for focused Woodpecker reconciliation.",
+    )
+    parser.add_argument(
         "--woodpecker-values",
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"),
@@ -4037,7 +4042,7 @@ def main() -> int:
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
         changed.append(str(args.argocd_values))
 
-    if render_forgejo(args.forgejo_values, inventory):
+    if not args.skip_forgejo and render_forgejo(args.forgejo_values, inventory):
         changed.append(str(args.forgejo_values))
 
     if not args.skip_longhorn and args.longhorn_values.exists():

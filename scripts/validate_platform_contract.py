@@ -4292,6 +4292,7 @@ def main() -> None:
         "PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS",
         "PLATFORM_SEED_SYNC_PULL",
         "PLATFORM_SEED_SYNC_PUSH_ORIGIN",
+        "PLATFORM_AUTO_RENDER_SCOPE=woodpecker",
         "PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true",
         "PLATFORM_AUTO_COMMIT=true",
         "git status --porcelain --untracked-files=normal",
@@ -5622,6 +5623,15 @@ def main() -> None:
     seed_sync_text = read(root / "scripts/bootstrap/sync-seed-git.sh")
     if 'load_env_file "${env_file}" preserve-existing' not in seed_sync_text:
         fail("seed sync must let explicit environment overrides win over the private deployment environment file")
+    if 'PLATFORM_AUTO_RENDER_SCOPE="${PLATFORM_AUTO_RENDER_SCOPE:-all}"' not in seed_sync_text:
+        fail("seed sync must expose an explicit private-render scope")
+    for needle in (
+        "PLATFORM_AUTO_RENDER_SCOPE must be all or woodpecker.",
+        "--skip-forgejo",
+        "--skip-platform-image-integrity",
+    ):
+        if needle not in seed_sync_text:
+            fail(f"seed sync must preserve focused Woodpecker render control: {needle}")
     if 'PLATFORM_SEED_SYNC_PUSH_ORIGIN="${PLATFORM_SEED_SYNC_PUSH_ORIGIN:-false}"' not in seed_sync_text:
         fail("seed sync must keep source remote push opt-in by default")
     if "Set PLATFORM_SEED_SYNC_PUSH_ORIGIN=true" not in seed_sync_text:
@@ -8131,6 +8141,7 @@ def main() -> None:
         "--loki-values",
         "--velero-values",
         "--cnpg-postgres-cluster",
+        "--skip-forgejo",
         "LOKI_OBJECT_STORAGE_SECRET_NAME",
         "VELERO_CREDENTIALS_SECRET_NAME",
         "CNPG_OBJECT_STORE_SECRET_NAME",

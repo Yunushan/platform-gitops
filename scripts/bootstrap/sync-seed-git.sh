@@ -21,6 +21,7 @@ PLATFORM_SEED_SYNC_PULL="${PLATFORM_SEED_SYNC_PULL:-true}"
 PLATFORM_SEED_SYNC_PUSH_ORIGIN="${PLATFORM_SEED_SYNC_PUSH_ORIGIN:-false}"
 PLATFORM_SEED_SYNC_ENSURE_SERVICE="${PLATFORM_SEED_SYNC_ENSURE_SERVICE:-true}"
 PLATFORM_AUTO_RENDER_PRIVATE_VALUES="${PLATFORM_AUTO_RENDER_PRIVATE_VALUES:-false}"
+PLATFORM_AUTO_RENDER_SCOPE="${PLATFORM_AUTO_RENDER_SCOPE:-all}"
 PLATFORM_AUTO_COMMIT="${PLATFORM_AUTO_COMMIT:-false}"
 PLATFORM_AUTO_COMMIT_MESSAGE="${PLATFORM_AUTO_COMMIT_MESSAGE:-Sync platform GitOps deployment}"
 PLATFORM_VALIDATE_BEFORE_PUSH="${PLATFORM_VALIDATE_BEFORE_PUSH:-true}"
@@ -85,7 +86,35 @@ if [[ "${PLATFORM_SEED_SYNC_PULL}" == "true" ]]; then
 fi
 
 if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
-  "${PYTHON_BIN}" scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
+  render_args=(--inventory inventory/hosts.local.ini)
+  case "${PLATFORM_AUTO_RENDER_SCOPE}" in
+    all)
+      ;;
+    woodpecker)
+      # A focused CI repair must not re-render unrelated production apps and
+      # accidentally require their private object-storage credentials.
+      render_args+=(
+        --skip-argocd
+        --skip-forgejo
+        --skip-longhorn
+        --skip-harbor
+        --skip-monitoring
+        --skip-loki
+        --skip-velero
+        --skip-cnpg-postgres-cluster
+        --skip-platform-valkey
+        --skip-minio
+        --skip-keycloak
+        --skip-step-ca
+        --skip-platform-image-integrity
+      )
+      ;;
+    *)
+      echo "PLATFORM_AUTO_RENDER_SCOPE must be all or woodpecker." >&2
+      exit 1
+      ;;
+  esac
+  "${PYTHON_BIN}" scripts/render_private_platform_values.py "${render_args[@]}"
   commit_or_fail_dirty_worktree
 fi
 
