@@ -152,7 +152,9 @@ settings:
 
 The example below uses `/mnt/longhorn` as a dedicated filesystem mountpoint.
 Create and mount that filesystem on every node before running the gate; do not
-replace it with a directory on the operating-system filesystem.
+replace it with a directory on the operating-system filesystem. The configured
+path must also match the path of every Ready and schedulable Longhorn disk;
+mounting a second filesystem at another path does not move Longhorn replicas.
 
 ```bash
 PLATFORM_CAPACITY_ROOT_FREE_PERCENT=15 \
