@@ -413,6 +413,13 @@ Run the normal repair target:
 make platform-woodpecker-repair
 ```
 
+When `private/seed-git.env` is present, the repair renders Woodpecker values in
+an isolated temporary Git checkout and pushes only that detached commit to the
+internal seed Git service. The operator's checkout and its public `origin`
+remain unchanged. Internal hostnames are allowed only in that isolated private
+checkout; plaintext credentials, private keys, kubeconfigs, and private IPs
+remain blocked by the safety scanner.
+
 The repair verifies Forgejo from the ingress VIP with SNI and the system trust
 store. If an intermediate is missing, it completes the existing Forgejo TLS
 Secret from the certificate's cryptographically verified CA Issuers AIA path,
