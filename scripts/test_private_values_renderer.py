@@ -129,10 +129,37 @@ def render_real_premium_profile(renderer, checker, env: dict[str, str]) -> None:
             )
 
 
+def test_forgejo_image_matches_reviewed_chart(renderer) -> None:
+    chart_path = (
+        ROOT
+        / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/charts/forgejo-17.1.4/forgejo/Chart.yaml"
+    )
+    chart_text = chart_path.read_text(encoding="utf-8")
+    match = re.search(r"^appVersion:\s*v?([0-9]+\.[0-9]+\.[0-9]+)\s*$", chart_text, re.MULTILINE)
+    if match is None:
+        raise AssertionError("vendored Forgejo chart must declare a semantic appVersion")
+    app_version = match.group(1)
+    if renderer.FORGEJO_DEFAULT_IMAGE_TAG != app_version:
+        raise AssertionError(
+            "Forgejo renderer default image tag must match the vendored chart appVersion"
+        )
+    for values_path in (
+        ROOT / "gitops/clusters/rke2-main/apps/forgejo/values.yaml",
+        ROOT / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml",
+    ):
+        values_text = values_path.read_text(encoding="utf-8")
+        tag_match = re.search(r'^\s*tag:\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$', values_text, re.MULTILINE)
+        if tag_match is None or tag_match.group(1) != app_version:
+            raise AssertionError(
+                f"{values_path} must pin Forgejo image tag {app_version} from the reviewed chart"
+            )
+
+
 def main() -> int:
     renderer = load_renderer()
     checker = load_checker()
     contract_validator = load_contract_validator()
+    test_forgejo_image_matches_reviewed_chart(renderer)
 
     with tempfile.TemporaryDirectory(prefix="platform-private-render-") as tmp:
         repo = Path(tmp)
