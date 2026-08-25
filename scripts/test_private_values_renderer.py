@@ -321,7 +321,7 @@ def main() -> int:
             paths["forgejo"],
             "git.example.test",
             "21Gi",
-            'tag: "15.0.7-rootless"',
+            'tag: "15.0.6-rootless"',
             "strategy:\n  type: Recreate",
             "podDisruptionBudget:\n  minAvailable: 1",
             "DB_TYPE: postgres",
@@ -351,7 +351,7 @@ def main() -> int:
             sqlite_forgejo_path,
             "git.example.test",
             "sqlite3",
-            'tag: "15.0.7-rootless"',
+            'tag: "15.0.6-rootless"',
             "strategy:\n  type: Recreate",
             "podDisruptionBudget:\n  minAvailable: 1",
         )
