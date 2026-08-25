@@ -41,6 +41,10 @@ def test_git_bash_discovery() -> None:
         executable.write_text('', encoding='utf-8')
         with (
             mock.patch.object(test_bash_support.os, 'name', 'nt'),
+            # Patching os.name on a POSIX runner makes pathlib.Path try to
+            # construct WindowsPath. Keep the host's concrete path class so
+            # this Windows-behavior test remains portable.
+            mock.patch.object(test_bash_support, 'Path', type(temp_root)),
             mock.patch.dict(
                 test_bash_support.os.environ,
                 {
@@ -58,8 +62,12 @@ def test_git_bash_discovery() -> None:
 
 
 def test_git_bash_fallback() -> None:
+    path_type = type(Path(__file__).resolve())
     with (
         mock.patch.object(test_bash_support.os, 'name', 'nt'),
+        # See test_git_bash_discovery: pathlib must keep a constructible
+        # concrete path implementation when os.name is simulated on Linux.
+        mock.patch.object(test_bash_support, 'Path', path_type),
         mock.patch.object(test_bash_support.shutil, 'which', return_value='C:/Windows/System32/bash.exe'),
         mock.patch.object(
             test_bash_support,
