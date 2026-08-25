@@ -126,6 +126,11 @@ could revert. Source-remote pull and push remain disabled for this focused
 reconciliation. Set `PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=false` only when an
 external process owns the Argo CD source; use `true` to require the private seed
 environment instead of the default `auto` detection.
+The focused reconciliation renders only Woodpecker values and shared policy
+artifacts. It intentionally leaves Forgejo, Longhorn, Harbor, backup, and
+monitoring values unchanged, so a missing unrelated S3 endpoint cannot block a
+Woodpecker repair. Configure those production values before running their own
+deployment or health gates.
 
 The premium renderer does not use the chart-generated
 `woodpecker-default-agent-secret`. That chart secret depends on random Helm
