@@ -108,6 +108,39 @@ def assert_not_contains(path: Path, *needles: str) -> None:
         raise AssertionError(f"{path} contains unexpected text: {', '.join(present)}")
 
 
+def assert_hardened_woodpecker_values(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    pod_security_contract = (
+        "podSecurityContext:\n"
+        "    runAsNonRoot: true\n"
+        "    fsGroup: 1000\n"
+        "    seccompProfile:\n"
+        "      type: RuntimeDefault"
+    )
+    container_security_contract = (
+        "securityContext:\n"
+        "    allowPrivilegeEscalation: false\n"
+        "    capabilities:\n"
+        "      drop:\n"
+        "        - ALL\n"
+        "    runAsNonRoot: true\n"
+        "    runAsUser: 1000\n"
+        "    runAsGroup: 1000"
+    )
+    if text.count(pod_security_contract) != 2:
+        raise AssertionError("rendered Woodpecker values must harden both pod roles")
+    if text.count(container_security_contract) != 2:
+        raise AssertionError("rendered Woodpecker values must harden both containers")
+    assert_contains(
+        path,
+        "  resources:\n    requests:\n      cpu: 50m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
+        "  resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
+        "extraVolumes:\n    - name: agent-config\n      emptyDir: {}",
+        "extraVolumeMounts:\n    - name: agent-config\n      mountPath: /etc/woodpecker",
+    )
+    assert_not_contains(path, "limits:\n      cpu:")
+
+
 def render_real_premium_profile(renderer, checker, env: dict[str, str]) -> None:
     with tempfile.TemporaryDirectory(prefix="platform-real-premium-render-") as tmp:
         repo = Path(tmp) / "repo"
@@ -130,6 +163,9 @@ def render_real_premium_profile(renderer, checker, env: dict[str, str]) -> None:
         assert_contains(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml",
             'WOODPECKER_ADMIN: "platform-admin"',
+        )
+        assert_hardened_woodpecker_values(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"
         )
 
 
@@ -784,6 +820,7 @@ def main() -> int:
         rendered_woodpecker_text = paths["woodpecker"].read_text(encoding="utf-8")
         if contract_validator.count_yaml_list_scalar(rendered_woodpecker_text, "woodpecker-agent-test") != 2:
             raise AssertionError("rendered Woodpecker values did not map the managed agent Secret into both roles")
+        assert_hardened_woodpecker_values(paths["woodpecker"])
         mixed_yaml_scalar_styles = """
 - woodpecker-agent-test
 - "woodpecker-agent-test"
@@ -1097,6 +1134,7 @@ def main() -> int:
             'WOODPECKER_DATABASE_DRIVER: "postgres"',
             '"woodpecker-database"',
         )
+        assert_hardened_woodpecker_values(sqlite_woodpecker_path)
 
         invalid_sqlite_env = dict(sqlite_env, WOODPECKER_DATABASE_MODE="sqlite", WOODPECKER_SERVER_REPLICAS="2")
         with patched_env(invalid_sqlite_env):

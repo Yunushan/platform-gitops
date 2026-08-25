@@ -1783,6 +1783,19 @@ server:
   enabled: true
   statefulSet:
     replicaCount: {replica_count}
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -1844,7 +1857,7 @@ server:
     storageClass: {yaml_string(storage_class)}
   resources:
     requests:
-      cpu: 100m
+      cpu: 50m
       memory: 256Mi
     limits:
       memory: 1Gi
@@ -1852,6 +1865,19 @@ server:
 agent:
   enabled: true
   replicaCount: {agent_replicas}
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -1882,11 +1908,17 @@ agent:
     WOODPECKER_BACKEND_K8S_VOLUME_SIZE: 10G
     WOODPECKER_BACKEND_K8S_STORAGE_RWX: "false"
     WOODPECKER_MAX_WORKFLOWS: "2"
+  extraVolumes:
+    - name: agent-config
+      emptyDir: {{}}
+  extraVolumeMounts:
+    - name: agent-config
+      mountPath: /etc/woodpecker
   persistence:
     enabled: false
   resources:
     requests:
-      cpu: 250m
+      cpu: 100m
       memory: 256Mi
     limits:
       memory: 1Gi
