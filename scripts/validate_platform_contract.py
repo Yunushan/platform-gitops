@@ -4639,6 +4639,12 @@ def main() -> None:
         (longhorn_bootstrap_runner, "ansible/playbooks/bootstrap-longhorn.yml"),
         (longhorn_crd_repair_runner, "ansible/playbooks/repair-longhorn-crds.yml"),
     ):
+        playbook_text = read(root / playbook)
+        require_text(
+            playbook_text,
+            'platform_longhorn_render_kube_version: "1.36.2"',
+            f"{playbook} must render CRDs against the pinned Kubernetes schema",
+        )
         runner_text = read(runner)
         for needle in (
             "scripts/bootstrap/ensure-local-helm.sh",
