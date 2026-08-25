@@ -98,8 +98,12 @@ def main() -> int:
         "make platform-status",
         "make platform-app-health",
         "PLATFORM_PROFILE=<PROFILE> make platform-production-check",
+        "PLATFORM_CAPACITY_STORAGE_PATH=/mnt/longhorn",
     ):
         require(doc, command, "capacity evidence commands")
+
+    if "PLATFORM_CAPACITY_STORAGE_PATH=/var/lib/longhorn" in doc:
+        fail("capacity planning runbook must not recommend a root-backed Longhorn path")
 
     for private_safety in (
         "private deployment repository or operations system",
