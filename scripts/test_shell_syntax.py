@@ -2,7 +2,9 @@
 from pathlib import Path
 import sys
 import tempfile
+from unittest import mock
 
+import test_bash_support
 from test_bash_support import BashRuntimeUnavailable, bash_executable, bash_path, run_bash_args
 
 # The Bash adapter centralizes the subprocess.run call so WSL and Git Bash use
@@ -31,7 +33,50 @@ def shell_scripts() -> list[Path]:
     return sorted(scripts)
 
 
+def test_git_bash_discovery() -> None:
+    with tempfile.TemporaryDirectory(prefix='.git-bash-contract-') as temp_root_name:
+        temp_root = Path(temp_root_name)
+        executable = temp_root / 'Git' / 'bin' / 'bash.exe'
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_text('', encoding='utf-8')
+        with (
+            mock.patch.object(test_bash_support.os, 'name', 'nt'),
+            mock.patch.dict(
+                test_bash_support.os.environ,
+                {
+                    'ProgramFiles': temp_root_name,
+                    'ProgramFiles(x86)': '',
+                    'LOCALAPPDATA': '',
+                },
+                clear=False,
+            ),
+            mock.patch.object(test_bash_support.shutil, 'which', return_value=None),
+        ):
+            discovered = test_bash_support.git_bash_executable()
+    if discovered is None or Path(discovered).resolve() != executable.resolve():
+        raise AssertionError('Git Bash discovery must find the standard Windows installation path')
+
+
+def test_git_bash_fallback() -> None:
+    with (
+        mock.patch.object(test_bash_support.os, 'name', 'nt'),
+        mock.patch.object(test_bash_support.shutil, 'which', return_value='C:/Windows/System32/bash.exe'),
+        mock.patch.object(
+            test_bash_support,
+            'git_bash_executable',
+            return_value='C:/Program Files/Git/bin/bash.exe',
+        ) as git_bash_mock,
+    ):
+        executable, flavor = bash_executable()
+    if executable != 'C:/Program Files/Git/bin/bash.exe' or flavor != 'git-bash':
+        raise AssertionError('A runnable Git Bash install must replace the WSL shim on Windows')
+    if not git_bash_mock.called:
+        raise AssertionError('WSL shim detection must consult Git Bash fallback discovery')
+
+
 def main() -> int:
+    test_git_bash_discovery()
+    test_git_bash_fallback()
     try:
         _, flavor = bash_executable()
     except BashRuntimeUnavailable as exc:
