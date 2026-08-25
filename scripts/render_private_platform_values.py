@@ -256,6 +256,18 @@ def render_longhorn(
             "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE "
             "must be an integer from 100 through 1000"
         )
+    default_data_path = os.environ.get("PLATFORM_LONGHORN_DEFAULT_DISK_PATH", "").strip()
+    if production_strict and not default_data_path:
+        raise SystemExit(
+            "PLATFORM_LONGHORN_DEFAULT_DISK_PATH is required when "
+            "PLATFORM_PRODUCTION_STRICT=true; mount a dedicated filesystem "
+            "on every RKE2 node before rendering Longhorn values"
+        )
+    default_data_path = default_data_path or "/var/lib/longhorn"
+    if not default_data_path.startswith("/") or default_data_path == "/":
+        raise SystemExit(
+            "PLATFORM_LONGHORN_DEFAULT_DISK_PATH must be an absolute directory path"
+        )
     text = read_bounded_text(path, encoding="utf-8")
     rendered = re.sub(
         r"^(\s*backupTarget:\s*).*$",
@@ -266,6 +278,12 @@ def render_longhorn(
     rendered = re.sub(
         r"^(\s*backupTargetCredentialSecret:\s*).*$",
         lambda match: f"{match.group(1)}{backup_secret_name}",
+        rendered,
+        flags=re.MULTILINE,
+    )
+    rendered = re.sub(
+        r"^(\s*defaultDataPath:\s*).*$",
+        lambda match: f"{match.group(1)}{yaml_string(default_data_path)}",
         rendered,
         flags=re.MULTILINE,
     )

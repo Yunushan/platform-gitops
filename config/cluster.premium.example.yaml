@@ -49,7 +49,7 @@ components:
   supply_chain: cosign-renovate
 
 storage:
-  longhorn_data_path: /var/lib/longhorn
+  longhorn_data_path: <PLATFORM_LONGHORN_DEFAULT_DISK_PATH>
   standard_replica_count: 2
   critical_replica_count: 3
   backup_target: <LONGHORN_BACKUP_TARGET>

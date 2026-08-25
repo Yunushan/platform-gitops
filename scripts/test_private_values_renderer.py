@@ -205,12 +205,32 @@ def test_focused_woodpecker_cli_does_not_require_forgejo_storage(renderer) -> No
         assert_contains(woodpecker_path, 'WOODPECKER_HOST: "https://ci.example.test"')
 
 
+def test_strict_longhorn_render_requires_explicit_disk_path(renderer) -> None:
+    """Strict rendering must not silently restore the root-backed default."""
+    with tempfile.TemporaryDirectory(prefix="platform-longhorn-render-") as tmp:
+        values_path = write(
+            Path(tmp) / "longhorn-values.yaml",
+            'defaultSettings:\n  defaultDataPath: "<PLATFORM_LONGHORN_DEFAULT_DISK_PATH>"\n',
+        )
+        env = synthetic_environment(Path(tmp) / "cosign.pub")
+        env.pop("PLATFORM_LONGHORN_DEFAULT_DISK_PATH")
+        with patched_env(env):
+            try:
+                renderer.render_longhorn(values_path, env["LONGHORN_BACKUP_TARGET"])
+            except SystemExit as exc:
+                if "PLATFORM_LONGHORN_DEFAULT_DISK_PATH is required" not in str(exc):
+                    raise AssertionError(f"unexpected Longhorn path error: {exc}") from exc
+            else:
+                raise AssertionError("strict Longhorn rendering accepted a missing disk path")
+
+
 def main() -> int:
     renderer = load_renderer()
     checker = load_checker()
     contract_validator = load_contract_validator()
     test_forgejo_image_matches_reviewed_chart(renderer)
     test_focused_woodpecker_cli_does_not_require_forgejo_storage(renderer)
+    test_strict_longhorn_render_requires_explicit_disk_path(renderer)
 
     with tempfile.TemporaryDirectory(prefix="platform-private-render-") as tmp:
         repo = Path(tmp)
@@ -228,7 +248,8 @@ def main() -> int:
             ),
             "longhorn": write(
                 repo / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/values.yaml",
-                'defaultSettings:\n  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n'
+                'defaultSettings:\n  defaultDataPath: "<PLATFORM_LONGHORN_DEFAULT_DISK_PATH>"\n'
+                '  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n'
                 "  backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>\n"
                 "  storageOverProvisioningPercentage: 100\n",
             ),
@@ -538,6 +559,7 @@ def main() -> int:
         )
         assert_contains(
             paths["longhorn"],
+            'defaultDataPath: "/mnt/longhorn"',
             "s3://platform-test-longhorn@eu-test-1/",
             "backupTargetCredentialSecret: longhorn-backup-test",
             "storageOverProvisioningPercentage: 275",

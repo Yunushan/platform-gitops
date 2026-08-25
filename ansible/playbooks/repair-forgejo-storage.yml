@@ -17,6 +17,7 @@
     platform_forgejo_stale_pod_min_age_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_STALE_POD_MIN_AGE') }}"
     platform_forgejo_backend_ready_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_FORGEJO_BACKEND_READY_TIMEOUT') }}"
     platform_longhorn_default_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
+    platform_longhorn_dedicated_storage_required_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEDICATED_STORAGE_REQUIRED') }}"
     platform_longhorn_default_disk_repair_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_REPAIR_ENABLED') }}"
     platform_forgejo_namespace_effective: "{{ platform_forgejo_namespace | default(platform_forgejo_namespace_from_env, true) | default('forgejo', true) }}"
     platform_forgejo_pvc_name_effective: "{{ platform_forgejo_pvc_name | default(platform_forgejo_pvc_name_from_env, true) | default('gitea-shared-storage', true) }}"
@@ -29,6 +30,7 @@
     platform_forgejo_stale_pod_min_age_effective: "{{ platform_forgejo_stale_pod_min_age | default(platform_forgejo_stale_pod_min_age_from_env, true) | default(120, true) | int }}"
     platform_forgejo_backend_ready_timeout_effective: "{{ platform_forgejo_backend_ready_timeout | default(platform_forgejo_backend_ready_timeout_from_env, true) | default(600, true) | int }}"
     platform_longhorn_default_disk_path_effective: "{{ platform_longhorn_default_disk_path | default(platform_longhorn_default_disk_path_from_env, true) | default('/var/lib/longhorn', true) }}"
+    platform_longhorn_dedicated_storage_required_effective: "{{ platform_longhorn_dedicated_storage_required | default(platform_longhorn_dedicated_storage_required_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_default_disk_repair_enabled_effective: "{{ platform_longhorn_default_disk_repair_enabled | default(platform_longhorn_default_disk_repair_enabled_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Inspect Forgejo storage state
@@ -555,6 +557,10 @@
           changed_when: "'restarted' in forgejo_attach_longhorn_manager_restart.stdout"
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
+
+        - name: Validate Longhorn default disk filesystem before repair
+          ansible.builtin.include_tasks: ../tasks/validate-longhorn-disk-path.yml
+          when: platform_longhorn_default_disk_repair_enabled_effective | bool
 
         - name: Ensure Longhorn default disk path exists on all nodes
           ansible.builtin.file:

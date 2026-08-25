@@ -26,7 +26,21 @@ When `longhorn_default_path_shares_root=true`, the cluster is storing Longhorn
 replicas on the operating-system disk. The durable fix is to attach a separate
 SSD or block device, format and mount it consistently on every node, and point
 Longhorn at that filesystem. The bootstrap task refuses to treat a directory
-on the same filesystem as an extra disk, by design.
+on the same filesystem as an extra disk, by design. In strict mode the private
+renderer also requires the path explicitly, so a missing mount cannot silently
+fall back to `/var/lib/longhorn`:
+
+```bash
+# After mounting the same dedicated filesystem on every RKE2 node:
+export PLATFORM_LONGHORN_DEFAULT_DISK_PATH=/mnt/longhorn
+findmnt /mnt/longhorn
+make platform-longhorn-bootstrap
+```
+
+The preflight compares both the backing device and filesystem ID before it
+creates or registers the directory. A reviewed non-production lab may set
+`PLATFORM_LONGHORN_DEDICATED_STORAGE_REQUIRED=false`, but that override is not
+valid production evidence and does not make root-backed capacity safe.
 
 ## Safe Cleanup
 

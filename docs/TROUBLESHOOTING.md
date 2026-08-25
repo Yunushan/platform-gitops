@@ -751,14 +751,20 @@ PLATFORM_FORGEJO_POD_IP_WAIT_TIMEOUT=120 make platform-forgejo-storage-repair
 
 If the PV has `longhorn.io/volume-scheduling-error: precheck new replica failed:
 disks are unavailable` and `nodes.longhorn.io` shows empty `Spec.Disks`, the
-repair target creates the default Longhorn data path, adds a schedulable
-Longhorn disk on each node at `/var/lib/longhorn`, waits for Longhorn
-`status.diskStatus` to report a ready schedulable disk, and only then retries
-the Forgejo attach. To use a dedicated disk path:
+repair target validates the Longhorn path before creating or registering a
+schedulable disk. In strict mode it stops when the path is missing or shares
+the root filesystem, because using `/var/lib/longhorn` on `/` can trigger
+DiskPressure even when user repositories are empty. Mount a dedicated disk on
+each node and use the same path:
 
 ```bash
 PLATFORM_LONGHORN_DEFAULT_DISK_PATH=/mnt/longhorn make platform-forgejo-storage-repair
 ```
+
+The same path is required when rendering the premium Longhorn values. A
+reviewed non-production lab can explicitly set
+`PLATFORM_LONGHORN_DEDICATED_STORAGE_REQUIRED=false`, but this is not a
+production-capacity exception.
 
 If the Forgejo pod is `1/1 Running` but
 `https://<GIT_FQDN>` returns Traefik's plain `404 page not found`, the app VIP

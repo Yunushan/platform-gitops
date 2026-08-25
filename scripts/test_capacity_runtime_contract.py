@@ -27,6 +27,9 @@ def forbid(text: str, needle: str, label: str) -> None:
 
 def main() -> int:
     verifier = read(ROOT / "ansible/playbooks/verify-platform-capacity.yml")
+    longhorn_bootstrap = read(ROOT / "ansible/playbooks/bootstrap-longhorn.yml")
+    forgejo_storage_repair = read(ROOT / "ansible/playbooks/repair-forgejo-storage.yml")
+    longhorn_disk_path_task = read(ROOT / "ansible/tasks/validate-longhorn-disk-path.yml")
     node_prepare = read(ROOT / "ansible/playbooks/prepare-nodes.yml")
     makefile = read(ROOT / "Makefile")
     production_check = read(ROOT / "scripts/bootstrap/run-platform-production-check.sh")
@@ -78,6 +81,25 @@ def main() -> int:
         "longhorn-storage-encryption-verified",
     ):
         require(verifier, needle, "capacity verifier")
+
+    for text, label in (
+        (longhorn_bootstrap, "Longhorn bootstrap"),
+        (forgejo_storage_repair, "Forgejo storage repair"),
+    ):
+        for needle in (
+            "validate-longhorn-disk-path.yml",
+            "platform_longhorn_dedicated_storage_required_effective",
+        ):
+            require(text, needle, label)
+    for needle in (
+        "root_source",
+        "storage_source",
+        "root_fsid",
+        "storage_fsid",
+        "PLATFORM_LONGHORN_DEDICATED_STORAGE_REQUIRED=false",
+        "Longhorn disk path",
+    ):
+        require(longhorn_disk_path_task, needle, "Longhorn disk-path preflight")
 
     for forbidden in (
         "kubectl patch",
