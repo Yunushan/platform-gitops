@@ -150,10 +150,16 @@ space, no more than 85% CPU or memory requests, and no more than 80% pod capacit
 on any node. Override the thresholds only through reviewed private deployment
 settings:
 
+The example below uses `/mnt/longhorn` as a dedicated filesystem mountpoint.
+Create and mount that filesystem on every node before running the gate; do not
+replace it with a directory on the operating-system filesystem. The configured
+path must also match the path of every Ready and schedulable Longhorn disk;
+mounting a second filesystem at another path does not move Longhorn replicas.
+
 ```bash
 PLATFORM_CAPACITY_ROOT_FREE_PERCENT=15 \
 PLATFORM_CAPACITY_STORAGE_FREE_PERCENT=20 \
-PLATFORM_CAPACITY_STORAGE_PATH=/var/lib/longhorn \
+PLATFORM_CAPACITY_STORAGE_PATH=/mnt/longhorn \
 PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED=true \
 PLATFORM_CAPACITY_MAX_CPU_PERCENT=85 \
 PLATFORM_CAPACITY_MAX_MEMORY_PERCENT=85 \
