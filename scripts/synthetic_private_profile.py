@@ -64,6 +64,7 @@ def synthetic_environment(cosign_public_key: Path) -> dict[str, str]:
         "FORGEJO_IMAGE_TAG": "15.0.6-rootless",
         "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn@eu-test-1/",
         "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME": "longhorn-backup-test",
+        "PLATFORM_LONGHORN_DEFAULT_DISK_PATH": "/mnt/longhorn",
         "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE": "275",
         "WOODPECKER_DATA_SIZE": "11Gi",
         "WOODPECKER_STORAGE_CLASS": "longhorn-standard-encrypted",

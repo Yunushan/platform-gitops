@@ -1,0 +1,61 @@
+---
+- name: Validate Longhorn default disk path before creating it
+  ansible.builtin.shell: |
+    set -euo pipefail
+    disk_path={{ platform_longhorn_default_disk_path_effective | quote }}
+    dedicated_required={{ 'true' if platform_longhorn_dedicated_storage_required_effective else 'false' }}
+
+    if [ "${dedicated_required}" != "true" ]; then
+      echo "longhorn_disk_path_validation=skipped reason=dedicated-storage-not-required path=${disk_path}"
+      exit 0
+    fi
+
+    case "${disk_path}" in
+      /*) ;;
+      *)
+        echo "result=fail reason=longhorn-disk-path-not-absolute path=${disk_path}" >&2
+        exit 1
+        ;;
+    esac
+    if [ "${disk_path}" = "/" ]; then
+      echo "result=fail reason=longhorn-disk-path-is-root path=${disk_path}" >&2
+      exit 1
+    fi
+
+    root_source="$(df -P / 2>/dev/null | awk 'NR == 2 {print $1}' || true)"
+    root_fsid="$(stat -f -c '%i' / 2>/dev/null || true)"
+    probe_path="${disk_path}"
+    if [ ! -e "${probe_path}" ]; then
+      probe_path="$(dirname "${disk_path}")"
+    fi
+    storage_source="$(df -P "${probe_path}" 2>/dev/null | awk 'NR == 2 {print $1}' || true)"
+    storage_fsid="$(stat -f -c '%i' "${probe_path}" 2>/dev/null || true)"
+
+    printf 'longhorn_disk_path_validation=checked path=%s probe_path=%s root_source=%s storage_source=%s root_fsid=%s storage_fsid=%s\n' \
+      "${disk_path}" "${probe_path}" "${root_source:-unknown}" "${storage_source:-unknown}" \
+      "${root_fsid:-unknown}" "${storage_fsid:-unknown}"
+
+    if [ -z "${root_source}" ] || [ -z "${storage_source}" ] ||
+      [ -z "${root_fsid}" ] || [ -z "${storage_fsid}" ]; then
+      echo "result=fail reason=longhorn-disk-filesystem-detection-failed path=${disk_path} probe_path=${probe_path}" >&2
+      exit 1
+    fi
+    if [ "${root_source}" = "${storage_source}" ] || [ "${root_fsid}" = "${storage_fsid}" ]; then
+      cat >&2 <<EOF
+Longhorn disk path ${disk_path} resolves to the root filesystem.
+Mount a dedicated filesystem at ${disk_path} (or its existing parent mount)
+on every RKE2 node, then rerun the operation. The production guard refuses
+to register a directory on / because Longhorn replicas would consume the OS
+disk and can trigger Kubernetes DiskPressure.
+
+For a reviewed non-production lab only, set
+PLATFORM_LONGHORN_DEDICATED_STORAGE_REQUIRED=false explicitly.
+EOF
+      exit 1
+    fi
+
+    echo "longhorn_disk_path_validation=passed path=${disk_path}"
+  args:
+    executable: /bin/bash
+  register: platform_longhorn_disk_path_validation
+  changed_when: false

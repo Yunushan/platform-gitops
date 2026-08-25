@@ -2,7 +2,7 @@ persistence:
   defaultClass: false
 
 defaultSettings:
-  defaultDataPath: /var/lib/longhorn
+  defaultDataPath: "<PLATFORM_LONGHORN_DEFAULT_DISK_PATH>"
   backupTarget: "<LONGHORN_BACKUP_TARGET>"
   backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>
   createDefaultDiskLabeledNodes: false

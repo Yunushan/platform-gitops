@@ -786,6 +786,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
         "CNPG_BACKUP_ENABLED": "true",
         "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn-backups@eu-test-1/",
         "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME": "longhorn-backup-custom",
+        "PLATFORM_LONGHORN_DEFAULT_DISK_PATH": "/mnt/longhorn",
         "LONGHORN_ENCRYPTION_SECRET_NAME": "longhorn-crypto-custom",
         "PLATFORM_VALKEY_AUTH_SECRET_NAME": "platform-valkey-custom",
         "PLATFORM_VALKEY_PASSWORD_KEY": "valkey-password-custom",
@@ -849,6 +850,7 @@ def render_with_custom_secret_names() -> dict[str, str]:
         }
         paths["longhorn"].write_text(
             "defaultSettings:\n"
+            '  defaultDataPath: "<PLATFORM_LONGHORN_DEFAULT_DISK_PATH>"\n'
             '  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n'
             "  backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>\n"
             "  storageOverProvisioningPercentage: 100\n",

@@ -18,6 +18,7 @@
     platform_longhorn_image_pull_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_TIMEOUT') }}"
     platform_longhorn_image_pull_fast_fail_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_IMAGE_PULL_FAST_FAIL') }}"
     platform_longhorn_default_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEFAULT_DISK_PATH') }}"
+    platform_longhorn_dedicated_storage_required_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_DEDICATED_STORAGE_REQUIRED') }}"
     platform_longhorn_auto_extra_disk_enabled_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK') }}"
     platform_longhorn_auto_extra_disk_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_PATH') }}"
     platform_longhorn_auto_extra_disk_min_available_gib_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_AUTO_EXTRA_DISK_MIN_AVAILABLE_GIB') }}"
@@ -42,6 +43,7 @@
     platform_longhorn_image_pull_timeout_effective: "{{ platform_longhorn_image_pull_timeout | default(platform_longhorn_image_pull_timeout_from_env, true) | default(300, true) | int }}"
     platform_longhorn_image_pull_fast_fail_effective: "{{ platform_longhorn_image_pull_fast_fail | default(platform_longhorn_image_pull_fast_fail_from_env, true) | default(false, true) | bool }}"
     platform_longhorn_default_disk_path_effective: "{{ platform_longhorn_default_disk_path | default(platform_longhorn_default_disk_path_from_env, true) | default('/var/lib/longhorn', true) }}"
+    platform_longhorn_dedicated_storage_required_effective: "{{ platform_longhorn_dedicated_storage_required | default(platform_longhorn_dedicated_storage_required_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_auto_extra_disk_enabled_effective: "{{ platform_longhorn_auto_extra_disk_enabled | default(platform_longhorn_auto_extra_disk_enabled_from_env, true) | default(true, true) | bool }}"
     platform_longhorn_auto_extra_disk_path_effective: "{{ platform_longhorn_auto_extra_disk_path | default(platform_longhorn_auto_extra_disk_path_from_env, true) | default('/home/longhorn', true) }}"
     platform_longhorn_auto_extra_disk_min_available_gib_effective: "{{ platform_longhorn_auto_extra_disk_min_available_gib | default(platform_longhorn_auto_extra_disk_min_available_gib_from_env, true) | default(40, true) | int }}"
@@ -203,6 +205,9 @@
           delegate_to: "{{ rke2_first_server }}"
           run_once: true
 
+        - name: Validate Longhorn default disk filesystem before bootstrap
+          ansible.builtin.include_tasks: ../tasks/validate-longhorn-disk-path.yml
+
         - name: Ensure Longhorn default disk path exists on all nodes
           ansible.builtin.file:
             path: "{{ platform_longhorn_default_disk_path_effective }}"
@@ -294,7 +299,7 @@
                   persistence:
                     defaultClass: false
                   defaultSettings:
-                    defaultDataPath: /var/lib/longhorn
+                    defaultDataPath: {{ platform_longhorn_default_disk_path_effective | to_json }}
                     backupTarget: {{ platform_longhorn_backup_target_effective | to_json }}
                     backupTargetCredentialSecret: longhorn-backup-target
                     createDefaultDiskLabeledNodes: false

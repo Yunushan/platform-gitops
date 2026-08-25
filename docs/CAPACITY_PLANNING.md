@@ -170,6 +170,13 @@ The check measures Kubernetes requests rather than instantaneous utilization.
 Keep Prometheus saturation and forecast evidence alongside this gate; neither
 source is a substitute for the other.
 
+Longhorn bootstrap has the same protection before it creates a disk: strict
+private rendering requires `PLATFORM_LONGHORN_DEFAULT_DISK_PATH`, and the
+bootstrap and Forgejo storage-repair tasks compare the path's backing device
+and filesystem ID with `/`. This prevents an empty installation from silently
+placing replicated PVC data on the operating-system disk. Mount the dedicated
+filesystem on every node first; do not use a directory on `/` as a substitute.
+
 ## Component Planning
 
 Use these component notes as prompts for private sizing decisions:

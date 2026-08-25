@@ -1385,6 +1385,7 @@ def main() -> None:
     premium_longhorn_text = read(premium_longhorn_values)
     for needle in (
         "persistence:\n  defaultClass: false",
+        'defaultDataPath: "<PLATFORM_LONGHORN_DEFAULT_DISK_PATH>"',
         "backupTarget: \"<LONGHORN_BACKUP_TARGET>\"",
         "backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>",
         "createDefaultDiskLabeledNodes: false",
@@ -4517,6 +4518,9 @@ def main() -> None:
         )
     longhorn_bootstrap_text = read(longhorn_bootstrap_playbook)
     for needle in (
+        "validate-longhorn-disk-path.yml",
+        "platform_longhorn_dedicated_storage_required_effective",
+        "defaultDataPath: {{ platform_longhorn_default_disk_path_effective | to_json }}",
         "same-filesystem-as-default-disk",
         "same-filesystem-id-as-default-disk",
         "action=remove-stale-auto-extra-disk",
