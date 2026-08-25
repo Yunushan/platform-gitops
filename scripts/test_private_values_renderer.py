@@ -127,6 +127,10 @@ def render_real_premium_profile(renderer, checker, env: dict[str, str]) -> None:
                 + stdout.getvalue()
                 + stderr.getvalue()
             )
+        assert_contains(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml",
+            'WOODPECKER_ADMIN: "platform-admin"',
+        )
 
 
 def test_forgejo_image_matches_reviewed_chart(renderer) -> None:
