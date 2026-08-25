@@ -499,6 +499,17 @@ def require_text(text: str, needle: str, description: str) -> None:
         fail(description)
 
 
+def require_woodpecker_admin(text: str, label: str) -> None:
+    """Require a configured Woodpecker administrator without fixing its login."""
+    match = re.search(r"(?m)^\s+WOODPECKER_ADMIN:\s*(?P<value>[^#\n]+?)\s*$", text)
+    if match is None:
+        fail(f"{label} must define WOODPECKER_ADMIN")
+
+    value = match.group("value").strip().strip('"').strip("'").strip()
+    if not value or re.search(r"<[A-Z0-9_]+>", value):
+        fail(f"{label} must define a non-placeholder WOODPECKER_ADMIN value")
+
+
 def reject_text(text: str, needle: str, description: str) -> None:
     if needle in text or needle in canonical_contract_text(text):
         fail(description)
@@ -1230,8 +1241,8 @@ def main() -> None:
         "- woodpecker-database",
         "premium Woodpecker profile must consume the generated database datasource secret",
     )
+    require_woodpecker_admin(premium_woodpecker_text, "premium Woodpecker profile")
     for needle in (
-        "WOODPECKER_ADMIN: \"admin\"",
         "WOODPECKER_OPEN: \"false\"",
         "WOODPECKER_FORGEJO: \"true\"",
         "WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>",
