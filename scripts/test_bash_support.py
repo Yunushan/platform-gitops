@@ -35,11 +35,41 @@ def bash_path(path: Path, flavor: str) -> str:
     return f"/{drive}/{rest}"
 
 
+def git_bash_executable() -> str | None:
+    """Locate Git Bash when Windows exposes a non-runnable WSL shim first."""
+    if os.name != "nt":
+        return None
+
+    candidates: list[Path] = []
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        root = os.environ.get(variable)
+        if root:
+            candidates.append(Path(root) / "Git" / "bin" / "bash.exe")
+
+    git = shutil.which("git")
+    if git:
+        candidates.append(Path(git).resolve().parent.parent / "bin" / "bash.exe")
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def bash_executable() -> tuple[str, str]:
     bash = shutil.which("bash")
     if bash is None:
-        raise BashRuntimeUnavailable("Bash is not installed on this host")
-    return bash, bash_flavor(bash)
+        bash = git_bash_executable()
+        if bash is None:
+            raise BashRuntimeUnavailable("Bash is not installed on this host")
+        return bash, "git-bash"
+
+    flavor = bash_flavor(bash)
+    if flavor == "wsl":
+        git_bash = git_bash_executable()
+        if git_bash is not None:
+            return git_bash, "git-bash"
+    return bash, flavor
 
 
 def bash_argv(arguments: Sequence[str]) -> list[str]:
