@@ -12,7 +12,7 @@
     platform_longhorn_vendored_chart_metadata: "{{ lookup('ansible.builtin.file', platform_longhorn_vendored_chart_path ~ '/Chart.yaml') | from_yaml }}"
     platform_longhorn_vendored_chart_version: "{{ platform_longhorn_vendored_chart_metadata.version }}"
     platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) | default(platform_longhorn_vendored_chart_version, true) }}"
-    platform_longhorn_render_kube_version: "1.36.0"
+    platform_longhorn_render_kube_version: "1.36.2"
     platform_longhorn_crd_render_max_bytes: 4194304
     platform_longhorn_wait_timeout_effective: "{{ platform_longhorn_wait_timeout | default(platform_longhorn_wait_timeout_from_env, true) | default(900, true) | int }}"
     platform_longhorn_required_crds:
