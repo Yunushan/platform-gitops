@@ -57,6 +57,11 @@ trap cleanup EXIT
 
 git clone --quiet --no-hardlinks --no-checkout "${source_root}" "${seed_checkout}"
 git -C "${seed_checkout}" checkout --quiet --detach "${source_head}"
+seed_git_user_name="${PLATFORM_WOODPECKER_REPAIR_GIT_USER_NAME:-$(git -C "${source_root}" config user.name || true)}"
+seed_git_user_email="${PLATFORM_WOODPECKER_REPAIR_GIT_USER_EMAIL:-$(git -C "${source_root}" config user.email || true)}"
+git -C "${seed_checkout}" config user.name "${seed_git_user_name:-Platform GitOps Repair}"
+git -C "${seed_checkout}" config user.email "${seed_git_user_email:-platform-gitops-repair@localhost}"
+git -C "${seed_checkout}" config commit.gpgSign false
 mkdir -p "${seed_checkout}/inventory"
 cp "${inventory_file}" "${seed_checkout}/inventory/hosts.local.ini"
 

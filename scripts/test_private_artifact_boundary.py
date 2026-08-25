@@ -78,6 +78,9 @@ def check_woodpecker_seed_isolation() -> list[str]:
         "PLATFORM_VALIDATE_BEFORE_PUSH=true": "pre-push validation",
         "PLATFORM_RUN_NO_SECRETS=true": "private-data scanning",
         "PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES=true": "private seed hostname policy",
+        'config user.name "${seed_git_user_name:-Platform GitOps Repair}"': "isolated commit author name",
+        'config user.email "${seed_git_user_email:-platform-gitops-repair@localhost}"': "isolated commit author email",
+        "config commit.gpgSign false": "noninteractive isolated commits",
         'cd "${seed_checkout}"': "execution inside the isolated checkout",
     }
     problems = [
@@ -152,10 +155,13 @@ test "${PLATFORM_RUN_NO_SECRETS}" = "true"
 test "${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES}" = "true"
 test -f "${PLATFORM_SEED_DEPLOY_ENV_FILE}"
 test -f inventory/hosts.local.ini
+test "$(git config user.name)" = "Test"
+test "$(git config user.email)" = "test@example.test"
+test "$(git config --bool commit.gpgSign)" = "false"
 pwd -P > "${TEST_MARKER}"
 printf '%s\n' 'private deployment render' >> tracked.txt
 git add tracked.txt
-git -c user.name=Test -c user.email=test@example.test commit --quiet -m isolated-render
+git commit --quiet -m isolated-render
 ''',
             encoding="utf-8",
             newline="\n",
