@@ -4325,11 +4325,17 @@ def main() -> None:
     woodpecker_gitops_source_reconciler_text = read(woodpecker_gitops_source_reconciler)
     for needle in (
         "PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS",
-        "PLATFORM_SEED_SYNC_PULL",
-        "PLATFORM_SEED_SYNC_PUSH_ORIGIN",
+        "git clone --quiet --no-hardlinks --no-checkout",
+        'cd "${seed_checkout}"',
+        "PLATFORM_SEED_SYNC_PULL=false",
+        "PLATFORM_SEED_SYNC_PUSH_ORIGIN=false",
         "PLATFORM_AUTO_RENDER_SCOPE=woodpecker",
         "PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true",
         "PLATFORM_AUTO_COMMIT=true",
+        "PLATFORM_VALIDATE_BEFORE_PUSH=true",
+        "PLATFORM_RUN_PROFILE_CHECK=true",
+        "PLATFORM_RUN_NO_SECRETS=true",
+        "PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES=true",
         "git status --porcelain --untracked-files=normal",
         "make platform-seed-git-sync",
         "woodpecker_gitops_source_sync=synced",
@@ -4339,6 +4345,15 @@ def main() -> None:
             needle,
             f"Woodpecker GitOps source reconciliation must preserve {needle}",
         )
+    for unsafe_override in (
+        "PLATFORM_WOODPECKER_REPAIR_SYNC_PULL",
+        "PLATFORM_WOODPECKER_REPAIR_SYNC_PUSH_ORIGIN",
+    ):
+        if unsafe_override in woodpecker_gitops_source_reconciler_text:
+            fail(
+                "Woodpecker GitOps source reconciliation must not allow "
+                f"{unsafe_override} to mutate the public source checkout"
+            )
     for task_name in (
         "Generate or preserve Woodpecker shared agent secret",
         "Generate or preserve Woodpecker database datasource secret",
