@@ -138,18 +138,23 @@ PLATFORM_PROFILE=<PROFILE> make platform-production-check
 `platform-capacity-verify` is a read-only, fail-closed snapshot gate. It checks
 every RKE2 node for root and platform-storage filesystem headroom, then checks
 Ready and pressure conditions, requested CPU and memory, scheduled pod density,
-and Longhorn schedulable-disk capacity. With production encryption enforcement
-enabled, it also requires `cryptsetup` and `dm_crypt` on every node, validates
-the three encrypted Longhorn StorageClasses and all CSI Secret references, and
-rejects any bound Longhorn PVC or PV that is not encrypted. Its production
-defaults require 15% free root space, 20% free platform and Longhorn space, no
-more than 85% CPU or memory requests, and no more than 80% pod capacity on any
-node. Override the thresholds only through reviewed private deployment
+and Longhorn schedulable-disk capacity. Production mode requires the configured
+platform storage path to exist on a filesystem distinct from `/`; the gate
+compares both the backing device and filesystem ID so an ordinary directory on
+the root volume cannot satisfy this requirement. With production encryption
+enforcement enabled, it also requires `cryptsetup` and `dm_crypt` on every node,
+validates the three encrypted Longhorn StorageClasses and all CSI Secret
+references, and rejects any bound Longhorn PVC or PV that is not encrypted. Its
+production defaults require 15% free root space, 20% free platform and Longhorn
+space, no more than 85% CPU or memory requests, and no more than 80% pod capacity
+on any node. Override the thresholds only through reviewed private deployment
 settings:
 
 ```bash
 PLATFORM_CAPACITY_ROOT_FREE_PERCENT=15 \
 PLATFORM_CAPACITY_STORAGE_FREE_PERCENT=20 \
+PLATFORM_CAPACITY_STORAGE_PATH=/var/lib/longhorn \
+PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED=true \
 PLATFORM_CAPACITY_MAX_CPU_PERCENT=85 \
 PLATFORM_CAPACITY_MAX_MEMORY_PERCENT=85 \
 PLATFORM_CAPACITY_MAX_PODS_PERCENT=80 \
@@ -157,6 +162,9 @@ PLATFORM_CAPACITY_LONGHORN_FREE_PERCENT=20 \
 PLATFORM_STORAGE_ENCRYPTION_REQUIRED=true \
 make platform-capacity-verify
 ```
+
+Set `PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED=false` only for a reviewed
+non-production lab. It is not an acceptable setting for production evidence.
 
 The check measures Kubernetes requests rather than instantaneous utilization.
 Keep Prometheus saturation and forecast evidence alongside this gate; neither

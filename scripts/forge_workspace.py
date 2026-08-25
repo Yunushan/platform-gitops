@@ -18,7 +18,7 @@ import fnmatch
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 from typing import Any
@@ -272,6 +272,15 @@ def validate_plan(plan: dict[str, Any]) -> None:
             raise WorkspaceError(
                 "surfaces.pipelines.import_history cannot be true: historical GitLab runs are export-only; use ci or schedules for import"
             )
+        if name == "pipelines":
+            schedule_mappings = config.get("schedule_mappings") or {}
+            if not isinstance(schedule_mappings, dict):
+                raise WorkspaceError("surfaces.pipelines.schedule_mappings must be an object")
+            for source_id, mapping in schedule_mappings.items():
+                if isinstance(mapping, dict) and bool_value(mapping.get("enabled")):
+                    raise WorkspaceError(
+                        f"surfaces.pipelines.schedule_mappings[{source_id!r}] cannot enable a schedule during workspace import; use the approved cutover controller"
+                    )
         if name == "ci" and config["mode"] == "managed" and not bool_value(config.get("include_content")):
             raise WorkspaceError("surfaces.ci.managed requires include_content=true for fail-closed conversion")
     services = plan.get("services") or {}
@@ -717,19 +726,65 @@ def forgejo_user(destination: Endpoint, username: str) -> tuple[int, dict[str, A
     return request(destination, "GET", f"users/{quote(username, safe='')}", expected=(200, 404), return_status=True)
 
 
+def require_named_api_record(
+    status: int,
+    record: Any,
+    expected_name: str,
+    label: str,
+) -> dict[str, Any]:
+    if status != 200 or not isinstance(record, dict):
+        raise WorkspaceError(f"{label} {expected_name!r} was not readable after reconciliation")
+    actual_name = string(record.get("login") or record.get("username"))
+    if actual_name.casefold() != expected_name.casefold():
+        raise WorkspaceError(
+            f"{label} read-back mismatch: expected {expected_name!r}, got {actual_name or '<missing>'!r}"
+        )
+    return record
+
+
+def validate_unique_user_targets(
+    plan: dict[str, Any],
+    config: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> None:
+    targets: dict[str, str] = {}
+    for item in items:
+        source_username = string(item.get("username"))
+        if not source_username or (
+            bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
+        ):
+            continue
+        target_username = mapped_name(plan, "users", source_username, source_username)
+        if not target_username:
+            raise WorkspaceError(
+                f"user {source_username!r} maps to an empty Forgejo username"
+            )
+        target_key = target_username.casefold()
+        previous_source = targets.get(target_key)
+        if previous_source is not None and previous_source.casefold() != source_username.casefold():
+            raise WorkspaceError(
+                f"users {previous_source!r} and {source_username!r} map to the same "
+                f"Forgejo username {target_username!r}; user mappings must have unique targets"
+            )
+        targets[target_key] = source_username
+
+
 def import_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str, Any]) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
     if config["mode"] != "managed":
         return {"mode": config["mode"], "verified": config["mode"] in {"skip", "export", "mapped", "manual"}, "created": 0, "existing": 0}
     created = 0
     existing = 0
-    for item in snapshot["surfaces"].get("users", {}).get("items", []):
+    items = snapshot["surfaces"].get("users", {}).get("items", [])
+    validate_unique_user_targets(plan, config, items)
+    for item in items:
         source_username = string(item.get("username"))
         if not source_username or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True):
             continue
         target_username = mapped_name(plan, "users", source_username, source_username)
-        status, _existing = forgejo_user(destination, target_username)
+        status, current = forgejo_user(destination, target_username)
         if status == 200:
+            require_named_api_record(status, current, target_username, "Forgejo user")
             existing += 1
             continue
         env_map = config.get("password_env_by_username") or {}
@@ -747,12 +802,48 @@ def import_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str
             "send_notify": False,
         }
         request(destination, "POST", "admin/users", body=body, expected=(201, 200))
+        verified_status, verified_user = forgejo_user(destination, target_username)
+        require_named_api_record(verified_status, verified_user, target_username, "Forgejo user")
         created += 1
-    return {"mode": config["mode"], "created": created, "existing": existing, "verified": True}
+    return {
+        "mode": config["mode"],
+        "created": created,
+        "existing": existing,
+        "verified_count": created + existing,
+        "verified": True,
+    }
 
 
 def forgejo_org(destination: Endpoint, name: str) -> tuple[int, dict[str, Any]]:
     return request(destination, "GET", f"orgs/{quote(name, safe='')}", expected=(200, 404), return_status=True)
+
+
+def reconcile_team_membership(
+    destination: Endpoint,
+    teams: dict[int, int],
+    selected_level: int | None,
+    username: str,
+) -> None:
+    encoded_username = quote(username, safe="")
+    for level, team_id in teams.items():
+        member_path = f"teams/{team_id}/members/{encoded_username}"
+        if level == selected_level:
+            request(destination, "PUT", member_path, expected=(204, 200, 201))
+        else:
+            request(destination, "DELETE", member_path, expected=(204, 200, 404))
+
+    for level, team_id in teams.items():
+        members = list_pages(destination, f"teams/{team_id}/members")
+        present = any(
+            string(member.get("login") or member.get("username")).casefold() == username.casefold()
+            for member in members
+        )
+        if present != (level == selected_level):
+            expected = "present" if level == selected_level else "absent"
+            raise WorkspaceError(
+                f"Forgejo team membership read-back mismatch for {username!r} in team {team_id}: "
+                f"expected {expected}"
+            )
 
 
 def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -774,7 +865,7 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
         source_path = string(item.get("full_path"))
         default_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_path.replace("/", "-"))[:100] or "migrated"
         target_name = mapped_name(plan, "groups", source_path, default_name)
-        status, _existing = forgejo_org(destination, target_name)
+        status, current = forgejo_org(destination, target_name)
         if status == 404:
             body = {
                 "username": target_name,
@@ -785,7 +876,15 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
             request(destination, "POST", "orgs", body=body, expected=(201, 200))
             created += 1
         else:
+            require_named_api_record(status, current, target_name, "Forgejo organization")
             existing += 1
+        verified_status, verified_org = forgejo_org(destination, target_name)
+        require_named_api_record(
+            verified_status,
+            verified_org,
+            target_name,
+            "Forgejo organization",
+        )
         org_by_path[source_path] = target_name
         policy = string(group_configs["subgroup" if group_is_subgroup(plan, source_path) else "group"].get("members_mode") or "import").lower()
         if isinstance(mappings, dict):
@@ -813,17 +912,30 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
         for member in members:
             access_level = int(member.get("access_level") or 0)
             selected = next((level for level, _name, _permission in team_definitions if access_level >= level), None)
-            if selected is None:
-                continue
             username = mapped_name(plan, "users", string(member.get("username")), string(member.get("username")))
-            request(destination, "PUT", f"teams/{teams[selected]}/members/{quote(username, safe='')}", expected=(204, 200, 201))
-    return {"mode": "managed", "created": created, "existing": existing, "organizations": org_by_path, "verified": True}
+            if not username:
+                raise WorkspaceError(f"GitLab group {source_path!r} contains a member without a username")
+            reconcile_team_membership(destination, teams, selected, username)
+    return {
+        "mode": "managed",
+        "created": created,
+        "existing": existing,
+        "organizations": org_by_path,
+        "verified_count": created + existing,
+        "verified": True,
+    }
 
 
 def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> int:
     teams = list_pages(destination, f"orgs/{quote(org, safe='')}/teams")
     existing = next((item for item in teams if string(item.get("name")) == name), None)
     if existing and existing.get("id") is not None:
+        actual_permission = string(existing.get("permission")).lower()
+        if actual_permission != permission:
+            raise WorkspaceError(
+                f"Forgejo team {org}/{name} permission mismatch: "
+                f"expected {permission!r}, got {actual_permission or '<missing>'!r}"
+            )
         return int(existing["id"])
     body = {
         "name": name,
@@ -835,7 +947,15 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
     created = request(destination, "POST", f"orgs/{quote(org, safe='')}/teams", body=body, expected=(201, 200))
     if not isinstance(created, dict) or created.get("id") is None:
         raise WorkspaceError(f"Forgejo team create returned no id for {org}/{name}")
-    return int(created["id"])
+    team_id = int(created["id"])
+    verified_teams = list_pages(destination, f"orgs/{quote(org, safe='')}/teams")
+    verified = next(
+        (item for item in verified_teams if int(item.get("id") or 0) == team_id),
+        None,
+    )
+    if not verified or string(verified.get("permission")).lower() != permission:
+        raise WorkspaceError(f"Forgejo team {org}/{name} did not verify after creation")
+    return team_id
 
 
 def destination_authenticated_username(destination: Endpoint) -> str:
@@ -995,6 +1115,54 @@ def source_variable_query(metadata: dict[str, Any]) -> dict[str, str]:
     return {"filter[environment_scope]": string(metadata.get("environment_scope") or "*")}
 
 
+def planned_variable_imports(
+    plan: dict[str, Any],
+    project_path: str,
+    variables: Any,
+) -> list[dict[str, Any]]:
+    """Validate variable mappings before any Woodpecker mutation for a repo."""
+    if not isinstance(variables, list):
+        raise WorkspaceError(f"variables for {project_path} must be a list")
+    planned: list[dict[str, Any]] = []
+    targets: dict[str, str] = {}
+    for metadata in variables:
+        if not isinstance(metadata, dict):
+            raise WorkspaceError(f"variable metadata for {project_path} must be an object")
+        key = string(metadata.get("key"))
+        if not key:
+            raise WorkspaceError(f"variable metadata for {project_path} is missing key")
+        identity = variable_identity(metadata)
+        mapping = variable_mapping(plan, identity, key)
+        mode = string(mapping.get("mode") or "managed").lower()
+        if mode in {"skip", "skipped", "manual", "mapped"}:
+            planned.append({"metadata": metadata, "identity": identity, "mapping": mapping, "mode": mode})
+            continue
+        if mode != "managed":
+            raise WorkspaceError(f"unsupported variable mapping mode {mode!r} for {identity}")
+        target_name = string(mapping.get("target_name") or key)
+        if not target_name:
+            raise WorkspaceError(f"managed variable {identity} has no Woodpecker target name")
+        normalized_target = target_name.casefold()
+        previous_identity = targets.get(normalized_target)
+        if previous_identity is not None:
+            raise WorkspaceError(
+                f"variables for {project_path} map {previous_identity!r} and {identity!r} "
+                f"to the same Woodpecker secret {target_name!r}; provide unique full-identity mappings "
+                "or mark one mapping manual, mapped, or skip"
+            )
+        targets[normalized_target] = identity
+        planned.append(
+            {
+                "metadata": metadata,
+                "identity": identity,
+                "mapping": mapping,
+                "mode": mode,
+                "target_name": target_name,
+            }
+        )
+    return planned
+
+
 def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("variables"), "surfaces.variables")
     if config["mode"] != "managed":
@@ -1009,10 +1177,27 @@ def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
 
     wp = cutover.service_target("woodpecker", wp_config)
     results: list[dict[str, Any]] = []
+    planned_projects: list[tuple[str, dict[str, Any], list[dict[str, Any]]]] = []
     for project_item in snapshot["surfaces"].get("variables", {}).get("items", []):
         project_path = string(project_item.get("project"))
         project_snapshot = project_snapshot_for(snapshot, project_path)
         if not project_snapshot:
+            continue
+        planned = planned_variable_imports(plan, project_path, project_item.get("variables", []))
+        planned_projects.append((project_path, project_snapshot, planned))
+    for project_path, project_snapshot, planned in planned_projects:
+        managed_items = [item for item in planned if item["mode"] == "managed"]
+        for item in planned:
+            if item["mode"] in {"skip", "skipped", "manual", "mapped"}:
+                results.append(
+                    {
+                        "project": project_path,
+                        "identity": item["identity"],
+                        "mode": item["mode"],
+                        "verified": True,
+                    }
+                )
+        if not managed_items:
             continue
         owner = string(project_snapshot["destination"]["owner"])
         repo = string(project_snapshot["destination"]["repo"])
@@ -1023,16 +1208,11 @@ def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
         if repo_id <= 0:
             raise WorkspaceError(f"Woodpecker repository id is missing for {owner}/{repo}")
         source_project = string(project_snapshot["project"].get("id") or project_path)
-        for metadata in project_item.get("variables", []):
-            key = string(metadata.get("key"))
-            identity = variable_identity(metadata)
-            mapping = variable_mapping(plan, identity, key)
-            mode = string(mapping.get("mode") or "managed").lower()
-            if mode in {"skip", "skipped", "manual"}:
-                results.append({"project": project_path, "identity": identity, "mode": mode, "verified": True})
-                continue
-            if mode != "managed":
-                raise WorkspaceError(f"unsupported variable mapping mode {mode!r} for {identity}")
+        for item in managed_items:
+            metadata = item["metadata"]
+            identity = item["identity"]
+            mapping = item["mapping"]
+            mode = item["mode"]
             live = request(
                 source,
                 "GET",
@@ -1043,8 +1223,9 @@ def import_variables(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
             value = string(live.get("value") if isinstance(live, dict) else "")
             if not value:
                 raise WorkspaceError(f"GitLab variable {identity} has no readable value; map it manually")
-            result = cutover.woodpecker_secret_upsert(wp, repo_id, string(mapping.get("target_name") or key), value)
-            results.append({"project": project_path, "identity": identity, "target_name": string(mapping.get("target_name") or key), "mode": mode, "verified": result.get("verified") is True})
+            target_name = item["target_name"]
+            result = cutover.woodpecker_secret_upsert(wp, repo_id, target_name, value)
+            results.append({"project": project_path, "identity": identity, "target_name": target_name, "mode": mode, "verified": result.get("verified") is True})
     return {"mode": config["mode"], "items": results, "verified": all(item.get("verified") is True for item in results)}
 
 
@@ -1062,6 +1243,79 @@ def prepare_ci_checkout(destination_url: str, repo_root: Path) -> None:
             return
         shutil.rmtree(repo_root)
     migration.run_command(["git", "clone", "--quiet", destination_url, str(repo_root)], check=True)
+
+
+def safe_ci_destination(repo_root: Path, value: str) -> tuple[Path, str]:
+    normalized = value.replace("\\", "/").strip()
+    parts = normalized.split("/")
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized)
+        or any(part in {"", ".", ".."} for part in parts)
+        or any(ord(character) < 32 for character in normalized)
+    ):
+        raise WorkspaceError(f"unsafe CI destination path {value!r}")
+    relative = PurePosixPath(*parts).as_posix()
+    destination = repo_root.joinpath(*parts)
+    root_resolved = repo_root.resolve()
+    destination_resolved = destination.resolve(strict=False)
+    if root_resolved != destination_resolved and root_resolved not in destination_resolved.parents:
+        raise WorkspaceError(f"CI destination path escapes checkout: {value!r}")
+    return destination, relative
+
+
+def verify_ci_remote_files(repo_root: Path, rendered_files: list[tuple[str, str]]) -> list[dict[str, str]]:
+    migration.run_command(
+        ["git", "-C", str(repo_root), "fetch", "--quiet", "origin"],
+        check=True,
+    )
+    verified: list[dict[str, str]] = []
+    for path, expected_content in rendered_files:
+        result = migration.run_command(
+            ["git", "-C", str(repo_root), "show", f"origin/HEAD:{path}"],
+            check=True,
+        )
+        expected_digest = hashlib.sha256(expected_content.encode("utf-8")).hexdigest()
+        actual_digest = hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+        if actual_digest != expected_digest:
+            raise WorkspaceError(
+                f"converted CI read-back mismatch for {path!r}: "
+                f"expected sha256:{expected_digest}, got sha256:{actual_digest}"
+            )
+        verified.append({"path": path, "sha256": expected_digest})
+    return verified
+
+
+def commit_ci_changes(repo_root: Path, paths: list[str]) -> str:
+    migration.run_command(["git", "-C", str(repo_root), "add", *paths], check=True)
+    staged = migration.run_command(
+        ["git", "-C", str(repo_root), "diff", "--cached", "--quiet"],
+        check=False,
+    )
+    if staged.returncode == 0:
+        return "unchanged"
+    if staged.returncode != 1:
+        raise WorkspaceError(
+            f"git staged-change probe failed for {repo_root.name!r} with rc={staged.returncode}"
+        )
+    migration.run_command(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "-c",
+            "user.name=platform-forge-workspace",
+            "-c",
+            "user.email=forge-workspace@invalid",
+            "commit",
+            "-m",
+            "Import GitLab CI as Woodpecker workflow",
+        ],
+        check=True,
+    )
+    migration.run_command(["git", "-C", str(repo_root), "push", "origin", "HEAD"], check=True)
+    return "committed"
 
 
 def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) -> dict[str, Any]:
@@ -1082,8 +1336,8 @@ def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) ->
         rendered_files: list[tuple[str, str]] = []
         for file_item in project_item.get("files", []):
             source_path = string(file_item.get("path"))
-            destination_path = string(mappings.get(source_path))
-            if not destination_path:
+            configured_destination = string(mappings.get(source_path))
+            if not configured_destination:
                 continue
             content = file_item.get("content")
             if not isinstance(content, str):
@@ -1091,21 +1345,31 @@ def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) ->
             rendered, report = pipeline.convert_pipeline("gitlab", content, source_path, conversion_config)
             if not report.get("supported"):
                 raise WorkspaceError(f"GitLab pipeline {project_path}:{source_path} has unsupported constructs")
-            rendered_files.append((destination_path, rendered))
+            rendered_files.append((configured_destination, rendered))
         if not rendered_files:
             results.append({"project": project_path, "files": [], "verified": True, "action": "no-files"})
             continue
         destination_url = string(source_item["destination"]["git_url"])
         repo_root = work_dir / "ci" / re.sub(r"[^A-Za-z0-9_.-]+", "-", project_path)
         prepare_ci_checkout(destination_url, repo_root)
+        safe_rendered_files: list[tuple[str, str]] = []
         for path, content in rendered_files:
-            destination_file = repo_root / path
+            destination_file, safe_path = safe_ci_destination(repo_root, path)
             destination_file.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(destination_file, content)
-        migration.run_command(["git", "-C", str(repo_root), "add", *[path for path, _ in rendered_files]], check=True)
-        migration.run_command(["git", "-C", str(repo_root), "-c", "user.name=platform-forge-workspace", "-c", "user.email=forge-workspace@invalid", "commit", "-m", "Import GitLab CI as Woodpecker workflow"], check=True)
-        migration.run_command(["git", "-C", str(repo_root), "push", "origin", "HEAD"], check=True)
-        results.append({"project": project_path, "files": [path for path, _ in rendered_files], "verified": True, "action": "committed"})
+            safe_rendered_files.append((safe_path, content))
+        paths = [path for path, _content in safe_rendered_files]
+        action = commit_ci_changes(repo_root, paths)
+        verified_files = verify_ci_remote_files(repo_root, safe_rendered_files)
+        results.append(
+            {
+                "project": project_path,
+                "files": paths,
+                "verified_files": verified_files,
+                "verified": True,
+                "action": action,
+            }
+        )
     return {"mode": config["mode"], "items": results, "verified": all(item.get("verified") is True for item in results)}
 
 
@@ -1164,11 +1428,14 @@ def import_pipelines(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
             if isinstance(configured, dict):
                 name = string(configured.get("name"))
                 branch = string(configured.get("branch"))
-                enabled = bool_value(configured.get("enabled"), bool_value(schedule.get("active"), True))
+                if bool_value(configured.get("enabled")):
+                    raise WorkspaceError(
+                        f"workspace schedule {project_path}:{source_id} cannot be enabled before cutover"
+                    )
             else:
                 name = string(configured) or f"gitlab-schedule-{source_id or hashlib.sha256(canonical_digest(schedule).encode()).hexdigest()[:12]}"
                 branch = ""
-                enabled = bool_value(schedule.get("active"), True)
+            enabled = False
             name = name or f"gitlab-schedule-{source_id}"
             cron = string(schedule.get("cron"))
             branch = branch or string(schedule.get("ref")) or string(project_snapshot["project"].get("default_branch") or "main")

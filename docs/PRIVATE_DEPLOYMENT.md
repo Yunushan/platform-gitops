@@ -146,7 +146,12 @@ mode before commit or push. With
 through `scripts/check_gitops_profile.py`. With the default
 `skip-incomplete`, it renders and validates the deployable Application subset
 that Argo CD will receive, while still allowing optional unresolved apps to be
-skipped during first bootstrap. Disable it only for a temporary local debug run.
+skipped during first bootstrap. Both modes also verify that selected
+Kustomization resources, components, patch files, Helm values, vendored chart
+metadata, and premium internal-TLS support files exist before promotion. The
+skip-incomplete mode allows unresolved template placeholders only; it does not
+allow an incomplete application tree. Disable the profile check only for a
+temporary local debug run.
 `PLATFORM_RUN_NO_SECRETS=true` also runs the safety scanner. First private
 deploy and first seed deploy default
 `PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES=true` so real internal FQDNs can

@@ -22,7 +22,10 @@ fi
 
 case "${mode}" in
   strict)
-    "${python_bin}" scripts/check_gitops_profile.py --repo-root . --profile "${profile}"
+    "${python_bin}" scripts/check_gitops_profile.py \
+      --repo-root . \
+      --profile "${profile}" \
+      --require-structure
     ;;
   skip-incomplete)
     rendered_file=".platform-gitops-selection-$$.yaml"
@@ -33,6 +36,11 @@ case "${mode}" in
       --repo-url "${repo_url}" \
       --output "${rendered_file}" \
       --required-path gitops/clusters/rke2-main/projects
+    "${python_bin}" scripts/check_gitops_profile.py \
+      --repo-root . \
+      --profile "${profile}" \
+      --require-structure \
+      --allow-placeholders
     ;;
   *)
     echo "Unsupported PLATFORM_GITOPS_PLACEHOLDER_MODE=${mode}; expected strict or skip-incomplete." >&2

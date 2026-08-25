@@ -36,9 +36,9 @@ rules:
       exclude:
         # Longhorn requires host storage access. Keep these reviewed exceptions
         # bound to the exact vendored chart version so upgrades force re-review.
-        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn/templates/daemonset-sa.yaml"
-        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn/templates/preupgrade-job.yaml"
-        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn/templates/psp.yaml"
+        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn/templates/daemonset-sa.yaml"
+        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn/templates/preupgrade-job.yaml"
+        - "/gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn/templates/psp.yaml"
         # Tetragon requires privileged eBPF and host-observation access. Bind
         # the exception to the exact reviewed upstream chart version.
         - "/gitops/clusters/rke2-main/premium-3node/apps/tetragon/charts/tetragon-1.6.0/tetragon/values.yaml"

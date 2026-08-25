@@ -543,6 +543,10 @@ def main() -> int:
     for needle in (
         "HARBOR_REDIS_TLS:-true",
         "FORGEJO_REDIS_TLS:-true",
+        "Reject plaintext Harbor cache transport in production mode",
+        "HARBOR_REDIS_TLS=false is not allowed",
+        "Reject plaintext Forgejo cache transport in production mode",
+        "platform_forgejo_redis_url_from_env",
         'scheme = "rediss"',
         "state=reconciled",
     ):

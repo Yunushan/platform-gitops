@@ -61,7 +61,7 @@ def synthetic_environment(cosign_public_key: Path) -> dict[str, str]:
     return {
         "FORGEJO_DATA_SIZE": "21Gi",
         "FORGEJO_STORAGE_CLASS": "longhorn-critical-encrypted",
-        "FORGEJO_IMAGE_TAG": "15.0.3-rootless",
+        "FORGEJO_IMAGE_TAG": "15.0.6-rootless",
         "LONGHORN_BACKUP_TARGET": "s3://platform-test-longhorn@eu-test-1/",
         "LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME": "longhorn-backup-test",
         "PLATFORM_LONGHORN_STORAGE_OVER_PROVISIONING_PERCENTAGE": "275",

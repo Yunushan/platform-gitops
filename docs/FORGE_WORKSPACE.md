@@ -42,11 +42,17 @@ instance-wide import.
 - **Users:** selected GitLab users are created through Forgejo's administrative
   user API. The plan references one or more password environment variables;
   passwords are never put in JSON. New users are marked to change the password.
+  Every managed user is read back by its mapped login before the import can
+  report success.
 - **Groups and subgroups:** GitLab groups are represented as Forgejo
   organizations. GitLab access levels are represented by Forgejo teams. Nested
   groups are flattened into deterministic organization names; use `mappings`
   when a different name is required. Set `members_mode` to `skip`, `mapped`, or
-  `manual` when users are intentionally not being imported.
+  `manual` when users are intentionally not being imported. Managed
+  organizations, team permissions, and imported memberships are read back.
+  Membership reconciliation removes a selected user from the other
+  deterministic GitLab access-level teams so a downgrade cannot retain stale
+  privileges.
 - **Projects:** project metadata that Forgejo can represent is reconciled on
   the destination repository. The source project is not deleted or disabled.
 - **Repositories:** Git refs, tags, LFS data when selected, and the supported
@@ -54,18 +60,29 @@ instance-wide import.
 - **Variables:** project, group, and optional instance variables are read from
   GitLab at import time and stored as Woodpecker repository secrets. By default,
   project names are preserved; group and instance names receive `GL_GROUP_` or
-  `GL_INSTANCE_` prefixes unless a mapping supplies a target name.
+  `GL_INSTANCE_` prefixes unless a mapping supplies a target name. The importer
+  fails before writing secrets when two environment-scoped source variables
+  resolve to the same case-insensitive Woodpecker secret name. Use a full
+  identity mapping such as `project:DEPLOY_TOKEN:production` with a unique
+  `target_name`, or mark the mapping `manual`, `mapped`, or `skip` when the
+  source scope cannot be represented safely.
 - **CI:** selected `.gitlab-ci.yml` or `.gitlab/ci/*` files are converted by the
   fail-closed pipeline converter and committed to the destination repository as
   `.woodpecker.yml` (or an explicit destination path). Unsupported constructs
-  stop the import rather than producing a misleading workflow.
+  stop the import rather than producing a misleading workflow. Destination
+  paths are confined to the repository checkout, unchanged retries do not make
+  duplicate commits, and each pushed workflow is read back from the remote and
+  verified by SHA-256 digest.
 - **Runners:** GitLab runners are inventory-only unless a `managed` surface is
   selected. Managed runner import verifies that an already-running Woodpecker
   agent matches each declared label mapping. GitLab runner machines,
   registration tokens, executors, and host credentials are never copied.
 - **Pipelines:** pipeline runs and history are export-only. Managed pipeline
-  import recreates GitLab pipeline schedules as Woodpecker cron jobs. GitLab
-  trigger tokens and historical run state require an explicit manual design.
+  import recreates GitLab pipeline schedules as **disabled** Woodpecker cron
+  jobs. Workspace import rejects schedule activation; only the approved
+  cutover controller may enable them after source-CI freeze and verification.
+  GitLab trigger tokens and historical run state require an explicit manual
+  design.
 
 These boundaries reflect the different provider models: GitLab exposes users,
 groups, projects, runners, variables, schedules, and pipelines through separate

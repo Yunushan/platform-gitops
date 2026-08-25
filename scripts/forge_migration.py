@@ -2,12 +2,12 @@
 """Mirror and verify Git forge migrations with machine-readable proof.
 
 The supported migration planes are Git refs, repository labels, milestones,
-portable releases, issues/comments, and open or closed same-repository pull or
-merge requests: branches, tags, optional wiki/LFS repositories, and
-provider-common metadata. Other provider metadata such as packages and release
-assets is intentionally modeled in the plan and rejected when marked required
-until an importer for that surface exists. That keeps "verified migration"
-claims honest.
+portable releases, issues/comments, open or closed same-repository pull or
+merge requests, and a fail-closed branch-protection subset: branches, tags,
+optional wiki/LFS repositories, and provider-common metadata. Other provider
+metadata such as packages and release assets is intentionally modeled in the
+plan and rejected when marked required until an importer for that surface
+exists. That keeps "verified migration" claims honest.
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ OPTIONAL_DIRECTIONS = {
 }
 SUPPORTED_METADATA_STATES = {"skip", "skipped", "false", "none", "not-required"}
 SUPPORTED_METADATA_SURFACES = {
+    "branch_protection",
     "labels",
     "milestones",
     "releases",
@@ -73,7 +74,6 @@ UNSUPPORTED_METADATA_SURFACES = {
     "users",
     "teams",
     "permissions",
-    "branch_protection",
     "webhooks",
 }
 SENSITIVE_LITERAL_KEYS = {
@@ -87,6 +87,35 @@ SENSITIVE_LITERAL_KEYS = {
     "value",
 }
 MIGRATION_COMMAND_TIMEOUT_SECONDS = 7_200
+BRANCH_PROTECTION_OPTION_KEYS = {
+    "mode",
+    "branches",
+    "gitlab_maintainer_team",
+}
+BRANCH_PROTECTION_LIST_FIELDS = {
+    "approvals_whitelist_teams",
+    "approvals_whitelist_username",
+    "merge_whitelist_teams",
+    "merge_whitelist_usernames",
+    "push_whitelist_teams",
+    "push_whitelist_usernames",
+    "status_check_contexts",
+}
+BRANCH_PROTECTION_BOOL_FIELDS = {
+    "apply_to_admins",
+    "block_on_official_review_requests",
+    "block_on_outdated_branch",
+    "block_on_rejected_reviews",
+    "dismiss_stale_approvals",
+    "enable_approvals_whitelist",
+    "enable_merge_whitelist",
+    "enable_push",
+    "enable_push_whitelist",
+    "enable_status_check",
+    "ignore_stale_approvals",
+    "push_whitelist_deploy_keys",
+    "require_signed_commits",
+}
 
 
 class MigrationError(RuntimeError):
@@ -223,17 +252,24 @@ def strip_git_suffix(value: str) -> str:
     return value[:-4] if value.endswith(".git") else value
 
 
+def safe_urlsplit(value: str, label: str) -> Any:
+    try:
+        return urlsplit(value)
+    except ValueError as exc:
+        raise MigrationError(f"{label} must contain a valid URL") from exc
+
+
 def derive_api_repository(repo_url: str) -> str:
     if repo_url.startswith("git@") and ":" in repo_url:
         return strip_git_suffix(repo_url.split(":", 1)[1].strip("/"))
-    parts = urlsplit(repo_url)
+    parts = safe_urlsplit(repo_url, "repository URL")
     if parts.scheme in {"http", "https", "ssh", "git"} and parts.path:
         return strip_git_suffix(parts.path.strip("/"))
     return ""
 
 
 def infer_api_url(repo_url: str, provider: str) -> str:
-    parts = urlsplit(repo_url)
+    parts = safe_urlsplit(repo_url, "repository URL")
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         return ""
     host = parts.netloc
@@ -497,6 +533,118 @@ def metadata_mode(repo: RepoPlan, surface: str) -> str:
     raise MigrationError(f"{repo.name}: unsupported metadata mode for {surface}: {value!r}")
 
 
+def branch_protection_options(repo: RepoPlan) -> dict[str, Any]:
+    value = repo.metadata.get("branch_protection")
+    if value is None or isinstance(value, (bool, str)):
+        return {}
+    if not isinstance(value, dict):
+        raise MigrationError(
+            f"{repo.name}: branch_protection must be a mode or an object"
+        )
+    unknown = sorted(set(value) - BRANCH_PROTECTION_OPTION_KEYS)
+    if unknown:
+        raise MigrationError(
+            f"{repo.name}: branch_protection has unsupported option(s): "
+            f"{', '.join(unknown)}"
+        )
+    return value
+
+
+def github_branch_protection_scope(repo: RepoPlan) -> list[str]:
+    options = branch_protection_options(repo)
+    raw_branches = options.get("branches")
+    if not isinstance(raw_branches, list) or not raw_branches:
+        raise MigrationError(
+            f"{repo.name}: GitHub branch_protection requires a non-empty branches list; "
+            "the REST API cannot enumerate wildcard branch-protection rules safely"
+        )
+    branches: list[str] = []
+    for index, raw_branch in enumerate(raw_branches):
+        branch = str(raw_branch).strip()
+        if not branch:
+            raise MigrationError(
+                f"{repo.name}: branch_protection.branches[{index}] must not be empty"
+            )
+        if any(character in branch for character in "*?["):
+            raise MigrationError(
+                f"{repo.name}: GitHub branch protection scope must use exact branch names, "
+                f"not wildcard {branch!r}"
+            )
+        branches.append(branch)
+    if len(branches) != len(set(branches)):
+        raise MigrationError(
+            f"{repo.name}: branch_protection.branches must not contain duplicates"
+        )
+    return branches
+
+
+def gitlab_maintainer_team(repo: RepoPlan) -> str | None:
+    value = branch_protection_options(repo).get("gitlab_maintainer_team")
+    if value is None:
+        return None
+    team = str(value).strip()
+    if not team:
+        raise MigrationError(
+            f"{repo.name}: branch_protection.gitlab_maintainer_team must not be empty"
+        )
+    return team
+
+
+def validate_branch_protection_contract(
+    repo: RepoPlan,
+    source: ApiTarget,
+    destination: ApiTarget,
+) -> None:
+    options = branch_protection_options(repo)
+    if destination.provider != "forgejo" or source.provider not in {"github", "gitlab"}:
+        raise MigrationError(
+            f"{repo.name}: verified branch-protection migration currently supports "
+            "GitHub or GitLab sources with a Forgejo destination"
+        )
+    if source.provider == "github":
+        github_branch_protection_scope(repo)
+        if "gitlab_maintainer_team" in options:
+            raise MigrationError(
+                f"{repo.name}: gitlab_maintainer_team only applies to GitLab sources"
+            )
+    elif "branches" in options:
+        raise MigrationError(
+            f"{repo.name}: GitLab protected branches are enumerated by the API; "
+            "branch_protection.branches is only valid for GitHub sources"
+        )
+
+
+def branch_protection_plan(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "branch_protection")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped"}
+    try:
+        source = api_target(repo, "source")
+        destination = api_target(repo, "destination")
+        validate_branch_protection_contract(repo, source, destination)
+    except MigrationError as exc:
+        if mode == "auto":
+            return {
+                "mode": mode,
+                "status": "skipped",
+                "reason": str(exc),
+            }
+        raise
+    plan = {
+        "mode": mode,
+        "status": "planned",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        "source_api_url": redact_url(source.api_url),
+        "destination_api_url": redact_url(destination.api_url),
+        "source_repository": source.repository,
+        "destination_repository": destination.repository,
+    }
+    if source.provider == "github":
+        plan["branches"] = github_branch_protection_scope(repo)
+    return plan
+
+
 def api_target(repo: RepoPlan, side: str) -> ApiTarget:
     if side == "source":
         provider = repo.source_provider
@@ -545,6 +693,7 @@ def validate_metadata_requirements(repo: RepoPlan) -> dict[str, Any]:
         }
 
     return {
+        "branch_protection": branch_protection_plan(repo),
         "labels": planned_surface("labels"),
         "milestones": planned_surface("milestones"),
         "releases": planned_surface("releases"),
@@ -1020,6 +1169,575 @@ def poll_verified_comparison(
         if attempt + 1 < attempts:
             time.sleep(initial_delay_seconds * (2**attempt))
     return comparison
+
+
+def require_api_bool(value: Any, label: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, dict):
+        value = value.get("enabled")
+    if not isinstance(value, bool):
+        raise MigrationError(f"{label} must be a boolean")
+    return value
+
+
+def require_api_int(value: Any, label: str, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise MigrationError(f"{label} must be a non-negative integer")
+    return value
+
+
+def require_api_string_list(value: Any, label: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise MigrationError(f"{label} must be a list")
+    normalized: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if not text:
+            raise MigrationError(f"{label} must not contain empty values")
+        normalized.append(text)
+    return sorted(set(normalized), key=str.casefold)
+
+
+def empty_forgejo_branch_protection(branch_name: str) -> dict[str, Any]:
+    return {
+        "branch_name": branch_name,
+        "apply_to_admins": False,
+        "enable_push": True,
+        "enable_push_whitelist": False,
+        "push_whitelist_usernames": [],
+        "push_whitelist_teams": [],
+        "push_whitelist_deploy_keys": False,
+        "enable_merge_whitelist": False,
+        "merge_whitelist_usernames": [],
+        "merge_whitelist_teams": [],
+        "enable_status_check": False,
+        "status_check_contexts": [],
+        "required_approvals": 0,
+        "enable_approvals_whitelist": False,
+        "approvals_whitelist_username": [],
+        "approvals_whitelist_teams": [],
+        "block_on_rejected_reviews": False,
+        "block_on_official_review_requests": False,
+        "block_on_outdated_branch": False,
+        "dismiss_stale_approvals": False,
+        "ignore_stale_approvals": False,
+        "require_signed_commits": False,
+        "protected_file_patterns": "",
+        "unprotected_file_patterns": "",
+    }
+
+
+def normalize_forgejo_branch_protection(rule: dict[str, Any]) -> dict[str, Any]:
+    branch_name = str(rule.get("rule_name") or rule.get("branch_name") or "").strip()
+    if not branch_name:
+        raise MigrationError("Forgejo branch-protection rule is missing rule_name/branch_name")
+    normalized = empty_forgejo_branch_protection(branch_name)
+    for field in BRANCH_PROTECTION_BOOL_FIELDS:
+        normalized[field] = require_api_bool(
+            rule.get(field), f"Forgejo branch protection {branch_name!r}.{field}"
+        )
+    for field in BRANCH_PROTECTION_LIST_FIELDS:
+        value = rule.get(field)
+        if field == "approvals_whitelist_username" and value is None:
+            value = rule.get("approvals_whitelist_usernames")
+        normalized[field] = require_api_string_list(
+            value, f"Forgejo branch protection {branch_name!r}.{field}"
+        )
+    normalized["required_approvals"] = require_api_int(
+        rule.get("required_approvals"),
+        f"Forgejo branch protection {branch_name!r}.required_approvals",
+    )
+    for field in ("protected_file_patterns", "unprotected_file_patterns"):
+        value = rule.get(field)
+        normalized[field] = "" if value is None else str(value)
+    return normalized
+
+
+def github_actor_restrictions_present(value: Any, label: str) -> bool:
+    if value is None:
+        return False
+    if not isinstance(value, dict):
+        raise MigrationError(f"{label} must be an object or null")
+    for field in ("users", "teams", "apps"):
+        actors = value.get(field)
+        if actors is not None and not isinstance(actors, list):
+            raise MigrationError(f"{label}.{field} must be a list")
+        if actors:
+            return True
+    return False
+
+
+def normalize_github_branch_protection(
+    branch_name: str,
+    protection: dict[str, Any],
+) -> dict[str, Any]:
+    if github_actor_restrictions_present(
+        protection.get("restrictions"),
+        f"GitHub branch protection {branch_name!r}.restrictions",
+    ):
+        raise MigrationError(
+            f"GitHub branch {branch_name!r} has push actor restrictions; "
+            "identity and role restrictions require an explicit destination mapping"
+        )
+    enforce_admins = require_api_bool(
+        protection.get("enforce_admins"),
+        f"GitHub branch protection {branch_name!r}.enforce_admins",
+    )
+    if not enforce_admins:
+        raise MigrationError(
+            f"GitHub branch {branch_name!r} exempts administrators; Forgejo's portable "
+            "rule cannot prove that exception"
+        )
+    unsupported_enabled = []
+    for field in (
+        "allow_deletions",
+        "allow_force_pushes",
+        "allow_fork_syncing",
+        "block_creations",
+        "lock_branch",
+        "required_conversation_resolution",
+        "required_linear_history",
+    ):
+        if require_api_bool(
+            protection.get(field),
+            f"GitHub branch protection {branch_name!r}.{field}",
+        ):
+            unsupported_enabled.append(field)
+    if unsupported_enabled:
+        raise MigrationError(
+            f"GitHub branch {branch_name!r} enables non-portable control(s): "
+            f"{', '.join(unsupported_enabled)}"
+        )
+
+    normalized = empty_forgejo_branch_protection(branch_name)
+    normalized["apply_to_admins"] = enforce_admins
+    status_checks = protection.get("required_status_checks")
+    if status_checks is not None:
+        if not isinstance(status_checks, dict):
+            raise MigrationError(
+                f"GitHub branch protection {branch_name!r}.required_status_checks must be an object"
+            )
+        contexts = require_api_string_list(
+            status_checks.get("contexts"),
+            f"GitHub branch protection {branch_name!r}.required_status_checks.contexts",
+        )
+        checks = status_checks.get("checks")
+        if checks is not None:
+            if not isinstance(checks, list):
+                raise MigrationError(
+                    f"GitHub branch protection {branch_name!r}.required_status_checks.checks "
+                    "must be a list"
+                )
+            for check in checks:
+                if not isinstance(check, dict) or not str(check.get("context") or "").strip():
+                    raise MigrationError(
+                        f"GitHub branch protection {branch_name!r} has a malformed status check"
+                    )
+                if check.get("app_id") is not None:
+                    raise MigrationError(
+                        f"GitHub branch {branch_name!r} has an app-bound required status check; "
+                        "Forgejo cannot preserve the GitHub App identity safely"
+                    )
+                contexts.append(str(check["context"]).strip())
+        normalized["status_check_contexts"] = sorted(set(contexts), key=str.casefold)
+        normalized["enable_status_check"] = True
+        normalized["block_on_outdated_branch"] = require_api_bool(
+            status_checks.get("strict"),
+            f"GitHub branch protection {branch_name!r}.required_status_checks.strict",
+        )
+
+    reviews = protection.get("required_pull_request_reviews")
+    if reviews is not None:
+        if not isinstance(reviews, dict):
+            raise MigrationError(
+                f"GitHub branch protection {branch_name!r}.required_pull_request_reviews "
+                "must be an object"
+            )
+        if github_actor_restrictions_present(
+            reviews.get("dismissal_restrictions"),
+            f"GitHub branch protection {branch_name!r}.dismissal_restrictions",
+        ) or github_actor_restrictions_present(
+            reviews.get("bypass_pull_request_allowances"),
+            f"GitHub branch protection {branch_name!r}.bypass_pull_request_allowances",
+        ):
+            raise MigrationError(
+                f"GitHub branch {branch_name!r} has review actor restrictions; "
+                "identity restrictions require an explicit destination mapping"
+            )
+        for field in ("require_code_owner_reviews", "require_last_push_approval"):
+            if require_api_bool(
+                reviews.get(field),
+                f"GitHub branch protection {branch_name!r}.{field}",
+            ):
+                raise MigrationError(
+                    f"GitHub branch {branch_name!r} enables non-portable control {field}"
+                )
+        normalized["enable_push"] = False
+        normalized["required_approvals"] = require_api_int(
+            reviews.get("required_approving_review_count"),
+            f"GitHub branch protection {branch_name!r}.required_approving_review_count",
+        )
+        normalized["dismiss_stale_approvals"] = require_api_bool(
+            reviews.get("dismiss_stale_reviews"),
+            f"GitHub branch protection {branch_name!r}.dismiss_stale_reviews",
+        )
+        normalized["block_on_rejected_reviews"] = True
+
+    normalized["require_signed_commits"] = require_api_bool(
+        protection.get("required_signatures"),
+        f"GitHub branch protection {branch_name!r}.required_signatures",
+    )
+    return normalized
+
+
+def gitlab_access_level(
+    branch_name: str,
+    field: str,
+    value: Any,
+) -> int:
+    if not isinstance(value, list) or not value:
+        raise MigrationError(
+            f"GitLab protected branch {branch_name!r}.{field} must be a non-empty list"
+        )
+    levels: set[int] = set()
+    for entry in value:
+        if not isinstance(entry, dict):
+            raise MigrationError(
+                f"GitLab protected branch {branch_name!r}.{field} contains a non-object entry"
+            )
+        if any(entry.get(key) is not None for key in ("user_id", "group_id", "deploy_key_id")):
+            raise MigrationError(
+                f"GitLab protected branch {branch_name!r}.{field} has identity-specific access; "
+                "users, groups, and deploy keys require explicit destination mappings"
+            )
+        raw_level = entry.get("access_level")
+        if isinstance(raw_level, bool) or not isinstance(raw_level, int):
+            raise MigrationError(
+                f"GitLab protected branch {branch_name!r}.{field}.access_level must be an integer"
+            )
+        levels.add(raw_level)
+    if len(levels) != 1:
+        raise MigrationError(
+            f"GitLab protected branch {branch_name!r}.{field} combines access levels that "
+            "cannot be represented as one Forgejo rule"
+        )
+    level = next(iter(levels))
+    if level not in {0, 30, 40}:
+        raise MigrationError(
+            f"GitLab protected branch {branch_name!r}.{field} uses unsupported access level {level}"
+        )
+    return level
+
+
+def normalize_gitlab_branch_protection(
+    repo: RepoPlan,
+    protection: dict[str, Any],
+) -> dict[str, Any]:
+    branch_name = str(protection.get("name") or "").strip()
+    if not branch_name:
+        raise MigrationError("GitLab protected branch is missing its name")
+    if require_api_bool(
+        protection.get("allow_force_push"),
+        f"GitLab protected branch {branch_name!r}.allow_force_push",
+    ):
+        raise MigrationError(
+            f"GitLab protected branch {branch_name!r} allows force pushes, which is not "
+            "portable to the verified Forgejo policy subset"
+        )
+    if require_api_bool(
+        protection.get("code_owner_approval_required"),
+        f"GitLab protected branch {branch_name!r}.code_owner_approval_required",
+    ):
+        raise MigrationError(
+            f"GitLab protected branch {branch_name!r} requires code-owner approval, which "
+            "is not portable to the verified Forgejo policy subset"
+        )
+
+    push_level = gitlab_access_level(
+        branch_name, "push_access_levels", protection.get("push_access_levels")
+    )
+    merge_level = gitlab_access_level(
+        branch_name, "merge_access_levels", protection.get("merge_access_levels")
+    )
+    unprotect = protection.get("unprotect_access_levels")
+    if unprotect is not None and gitlab_access_level(
+        branch_name, "unprotect_access_levels", unprotect
+    ) != 40:
+        raise MigrationError(
+            f"GitLab protected branch {branch_name!r} allows non-maintainers to unprotect it"
+        )
+
+    maintainer_team = gitlab_maintainer_team(repo)
+    if 40 in {push_level, merge_level} and maintainer_team is None:
+        raise MigrationError(
+            f"GitLab protected branch {branch_name!r} uses Maintainers-only access; set "
+            "branch_protection.gitlab_maintainer_team to the pre-created Forgejo team"
+        )
+
+    normalized = empty_forgejo_branch_protection(branch_name)
+    # GitLab protected branches do not expose an administrator-bypass switch.
+    # Applying the Forgejo rule to administrators avoids weakening the source policy.
+    normalized["apply_to_admins"] = True
+    normalized["enable_push"] = push_level != 0
+    if push_level == 40:
+        normalized["enable_push_whitelist"] = True
+        normalized["push_whitelist_teams"] = [maintainer_team]
+    if merge_level == 0:
+        normalized["enable_merge_whitelist"] = True
+    elif merge_level == 40:
+        normalized["enable_merge_whitelist"] = True
+        normalized["merge_whitelist_teams"] = [maintainer_team]
+    return normalized
+
+
+def normalized_branch_protections(
+    repo: RepoPlan,
+    target: ApiTarget,
+    protections: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    if target.provider == "forgejo":
+        normalized = [normalize_forgejo_branch_protection(rule) for rule in protections]
+    elif target.provider == "gitlab":
+        normalized = [normalize_gitlab_branch_protection(repo, rule) for rule in protections]
+    else:
+        raise MigrationError(
+            "GitHub branch protections require an explicit branch name during normalization"
+        )
+    names = [rule["branch_name"] for rule in normalized]
+    if len(names) != len(set(names)):
+        raise MigrationError(
+            f"{target.provider} returned duplicate branch-protection rule names"
+        )
+    return sorted(normalized, key=lambda item: item["branch_name"].casefold())
+
+
+def list_forgejo_branch_protections(target: ApiTarget) -> list[dict[str, Any]]:
+    protections: list[dict[str, Any]] = []
+    for page in range(1, 1001):
+        payload = api_request(
+            target,
+            "GET",
+            f"{repo_api_base(target)}/branch_protections",
+            query={"limit": 100, "page": page},
+            expected=(200,),
+        )
+        if not isinstance(payload, list):
+            raise MigrationError("Forgejo branch-protection API returned a non-list response")
+        protections.extend(payload)
+        if len(payload) < 100:
+            break
+    return protections
+
+
+def list_source_branch_protections(repo: RepoPlan, target: ApiTarget) -> list[dict[str, Any]]:
+    if target.provider == "github":
+        protections: list[dict[str, Any]] = []
+        for branch_name in github_branch_protection_scope(repo):
+            payload = api_request(
+                target,
+                "GET",
+                f"{repo_api_base(target)}/branches/{quote(branch_name, safe='')}/protection",
+                expected=(200,),
+            )
+            if not isinstance(payload, dict):
+                raise MigrationError(
+                    f"GitHub branch protection for {branch_name!r} returned a non-object response"
+                )
+            protections.append(normalize_github_branch_protection(branch_name, payload))
+        return sorted(protections, key=lambda item: item["branch_name"].casefold())
+    if target.provider == "gitlab":
+        protections = []
+        for page in range(1, 1001):
+            payload = api_request(
+                target,
+                "GET",
+                f"{repo_api_base(target)}/protected_branches",
+                query={"per_page": 100, "page": page},
+                expected=(200,),
+            )
+            if not isinstance(payload, list):
+                raise MigrationError("GitLab protected-branches API returned a non-list response")
+            protections.extend(payload)
+            if len(payload) < 100:
+                break
+        return normalized_branch_protections(repo, target, protections)
+    raise MigrationError(
+        f"{repo.name}: unsupported branch-protection source provider {target.provider}"
+    )
+
+
+def branch_protection_digest(protections: list[dict[str, Any]]) -> str:
+    payload = json.dumps(protections, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def compare_branch_protection_sets(
+    source_protections: list[dict[str, Any]],
+    destination_protections: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_by_name = {rule["branch_name"]: rule for rule in source_protections}
+    destination_by_name = {rule["branch_name"]: rule for rule in destination_protections}
+    missing = sorted(set(source_by_name) - set(destination_by_name), key=str.casefold)
+    mismatched = sorted(
+        name
+        for name in set(source_by_name) & set(destination_by_name)
+        if source_by_name[name] != destination_by_name[name]
+    )
+    extra = sorted(set(destination_by_name) - set(source_by_name), key=str.casefold)
+    replicated = sorted(
+        (destination_by_name[name] for name in source_by_name if name in destination_by_name),
+        key=lambda item: item["branch_name"].casefold(),
+    )
+    return {
+        "verified": not missing and not mismatched,
+        "source_count": len(source_protections),
+        "destination_count": len(destination_protections),
+        "source_digest": branch_protection_digest(source_protections),
+        "destination_digest": branch_protection_digest(replicated),
+        "missing": missing,
+        "mismatched": mismatched,
+        "extra": extra,
+    }
+
+
+def forgejo_branch_protection_payload(
+    protection: dict[str, Any],
+    create: bool,
+) -> dict[str, Any]:
+    payload = dict(protection)
+    branch_name = str(payload.pop("branch_name"))
+    if create:
+        payload["branch_name"] = branch_name
+        payload["rule_name"] = branch_name
+    return payload
+
+
+def create_forgejo_branch_protection(
+    target: ApiTarget,
+    protection: dict[str, Any],
+) -> None:
+    api_request(
+        target,
+        "POST",
+        f"{repo_api_base(target)}/branch_protections",
+        body=forgejo_branch_protection_payload(protection, create=True),
+        expected=(200, 201),
+    )
+
+
+def update_forgejo_branch_protection(
+    target: ApiTarget,
+    existing: dict[str, Any],
+    protection: dict[str, Any],
+) -> None:
+    rule_name = str(existing.get("rule_name") or existing.get("branch_name") or "").strip()
+    if not rule_name:
+        raise MigrationError("Forgejo branch-protection update is missing its rule name")
+    api_request(
+        target,
+        "PATCH",
+        f"{repo_api_base(target)}/branch_protections/{quote(rule_name, safe='')}",
+        body=forgejo_branch_protection_payload(protection, create=False),
+        expected=(200,),
+    )
+
+
+def branch_protection_skip(mode: str, exc: MigrationError) -> dict[str, Any]:
+    return {
+        "mode": mode,
+        "status": "skipped",
+        "reason": str(exc),
+        "verified": True,
+    }
+
+
+def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "branch_protection")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    try:
+        source = api_target(repo, "source")
+        destination = api_target(repo, "destination")
+        validate_branch_protection_contract(repo, source, destination)
+        source_protections = list_source_branch_protections(repo, source)
+    except MigrationError as exc:
+        if mode == "auto":
+            return branch_protection_skip(mode, exc)
+        raise
+
+    destination_before_raw = list_forgejo_branch_protections(destination)
+    destination_before = normalized_branch_protections(
+        repo, destination, destination_before_raw
+    )
+    raw_by_name = {
+        normalize_forgejo_branch_protection(rule)["branch_name"]: rule
+        for rule in destination_before_raw
+    }
+    destination_by_name = {
+        protection["branch_name"]: protection for protection in destination_before
+    }
+    created = 0
+    updated = 0
+    for protection in source_protections:
+        name = protection["branch_name"]
+        existing = destination_by_name.get(name)
+        if existing is None:
+            create_forgejo_branch_protection(destination, protection)
+            created += 1
+        elif existing != protection:
+            update_forgejo_branch_protection(destination, raw_by_name[name], protection)
+            updated += 1
+    comparison = poll_verified_comparison(
+        lambda: compare_branch_protection_sets(
+            source_protections,
+            normalized_branch_protections(
+                repo, destination, list_forgejo_branch_protections(destination)
+            ),
+        )
+    )
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        "created": created,
+        "updated": updated,
+        **comparison,
+    }
+
+
+def verify_branch_protections(repo: RepoPlan) -> dict[str, Any]:
+    mode = metadata_mode(repo, "branch_protection")
+    if mode == "skip":
+        return {"mode": mode, "status": "skipped", "verified": True}
+    try:
+        source = api_target(repo, "source")
+        destination = api_target(repo, "destination")
+        validate_branch_protection_contract(repo, source, destination)
+        source_protections = list_source_branch_protections(repo, source)
+    except MigrationError as exc:
+        if mode == "auto":
+            return branch_protection_skip(mode, exc)
+        raise
+    comparison = compare_branch_protection_sets(
+        source_protections,
+        normalized_branch_protections(
+            repo, destination, list_forgejo_branch_protections(destination)
+        ),
+    )
+    return {
+        "mode": mode,
+        "status": "verified" if comparison["verified"] else "failed",
+        "source_provider": source.provider,
+        "destination_provider": destination.provider,
+        **comparison,
+    }
 
 
 def migrate_labels(repo: RepoPlan) -> dict[str, Any]:
@@ -2349,18 +3067,21 @@ def verify_change_requests(repo: RepoPlan) -> dict[str, Any]:
 
 
 def migrate_metadata(repo: RepoPlan) -> dict[str, Any]:
+    branch_protection = migrate_branch_protections(repo)
     labels = migrate_labels(repo)
     milestones = migrate_milestones(repo)
     releases = migrate_releases(repo)
     issues = migrate_issues(repo)
     change_requests = migrate_change_requests(repo)
     return {
+        "branch_protection": branch_protection,
         "labels": labels,
         "milestones": milestones,
         "releases": releases,
         "issues": issues,
         "change_requests": change_requests,
-        "verified": labels.get("verified", False)
+        "verified": branch_protection.get("verified", False)
+        and labels.get("verified", False)
         and milestones.get("verified", False)
         and releases.get("verified", False)
         and issues.get("verified", False)
@@ -2369,18 +3090,21 @@ def migrate_metadata(repo: RepoPlan) -> dict[str, Any]:
 
 
 def verify_metadata(repo: RepoPlan) -> dict[str, Any]:
+    branch_protection = verify_branch_protections(repo)
     labels = verify_labels(repo)
     milestones = verify_milestones(repo)
     releases = verify_releases(repo)
     issues = verify_issues(repo)
     change_requests = verify_change_requests(repo)
     return {
+        "branch_protection": branch_protection,
         "labels": labels,
         "milestones": milestones,
         "releases": releases,
         "issues": issues,
         "change_requests": change_requests,
-        "verified": labels.get("verified", False)
+        "verified": branch_protection.get("verified", False)
+        and labels.get("verified", False)
         and milestones.get("verified", False)
         and releases.get("verified", False)
         and issues.get("verified", False)

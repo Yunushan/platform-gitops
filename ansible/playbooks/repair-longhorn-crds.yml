@@ -8,11 +8,11 @@
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_longhorn_chart_version_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_CHART_VERSION') }}"
     platform_longhorn_wait_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_LONGHORN_WAIT_TIMEOUT') }}"
-    platform_longhorn_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn"
+    platform_longhorn_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn"
     platform_longhorn_vendored_chart_metadata: "{{ lookup('ansible.builtin.file', platform_longhorn_vendored_chart_path ~ '/Chart.yaml') | from_yaml }}"
     platform_longhorn_vendored_chart_version: "{{ platform_longhorn_vendored_chart_metadata.version }}"
     platform_longhorn_chart_version_effective: "{{ platform_longhorn_chart_version | default(platform_longhorn_chart_version_from_env, true) | default(platform_longhorn_vendored_chart_version, true) }}"
-    platform_longhorn_render_kube_version: "1.35.0"
+    platform_longhorn_render_kube_version: "1.36.0"
     platform_longhorn_crd_render_max_bytes: 4194304
     platform_longhorn_wait_timeout_effective: "{{ platform_longhorn_wait_timeout | default(platform_longhorn_wait_timeout_from_env, true) | default(900, true) | int }}"
     platform_longhorn_required_crds:

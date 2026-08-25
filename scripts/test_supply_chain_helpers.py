@@ -68,8 +68,8 @@ ARGOCD_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-argocd.yml"
 INGRESS_BOOTSTRAP = ROOT / "ansible/playbooks/deploy-platform-ingress.yml"
 LONGHORN_BOOTSTRAP = ROOT / "ansible/playbooks/bootstrap-longhorn.yml"
 LONGHORN_CRD_REPAIR = ROOT / "ansible/playbooks/repair-longhorn-crds.yml"
-LONGHORN_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn"
-LONGHORN_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.0/longhorn-1.12.0.tgz"
+LONGHORN_CHART_SOURCE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn"
+LONGHORN_CHART_ARCHIVE = ROOT / "gitops/clusters/rke2-main/premium-3node/apps/longhorn/charts/longhorn-1.12.1/longhorn-1.12.1.tgz"
 LONGHORN_CHART_ARCHIVE_MAX_BYTES = 1 * 1024 * 1024
 LONGHORN_CHART_EXPANDED_MAX_BYTES = 4 * 1024 * 1024
 LONGHORN_CHART_MEMBER_MAX = 128
@@ -970,9 +970,9 @@ def main() -> int:
             "id: kubernetes-privileged-container",
             '        - "**/*.yaml"',
             '        - "**/*.yml"',
-            "longhorn/charts/longhorn-1.12.0/longhorn/templates/daemonset-sa.yaml",
-            "longhorn/charts/longhorn-1.12.0/longhorn/templates/preupgrade-job.yaml",
-            "longhorn/charts/longhorn-1.12.0/longhorn/templates/psp.yaml",
+            "longhorn/charts/longhorn-1.12.1/longhorn/templates/daemonset-sa.yaml",
+            "longhorn/charts/longhorn-1.12.1/longhorn/templates/preupgrade-job.yaml",
+            "longhorn/charts/longhorn-1.12.1/longhorn/templates/psp.yaml",
             "tetragon/charts/tetragon-1.6.0/tetragon/values.yaml",
             label=str(SEMGREP_CONFIG.relative_to(ROOT)),
         )

@@ -1,4 +1,4 @@
-{{- if .Values.networkPolicies.enabled }}
+{{- if .Values.networkPolicies.restrictInternalTraffic }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -11,7 +11,11 @@ spec:
   policyTypes:
   - Ingress
   ingress:
-  - ports:
+  - from:
+    - podSelector:
+        matchLabels:
+          longhorn.io/component: share-manager
+    ports:
     - protocol: TCP
       port: 9503
 {{- end }}

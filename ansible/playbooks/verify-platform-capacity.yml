@@ -7,10 +7,12 @@
     platform_capacity_root_free_percent_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_ROOT_FREE_PERCENT') }}"
     platform_capacity_storage_free_percent_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_STORAGE_FREE_PERCENT') }}"
     platform_capacity_storage_path_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_STORAGE_PATH') }}"
+    platform_capacity_dedicated_storage_required_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED') }}"
     platform_storage_encryption_required_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_STORAGE_ENCRYPTION_REQUIRED') }}"
     platform_capacity_root_free_percent_effective: "{{ platform_capacity_root_free_percent | default(platform_capacity_root_free_percent_from_env, true) | default('15', true) | int }}"
     platform_capacity_storage_free_percent_effective: "{{ platform_capacity_storage_free_percent | default(platform_capacity_storage_free_percent_from_env, true) | default('20', true) | int }}"
     platform_capacity_storage_path_effective: "{{ platform_capacity_storage_path | default(platform_capacity_storage_path_from_env, true) | default('/var/lib/longhorn', true) }}"
+    platform_capacity_dedicated_storage_required_effective: "{{ platform_capacity_dedicated_storage_required | default(platform_capacity_dedicated_storage_required_from_env, true) | default(true, true) | bool }}"
     platform_storage_encryption_required_effective: "{{ platform_storage_encryption_required | default(platform_storage_encryption_required_from_env, true) | default(true, true) | bool }}"
   tasks:
     - name: Require valid host capacity thresholds
@@ -32,6 +34,7 @@
         root_min={{ platform_capacity_root_free_percent_effective }}
         storage_min={{ platform_capacity_storage_free_percent_effective }}
         storage_path={{ platform_capacity_storage_path_effective | quote }}
+        dedicated_storage_required={{ 'true' if platform_capacity_dedicated_storage_required_effective else 'false' }}
         encryption_required={{ 'true' if platform_storage_encryption_required_effective else 'false' }}
 
         if [ "${encryption_required}" = "true" ]; then
@@ -41,7 +44,34 @@
         fi
 
         if [ ! -e "${storage_path}" ]; then
+          if [ "${dedicated_storage_required}" = "true" ]; then
+            printf 'result=fail reason=platform-storage-path-missing node=%s path=%s\n' \
+              {{ inventory_hostname | quote }} "${storage_path}" >&2
+            exit 1
+          fi
           storage_path=/var/lib/rancher/rke2
+        fi
+
+        root_source="$(df -P / 2>/dev/null | awk 'NR == 2 {print $1}' || true)"
+        storage_source="$(df -P "${storage_path}" 2>/dev/null | awk 'NR == 2 {print $1}' || true)"
+        root_fsid="$(stat -f -c '%i' / 2>/dev/null || true)"
+        storage_fsid="$(stat -f -c '%i' "${storage_path}" 2>/dev/null || true)"
+        printf 'node=%s dedicated_platform_storage_required=%s root_source=%s storage_source=%s root_fsid=%s storage_fsid=%s storage_path=%s\n' \
+          {{ inventory_hostname | quote }} "${dedicated_storage_required}" "${root_source}" \
+          "${storage_source}" "${root_fsid}" "${storage_fsid}" "${storage_path}"
+
+        if [ "${dedicated_storage_required}" = "true" ]; then
+          if [ -z "${root_source}" ] || [ -z "${storage_source}" ] || \
+            [ -z "${root_fsid}" ] || [ -z "${storage_fsid}" ]; then
+            printf 'result=fail reason=platform-storage-filesystem-detection-failed node=%s path=%s\n' \
+              {{ inventory_hostname | quote }} "${storage_path}" >&2
+            exit 1
+          fi
+          if [ "${root_source}" = "${storage_source}" ] || [ "${root_fsid}" = "${storage_fsid}" ]; then
+            printf 'result=fail reason=platform-storage-shares-root-filesystem node=%s path=%s source=%s fsid=%s\n' \
+              {{ inventory_hostname | quote }} "${storage_path}" "${storage_source}" "${storage_fsid}" >&2
+            exit 1
+          fi
         fi
 
         check_path() {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -29,11 +30,23 @@ def write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def run_check(checker, repo: Path, profile: str = "premium-3node") -> tuple[int, str]:
+def run_check(
+    checker,
+    repo: Path,
+    profile: str = "premium-3node",
+    *,
+    check_placeholders: bool = True,
+    require_structure: bool = False,
+) -> tuple[int, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        rc = checker.check_profile(repo, profile)
+        rc = checker.check_profile(
+            repo,
+            profile,
+            check_placeholders=check_placeholders,
+            require_structure=require_structure,
+        )
     return rc, stdout.getvalue() + stderr.getvalue()
 
 
@@ -162,6 +175,82 @@ spec:
 
 def main() -> int:
     checker = load_checker()
+    with tempfile.TemporaryDirectory(prefix="platform-profile-structure-") as tmp:
+        repo = Path(tmp)
+        write(repo / "profiles/structure-fixture.yaml", "profile: structure-fixture\nincludes:\n  - apps/fixture\n")
+        write(repo / "apps/fixture/namespace.yaml", "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: fixture\n")
+        write(repo / "apps/fixture/values.yaml", "replicaCount: 1\n")
+        write(repo / "apps/fixture/patch.yaml", "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: fixture\n")
+        write(repo / "apps/fixture/components/shared/component.yaml", "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: shared\n")
+        write(
+            repo / "apps/fixture/components/shared/kustomization.yaml",
+            """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - component.yaml
+""",
+        )
+        write(
+            repo / "apps/fixture/charts/example/example/Chart.yaml",
+            """apiVersion: v2
+name: example
+version: 1.0.0
+""",
+        )
+        write(
+            repo / "apps/fixture/kustomization.yaml",
+            """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: fixture
+resources:
+  - namespace.yaml
+components:
+  - components/shared
+helmGlobals:
+  chartHome: charts/example
+helmCharts:
+  - name: example
+    releaseName: example
+    namespace: fixture
+    valuesFile: values.yaml
+patches:
+  - path: patch.yaml
+""",
+        )
+
+        rc, output = run_check(
+            checker,
+            repo,
+            "structure-fixture",
+            check_placeholders=False,
+            require_structure=True,
+        )
+        if rc != 0:
+            raise AssertionError(f"expected complete structure fixture to pass, got rc={rc}\n{output}")
+
+        (repo / "apps/fixture/patch.yaml").unlink()
+        rc, output = run_check(
+            checker,
+            repo,
+            "structure-fixture",
+            check_placeholders=False,
+            require_structure=True,
+        )
+        if rc == 0 or "missing patch path: patch.yaml" not in output:
+            raise AssertionError(f"expected missing patch reference to fail\n{output}")
+
+        write(repo / "apps/fixture/patch.yaml", "apiVersion: apps/v1\nkind: Deployment\n")
+        (repo / "apps/fixture/charts/example/example/Chart.yaml").unlink()
+        rc, output = run_check(
+            checker,
+            repo,
+            "structure-fixture",
+            check_placeholders=False,
+            require_structure=True,
+        )
+        if rc == 0 or "missing Chart.yaml" not in output:
+            raise AssertionError(f"expected missing local chart metadata to fail\n{output}")
+
     with tempfile.TemporaryDirectory(prefix="platform-profile-check-") as tmp:
         repo = Path(tmp)
         create_fixture(repo)
@@ -191,6 +280,64 @@ def main() -> int:
             raise AssertionError(f"vendored chart/CRD placeholders should stay ignored\n{output}")
         if "IGNORED_EXAMPLE_PLACEHOLDER" in output:
             raise AssertionError(f"example placeholders should stay ignored\n{output}")
+        (repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/private-values.yaml").unlink()
+
+        write(
+            repo / "profiles/premium-3node.yaml",
+            """profile: premium-3node
+internal_ca_optional: step-ca
+""",
+        )
+        write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/kustomization.yaml",
+            """apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+helmCharts:
+  - name: step-ca
+""",
+        )
+        write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml",
+            """ca:
+  name: <STEP_CA_NAME>
+""",
+        )
+        premium_apps = repo / "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
+        premium_apps.write_text(
+            premium_apps.read_text(encoding="utf-8")
+            + """---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: step-ca
+spec:
+  source:
+    repoURL: <THIS_REPO_URL>
+    path: gitops/clusters/rke2-main/premium-3node/apps/step-ca
+""",
+            encoding="utf-8",
+        )
+
+        previous_step_ca_mode = os.environ.get("STEP_CA_MODE")
+        try:
+            os.environ.pop("STEP_CA_MODE", None)
+            rc, output = run_check(checker, repo)
+            if rc != 0:
+                raise AssertionError(
+                    f"disabled optional step-ca should not block profile check\n{output}"
+                )
+
+            os.environ["STEP_CA_MODE"] = "bootstrap"
+            rc, output = run_check(checker, repo)
+            if rc == 0 or "<STEP_CA_NAME>" not in output:
+                raise AssertionError(
+                    f"enabled step-ca must be checked as a required application\n{output}"
+                )
+        finally:
+            if previous_step_ca_mode is None:
+                os.environ.pop("STEP_CA_MODE", None)
+            else:
+                os.environ["STEP_CA_MODE"] = previous_step_ca_mode
 
     with tempfile.TemporaryDirectory(prefix="platform-profile-check-missing-") as tmp:
         repo = Path(tmp)
@@ -248,6 +395,19 @@ includes:
             raise AssertionError("expected inherited profile placeholder to fail")
         if "<PROFILE_SUMMARY>" not in output:
             raise AssertionError(f"expected failure output to name inherited profile placeholder\n{output}")
+
+    for profile in ("default", "premium-3node", "gitea-woodpecker-argocd"):
+        rc, output = run_check(
+            checker,
+            ROOT,
+            profile,
+            check_placeholders=False,
+            require_structure=True,
+        )
+        if rc != 0:
+            raise AssertionError(
+                f"repository profile {profile!r} has an incomplete deployment tree\n{output}"
+            )
 
     print("GitOps profile checker self-test passed.")
     return 0

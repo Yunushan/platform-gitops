@@ -17,6 +17,7 @@ deployment:
 
 image:
   rootless: true
+  tag: "15.0.6"
 
 ingress:
   enabled: true
