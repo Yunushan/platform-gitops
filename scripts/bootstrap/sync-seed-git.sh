@@ -17,6 +17,7 @@ PLATFORM_SEED_GIT_PORT="${PLATFORM_SEED_GIT_PORT:-9418}"
 PLATFORM_SEED_GIT_OWNER="${PLATFORM_SEED_GIT_OWNER:-}"
 PLATFORM_SEED_GIT_WAIT_TIMEOUT="${PLATFORM_SEED_GIT_WAIT_TIMEOUT:-45}"
 PLATFORM_SEED_GIT_FORCE_WITH_LEASE="${PLATFORM_SEED_GIT_FORCE_WITH_LEASE:-true}"
+PLATFORM_SEED_GIT_EXPECTED_HEAD="${PLATFORM_SEED_GIT_EXPECTED_HEAD:-}"
 PLATFORM_SEED_SYNC_PULL="${PLATFORM_SEED_SYNC_PULL:-true}"
 PLATFORM_SEED_SYNC_PUSH_ORIGIN="${PLATFORM_SEED_SYNC_PUSH_ORIGIN:-false}"
 PLATFORM_SEED_SYNC_ENSURE_SERVICE="${PLATFORM_SEED_SYNC_ENSURE_SERVICE:-true}"
@@ -203,10 +204,33 @@ if [[ "${PLATFORM_SEED_GIT_FORCE_WITH_LEASE}" == "true" ]]; then
     GIT_TERMINAL_PROMPT=0 git ls-remote --heads "${PLATFORM_SEED_GIT_REMOTE_NAME}" "${PLATFORM_DEPLOY_BRANCH}" |
       awk '{ print $1; exit }'
   )"
-  if [[ -n "${seed_remote_head}" ]]; then
+  seed_expected_head="${PLATFORM_SEED_GIT_EXPECTED_HEAD:-${seed_remote_head}}"
+  if [[ -n "${seed_expected_head}" && "${seed_expected_head}" != "absent" &&
+    ! "${seed_expected_head}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "PLATFORM_SEED_GIT_EXPECTED_HEAD must be absent or a 40-character commit SHA." >&2
+    exit 1
+  fi
+  case "${seed_expected_head}" in
+    absent)
+      if [[ -n "${seed_remote_head}" ]]; then
+        echo "Temporary seed branch appeared after the isolated base check; refusing to overwrite it." >&2
+        exit 1
+      fi
+      seed_expected_head=""
+      ;;
+    "")
+      ;;
+    *)
+      if [[ "${seed_remote_head}" != "${seed_expected_head}" ]]; then
+        echo "Temporary seed branch changed after the isolated base was fetched; refusing to overwrite it." >&2
+        exit 1
+      fi
+      ;;
+  esac
+  if [[ -n "${seed_expected_head}" ]]; then
     echo "Updating temporary seed Git mirror with --force-with-lease."
     GIT_TERMINAL_PROMPT=0 git push \
-      --force-with-lease="refs/heads/${PLATFORM_DEPLOY_BRANCH}:${seed_remote_head}" \
+      --force-with-lease="refs/heads/${PLATFORM_DEPLOY_BRANCH}:${seed_expected_head}" \
       "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"
   else
     GIT_TERMINAL_PROMPT=0 git push "${PLATFORM_SEED_GIT_REMOTE_NAME}" "HEAD:${PLATFORM_DEPLOY_BRANCH}"

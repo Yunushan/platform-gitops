@@ -81,6 +81,11 @@ def check_woodpecker_seed_isolation() -> list[str]:
         'config user.name "${seed_git_user_name:-Platform GitOps Repair}"': "isolated commit author name",
         'config user.email "${seed_git_user_email:-platform-gitops-repair@localhost}"': "isolated commit author email",
         "config commit.gpgSign false": "noninteractive isolated commits",
+        "PLATFORM_WOODPECKER_REPAIR_SEED_BASE_URL": "an explicit private seed base",
+        "PLATFORM_WOODPECKER_REPAIR_SEED_BASE_REF": "an explicit private seed branch",
+        "PLATFORM_WOODPECKER_REPAIR_ALLOW_EMPTY_SEED": "fail-closed empty-seed initialization",
+        'PLATFORM_SEED_GIT_EXPECTED_HEAD="${seed_destination_head:-absent}"': "a race-safe destination seed lease",
+        'git -C "${seed_checkout}" merge --no-edit "${source_head}"': "public source reconciliation on the private seed base",
         'cd "${seed_checkout}"': "execution inside the isolated checkout",
     }
     problems = [
@@ -118,6 +123,7 @@ def check_woodpecker_seed_behavior() -> list[str]:
     with tempfile.TemporaryDirectory(prefix=".woodpecker-seed-boundary-", dir=ROOT) as temp_name:
         temp_root = Path(temp_name)
         repo = temp_root / "source"
+        seed_repo = temp_root / "seed"
         script = repo / "scripts" / "bootstrap" / WOODPECKER_RECONCILER.name
         fake_bin = temp_root / "bin"
         marker = temp_root / "isolated-checkout"
@@ -126,6 +132,11 @@ def check_woodpecker_seed_behavior() -> list[str]:
         (repo / "inventory").mkdir()
         (repo / "private").mkdir()
         script.write_text(WOODPECKER_RECONCILER.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+        (script.parent / "load-env-file.sh").write_text(
+            (ROOT / "scripts" / "bootstrap" / "load-env-file.sh").read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
         (repo / ".gitignore").write_text(
             "inventory/hosts.local.ini\nprivate/*\n",
             encoding="utf-8",
@@ -149,6 +160,7 @@ set -euo pipefail
 test "$1" = "platform-seed-git-sync"
 test "${PLATFORM_SEED_SYNC_PULL}" = "false"
 test "${PLATFORM_SEED_SYNC_PUSH_ORIGIN}" = "false"
+test "${PLATFORM_SEED_GIT_EXPECTED_HEAD}" = "${TEST_EXPECTED_SEED_HEAD}"
 test "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" = "true"
 test "${PLATFORM_VALIDATE_BEFORE_PUSH}" = "true"
 test "${PLATFORM_RUN_NO_SECRETS}" = "true"
@@ -158,6 +170,8 @@ test -f inventory/hosts.local.ini
 test "$(git config user.name)" = "Test"
 test "$(git config user.email)" = "test@example.test"
 test "$(git config --bool commit.gpgSign)" = "false"
+test "$(cat private-state.txt)" = "retained private platform values"
+test "$(cat public-change.txt)" = "new public repair code"
 pwd -P > "${TEST_MARKER}"
 printf '%s\n' 'private deployment render' >> tracked.txt
 git add tracked.txt
@@ -178,19 +192,69 @@ git commit --quiet -m isolated-render
         committed = run_git(repo, "commit", "--quiet", "-m", "public-template")
         if committed.returncode != 0:
             return [f"could not commit Woodpecker seed isolation fixture: {committed.stderr.strip()}"]
+        source_base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        cloned = subprocess.run(
+            ["git", "clone", "--quiet", str(repo), str(seed_repo)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if cloned.returncode != 0:
+            return [f"could not clone private seed fixture: {cloned.stderr.strip()}"]
+        run_git(seed_repo, "config", "user.name", "Test")
+        run_git(seed_repo, "config", "user.email", "test@example.test")
+        run_git(seed_repo, "branch", "-M", "main")
+        (seed_repo / "private-state.txt").write_text(
+            "retained private platform values\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run_git(seed_repo, "add", "private-state.txt")
+        private_commit = run_git(seed_repo, "commit", "--quiet", "-m", "private-render")
+        if private_commit.returncode != 0:
+            return [f"could not commit private seed fixture: {private_commit.stderr.strip()}"]
+        seed_head = run_git(seed_repo, "rev-parse", "HEAD").stdout.strip()
+        if run_git(seed_repo, "merge-base", "--is-ancestor", source_base, seed_head).returncode != 0:
+            return ["private seed fixture does not descend from the public base"]
+        run_git(seed_repo, "branch", "recovery-private", seed_head)
+        (seed_repo / "broken-current-state.txt").write_text(
+            "destination branch that must be safely replaced\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run_git(seed_repo, "add", "broken-current-state.txt")
+        destination_commit = run_git(seed_repo, "commit", "--quiet", "-m", "broken-current-seed")
+        if destination_commit.returncode != 0:
+            return [f"could not commit current seed destination fixture: {destination_commit.stderr.strip()}"]
+        seed_destination_head = run_git(seed_repo, "rev-parse", "HEAD").stdout.strip()
+
+        (repo / "public-change.txt").write_text(
+            "new public repair code\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run_git(repo, "add", "public-change.txt")
+        public_commit = run_git(repo, "commit", "--quiet", "-m", "public-repair")
+        if public_commit.returncode != 0:
+            return [f"could not commit public repair fixture: {public_commit.stderr.strip()}"]
         source_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
 
         repo_bash = bash_path(repo, flavor)
         fake_bin_bash = bash_path(fake_bin, flavor)
         marker_bash = bash_path(marker, flavor)
+        seed_repo_bash = bash_path(seed_repo, flavor)
         command = "\n".join(
             [
                 "set -euo pipefail",
                 f"cd {shlex.quote(repo_bash)}",
                 f"export PATH={shlex.quote(fake_bin_bash)}:$PATH",
                 f"export TEST_MARKER={shlex.quote(marker_bash)}",
+                f"export TEST_EXPECTED_SEED_HEAD={shlex.quote(seed_destination_head)}",
                 "export PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=true",
                 "export PLATFORM_SEED_DEPLOY_ENV_FILE=private/seed-git.env",
+                f"export PLATFORM_WOODPECKER_REPAIR_SEED_BASE_URL={shlex.quote(seed_repo_bash)}",
+                "export PLATFORM_WOODPECKER_REPAIR_SEED_BASE_REF=refs/heads/recovery-private",
                 "bash scripts/bootstrap/reconcile-woodpecker-gitops-source.sh",
                 'isolated_checkout="$(cat "${TEST_MARKER}")"',
                 'test ! -e "${isolated_checkout}"',
