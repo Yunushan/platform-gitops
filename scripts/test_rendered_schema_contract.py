@@ -99,6 +99,7 @@ def main() -> int:
         '"-strict"',
         '"-ignore-missing-schemas"',
         '"-kubernetes-version"',
+        'DEFAULT_KUBERNETES_SCHEMA_VERSION = "1.36.2"',
         'manifests_dir = temporary_root / "manifests"',
         "stdout_sha256=",
         '"manifestSha256"',

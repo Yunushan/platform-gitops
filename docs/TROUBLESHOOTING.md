@@ -417,6 +417,16 @@ continues Woodpecker reconciliation. If ready Traefik replicas retain the old ce
 repair recycles them serially and waits for full replica readiness after each
 replacement. It never enables Woodpecker's TLS skip-verification setting.
 
+If Woodpecker redirects to `/login?error=registration_closed`, OAuth has
+completed but the Woodpecker user is not registered. This is caused by the
+intentional `WOODPECKER_OPEN=false` production default, not by Forgejo TLS.
+For a controlled deployment, set `WOODPECKER_ADMIN_USERS` to the exact Forgejo
+login and rerender the private values. For initial onboarding, temporarily set
+`WOODPECKER_OPEN=true` in the ignored private environment, sync the rendered
+values, let approved users sign in, then set it back to `false` and sync again.
+Do not patch only the live Deployment because Argo CD will reconcile it back to
+the GitOps value.
+
 The `platform-tls-verify` gate uses each live Ingress TLS Secret binding as the
 authoritative hostname when one exists. This keeps verification aligned with
 custom hostnames even when optional hostname variables are absent from the local

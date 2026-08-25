@@ -184,6 +184,10 @@ make rendered-schema-verify
 make rendered-private-schema-verify
 ```
 
+The schema gate defaults to Kubernetes `1.36.2`, matching the repository's
+RKE2 `v1.36.2+rke2r1` installation pin. Override it only when the target
+cluster uses a different reviewed Kubernetes release.
+
 The default production run is strict: unresolved values, an empty render,
 Helm or Kustomize failure, and Kubernetes schema failures all block promotion.
 The public pull-request workflow checks both `base` and `premium-3node`; it may

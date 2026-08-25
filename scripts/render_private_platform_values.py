@@ -1713,6 +1713,7 @@ def woodpecker_bootstrap_values(
     data_size: str,
     storage_class: str,
     admin_users: str,
+    open_registration: bool,
     oauth_secret_name: str,
     agent_secret_name: str,
     image_tag: str,
@@ -1777,7 +1778,7 @@ server:
   env:
     WOODPECKER_ADMIN: {yaml_string(admin_users)}
     WOODPECKER_HOST: {yaml_string(f"https://{host}")}
-    WOODPECKER_OPEN: "false"
+    WOODPECKER_OPEN: {yaml_string("true" if open_registration else "false")}
     WOODPECKER_FORGEJO: "true"
     WOODPECKER_FORGEJO_URL: {yaml_string(forgejo_url)}
 {database_env.rstrip()}
@@ -1899,6 +1900,7 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
     data_size = os.environ.get("WOODPECKER_DATA_SIZE", "10Gi").strip() or "10Gi"
     storage_class = os.environ.get("WOODPECKER_STORAGE_CLASS", "longhorn-standard-encrypted").strip() or "longhorn-standard-encrypted"
     admin_users = os.environ.get("WOODPECKER_ADMIN_USERS", "admin").strip() or "admin"
+    open_registration = env_bool("WOODPECKER_OPEN", False)
     oauth_secret_name = os.environ.get("WOODPECKER_FORGEJO_OAUTH_SECRET_NAME", "woodpecker-forgejo-oauth").strip()
     agent_secret_name = os.environ.get("WOODPECKER_AGENT_SECRET_NAME", "woodpecker-agent-secret").strip() or "woodpecker-agent-secret"
     image_tag = normalize_woodpecker_image_tag(os.environ.get("WOODPECKER_IMAGE_TAG", "v3.16.0").strip() or "v3.16.0")
@@ -1933,6 +1935,7 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
         data_size,
         storage_class,
         admin_users,
+        open_registration,
         oauth_secret_name,
         agent_secret_name,
         image_tag,

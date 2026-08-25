@@ -33,6 +33,7 @@ PROFILE_APPLICATION_FILES = {
 SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 TRUE_VALUES = {"1", "true", "yes", "on"}
 RENDER_TIMEOUT_SECONDS = 900
+DEFAULT_KUBERNETES_SCHEMA_VERSION = "1.36.2"
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -154,7 +155,10 @@ def validate(args: argparse.Namespace, *, root: Path = ROOT) -> int:
         )
     kubernetes_version = (
         args.kubernetes_version
-        or os.environ.get("PLATFORM_RENDERED_SCHEMA_KUBERNETES_VERSION", "1.35.0")
+        or os.environ.get(
+            "PLATFORM_RENDERED_SCHEMA_KUBERNETES_VERSION",
+            DEFAULT_KUBERNETES_SCHEMA_VERSION,
+        )
     ).strip()
     output_dir = output_path(
         args.output_dir
