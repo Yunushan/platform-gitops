@@ -85,12 +85,13 @@ still `Progressing`, or agents are stuck on an old `next-*` image and
 make platform-woodpecker-repair
 ```
 
-It hard-refreshes and syncs the Woodpecker application first, waits for the
-server and agents, verifies the runtime server and agent image tags, refreshes
-service-path consumers, and then runs `make platform-ci-health`. The repair
-reconciles only Woodpecker's agent, database, and Forgejo OAuth secrets, so an
-unrelated Harbor S3 or backup credential cannot block this focused workflow.
-Use `make platform-app-secrets` to enforce the complete production secret gate.
+It reconciles Woodpecker's focused secrets and private seed source before Argo
+CD service repair, so stale public placeholders cannot block private-state
+recovery. It then hard-refreshes and syncs the application, waits for the server
+and agents, verifies the runtime image tags, refreshes service-path consumers,
+and runs `make platform-ci-health`. An unrelated Harbor S3 or backup credential
+cannot block this focused workflow. Use `make platform-app-secrets` to enforce
+the complete production secret gate.
 
 The Argo CD repair phase also reconciles `prune=true`, `selfHeal=true`,
 `allowEmpty=false`, and approval-gated foreground prune options for the exact

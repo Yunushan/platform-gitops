@@ -454,13 +454,13 @@ platform-woodpecker-repair:
 		PLATFORM_NODE_STORAGE_LONGHORN_TRIM=true \
 		PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=true \
 		$(MAKE) platform-node-storage-cleanup
-	@$(MAKE) platform-argocd-service-repair
 	@PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=false \
 	PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=false \
 	PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=false \
 	ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini \
 		ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker --skip-tags harbor
 	@bash scripts/bootstrap/reconcile-woodpecker-gitops-source.sh
+	@$(MAKE) platform-argocd-service-repair
 	@set -o pipefail; \
 		repair_log="$$(mktemp)"; \
 		trap 'rm -f "$$repair_log"' EXIT; \

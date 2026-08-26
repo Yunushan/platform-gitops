@@ -4306,15 +4306,25 @@ def main() -> None:
     consumer_refresh = "@$(MAKE) platform-service-path-consumers-repair"
     strict_repair = "ansible/playbooks/repair-woodpecker.yml"
     focused_secret_repair = "ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker"
+    gitops_source_reconcile = "scripts/bootstrap/reconcile-woodpecker-gitops-source.sh"
     pressure_cleanup = "$(MAKE) platform-node-storage-cleanup"
     first_consumer_refresh = woodpecker_repair_body.find(consumer_refresh)
     strict_repair_index = woodpecker_repair_body.find(strict_repair)
     argocd_repair_index = woodpecker_repair_body.find(argocd_repair)
+    focused_secret_repair_index = woodpecker_repair_body.find(focused_secret_repair)
+    gitops_source_reconcile_index = woodpecker_repair_body.find(gitops_source_reconcile)
     pressure_cleanup_index = woodpecker_repair_body.find(pressure_cleanup)
-    if not (0 <= pressure_cleanup_index < argocd_repair_index < strict_repair_index):
+    if not (
+        0
+        <= pressure_cleanup_index
+        < focused_secret_repair_index
+        < gitops_source_reconcile_index
+        < argocd_repair_index
+        < strict_repair_index
+    ):
         fail(
-            "platform-woodpecker-repair must clear disk pressure, then repair Argo CD and its "
-            "shared service paths before Woodpecker"
+            "platform-woodpecker-repair must clear disk pressure, reconcile focused secrets and "
+            "the private seed, then repair Argo CD and its shared service paths before Woodpecker"
         )
     if "@$(MAKE) platform-dns-repair" in woodpecker_repair_body:
         fail("platform-woodpecker-repair must not duplicate the Argo CD DNS/API service-path preflight")

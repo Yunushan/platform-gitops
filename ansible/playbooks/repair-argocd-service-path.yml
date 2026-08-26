@@ -1110,6 +1110,12 @@
           sync_status="$(printf '%s' "${application_state}" | cut -d'|' -f3)"
         }
 
+        read_operation_message() {
+          app="$1"
+          "$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.status.operationState.message}' 2>/dev/null || true
+        }
+
         wait_for_requested_operation() {
           app="$1"
           deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
@@ -1172,8 +1178,12 @@
               -o jsonpath='{.spec.sources[0].targetRevision}' 2>/dev/null || true)"
           fi
           revision="${revision:-main}"
-          "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
-            -p "$(printf '{"operation":{"sync":{"revision":"%s","prune":false}}}' "${revision}")" >/dev/null
+          if ! "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
+            -p "$(printf '{"operation":{"sync":{"revision":"%s","prune":false}}}' "${revision}")" >/dev/null; then
+            echo "application=${app} action=stop-retries reason=sync-request-failed" >&2
+            failed=1
+            continue
+          fi
           echo "application=${app} action=sync-requested reason=${retry_reason} revision=${revision} prune=false"
           sleep 5
           if ! wait_for_requested_operation "${app}"; then
@@ -1188,7 +1198,8 @@
           fi
           case "${operation_phase}" in
             Error|Failed)
-              echo "application=${app} action=stop-retries reason=retry-${operation_phase} sync=${sync_status:-unknown}" >&2
+              operation_message="$(read_operation_message "${app}")"
+              echo "application=${app} action=stop-retries reason=retry-${operation_phase} sync=${sync_status:-unknown} message=${operation_message:-unavailable}" >&2
               failed=1
               ;;
           esac
