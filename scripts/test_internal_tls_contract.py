@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import http.server
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -42,6 +43,16 @@ def require(text: str, needle: str, label: str) -> None:
 def forbid(text: str, needle: str, label: str) -> None:
     if needle in text:
         raise AssertionError(f"{label} must not contain {needle!r}")
+
+
+def forgejo_postgres_tls_required(text: str) -> bool:
+    """Keep the public contract strict while accepting rendered non-PostgreSQL profiles."""
+    if "Forgejo" not in text or "rendered by scripts/render_private_platform_values.py" not in text:
+        return True
+    return re.search(
+        r"(?im)^\s*DB_TYPE:\s*['\"]?(?:sqlite3?|mysql|mariadb)['\"]?\s*(?:#.*)?$",
+        text,
+    ) is None
 
 
 def run_command(
@@ -311,6 +322,23 @@ def test_public_tls_chain_completion() -> None:
 
 
 def main() -> int:
+    rendered_marker = "rendered by scripts/render_private_platform_values.py"
+    for database_type in ("sqlite3", "mysql"):
+        rendered_non_postgres = (
+            f"# Forgejo profile {rendered_marker}.\n"
+            f"    DB_TYPE: {database_type}\n"
+        )
+        if forgejo_postgres_tls_required(rendered_non_postgres):
+            raise AssertionError(
+                f"rendered Forgejo {database_type} profile unexpectedly requires PostgreSQL TLS"
+            )
+    if not forgejo_postgres_tls_required("# public premium Forgejo profile\n    DB_TYPE: sqlite3\n"):
+        raise AssertionError("public premium Forgejo profile must remain PostgreSQL TLS strict")
+    if not forgejo_postgres_tls_required(
+        f"# Forgejo profile {rendered_marker}.\n    DB_TYPE: postgres\n"
+    ):
+        raise AssertionError("rendered Forgejo PostgreSQL profile must retain its TLS contract")
+
     cert_manager_kustomization = read(PREMIUM / "cert-manager/kustomization.yaml")
     internal_ca = read(PREMIUM / "cert-manager/internal-ca.yaml")
     trust_bundle = read(PREMIUM / "trust-manager/bundles.yaml")
@@ -423,14 +451,15 @@ def main() -> int:
     ):
         require(postgres, needle, "CloudNativePG TLS manifest")
 
-    for needle in (
-        "SSL_MODE: verify-full",
-        "name: platform-internal-roots",
-        "mountPath: /data/gitea/git/.postgresql",
-        "name: SSL_CERT_FILE",
-        "value: /etc/ssl/platform/ca-certificates.crt",
-    ):
-        require(forgejo, needle, "Forgejo PostgreSQL TLS values")
+    if forgejo_postgres_tls_required(forgejo):
+        for needle in (
+            "SSL_MODE: verify-full",
+            "name: platform-internal-roots",
+            "mountPath: /data/gitea/git/.postgresql",
+            "name: SSL_CERT_FILE",
+            "value: /etc/ssl/platform/ca-certificates.crt",
+        ):
+            require(forgejo, needle, "Forgejo PostgreSQL TLS values")
     for needle in (
         "name: platform-internal-roots",
         "mountPath: /etc/ssl/platform-postgres",

@@ -581,16 +581,27 @@ def rendered_optional_sqlite_woodpecker_contract(text: str, needle: str) -> bool
 def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
     if not is_private_rendered(text) or "Forgejo" not in text:
         return False
-    sqlite_mode = "DB_TYPE: sqlite3" in canonical_contract_text(text)
+    canonical_text = canonical_contract_text(text)
+    sqlite_mode = "DB_TYPE: sqlite3" in canonical_text or "DB_TYPE: sqlite" in canonical_text
+    mysql_mode = "DB_TYPE: mysql" in canonical_text or "DB_TYPE: mariadb" in canonical_text
+    if (sqlite_mode or mysql_mode) and needle in {
+        "DB_TYPE: postgres",
+        "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
+        "SSL_MODE: verify-full",
+        "name: platform-postgres-ca",
+        "mountPath: /data/gitea/git/.postgresql",
+    }:
+        return True
     if sqlite_mode and needle in {
         "additionalConfigFromEnvs:",
         "GITEA__database__PASSWD",
         "name: forgejo-database",
-        "DB_TYPE: postgres",
-        "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
         "NAME: forgejo",
         "USER: forgejo",
-        "SSL_MODE: verify-full",
+        "name: platform-internal-roots",
+        "name: SSL_CERT_FILE",
+        "value: /etc/ssl/platform/ca-certificates.crt",
+        "mountPath: /etc/ssl/platform",
         "PROVIDER: db",
     }:
         return True

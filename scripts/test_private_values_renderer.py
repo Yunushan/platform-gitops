@@ -370,7 +370,7 @@ def test_focused_forgejo_tls_rejects_ambiguous_legacy_database(renderer) -> None
 
 
 def test_focused_forgejo_tls_honors_chart_config_precedence(renderer) -> None:
-    """Modern environment overrides win, while opaque config sources fail closed."""
+    """Modern overrides win, explicit non-PostgreSQL backends remain untouched."""
     with tempfile.TemporaryDirectory(prefix="platform-forgejo-tls-precedence-") as tmp:
         root = Path(tmp)
         postgres_path = write(
@@ -403,15 +403,26 @@ def test_focused_forgejo_tls_honors_chart_config_precedence(renderer) -> None:
 """,
         )
         mysql_before = mysql_path.read_text(encoding="utf-8")
-        try:
-            renderer.refresh_forgejo_postgres_tls(mysql_path)
-        except SystemExit as exc:
-            if "found database type mysql" not in str(exc):
-                raise AssertionError(f"unexpected Forgejo MySQL override error: {exc}") from exc
-        else:
-            raise AssertionError("Forgejo TLS refresh ignored the effective MySQL override")
+        if renderer.refresh_forgejo_postgres_tls(mysql_path):
+            raise AssertionError("Forgejo TLS refresh changed the effective MySQL override")
         if mysql_path.read_text(encoding="utf-8") != mysql_before:
-            raise AssertionError("failed Forgejo MySQL detection changed the private values file")
+            raise AssertionError("Forgejo MySQL preservation changed the private values file")
+
+        sqlite_path = write(
+            root / "sqlite.yaml",
+            """# Forgejo bootstrap profile rendered by scripts/render_private_platform_values.py.
+gitea:
+  config:
+    database:
+      DB_TYPE: sqlite3
+      PATH: /data/gitea/forgejo.db
+""",
+        )
+        sqlite_before = sqlite_path.read_text(encoding="utf-8")
+        if renderer.refresh_forgejo_postgres_tls(sqlite_path):
+            raise AssertionError("Forgejo TLS refresh changed the SQLite bootstrap backend")
+        if sqlite_path.read_text(encoding="utf-8") != sqlite_before:
+            raise AssertionError("Forgejo SQLite preservation changed the private values file")
 
         opaque_path = write(
             root / "opaque.yaml",
@@ -862,6 +873,25 @@ def main() -> int:
             "podDisruptionBudget:\n  minAvailable: 1",
         )
         assert_not_contains(sqlite_forgejo_path, "additionalConfigFromEnvs:", "DB_TYPE: postgres")
+        sqlite_forgejo_text = sqlite_forgejo_path.read_text(encoding="utf-8")
+        for postgres_only_needle in (
+            "DB_TYPE: postgres",
+            "SSL_MODE: verify-full",
+            "name: platform-postgres-ca",
+            "name: platform-internal-roots",
+            "mountPath: /data/gitea/git/.postgresql",
+            "name: SSL_CERT_FILE",
+            "value: /etc/ssl/platform/ca-certificates.crt",
+            "mountPath: /etc/ssl/platform",
+        ):
+            if not contract_validator.rendered_optional_forgejo_database_contract(
+                sqlite_forgejo_text,
+                postgres_only_needle,
+            ):
+                raise AssertionError(
+                    "private SQLite Forgejo validation did not exempt PostgreSQL-only contract "
+                    f"{postgres_only_needle!r}"
+                )
 
         external_forgejo_path = write(repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/external-values.yaml")
         external_forgejo_env = dict(env)
@@ -964,6 +994,21 @@ def main() -> int:
             'HOST: "forgejo-mariadb.example.test:3306"',
             'name: "forgejo-mariadb-test"',
         )
+        mysql_forgejo_text = mysql_forgejo_path.read_text(encoding="utf-8")
+        for postgres_only_needle in (
+            "DB_TYPE: postgres",
+            "SSL_MODE: verify-full",
+            "name: platform-postgres-ca",
+            "mountPath: /data/gitea/git/.postgresql",
+        ):
+            if not contract_validator.rendered_optional_forgejo_database_contract(
+                mysql_forgejo_text,
+                postgres_only_needle,
+            ):
+                raise AssertionError(
+                    "private MySQL Forgejo validation did not exempt PostgreSQL-only contract "
+                    f"{postgres_only_needle!r}"
+                )
         assert_contains(
             paths["longhorn"],
             'defaultDataPath: "/mnt/longhorn"',
