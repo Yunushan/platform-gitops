@@ -96,6 +96,7 @@ if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
       # accidentally require their private object-storage credentials.
       render_args+=(
         --refresh-forgejo-release-pin
+        --refresh-cnpg-database-roles
         --skip-argocd
         --skip-forgejo
         --skip-longhorn

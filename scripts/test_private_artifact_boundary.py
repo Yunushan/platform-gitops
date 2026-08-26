@@ -17,6 +17,7 @@ from test_bash_support import BashRuntimeUnavailable, bash_executable, bash_path
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE_DIRS = ("private", "rendered", "secrets")
 WOODPECKER_RECONCILER = ROOT / "scripts" / "bootstrap" / "reconcile-woodpecker-gitops-source.sh"
+SEED_SYNC = ROOT / "scripts" / "bootstrap" / "sync-seed-git.sh"
 KNOWN_RENDERED_CONFLICT_PATH = (
     "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml"
 )
@@ -102,6 +103,10 @@ def check_woodpecker_seed_isolation() -> list[str]:
         for needle, description in required.items()
         if needle not in text
     ]
+    if "--refresh-cnpg-database-roles" not in SEED_SYNC.read_text(encoding="utf-8"):
+        problems.append(
+            "Woodpecker seed reconciliation is missing focused shared database-role reconciliation"
+        )
     for unsafe_override in (
         "PLATFORM_WOODPECKER_REPAIR_SYNC_PULL",
         "PLATFORM_WOODPECKER_REPAIR_SYNC_PUSH_ORIGIN",
