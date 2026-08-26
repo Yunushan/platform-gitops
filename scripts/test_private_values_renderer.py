@@ -354,6 +354,8 @@ spec:
             "retentionPolicy: 90d",
             "s3://private-cnpg-backups/cluster",
             "https://objects.private.example.test",
+            "serverCASecret: private-postgres-tls",
+            "serverTLSSecret: private-postgres-tls",
             "name: keycloak",
             "connectionLimit: 25",
             "name: woodpecker",
@@ -367,6 +369,41 @@ spec:
         )
         if cnpg_path.read_text(encoding="utf-8") != first_render:
             raise AssertionError("idempotent CNPG role refresh changed the manifest")
+
+
+def test_focused_cnpg_role_refresh_rejects_tls_mismatch(renderer) -> None:
+    """Focused reconciliation must not overwrite conflicting private TLS state."""
+    with tempfile.TemporaryDirectory(prefix="platform-cnpg-tls-mismatch-") as tmp:
+        cnpg_path = write(
+            Path(tmp) / "postgres-cluster.yaml",
+            """apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: private-postgres-server
+  namespace: private-databases
+spec:
+  secretName: private-postgres-tls
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: private-postgres
+  namespace: private-databases
+spec:
+  certificates:
+    serverCASecret: different-private-ca
+""",
+        )
+        original = cnpg_path.read_text(encoding="utf-8")
+        try:
+            renderer.refresh_cnpg_managed_database_roles(cnpg_path)
+        except SystemExit as exc:
+            if "do not match the existing server Certificate" not in str(exc):
+                raise AssertionError(f"unexpected CNPG TLS mismatch error: {exc}") from exc
+        else:
+            raise AssertionError("focused CNPG refresh accepted conflicting TLS resources")
+        if cnpg_path.read_text(encoding="utf-8") != original:
+            raise AssertionError("failed CNPG TLS refresh modified the private manifest")
 
 
 def test_strict_longhorn_render_requires_explicit_disk_path(renderer) -> None:
@@ -395,6 +432,7 @@ def main() -> int:
     test_forgejo_image_matches_reviewed_chart(renderer)
     test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer)
     test_focused_cnpg_role_refresh_preserves_private_state(renderer)
+    test_focused_cnpg_role_refresh_rejects_tls_mismatch(renderer)
     test_strict_longhorn_render_requires_explicit_disk_path(renderer)
 
     with tempfile.TemporaryDirectory(prefix="platform-private-render-") as tmp:
