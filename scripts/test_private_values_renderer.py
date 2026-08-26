@@ -195,8 +195,8 @@ def test_forgejo_image_matches_reviewed_chart(renderer) -> None:
             )
 
 
-def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> None:
-    """A Woodpecker render refreshes the reviewed Forgejo pin without private dependencies."""
+def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) -> None:
+    """A Woodpecker render restores bounded Forgejo contracts without private dependencies."""
     with tempfile.TemporaryDirectory(prefix="platform-woodpecker-render-") as tmp:
         repo = Path(tmp)
         inventory_path = write(repo / "inventory/hosts.local.ini", TEST_INVENTORY)
@@ -210,7 +210,14 @@ def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> 
             '      value: enabled\n'
             '  config:\n'
             '    server:\n'
-            '      DOMAIN: forgejo.private.example.test\n',
+            '      DOMAIN: forgejo.private.example.test\n'
+            '    database:\n'
+            '      DB_TYPE: postgres\n'
+            '      HOST: private-postgres.private-databases.svc.cluster.local:5432\n'
+            '      NAME: private-forgejo\n'
+            '      USER: private-forgejo\n'
+            '    privateExtension:\n'
+            '      retained: true\n',
         )
         woodpecker_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"
@@ -239,6 +246,7 @@ def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> 
                 "--woodpecker-values",
                 str(woodpecker_path),
                 "--skip-forgejo",
+                "--refresh-forgejo-postgres-tls",
                 "--refresh-forgejo-release-pin",
             ]
             with patched_env(focused_env):
@@ -255,6 +263,15 @@ def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> 
             "host: forgejo.private.example.test",
             "DOMAIN: forgejo.private.example.test",
             "PRIVATE_FEATURE_FLAG",
+            "HOST: private-postgres.private-databases.svc.cluster.local:5432",
+            "NAME: private-forgejo",
+            "privateExtension:",
+            "retained: true",
+            "SSL_MODE: verify-full",
+            "name: platform-internal-roots",
+            "mountPath: /data/gitea/git/.postgresql",
+            "name: SSL_CERT_FILE",
+            "value: /etc/ssl/platform/ca-certificates.crt",
         )
         assert_not_contains(forgejo_path, 'tag: "14.0.0"')
         assert_not_contains(
@@ -264,7 +281,66 @@ def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> 
             "MINIO_ENDPOINT",
             "MINIO_BUCKET",
         )
+        if renderer.refresh_forgejo_postgres_tls(forgejo_path):
+            raise AssertionError("focused Forgejo PostgreSQL TLS refresh is not idempotent")
         assert_contains(woodpecker_path, 'WOODPECKER_HOST: "https://ci.example.test"')
+
+
+def test_focused_forgejo_tls_preserves_private_object_storage(renderer) -> None:
+    """The TLS repair must not replace existing private S3 or credential references."""
+    with tempfile.TemporaryDirectory(prefix="platform-forgejo-tls-refresh-") as tmp:
+        forgejo_path = write(
+            Path(tmp) / "values.yaml",
+            """image:
+  rootless: true
+  tag: "15.0.6"
+ingress:
+  hosts:
+    - host: forgejo.private.example.test
+gitea:
+  additionalConfigFromEnvs:
+    - name: GITEA__storage__MINIO_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: private-forgejo-object-storage
+          key: access-key-id
+  config:
+    database:
+      DB_TYPE: postgres
+      HOST: private-postgres.private-databases.svc.cluster.local:5432
+      NAME: private-forgejo
+      USER: private-forgejo
+    storage:
+      STORAGE_TYPE: minio
+      MINIO_ENDPOINT: object.private.example.test
+      MINIO_BUCKET: private-forgejo
+      MINIO_LOCATION: private-region-1
+    privateExtension:
+      retained: true
+""",
+        )
+        before = renderer.loads_strict_yaml_all(forgejo_path.read_text(encoding="utf-8"))[0]
+        before_env = before["gitea"]["additionalConfigFromEnvs"]
+        before_storage = before["gitea"]["config"]["storage"]
+        before_extension = before["gitea"]["config"]["privateExtension"]
+
+        if not renderer.refresh_forgejo_postgres_tls(forgejo_path):
+            raise AssertionError("focused Forgejo PostgreSQL TLS refresh did not repair legacy values")
+
+        after = renderer.loads_strict_yaml_all(forgejo_path.read_text(encoding="utf-8"))[0]
+        if after["gitea"]["additionalConfigFromEnvs"] != before_env:
+            raise AssertionError("focused Forgejo TLS refresh changed private secret references")
+        if after["gitea"]["config"]["storage"] != before_storage:
+            raise AssertionError("focused Forgejo TLS refresh changed private object storage")
+        if after["gitea"]["config"]["privateExtension"] != before_extension:
+            raise AssertionError("focused Forgejo TLS refresh changed an unrelated private extension")
+        assert_contains(
+            forgejo_path,
+            "SSL_MODE: verify-full",
+            "name: platform-internal-roots",
+            "mountPath: /data/gitea/git/.postgresql",
+            "value: /etc/ssl/platform/ca-certificates.crt",
+        )
 
 
 def test_focused_cnpg_role_refresh_preserves_private_state(renderer) -> None:
@@ -461,7 +537,8 @@ def main() -> int:
     checker = load_checker()
     contract_validator = load_contract_validator()
     test_forgejo_image_matches_reviewed_chart(renderer)
-    test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer)
+    test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer)
+    test_focused_forgejo_tls_preserves_private_object_storage(renderer)
     test_focused_cnpg_role_refresh_preserves_private_state(renderer)
     test_focused_cnpg_role_refresh_preserves_distinct_tls_secrets(renderer)
     test_focused_cnpg_role_refresh_requires_certificate_for_missing_tls(renderer)

@@ -91,7 +91,8 @@ def check_woodpecker_seed_isolation() -> list[str]:
         'PLATFORM_SEED_GIT_EXPECTED_HEAD="${seed_destination_head:-absent}"': "a race-safe destination seed lease",
         'git -C "${seed_checkout}" merge --no-edit "${source_head}"': "public source reconciliation on the private seed base",
         "diff --name-only --diff-filter=U -z": "exact merge-conflict discovery",
-        "private_seed_conflict=preserve-seed-hunks": "bounded private render conflict recovery",
+        "private_seed_merge=resolved-known-rendered-conflicts": "bounded private render conflict recovery",
+        "private_seed_base=destination-converged": "convergent recovery-base selection",
         "outside-rendered-private-boundary": "fail-closed source conflict handling",
         KNOWN_RENDERED_CONFLICT_PATH: "an explicit rendered-output conflict boundary",
         "git merge-file --ours --stdout": "three-way conflict-hunk preservation",
@@ -107,6 +108,10 @@ def check_woodpecker_seed_isolation() -> list[str]:
     if "--refresh-cnpg-database-roles" not in seed_sync_text:
         problems.append(
             "Woodpecker seed reconciliation is missing focused shared database/TLS reconciliation"
+        )
+    if "--refresh-forgejo-postgres-tls" not in seed_sync_text:
+        problems.append(
+            "Woodpecker seed reconciliation is missing focused Forgejo PostgreSQL trust reconciliation"
         )
     if "--refresh-forgejo-object-storage-credentials" in seed_sync_text:
         problems.append(
@@ -200,7 +205,8 @@ set -euo pipefail
 test "$1" = "platform-seed-git-sync"
 test "${PLATFORM_SEED_SYNC_PULL}" = "false"
 test "${PLATFORM_SEED_SYNC_PUSH_ORIGIN}" = "false"
-test "${PLATFORM_SEED_GIT_EXPECTED_HEAD}" = "${TEST_EXPECTED_SEED_HEAD}"
+current_seed_head="$(git ls-remote --heads "${TEST_SEED_REPO}" refs/heads/main | awk '{ print $1; exit }')"
+test "${PLATFORM_SEED_GIT_EXPECTED_HEAD}" = "${current_seed_head}"
 test "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" = "true"
 test "${PLATFORM_AUTO_RENDER_SCOPE}" = "woodpecker"
 test "${PLATFORM_VALIDATE_BEFORE_PUSH}" = "true"
@@ -219,6 +225,9 @@ pwd -P > "${TEST_MARKER}"
 printf '%s\n' 'private deployment render' >> tracked.txt
 git add tracked.txt
 git commit --quiet -m isolated-render
+git push --quiet \
+  --force-with-lease="refs/heads/main:${PLATFORM_SEED_GIT_EXPECTED_HEAD}" \
+  "${TEST_SEED_REPO}" HEAD:refs/heads/main
 ''',
             encoding="utf-8",
             newline="\n",
@@ -254,6 +263,7 @@ git commit --quiet -m isolated-render
             return [f"could not clone private seed fixture: {cloned.stderr.strip()}"]
         run_git(seed_repo, "config", "user.name", "Test")
         run_git(seed_repo, "config", "user.email", "test@example.test")
+        run_git(seed_repo, "config", "receive.denyCurrentBranch", "updateInstead")
         run_git(seed_repo, "branch", "-M", "main")
         (seed_repo / "private-state.txt").write_text(
             "retained private platform values\n",
@@ -322,7 +332,7 @@ git commit --quiet -m isolated-render
                 f"cd {shlex.quote(repo_bash)}",
                 f"export PATH={shlex.quote(fake_bin_bash)}:$PATH",
                 f"export TEST_MARKER={shlex.quote(marker_bash)}",
-                f"export TEST_EXPECTED_SEED_HEAD={shlex.quote(seed_destination_head)}",
+                f"export TEST_SEED_REPO={shlex.quote(seed_repo_bash)}",
                 "export PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=true",
                 "export PLATFORM_SEED_DEPLOY_ENV_FILE=private/seed-git.env",
                 f"export PLATFORM_WOODPECKER_REPAIR_SEED_BASE_URL={shlex.quote(seed_repo_bash)}",
@@ -348,14 +358,43 @@ git commit --quiet -m isolated-render
             problems.append("Woodpecker seed reconciliation wrote private render data into the source checkout")
         if "woodpecker_gitops_source_sync=synced" not in result.stdout:
             problems.append("Woodpecker seed reconciliation did not report successful isolated sync")
-        if (
-            f"private_seed_conflict=preserve-seed-hunks path={KNOWN_RENDERED_CONFLICT_PATH}"
-            not in result.stdout
-        ):
+        if "private_seed_merge=resolved-known-rendered-conflicts count=1" not in result.stdout:
             problems.append(
                 "Woodpecker seed reconciliation did not preserve private conflict hunks "
                 "while accepting public updates"
             )
+        if "private_seed_base=requested ref=refs/heads/recovery-private" not in result.stdout:
+            problems.append("Woodpecker seed reconciliation did not use the requested recovery base initially")
+        if "Auto-merging" in result.stdout or "CONFLICT (" in result.stdout:
+            problems.append("Woodpecker seed reconciliation leaked handled Git conflict output")
+
+        first_converged_seed_head = run_git(
+            seed_repo, "rev-parse", "refs/heads/main"
+        ).stdout.strip()
+        if first_converged_seed_head == seed_destination_head:
+            problems.append("Woodpecker seed reconciliation did not update the destination seed branch")
+
+        marker.unlink(missing_ok=True)
+        converged_result = run_bash(command)
+        if converged_result.returncode != 0:
+            problems.append(
+                "converged Woodpecker seed reconciliation behavior test failed:\n"
+                f"stdout:\n{converged_result.stdout}\nstderr:\n{converged_result.stderr}"
+            )
+            return problems
+        if "private_seed_base=destination-converged" not in converged_result.stdout:
+            problems.append(
+                "Woodpecker seed reconciliation replayed the frozen recovery base after convergence"
+            )
+        if "private_seed_merge=clean" not in converged_result.stdout:
+            problems.append("converged Woodpecker seed reconciliation did not report a clean merge")
+        if (
+            "private_seed_merge=resolved-known-rendered-conflicts" in converged_result.stdout
+            or "Auto-merging" in converged_result.stdout
+            or "CONFLICT (" in converged_result.stdout
+        ):
+            problems.append("converged Woodpecker seed reconciliation replayed handled conflicts")
+        converged_seed_head = run_git(seed_repo, "rev-parse", "refs/heads/main").stdout.strip()
 
         unsafe_branch = run_git(seed_repo, "checkout", "--quiet", "-b", "unsafe-recovery", source_base)
         if unsafe_branch.returncode != 0:
@@ -411,7 +450,7 @@ git commit --quiet -m isolated-render
                 f"cd {shlex.quote(repo_bash)}",
                 f"export PATH={shlex.quote(fake_bin_bash)}:$PATH",
                 f"export TEST_MARKER={shlex.quote(marker_bash)}",
-                f"export TEST_EXPECTED_SEED_HEAD={shlex.quote(seed_destination_head)}",
+                f"export TEST_SEED_REPO={shlex.quote(seed_repo_bash)}",
                 "export PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=true",
                 "export PLATFORM_SEED_DEPLOY_ENV_FILE=private/seed-git.env",
                 f"export PLATFORM_WOODPECKER_REPAIR_SEED_BASE_URL={shlex.quote(seed_repo_bash)}",
@@ -430,7 +469,7 @@ git commit --quiet -m isolated-render
             problems.append("unsafe Woodpecker seed reconciliation changed the source repository HEAD")
         if run_git(repo, "status", "--porcelain", "--untracked-files=normal").stdout.strip():
             problems.append("unsafe Woodpecker seed reconciliation changed the source working tree")
-        if run_git(seed_repo, "rev-parse", "refs/heads/main").stdout.strip() != seed_destination_head:
+        if run_git(seed_repo, "rev-parse", "refs/heads/main").stdout.strip() != converged_seed_head:
             problems.append("unsafe Woodpecker seed reconciliation changed the destination seed branch")
         return problems
 
