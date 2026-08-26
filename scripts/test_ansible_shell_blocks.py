@@ -9,6 +9,9 @@ expressions to shell-safe tokens, and runs bash -n over each block.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 from pathlib import Path
 import re
 import sys
@@ -202,7 +205,13 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "Retry failed Argo CD application operations after service repair",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT",
+        "PLATFORM_ARGOCD_SERVICE_REPAIR_RECOVER_STUCK_OPERATIONS",
+        "PLATFORM_ARGOCD_SERVICE_REPAIR_OPERATION_TERMINATION_TIMEOUT",
         "read_application_state()",
+        "remaining_operation_timeout()",
+        "recover_timed_out_operation()",
+        "action=terminate-stuck-operation",
+        "action=clear-stale-operation-state",
         "action=sync-finished",
         "action=sync-requested reason=${retry_reason}",
         '"prune":false',
@@ -255,10 +264,137 @@ def validate_argocd_cleanup_contract() -> list[str]:
             "reason=sync-request-failed",
             "reason=retry-${operation_phase}",
             "message=${operation_message:-unavailable}",
+            '"op": "test",',
+            '"path": "/metadata/resourceVersion",',
+            '"value": "Terminating",',
+            "reason=operation-changed-during-termination",
+            "reason=stuck-operation-recovery-rejected",
+            '"status":{"operationState":null}',
             'exit "${failed}"',
         ):
             if fragment not in retry_block:
                 errors.append(f"Argo CD operation retry is missing fragment: {fragment}")
+        recovery_marker = (
+            'if ! recovery_action="$(python3 - "${application_json}" "${patch_json}"'
+        )
+        recovery_start = retry_block.find(recovery_marker)
+        recovery_heredoc = retry_block.find("<<'PY'\n", recovery_start)
+        recovery_end = retry_block.find("\n        PY\n", recovery_heredoc)
+        if recovery_start < 0 or recovery_heredoc < 0 or recovery_end < 0:
+            errors.append("Argo CD operation retry is missing its structured recovery decision")
+        else:
+            recovery_body = retry_block[recovery_heredoc + len("<<'PY'\n") : recovery_end]
+            try:
+                recovery_code = compile(
+                    textwrap.dedent(recovery_body),
+                    str(ARGOCD_REPAIR_PLAYBOOK),
+                    "exec",
+                )
+            except SyntaxError as exc:
+                errors.append(f"Argo CD operation recovery Python is invalid: {exc}")
+            else:
+                def recovery_decision(
+                    application: dict[str, object],
+                    expected_requested: str,
+                    expected_started: str,
+                    expected_state_revision: str,
+                ) -> tuple[str, list[dict[str, object]]]:
+                    with tempfile.TemporaryDirectory(prefix="argocd-operation-recovery-") as temp:
+                        source_path = Path(temp) / "application.json"
+                        patch_path = Path(temp) / "patch.json"
+                        source_path.write_text(json.dumps(application), encoding="utf-8")
+                        original_argv = sys.argv
+                        output = io.StringIO()
+                        try:
+                            sys.argv = [
+                                "argocd-operation-recovery",
+                                str(source_path),
+                                str(patch_path),
+                                expected_requested,
+                                expected_started,
+                                expected_state_revision,
+                            ]
+                            with contextlib.redirect_stdout(output):
+                                exec(recovery_code, {"__name__": "__main__"})
+                        finally:
+                            sys.argv = original_argv
+                        return output.getvalue().strip(), json.loads(
+                            patch_path.read_text(encoding="utf-8")
+                        )
+
+                running_application = {
+                    "metadata": {"resourceVersion": "42"},
+                    "operation": {"sync": {"revision": "main"}},
+                    "status": {
+                        "sync": {"status": "Synced"},
+                        "operationState": {
+                            "phase": "Running",
+                            "startedAt": "2026-08-26T12:00:00Z",
+                            "operation": {"sync": {"revision": "main"}},
+                        },
+                    },
+                }
+                action, patch = recovery_decision(
+                    running_application,
+                    "main",
+                    "2026-08-26T12:00:00Z",
+                    "main",
+                )
+                if action != "terminate" or not any(
+                    item.get("value") == "Terminating" for item in patch
+                ):
+                    errors.append("unchanged timed-out Argo CD operation is not terminated safely")
+
+                changed_application = json.loads(json.dumps(running_application))
+                changed_application["operation"]["sync"]["revision"] = "newer"
+                changed_application["status"]["operationState"]["startedAt"] = (
+                    "2026-08-26T12:15:00Z"
+                )
+                action, patch = recovery_decision(
+                    changed_application,
+                    "main",
+                    "2026-08-26T12:00:00Z",
+                    "main",
+                )
+                if action != "reject-operation-changed" or patch:
+                    errors.append("newer Argo CD operation is not protected from stale recovery")
+
+                stale_application = json.loads(json.dumps(running_application))
+                stale_application.pop("operation")
+                action, patch = recovery_decision(
+                    stale_application,
+                    "main",
+                    "2026-08-26T12:00:00Z",
+                    "main",
+                )
+                if action != "clear-stale-state" or not any(
+                    item.get("op") == "remove"
+                    and item.get("path") == "/status/operationState"
+                    for item in patch
+                ):
+                    errors.append("synced Argo CD application cannot clear stale operation status")
+
+                stale_application["status"]["sync"]["status"] = "OutOfSync"
+                action, patch = recovery_decision(
+                    stale_application,
+                    "main",
+                    "2026-08-26T12:00:00Z",
+                    "main",
+                )
+                if action != "reject-stale-state-not-synced" or patch:
+                    errors.append("out-of-sync Argo CD stale status does not fail closed")
+        collapsed_retry_block = re.sub(r"\\\s*\n\s*", " ", retry_block)
+        if not re.search(
+            r'if ! wait_for_requested_operation "\$\{app\}" '
+            r'"\$\{initial_operation_timeout\}"; then\s+'
+            r'if \[ "\$\{RECOVER_STUCK_OPERATIONS\}" != "true" \]; then.*?'
+            r'recover_timed_out_operation "\$\{app\}"',
+            collapsed_retry_block,
+            flags=re.S,
+        ):
+            errors.append(
+                "Argo CD stuck-operation recovery must run only after the full operation wait"
+            )
     if not (retry_index < prune_index < readiness_index):
         errors.append("legacy Traefik pruning must run after Argo CD repair and application retries")
     return errors

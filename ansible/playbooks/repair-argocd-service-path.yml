@@ -21,6 +21,8 @@
     platform_argocd_health_probe_recovery_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_HEALTH_PROBE_RECOVERY_TIMEOUT') }}"
     platform_argocd_service_repair_retry_apps_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS') }}"
     platform_argocd_service_repair_app_sync_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT') }}"
+    platform_argocd_service_repair_recover_stuck_operations_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_RECOVER_STUCK_OPERATIONS') }}"
+    platform_argocd_service_repair_operation_termination_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_OPERATION_TERMINATION_TIMEOUT') }}"
     platform_argocd_service_repair_guarded_prune_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_SERVICE_REPAIR_GUARDED_PRUNE') }}"
     platform_argocd_prune_legacy_traefik_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_PRUNE_LEGACY_TRAEFIK') }}"
     platform_argocd_service_repair_timeout_effective: "{{ platform_argocd_service_repair_timeout | default(platform_argocd_service_repair_timeout_from_env, true) | default(180, true) | int }}"
@@ -38,6 +40,8 @@
     platform_argocd_health_probe_recovery_timeout_effective: "{{ platform_argocd_health_probe_recovery_timeout | default(platform_argocd_health_probe_recovery_timeout_from_env, true) | default(600, true) | int }}"
     platform_argocd_service_repair_retry_apps_effective: "{{ platform_argocd_service_repair_retry_apps | default(platform_argocd_service_repair_retry_apps_from_env, true) | default('argocd-ha traefik woodpecker', true) }}"
     platform_argocd_service_repair_app_sync_timeout_effective: "{{ platform_argocd_service_repair_app_sync_timeout | default(platform_argocd_service_repair_app_sync_timeout_from_env, true) | default(600, true) | int }}"
+    platform_argocd_service_repair_recover_stuck_operations_effective: "{{ platform_argocd_service_repair_recover_stuck_operations | default(platform_argocd_service_repair_recover_stuck_operations_from_env, true) | default(true, true) | bool }}"
+    platform_argocd_service_repair_operation_termination_timeout_effective: "{{ platform_argocd_service_repair_operation_termination_timeout | default(platform_argocd_service_repair_operation_termination_timeout_from_env, true) | default(180, true) | int }}"
     platform_argocd_service_repair_guarded_prune_effective: "{{ platform_argocd_service_repair_guarded_prune | default(platform_argocd_service_repair_guarded_prune_from_env, true) | default(true, true) | bool }}"
     platform_argocd_prune_legacy_traefik_effective: "{{ platform_argocd_prune_legacy_traefik | default(platform_argocd_prune_legacy_traefik_from_env, true) | default(true, true) | bool }}"
   tasks:
@@ -1093,21 +1097,29 @@
         C=/etc/rancher/rke2/rke2.yaml
         RETRY_APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"
         APP_SYNC_TIMEOUT={{ platform_argocd_service_repair_app_sync_timeout_effective }}
+        RECOVER_STUCK_OPERATIONS="{{ platform_argocd_service_repair_recover_stuck_operations_effective | bool | lower }}"
+        OPERATION_TERMINATION_TIMEOUT={{ platform_argocd_service_repair_operation_termination_timeout_effective }}
         failed=0
 
         read_application_state() {
           app="$1"
           if ! application_state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-            -o jsonpath='{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
+            -o jsonpath='{.metadata.resourceVersion}{"|"}{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}{"|"}{.status.operationState.startedAt}{"|"}{.status.operationState.operation.sync.revision}' \
             2>/dev/null)"; then
+            application_resource_version=""
             requested_revision=""
             operation_phase=""
             sync_status=""
+            operation_started_at=""
+            state_operation_revision=""
             return 1
           fi
-          requested_revision="$(printf '%s' "${application_state}" | cut -d'|' -f1)"
-          operation_phase="$(printf '%s' "${application_state}" | cut -d'|' -f2)"
-          sync_status="$(printf '%s' "${application_state}" | cut -d'|' -f3)"
+          application_resource_version="$(printf '%s' "${application_state}" | cut -d'|' -f1)"
+          requested_revision="$(printf '%s' "${application_state}" | cut -d'|' -f2)"
+          operation_phase="$(printf '%s' "${application_state}" | cut -d'|' -f3)"
+          sync_status="$(printf '%s' "${application_state}" | cut -d'|' -f4)"
+          operation_started_at="$(printf '%s' "${application_state}" | cut -d'|' -f5)"
+          state_operation_revision="$(printf '%s' "${application_state}" | cut -d'|' -f6)"
         }
 
         read_operation_message() {
@@ -1116,9 +1128,29 @@
             -o jsonpath='{.status.operationState.message}' 2>/dev/null || true
         }
 
+        remaining_operation_timeout() {
+          started_at="$1"
+          if [ -z "${started_at}" ] || \
+            ! started_epoch="$(date -d "${started_at}" +%s 2>/dev/null)"; then
+            printf '%s\n' "${APP_SYNC_TIMEOUT}"
+            return
+          fi
+          now_epoch="$(date +%s)"
+          age="$((now_epoch - started_epoch))"
+          if [ "${age}" -lt 0 ]; then
+            age=0
+          fi
+          remaining="$((APP_SYNC_TIMEOUT - age))"
+          if [ "${remaining}" -lt 0 ]; then
+            remaining=0
+          fi
+          printf '%s\n' "${remaining}"
+        }
+
         wait_for_requested_operation() {
           app="$1"
-          deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
+          timeout="${2:-${APP_SYNC_TIMEOUT}}"
+          deadline="$(( $(date +%s) + timeout ))"
           while [ "$(date +%s)" -lt "${deadline}" ]; do
             if ! read_application_state "${app}"; then
               sleep 5
@@ -1130,8 +1162,150 @@
             fi
             sleep 5
           done
-          echo "application=${app} action=sync-wait-timeout timeout=${APP_SYNC_TIMEOUT}s"
+          echo "application=${app} action=sync-wait-timeout timeout=${timeout}s"
           return 1
+        }
+
+        recover_timed_out_operation() {
+          app="$1"
+          expected_requested_revision="$2"
+          expected_started_at="$3"
+          expected_state_revision="$4"
+          application_json="$(mktemp)"
+          patch_json="$(mktemp)"
+
+          if ! "$K" --kubeconfig "$C" -n argocd get "application/${app}" -o json >"${application_json}"; then
+            rm -f "${application_json}" "${patch_json}"
+            echo "application=${app} action=stop-recovery reason=state-unavailable" >&2
+            return 1
+          fi
+          if ! recovery_action="$(python3 - "${application_json}" "${patch_json}" \
+            "${expected_requested_revision}" "${expected_started_at}" "${expected_state_revision}" <<'PY'
+        import json
+        import sys
+
+        source_path, patch_path, expected_requested, expected_started, expected_state_revision = sys.argv[1:]
+        with open(source_path, encoding="utf-8") as handle:
+            application = json.load(handle)
+
+        metadata = application.get("metadata", {})
+        operation = application.get("operation")
+        status = application.get("status", {})
+        operation_state = status.get("operationState") or {}
+        state_operation = operation_state.get("operation") or {}
+        state_sync = state_operation.get("sync") or {}
+        current_requested = ((operation or {}).get("sync") or {}).get("revision", "")
+        current_started = operation_state.get("startedAt", "")
+        current_state_revision = state_sync.get("revision", "")
+        phase = operation_state.get("phase", "")
+        sync_status = (status.get("sync") or {}).get("status", "")
+        resource_version = metadata.get("resourceVersion", "")
+
+        same_started = not expected_started or current_started == expected_started
+        same_state_revision = (
+            not expected_state_revision or current_state_revision == expected_state_revision
+        )
+        identity_available = bool(expected_started or expected_state_revision or expected_requested)
+        action = "reject-unidentified-operation"
+        patch = []
+
+        if not resource_version or phase not in {"Running", "Terminating"}:
+            action = "reject-operation-changed"
+        elif not operation:
+            stale_identity_available = bool(expected_started or expected_state_revision)
+            if (
+                sync_status == "Synced"
+                and stale_identity_available
+                and same_started
+                and same_state_revision
+            ):
+                action = "clear-stale-state"
+                patch = [
+                    {
+                        "op": "test",
+                        "path": "/metadata/resourceVersion",
+                        "value": resource_version,
+                    },
+                    {"op": "test", "path": "/status/operationState/phase", "value": phase},
+                    {"op": "remove", "path": "/status/operationState"},
+                ]
+            else:
+                action = "reject-stale-state-not-synced"
+        elif (
+            identity_available
+            and (not expected_requested or current_requested == expected_requested)
+            and same_started
+            and same_state_revision
+        ):
+            if phase == "Running":
+                action = "terminate"
+                patch = [
+                    {
+                        "op": "test",
+                        "path": "/metadata/resourceVersion",
+                        "value": resource_version,
+                    },
+                    {"op": "test", "path": "/status/operationState/phase", "value": phase},
+                    {
+                        "op": "replace",
+                        "path": "/status/operationState/phase",
+                        "value": "Terminating",
+                    },
+                ]
+            else:
+                action = "wait-terminating"
+        else:
+            action = "reject-operation-changed"
+
+        with open(patch_path, "w", encoding="utf-8") as handle:
+            json.dump(patch, handle)
+        print(action)
+        PY
+          )"; then
+            rm -f "${application_json}" "${patch_json}"
+            echo "application=${app} action=stop-recovery reason=decision-failed" >&2
+            return 1
+          fi
+
+          case "${recovery_action}" in
+            terminate)
+              if ! "$K" --kubeconfig "$C" -n argocd patch "application/${app}" \
+                --type json --patch-file "${patch_json}" >/dev/null; then
+                rm -f "${application_json}" "${patch_json}"
+                echo "application=${app} action=stop-recovery reason=operation-changed-during-termination" >&2
+                return 1
+              fi
+              echo "application=${app} action=terminate-stuck-operation revision=${expected_requested_revision:-default} startedAt=${expected_started_at:-unknown}"
+              ;;
+            clear-stale-state)
+              if ! "$K" --kubeconfig "$C" -n argocd patch "application/${app}" \
+                --type json --patch-file "${patch_json}" >/dev/null; then
+                rm -f "${application_json}" "${patch_json}"
+                echo "application=${app} action=stop-recovery reason=operation-changed-during-stale-state-cleanup" >&2
+                return 1
+              fi
+              if "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
+                argocd.argoproj.io/refresh=hard --overwrite >/dev/null 2>&1; then
+                echo "application=${app} action=clear-stale-operation-state refresh=requested"
+              else
+                echo "application=${app} action=clear-stale-operation-state refresh=failed" >&2
+              fi
+              ;;
+            wait-terminating)
+              echo "application=${app} action=wait-stuck-operation-termination"
+              ;;
+            reject-*)
+              rm -f "${application_json}" "${patch_json}"
+              echo "application=${app} action=stop-recovery reason=${recovery_action#reject-}" >&2
+              return 1
+              ;;
+            *)
+              rm -f "${application_json}" "${patch_json}"
+              echo "application=${app} action=stop-recovery reason=unknown-decision decision=${recovery_action}" >&2
+              return 1
+              ;;
+          esac
+          rm -f "${application_json}" "${patch_json}"
         }
 
         for app in ${RETRY_APPS}; do
@@ -1149,10 +1323,30 @@
           case "${operation_phase}" in
             Running|Terminating)
               echo "application=${app} action=keep operation=${operation_phase}"
-              if ! wait_for_requested_operation "${app}"; then
-                echo "application=${app} action=stop-retries reason=sync-wait-timeout" >&2
-                failed=1
-                continue
+              timed_out_requested_revision="${requested_revision}"
+              timed_out_started_at="${operation_started_at}"
+              timed_out_state_revision="${state_operation_revision}"
+              initial_operation_timeout="$(remaining_operation_timeout "${operation_started_at}")"
+              echo "application=${app} action=wait-existing-operation remaining=${initial_operation_timeout}s startedAt=${operation_started_at:-unknown}"
+              if ! wait_for_requested_operation "${app}" "${initial_operation_timeout}"; then
+                if [ "${RECOVER_STUCK_OPERATIONS}" != "true" ]; then
+                  echo "application=${app} action=stop-retries reason=sync-wait-timeout recovery=disabled" >&2
+                  failed=1
+                  continue
+                fi
+                if ! recover_timed_out_operation "${app}" \
+                  "${timed_out_requested_revision}" "${timed_out_started_at}" \
+                  "${timed_out_state_revision}"; then
+                  echo "application=${app} action=stop-retries reason=stuck-operation-recovery-rejected" >&2
+                  failed=1
+                  continue
+                fi
+                if ! wait_for_requested_operation "${app}" "${OPERATION_TERMINATION_TIMEOUT}"; then
+                  operation_message="$(read_operation_message "${app}")"
+                  echo "application=${app} action=stop-retries reason=operation-termination-timeout timeout=${OPERATION_TERMINATION_TIMEOUT}s message=${operation_message:-unavailable}" >&2
+                  failed=1
+                  continue
+                fi
               fi
               if ! read_application_state "${app}"; then
                 echo "application=${app} action=stop-retries reason=state-unavailable-after-wait" >&2
@@ -1179,7 +1373,7 @@
           fi
           revision="${revision:-main}"
           if ! "$K" --kubeconfig "$C" -n argocd patch "application/${app}" --type merge \
-            -p "$(printf '{"operation":{"sync":{"revision":"%s","prune":false}}}' "${revision}")" >/dev/null; then
+            -p "$(printf '{"operation":{"sync":{"revision":"%s","prune":false}},"status":{"operationState":null}}' "${revision}")" >/dev/null; then
             echo "application=${app} action=stop-retries reason=sync-request-failed" >&2
             failed=1
             continue
@@ -1208,7 +1402,10 @@
       args:
         executable: /bin/bash
       register: platform_argocd_failed_app_retry
-      changed_when: "'action=sync-requested' in platform_argocd_failed_app_retry.stdout"
+      changed_when: >-
+        'action=sync-requested' in platform_argocd_failed_app_retry.stdout or
+        'action=terminate-stuck-operation' in platform_argocd_failed_app_retry.stdout or
+        'action=clear-stale-operation-state' in platform_argocd_failed_app_retry.stdout
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       when: platform_argocd_service_repair_refresh_apps_effective | bool
