@@ -359,6 +359,19 @@ def validate_argocd_cleanup_contract() -> list[str]:
                 if action != "reject-operation-changed" or patch:
                     errors.append("newer Argo CD operation is not protected from stale recovery")
 
+                unidentified_application = json.loads(json.dumps(running_application))
+                unidentified_application["status"]["operationState"].pop("startedAt")
+                action, patch = recovery_decision(
+                    unidentified_application,
+                    "main",
+                    "",
+                    "main",
+                )
+                if action != "reject-unidentified-operation" or patch:
+                    errors.append(
+                        "Argo CD recovery does not reject an operation without stable startedAt identity"
+                    )
+
                 stale_application = json.loads(json.dumps(running_application))
                 stale_application.pop("operation")
                 action, patch = recovery_decision(

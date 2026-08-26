@@ -1201,21 +1201,22 @@
         sync_status = (status.get("sync") or {}).get("status", "")
         resource_version = metadata.get("resourceVersion", "")
 
-        same_started = not expected_started or current_started == expected_started
+        same_started = bool(expected_started) and current_started == expected_started
         same_state_revision = (
             not expected_state_revision or current_state_revision == expected_state_revision
         )
-        identity_available = bool(expected_started or expected_state_revision or expected_requested)
+        identity_available = bool(expected_started and current_started)
         action = "reject-unidentified-operation"
         patch = []
 
         if not resource_version or phase not in {"Running", "Terminating"}:
             action = "reject-operation-changed"
+        elif not identity_available:
+            action = "reject-unidentified-operation"
         elif not operation:
-            stale_identity_available = bool(expected_started or expected_state_revision)
             if (
                 sync_status == "Synced"
-                and stale_identity_available
+                and identity_available
                 and same_started
                 and same_state_revision
             ):
