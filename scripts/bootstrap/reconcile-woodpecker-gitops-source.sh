@@ -95,6 +95,7 @@ resolve_seed_base_url() {
 
 seed_base_url="${PLATFORM_WOODPECKER_REPAIR_SEED_BASE_URL:-$(resolve_seed_base_url)}"
 seed_base_ref="${PLATFORM_WOODPECKER_REPAIR_SEED_BASE_REF:-refs/heads/${deploy_branch}}"
+repair_commit_message="${PLATFORM_WOODPECKER_REPAIR_COMMIT_MESSAGE:-Reconcile Woodpecker GitOps source}"
 allow_empty_seed="${PLATFORM_WOODPECKER_REPAIR_ALLOW_EMPTY_SEED:-false}"
 case "${allow_empty_seed}" in
   true|false) ;;
@@ -188,13 +189,24 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
     destination_source_base="$(
       git -C "${seed_checkout}" merge-base "${seed_destination_head}" "${source_head}" 2>/dev/null || true
     )"
+    destination_has_repair_commit=false
+    if git -C "${seed_checkout}" log --format=%s \
+      "${seed_requested_base_head}..${seed_destination_head}" |
+      grep -Fqx -- "${repair_commit_message}"; then
+      destination_has_repair_commit=true
+    fi
     if [[ "${seed_destination_head}" != "${seed_requested_base_head}" ]] &&
       git -C "${seed_checkout}" merge-base --is-ancestor \
         "${seed_requested_base_head}" "${seed_destination_head}" &&
       [[ -n "${requested_source_base}" && -n "${destination_source_base}" ]] &&
-      [[ "${destination_source_base}" != "${requested_source_base}" ]] &&
-      git -C "${seed_checkout}" merge-base --is-ancestor \
-        "${requested_source_base}" "${destination_source_base}"; then
+      {
+        [[ "${destination_has_repair_commit}" == "true" ]] ||
+          {
+            [[ "${destination_source_base}" != "${requested_source_base}" ]] &&
+              git -C "${seed_checkout}" merge-base --is-ancestor \
+                "${requested_source_base}" "${destination_source_base}"
+          }
+      }; then
       seed_base_head="${seed_destination_head}"
       seed_base_selection="destination-converged"
     fi
@@ -334,7 +346,7 @@ echo "Reconciling rendered private Woodpecker values in an isolated temporary se
   PLATFORM_AUTO_RENDER_SCOPE=woodpecker \
   PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true \
   PLATFORM_AUTO_COMMIT=true \
-  PLATFORM_AUTO_COMMIT_MESSAGE="${PLATFORM_WOODPECKER_REPAIR_COMMIT_MESSAGE:-Reconcile Woodpecker GitOps source}" \
+  PLATFORM_AUTO_COMMIT_MESSAGE="${repair_commit_message}" \
   PLATFORM_VALIDATE_BEFORE_PUSH=true \
   PLATFORM_RUN_PROFILE_CHECK=true \
   PLATFORM_RUN_NO_SECRETS=true \

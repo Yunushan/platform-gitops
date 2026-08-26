@@ -166,6 +166,9 @@ An explicitly selected recovery branch is a bootstrap base, not a permanent
 fork point. After a successful seed push, later repairs detect that private
 `main` contains a newer reconciled public lineage and use that destination as the
 next base, even when the old recovery ref remains in the command environment.
+The validated reconciliation commit also records convergence when the recovery
+ref already contains the current public commit, so that edge case does not
+replay the frozen base.
 Handled rendered-file conflicts are reported as one bounded summary instead of
 raw `Auto-merging` and `CONFLICT` output. This makes repeated repair runs
 convergent while retaining force-with-lease protection on private `main`.

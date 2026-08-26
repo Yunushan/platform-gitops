@@ -224,7 +224,7 @@ grep -Fx 'imageTag: "15.0.6"' gitops/clusters/rke2-main/premium-3node/apps/forge
 pwd -P > "${TEST_MARKER}"
 printf '%s\n' 'private deployment render' >> tracked.txt
 git add tracked.txt
-git commit --quiet -m isolated-render
+git commit --quiet -m "${PLATFORM_AUTO_COMMIT_MESSAGE}"
 git push --quiet \
   --force-with-lease="refs/heads/main:${PLATFORM_SEED_GIT_EXPECTED_HEAD}" \
   "${TEST_SEED_REPO}" HEAD:refs/heads/main
@@ -373,6 +373,39 @@ git push --quiet \
         ).stdout.strip()
         if first_converged_seed_head == seed_destination_head:
             problems.append("Woodpecker seed reconciliation did not update the destination seed branch")
+
+        recovery_with_source = run_git(seed_repo, "rev-parse", f"{first_converged_seed_head}^").stdout.strip()
+        recovery_with_source_branch = run_git(
+            seed_repo,
+            "branch",
+            "recovery-current-source",
+            recovery_with_source,
+        )
+        if recovery_with_source_branch.returncode != 0:
+            problems.append(
+                "could not create current-source recovery fixture branch: "
+                + recovery_with_source_branch.stderr.strip()
+            )
+            return problems
+        current_source_command = command.replace(
+            "refs/heads/recovery-private",
+            "refs/heads/recovery-current-source",
+        )
+        marker.unlink(missing_ok=True)
+        current_source_result = run_bash(current_source_command)
+        if current_source_result.returncode != 0:
+            problems.append(
+                "current-source Woodpecker recovery behavior test failed:\n"
+                f"stdout:\n{current_source_result.stdout}\nstderr:\n{current_source_result.stderr}"
+            )
+            return problems
+        if "private_seed_base=destination-converged" not in current_source_result.stdout:
+            problems.append(
+                "Woodpecker seed reconciliation did not recognize a validated destination "
+                "when the recovery ref already contained the public source"
+            )
+        if "private_seed_merge=clean" not in current_source_result.stdout:
+            problems.append("current-source Woodpecker recovery did not report a clean merge")
 
         marker.unlink(missing_ok=True)
         converged_result = run_bash(command)
