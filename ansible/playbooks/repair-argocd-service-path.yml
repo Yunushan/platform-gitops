@@ -1014,10 +1014,13 @@
               continue
             fi
             pending_count="$((pending_count + 1))"
-            state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            if ! state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
               -o jsonpath='{.status.reconciledAt}{"|"}{.metadata.annotations.argocd\.argoproj\.io/refresh}{"|"}{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
-              2>/dev/null || true)"
-            refresh_last_state["${app}"]="${state:-unavailable}"
+              2>/dev/null)"; then
+              refresh_last_state["${app}"]=unavailable
+              continue
+            fi
+            refresh_last_state["${app}"]="${state}"
             reconciled_at="$(printf '%s' "${state}" | cut -d'|' -f1)"
             refresh="$(printf '%s' "${state}" | cut -d'|' -f2)"
             requested_revision="$(printf '%s' "${state}" | cut -d'|' -f3)"
@@ -1029,9 +1032,8 @@
               { [ -n "${reconciled_at}" ] && [ "${reconciled_at}" != "${baseline_reconciled_at}" ]; }; then
               reconciliation_observed=true
             fi
-            if [ "${reconciliation_observed}" = "true" ] && [ -z "${requested_revision}" ] && \
-              [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
-              echo "application=${app} action=hard-refresh-finished reconciledAt=${reconciled_at:-unknown} phase=${phase:-none} sync=${sync_status:-unknown}"
+            if [ "${reconciliation_observed}" = "true" ]; then
+              echo "application=${app} action=hard-refresh-acknowledged reconciledAt=${reconciled_at:-unknown} operation=${phase:-none} requestedRevision=${requested_revision:-none} sync=${sync_status:-unknown}"
               if [ -n "${refresh}" ]; then
                 if "$K" --kubeconfig "$C" -n argocd annotate "application/${app}" \
                   argocd.argoproj.io/refresh- >/dev/null 2>&1; then
@@ -1070,7 +1072,7 @@
             if [ "${stable}" = "true" ]; then
               echo "application=${app} action=continue reason=hard-refresh-unacknowledged timeout=${REFRESH_TIMEOUT}s cleanup=${cleanup} phase=${phase:-none} sync=${sync_status}"
             else
-              echo "application=${app} action=stop reason=hard-refresh-not-reconciled timeout=${REFRESH_TIMEOUT}s cleanup=${cleanup} baselineReconciledAt=${refresh_baseline_reconciled_at[${app}]:-none} lastState=${state:-not-observed}" >&2
+              echo "application=${app} action=stop reason=hard-refresh-not-acknowledged timeout=${REFRESH_TIMEOUT}s cleanup=${cleanup} baselineReconciledAt=${refresh_baseline_reconciled_at[${app}]:-none} lastState=${state:-not-observed}" >&2
               failed=1
             fi
           fi
@@ -1091,19 +1093,33 @@
         C=/etc/rancher/rke2/rke2.yaml
         RETRY_APPS="{{ platform_argocd_service_repair_retry_apps_effective }}"
         APP_SYNC_TIMEOUT={{ platform_argocd_service_repair_app_sync_timeout_effective }}
+        failed=0
+
+        read_application_state() {
+          app="$1"
+          if ! application_state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
+            -o jsonpath='{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
+            2>/dev/null)"; then
+            requested_revision=""
+            operation_phase=""
+            sync_status=""
+            return 1
+          fi
+          requested_revision="$(printf '%s' "${application_state}" | cut -d'|' -f1)"
+          operation_phase="$(printf '%s' "${application_state}" | cut -d'|' -f2)"
+          sync_status="$(printf '%s' "${application_state}" | cut -d'|' -f3)"
+        }
 
         wait_for_requested_operation() {
           app="$1"
           deadline="$(( $(date +%s) + APP_SYNC_TIMEOUT ))"
           while [ "$(date +%s)" -lt "${deadline}" ]; do
-            state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-              -o jsonpath='{.operation.sync.revision}{"|"}{.status.operationState.phase}{"|"}{.status.sync.status}' \
-              2>/dev/null || true)"
-            requested_revision="$(printf '%s' "${state}" | cut -d'|' -f1)"
-            phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
-            sync_status="$(printf '%s' "${state}" | cut -d'|' -f3)"
-            if [ -z "${requested_revision}" ] && [ "${phase}" != "Running" ] && [ "${phase}" != "Terminating" ]; then
-              echo "application=${app} action=sync-finished phase=${phase:-none} sync=${sync_status:-unknown}"
+            if ! read_application_state "${app}"; then
+              sleep 5
+              continue
+            fi
+            if [ -z "${requested_revision}" ] && [ "${operation_phase}" != "Running" ] && [ "${operation_phase}" != "Terminating" ]; then
+              echo "application=${app} action=sync-finished phase=${operation_phase:-none} sync=${sync_status:-unknown}"
               return 0
             fi
             sleep 5
@@ -1117,21 +1133,29 @@
             echo "application=${app} action=skip reason=not-found"
             continue
           fi
-          state="$("$K" --kubeconfig "$C" -n argocd get "application/${app}" \
-            -o jsonpath='{.status.sync.status}{"|"}{.status.operationState.phase}' 2>/dev/null || true)"
-          sync_status="$(printf '%s' "${state}" | cut -d'|' -f1)"
-          operation_phase="$(printf '%s' "${state}" | cut -d'|' -f2)"
+          if ! read_application_state "${app}"; then
+            echo "application=${app} action=stop-retries reason=state-unavailable" >&2
+            failed=1
+            continue
+          fi
           retry_reason=""
 
           case "${operation_phase}" in
             Running|Terminating)
               echo "application=${app} action=keep operation=${operation_phase}"
               if ! wait_for_requested_operation "${app}"; then
-                echo "application=${app} action=stop-retries reason=sync-wait-timeout"
-                break
+                echo "application=${app} action=stop-retries reason=sync-wait-timeout" >&2
+                failed=1
+                continue
               fi
-              continue
+              if ! read_application_state "${app}"; then
+                echo "application=${app} action=stop-retries reason=state-unavailable-after-wait" >&2
+                failed=1
+                continue
+              fi
               ;;
+          esac
+          case "${operation_phase}" in
             Error|Failed)
               retry_reason="operation-${operation_phase}"
               ;;
@@ -1153,10 +1177,23 @@
           echo "application=${app} action=sync-requested reason=${retry_reason} revision=${revision} prune=false"
           sleep 5
           if ! wait_for_requested_operation "${app}"; then
-            echo "application=${app} action=stop-retries reason=sync-wait-timeout"
-            break
+            echo "application=${app} action=stop-retries reason=sync-wait-timeout" >&2
+            failed=1
+            continue
           fi
+          if ! read_application_state "${app}"; then
+            echo "application=${app} action=stop-retries reason=state-unavailable-after-retry" >&2
+            failed=1
+            continue
+          fi
+          case "${operation_phase}" in
+            Error|Failed)
+              echo "application=${app} action=stop-retries reason=retry-${operation_phase} sync=${sync_status:-unknown}" >&2
+              failed=1
+              ;;
+          esac
         done
+        exit "${failed}"
       args:
         executable: /bin/bash
       register: platform_argocd_failed_app_retry

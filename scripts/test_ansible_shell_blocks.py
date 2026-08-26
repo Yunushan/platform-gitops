@@ -196,11 +196,13 @@ def validate_argocd_cleanup_contract() -> list[str]:
         "refresh_deadline",
         "refresh_last_state",
         "action=clear-preexisting-refresh",
+        "action=hard-refresh-acknowledged",
         "reason=hard-refresh-unacknowledged",
         "Explain skipped legacy Traefik prune after unacknowledged refresh",
         "Retry failed Argo CD application operations after service repair",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS",
         "PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT",
+        "read_application_state()",
         "action=sync-finished",
         "action=sync-requested reason=${retry_reason}",
         '"prune":false',
@@ -224,13 +226,36 @@ def validate_argocd_cleanup_contract() -> list[str]:
         for fragment in (
             ".status.reconciledAt",
             "refresh_apps+=(\"${app}\")",
-            "reason=hard-refresh-not-reconciled",
+            "reason=hard-refresh-not-acknowledged",
+            'if [ "${reconciliation_observed}" = "true" ]; then',
+            "action=hard-refresh-acknowledged",
             '[ "${sync_status}" = "Synced" ]',
             '""|Succeeded) stable=true',
             "argocd.argoproj.io/refresh-",
         ):
             if fragment not in refresh_block:
                 errors.append(f"Argo CD shared refresh wait is missing fragment: {fragment}")
+        collapsed_refresh_block = re.sub(r"\\\s*\n\s*", " ", refresh_block)
+        if re.search(
+            r'if \[ "\$\{reconciliation_observed\}" = "true" \] && '
+            r'\[ -z "\$\{requested_revision\}" \]',
+            collapsed_refresh_block,
+        ):
+            errors.append(
+                "Argo CD refresh acknowledgement must not wait for an active application operation"
+            )
+        if 'if ! state="$("$K" --kubeconfig "$C" -n argocd get' not in refresh_block:
+            errors.append("Argo CD refresh acknowledgement must reject unavailable application state")
+        retry_block = text[retry_index:prune_index]
+        for fragment in (
+            "read_application_state()",
+            'if ! read_application_state "${app}"; then',
+            "reason=state-unavailable-after-wait",
+            "reason=retry-${operation_phase}",
+            'exit "${failed}"',
+        ):
+            if fragment not in retry_block:
+                errors.append(f"Argo CD operation retry is missing fragment: {fragment}")
     if not (retry_index < prune_index < readiness_index):
         errors.append("legacy Traefik pruning must run after Argo CD repair and application retries")
     return errors
