@@ -29,6 +29,8 @@ PLATFORM_VALIDATE_BEFORE_PUSH="${PLATFORM_VALIDATE_BEFORE_PUSH:-true}"
 PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS:-true}"
 PLATFORM_RUN_PROFILE_CHECK="${PLATFORM_RUN_PROFILE_CHECK:-true}"
 PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES:-false}"
+secret_contract_static_apps=all
+validation_scope=source
 
 resolve_python() {
   if [[ -n "${PYTHON:-}" ]]; then
@@ -94,8 +96,9 @@ if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
     woodpecker)
       # A focused CI repair must not re-render unrelated production apps and
       # accidentally require their private object-storage credentials.
+      secret_contract_static_apps=woodpecker
+      validation_scope=private-seed
       render_args+=(
-        --refresh-forgejo-object-storage-credentials
         --refresh-forgejo-release-pin
         --refresh-cnpg-database-roles
         --skip-argocd
@@ -128,6 +131,8 @@ if [[ "${PLATFORM_VALIDATE_BEFORE_PUSH}" == "true" ]]; then
   fi
   PLATFORM_RUN_NO_SECRETS="${PLATFORM_RUN_NO_SECRETS}" \
     PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES="${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES}" \
+    PLATFORM_SECRET_CONTRACT_STATIC_APPS="${secret_contract_static_apps}" \
+    PLATFORM_VALIDATION_SCOPE="${validation_scope}" \
     "${PYTHON_BIN}" scripts/run_validation.py
 fi
 

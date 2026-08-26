@@ -651,8 +651,38 @@ def require_contains_any(text: str, needles: set[str], label: str) -> None:
         raise AssertionError(f"{label} is missing one of: {options}")
 
 
-def check_static_values() -> None:
-    for contract in CONTRACTS:
+def selected_static_contract_apps() -> set[str] | None:
+    raw = os.environ.get("PLATFORM_SECRET_CONTRACT_STATIC_APPS", "all").strip().lower()
+    if not raw or raw == "all":
+        return None
+
+    selected = {item.strip() for item in raw.split(",") if item.strip()}
+    if not selected:
+        raise SystemExit(
+            "PLATFORM_SECRET_CONTRACT_STATIC_APPS must be all or a comma-separated "
+            "list of rendered apps"
+        )
+    known = {
+        str(contract["rendered_app"])
+        for contract in CONTRACTS
+        if contract.get("rendered_app")
+    }
+    unknown = sorted(selected.difference(known))
+    if unknown:
+        raise SystemExit(
+            "PLATFORM_SECRET_CONTRACT_STATIC_APPS contains unknown rendered app(s): "
+            + ", ".join(unknown)
+        )
+    return selected
+
+
+def check_static_values(
+    selected_apps: set[str] | None = None,
+    contracts: list[dict[str, object]] = CONTRACTS,
+) -> None:
+    for contract in contracts:
+        if selected_apps is not None and contract.get("rendered_app") not in selected_apps:
+            continue
         static_file = contract["static_file"]
         if static_file is None:
             continue
@@ -678,6 +708,36 @@ def check_static_values() -> None:
                     needle_variants(needle),
                     f"{related_file.relative_to(ROOT)} for {contract['label']}",
                 )
+
+
+def check_static_scope_behavior() -> None:
+    with tempfile.TemporaryDirectory(prefix=".platform-secret-static-scope-", dir=ROOT) as tmp:
+        root = Path(tmp)
+        forgejo_values = root / "forgejo.yaml"
+        woodpecker_values = root / "woodpecker.yaml"
+        forgejo_values.write_text("legacy: true\n", encoding="utf-8")
+        woodpecker_values.write_text("required: present\n", encoding="utf-8")
+        contracts: list[dict[str, object]] = [
+            {
+                "label": "legacy Forgejo fixture",
+                "rendered_app": "forgejo",
+                "static_file": forgejo_values,
+                "static_needles": ["required: absent"],
+            },
+            {
+                "label": "focused Woodpecker fixture",
+                "rendered_app": "woodpecker",
+                "static_file": woodpecker_values,
+                "static_needles": ["required: present"],
+            },
+        ]
+        check_static_values({"woodpecker"}, contracts)
+        try:
+            check_static_values(None, contracts)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("full static secret validation accepted an invalid Forgejo fixture")
 
 
 def check_renderer_and_secret_playbook() -> None:
@@ -916,10 +976,16 @@ def check_custom_rendering() -> None:
 
 
 def main() -> int:
-    check_static_values()
+    static_apps = selected_static_contract_apps()
+    check_static_scope_behavior()
+    check_static_values(static_apps)
     check_renderer_and_secret_playbook()
     check_custom_rendering()
-    print(f"Platform app secret contract validation passed for {len(CONTRACTS)} generated secret contracts.")
+    static_scope = "all" if static_apps is None else ",".join(sorted(static_apps))
+    print(
+        f"Platform app secret contract validation passed for {len(CONTRACTS)} generated "
+        f"secret contracts (static apps: {static_scope})."
+    )
     return 0
 
 

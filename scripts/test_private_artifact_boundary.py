@@ -108,9 +108,24 @@ def check_woodpecker_seed_isolation() -> list[str]:
         problems.append(
             "Woodpecker seed reconciliation is missing focused shared database-role reconciliation"
         )
-    if "--refresh-forgejo-object-storage-credentials" not in seed_sync_text:
+    if "--refresh-forgejo-object-storage-credentials" in seed_sync_text:
         problems.append(
-            "Woodpecker seed reconciliation is missing focused Forgejo S3 credential reconciliation"
+            "Woodpecker seed reconciliation must not mutate unrelated Forgejo S3 configuration"
+        )
+    if (
+        "secret_contract_static_apps=woodpecker" not in seed_sync_text
+        or 'PLATFORM_SECRET_CONTRACT_STATIC_APPS="${secret_contract_static_apps}"'
+        not in seed_sync_text
+    ):
+        problems.append(
+            "Woodpecker seed reconciliation is missing focused static secret-contract validation"
+        )
+    if (
+        "validation_scope=private-seed" not in seed_sync_text
+        or 'PLATFORM_VALIDATION_SCOPE="${validation_scope}"' not in seed_sync_text
+    ):
+        problems.append(
+            "Woodpecker seed reconciliation is missing rendered private-seed validation scope"
         )
     for unsafe_override in (
         "PLATFORM_WOODPECKER_REPAIR_SYNC_PULL",
@@ -194,6 +209,7 @@ test "${PLATFORM_SEED_SYNC_PULL}" = "false"
 test "${PLATFORM_SEED_SYNC_PUSH_ORIGIN}" = "false"
 test "${PLATFORM_SEED_GIT_EXPECTED_HEAD}" = "${TEST_EXPECTED_SEED_HEAD}"
 test "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" = "true"
+test "${PLATFORM_AUTO_RENDER_SCOPE}" = "woodpecker"
 test "${PLATFORM_VALIDATE_BEFORE_PUSH}" = "true"
 test "${PLATFORM_RUN_NO_SECRETS}" = "true"
 test "${PLATFORM_NO_SECRETS_ALLOW_INTERNAL_HOSTNAMES}" = "true"
