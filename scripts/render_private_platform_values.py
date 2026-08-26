@@ -1455,43 +1455,80 @@ def refresh_forgejo_postgres_tls(path: Path) -> bool:
     config = mapping(gitea, "config", "gitea.config")
     database = mapping(config, "database", "gitea.config.database")
 
+    additional_sources = gitea.get("additionalConfigSources")
+    if additional_sources is None:
+        additional_sources = []
+    if not isinstance(additional_sources, list):
+        raise SystemExit(f"expected Forgejo gitea.additionalConfigSources list in {path}")
+
     configured_type = database.get("DB_TYPE")
     if configured_type is not None and not isinstance(configured_type, str):
         raise SystemExit(f"expected Forgejo gitea.config.database.DB_TYPE string in {path}")
     database_type = configured_type.strip().lower() if isinstance(configured_type, str) else ""
-    env_type_present, env_database_type = direct_config_env("GITEA__database__DB_TYPE")
-    env_database_type = env_database_type.lower()
+    forgejo_type_present, forgejo_database_type = direct_config_env(
+        "FORGEJO__DATABASE__DB_TYPE"
+    )
+    legacy_type_present, legacy_database_type = direct_config_env(
+        "GITEA__database__DB_TYPE"
+    )
+    forgejo_database_type = forgejo_database_type.lower()
+    legacy_database_type = legacy_database_type.lower()
 
-    explicit_types = [value for value in (database_type, env_database_type) if value]
-    if env_type_present and not env_database_type:
+    if forgejo_type_present and not forgejo_database_type:
         raise SystemExit(
             "focused Forgejo PostgreSQL TLS refresh cannot verify a dynamic "
-            f"GITEA__database__DB_TYPE value in {path}"
+            f"FORGEJO__DATABASE__DB_TYPE value in {path}"
         )
-    if any(value not in {"postgres", "postgresql"} for value in explicit_types):
+    if forgejo_type_present:
+        effective_database_type = forgejo_database_type
+    elif additional_sources:
+        raise SystemExit(
+            "focused Forgejo PostgreSQL TLS refresh cannot verify database settings from "
+            f"gitea.additionalConfigSources in {path}"
+        )
+    elif legacy_type_present:
+        if not legacy_database_type:
+            raise SystemExit(
+                "focused Forgejo PostgreSQL TLS refresh cannot verify a dynamic "
+                f"GITEA__database__DB_TYPE value in {path}"
+            )
+        effective_database_type = legacy_database_type
+    else:
+        effective_database_type = database_type
+
+    if effective_database_type and effective_database_type not in {"postgres", "postgresql"}:
         raise SystemExit(
             "focused Forgejo PostgreSQL TLS refresh requires PostgreSQL; "
-            f"found database type {', '.join(explicit_types)} in {path}"
+            f"found database type {effective_database_type} in {path}"
         )
 
-    if not explicit_types:
+    if not effective_database_type:
         configured_host = database.get("HOST")
         if configured_host is not None and not isinstance(configured_host, str):
             raise SystemExit(f"expected Forgejo gitea.config.database.HOST string in {path}")
-        env_host_present, env_host = direct_config_env("GITEA__database__HOST")
-        if env_host_present and not env_host:
+        forgejo_host_present, forgejo_host = direct_config_env("FORGEJO__DATABASE__HOST")
+        legacy_host_present, legacy_host = direct_config_env("GITEA__database__HOST")
+        if forgejo_host_present and not forgejo_host:
             raise SystemExit(
                 "focused Forgejo PostgreSQL TLS refresh cannot verify a dynamic "
-                f"GITEA__database__HOST value in {path}"
+                f"FORGEJO__DATABASE__HOST value in {path}"
             )
-        database_hosts = [
-            value
-            for value in (
-                configured_host.strip() if isinstance(configured_host, str) else "",
-                env_host,
-            )
-            if value
-        ]
+        if forgejo_host_present:
+            database_hosts = [forgejo_host]
+        else:
+            if legacy_host_present and not legacy_host:
+                raise SystemExit(
+                    "focused Forgejo PostgreSQL TLS refresh cannot verify a dynamic "
+                    f"GITEA__database__HOST value in {path}"
+                )
+            database_hosts = [
+                value
+                for value in (
+                    configured_host.strip() if isinstance(configured_host, str) else "",
+                    legacy_host,
+                )
+                if value
+            ]
         if not database_hosts or not all(is_postgres_endpoint(value) for value in database_hosts):
             raise SystemExit(
                 "focused Forgejo PostgreSQL TLS refresh could not prove a PostgreSQL backend in "
