@@ -109,6 +109,34 @@ if [[ ! "${seed_base_ref}" =~ ^refs/heads/[A-Za-z0-9._/-]+$ &&
   exit 2
 fi
 
+is_known_private_render_output() {
+  case "$1" in
+    gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/longhorn/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/longhorn/storageclasses.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/harbor/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/monitoring/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/loki/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/velero/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/platform-postgres/postgres-cluster.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/platform-valkey/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/minio/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/keycloak/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/step-ca/values.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/platform-policies/no-plaintext-secrets.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-workload-baseline.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/platform-policies/require-pod-security-baseline.yaml | \
+      gitops/clusters/rke2-main/premium-3node/apps/platform-image-integrity/verify-platform-images.yaml)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 umask 077
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/platform-woodpecker-seed.XXXXXX")"
 seed_checkout="${temporary_root}/repo"
@@ -141,9 +169,55 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
   seed_destination_head="$(awk '{ print $1; exit }' <<<"${seed_destination_refs}")"
   git -C "${seed_checkout}" checkout --quiet --detach "${seed_base_head}"
   if ! git -C "${seed_checkout}" merge --no-edit "${source_head}"; then
-    echo "The existing private seed branch conflicts with public source ${source_head}." >&2
-    echo "No source or seed remote was changed; reconcile the private seed base, then rerun." >&2
-    exit 2
+    conflict_paths=()
+    mapfile -d '' conflict_paths < <(
+      git -C "${seed_checkout}" diff --name-only --diff-filter=U -z
+    )
+    if (( ${#conflict_paths[@]} == 0 )); then
+      echo "The existing private seed merge failed without resolvable file conflicts." >&2
+      echo "No source or seed remote was changed; inspect the private seed base, then rerun." >&2
+      exit 2
+    fi
+
+    unsafe_conflicts=()
+    for conflict_path in "${conflict_paths[@]}"; do
+      if ! is_known_private_render_output "${conflict_path}"; then
+        unsafe_conflicts+=("${conflict_path}")
+      fi
+    done
+    if (( ${#unsafe_conflicts[@]} > 0 )); then
+      for conflict_path in "${unsafe_conflicts[@]}"; do
+        printf 'private_seed_conflict=stop reason=outside-rendered-private-boundary path=%s\n' \
+          "${conflict_path}" >&2
+      done
+      git -C "${seed_checkout}" merge --abort >/dev/null 2>&1 || true
+      echo "The private seed conflicts with public source outside known rendered outputs." >&2
+      echo "No source or seed remote was changed; reconcile those files manually, then rerun." >&2
+      exit 2
+    fi
+
+    for conflict_path in "${conflict_paths[@]}"; do
+      if git -C "${seed_checkout}" cat-file -e ":2:${conflict_path}" 2>/dev/null; then
+        git -C "${seed_checkout}" checkout --ours -- "${conflict_path}"
+        git -C "${seed_checkout}" add -- "${conflict_path}"
+      else
+        git -C "${seed_checkout}" rm --quiet --force --ignore-unmatch -- "${conflict_path}"
+      fi
+      printf 'private_seed_conflict=preserve-seed path=%s\n' "${conflict_path}"
+    done
+
+    unresolved_conflicts=()
+    mapfile -d '' unresolved_conflicts < <(
+      git -C "${seed_checkout}" diff --name-only --diff-filter=U -z
+    )
+    if (( ${#unresolved_conflicts[@]} > 0 )); then
+      git -C "${seed_checkout}" merge --abort >/dev/null 2>&1 || true
+      echo "Known private rendered conflicts could not be resolved safely." >&2
+      echo "No source or seed remote was changed; inspect the private seed base, then rerun." >&2
+      exit 2
+    fi
+    git -C "${seed_checkout}" commit --no-edit
+    echo "Private seed merge retained known rendered private outputs and accepted public source elsewhere."
   fi
   echo "Private seed base preserved: ${seed_base_ref} (${seed_base_head})."
 elif [[ "${allow_empty_seed}" == "true" ]]; then
