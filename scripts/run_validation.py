@@ -112,8 +112,6 @@ VALIDATION_SCRIPTS = (
     "scripts/validate_platform_contract.py",
     "scripts/validate_no_secrets.py",
 )
-
-
 def env_flag(name: str, default: bool = True) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw == "":

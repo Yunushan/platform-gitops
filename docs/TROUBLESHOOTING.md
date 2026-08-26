@@ -130,13 +130,17 @@ environment instead of the default `auto` detection.
 The focused reconciliation renders Woodpecker values and shared policy
 artifacts. It leaves private Forgejo configuration, Longhorn, Harbor, backup,
 and monitoring values unchanged, apart from refreshing Forgejo's reviewed image
-pin, restoring Forgejo's secret-backed S3 credential entries, and refreshing the
-shared CloudNativePG managed roles required by enabled platform databases. The
-focused refresh preserves the private Forgejo endpoint and bucket plus private
-PostgreSQL storage, backup, metadata, and extra roles. A missing unrelated S3
-endpoint in `private/seed-git.env` therefore cannot block a Woodpecker repair
-when those private Forgejo settings are already rendered. Configure unresolved
-production values before running their own deployment or health gates.
+pin and the shared CloudNativePG managed roles required by enabled platform
+databases. The role refresh preserves private PostgreSQL storage, backup,
+metadata, and extra roles. During this focused run, static rendered-value secret
+validation is limited to Woodpecker; all generated secret contracts, renderer
+and playbook checks, schema validation, security checks, and private-data
+scanning still run. The complete platform production contract also remains
+enabled and uses its existing bounded rules for rendered private values. A
+legacy Forgejo file without S3 settings therefore cannot block Woodpecker repair
+or be silently rewritten with guessed infrastructure values. Configure and
+fully render Forgejo production object storage before its own deployment or
+health gates.
 
 When the selected private seed base and current public source both changed a
 known premium rendered artifact, focused reconciliation performs a three-way

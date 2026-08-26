@@ -208,27 +208,9 @@ def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> 
             '  additionalConfigFromEnvs:\n'
             '    - name: PRIVATE_FEATURE_FLAG\n'
             '      value: enabled\n'
-            '    - name: GITEA__storage__MINIO_SECRET_ACCESS_KEY\n'
-            '      valueFrom:\n'
-            '        secretKeyRef:\n'
-            '          name: private-forgejo-object-storage\n'
-            '          key: secret-access-key\n'
             '  config:\n'
             '    server:\n'
-            '      DOMAIN: forgejo.private.example.test\n'
-            '    attachment:\n'
-            '      STORAGE_TYPE: minio\n'
-            '    lfs:\n'
-            '      STORAGE_TYPE: minio\n'
-            '    picture:\n'
-            '      AVATAR_STORAGE_TYPE: minio\n'
-            "    'storage.packages':\n"
-            '      STORAGE_TYPE: minio\n'
-            '    storage:\n'
-            '      MINIO_ENDPOINT: objects.private.example.test\n'
-            '      MINIO_LOCATION: private-region-1\n'
-            '      MINIO_BUCKET: private-forgejo-data\n'
-            '      MINIO_USE_SSL: true\n',
+            '      DOMAIN: forgejo.private.example.test\n',
         )
         woodpecker_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"
@@ -257,7 +239,6 @@ def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> 
                 "--woodpecker-values",
                 str(woodpecker_path),
                 "--skip-forgejo",
-                "--refresh-forgejo-object-storage-credentials",
                 "--refresh-forgejo-release-pin",
             ]
             with patched_env(focused_env):
@@ -274,18 +255,15 @@ def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> 
             "host: forgejo.private.example.test",
             "DOMAIN: forgejo.private.example.test",
             "PRIVATE_FEATURE_FLAG",
-            "MINIO_ENDPOINT: objects.private.example.test",
-            "MINIO_LOCATION: private-region-1",
-            "MINIO_BUCKET: private-forgejo-data",
-            "AVATAR_STORAGE_TYPE: minio",
-            "storage.packages:",
-            "GITEA__storage__MINIO_ACCESS_KEY_ID",
-            "GITEA__storage__MINIO_SECRET_ACCESS_KEY",
-            "name: private-forgejo-object-storage",
-            "key: access-key-id",
-            "key: secret-access-key",
         )
         assert_not_contains(forgejo_path, 'tag: "14.0.0"')
+        assert_not_contains(
+            forgejo_path,
+            "GITEA__storage__MINIO_ACCESS_KEY_ID",
+            "GITEA__storage__MINIO_SECRET_ACCESS_KEY",
+            "MINIO_ENDPOINT",
+            "MINIO_BUCKET",
+        )
         assert_contains(woodpecker_path, 'WOODPECKER_HOST: "https://ci.example.test"')
 
 
