@@ -287,7 +287,7 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
 
 
 def test_focused_forgejo_tls_preserves_private_object_storage(renderer) -> None:
-    """The TLS repair must not replace existing private S3 or credential references."""
+    """The TLS repair normalizes a legacy PostgreSQL host without replacing private state."""
     with tempfile.TemporaryDirectory(prefix="platform-forgejo-tls-refresh-") as tmp:
         forgejo_path = write(
             Path(tmp) / "values.yaml",
@@ -306,7 +306,6 @@ gitea:
           key: access-key-id
   config:
     database:
-      DB_TYPE: postgres
       HOST: private-postgres.private-databases.svc.cluster.local:5432
       NAME: private-forgejo
       USER: private-forgejo
@@ -336,11 +335,105 @@ gitea:
             raise AssertionError("focused Forgejo TLS refresh changed an unrelated private extension")
         assert_contains(
             forgejo_path,
+            "DB_TYPE: postgres",
             "SSL_MODE: verify-full",
             "name: platform-internal-roots",
             "mountPath: /data/gitea/git/.postgresql",
             "value: /etc/ssl/platform/ca-certificates.crt",
         )
+
+
+def test_focused_forgejo_tls_rejects_ambiguous_legacy_database(renderer) -> None:
+    """The focused repair must not guess when an older database shape is ambiguous."""
+    with tempfile.TemporaryDirectory(prefix="platform-forgejo-tls-ambiguous-") as tmp:
+        forgejo_path = write(
+            Path(tmp) / "values.yaml",
+            """gitea:
+  config:
+    database:
+      HOST: database.private.example.test:3306
+      NAME: private-forgejo
+      USER: private-forgejo
+""",
+        )
+        before = forgejo_path.read_text(encoding="utf-8")
+
+        try:
+            renderer.refresh_forgejo_postgres_tls(forgejo_path)
+        except SystemExit as exc:
+            if "could not prove a PostgreSQL backend" not in str(exc):
+                raise AssertionError(f"unexpected ambiguous database error: {exc}") from exc
+        else:
+            raise AssertionError("focused Forgejo TLS refresh guessed an ambiguous database type")
+        if forgejo_path.read_text(encoding="utf-8") != before:
+            raise AssertionError("failed Forgejo TLS inference changed the private values file")
+
+
+def test_focused_forgejo_tls_honors_chart_config_precedence(renderer) -> None:
+    """Modern environment overrides win, while opaque config sources fail closed."""
+    with tempfile.TemporaryDirectory(prefix="platform-forgejo-tls-precedence-") as tmp:
+        root = Path(tmp)
+        postgres_path = write(
+            root / "postgres.yaml",
+            """gitea:
+  additionalConfigFromEnvs:
+    - name: FORGEJO__DATABASE__DB_TYPE
+      value: postgres
+    - name: FORGEJO__DATABASE__HOST
+      value: database.private.example.test:6432
+  config:
+    database:
+      DB_TYPE: mysql
+      HOST: stale-mysql.private.example.test:3306
+""",
+        )
+        if not renderer.refresh_forgejo_postgres_tls(postgres_path):
+            raise AssertionError("Forgejo PostgreSQL environment override was not normalized")
+        assert_contains(postgres_path, "DB_TYPE: postgres", "SSL_MODE: verify-full")
+
+        mysql_path = write(
+            root / "mysql.yaml",
+            """gitea:
+  additionalConfigFromEnvs:
+    - name: FORGEJO__DATABASE__DB_TYPE
+      value: mysql
+  config:
+    database:
+      HOST: stale-postgres.private.example.test:5432
+""",
+        )
+        mysql_before = mysql_path.read_text(encoding="utf-8")
+        try:
+            renderer.refresh_forgejo_postgres_tls(mysql_path)
+        except SystemExit as exc:
+            if "found database type mysql" not in str(exc):
+                raise AssertionError(f"unexpected Forgejo MySQL override error: {exc}") from exc
+        else:
+            raise AssertionError("Forgejo TLS refresh ignored the effective MySQL override")
+        if mysql_path.read_text(encoding="utf-8") != mysql_before:
+            raise AssertionError("failed Forgejo MySQL detection changed the private values file")
+
+        opaque_path = write(
+            root / "opaque.yaml",
+            """gitea:
+  additionalConfigSources:
+    - secret:
+        secretName: private-forgejo-database
+  config:
+    database:
+      HOST: stale-postgres.private.example.test:5432
+""",
+        )
+        opaque_before = opaque_path.read_text(encoding="utf-8")
+        try:
+            renderer.refresh_forgejo_postgres_tls(opaque_path)
+        except SystemExit as exc:
+            if "cannot verify database settings from gitea.additionalConfigSources" not in str(exc):
+                raise AssertionError(f"unexpected opaque Forgejo config error: {exc}") from exc
+        else:
+            raise AssertionError("Forgejo TLS refresh inferred through an opaque config source")
+        if opaque_path.read_text(encoding="utf-8") != opaque_before:
+            raise AssertionError("failed opaque Forgejo detection changed the private values file")
 
 
 def test_focused_cnpg_role_refresh_preserves_private_state(renderer) -> None:
@@ -539,6 +632,8 @@ def main() -> int:
     test_forgejo_image_matches_reviewed_chart(renderer)
     test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer)
     test_focused_forgejo_tls_preserves_private_object_storage(renderer)
+    test_focused_forgejo_tls_rejects_ambiguous_legacy_database(renderer)
+    test_focused_forgejo_tls_honors_chart_config_precedence(renderer)
     test_focused_cnpg_role_refresh_preserves_private_state(renderer)
     test_focused_cnpg_role_refresh_preserves_distinct_tls_secrets(renderer)
     test_focused_cnpg_role_refresh_requires_certificate_for_missing_tls(renderer)
