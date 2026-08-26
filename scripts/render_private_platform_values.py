@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import copy
 import json
 import os
 import re
@@ -1320,8 +1321,6 @@ def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
     image = documents[0].get("image")
     if not isinstance(image, dict) or not isinstance(image.get("tag"), str):
         raise SystemExit(f"expected Forgejo image.tag in {path}")
-    if image["tag"] == FORGEJO_DEFAULT_IMAGE_TAG:
-        return False
 
     lines = text.splitlines(keepends=True)
     image_blocks = [
@@ -1348,7 +1347,10 @@ def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
 
     tag_index = tag_lines[0]
     newline = "\r\n" if lines[tag_index].endswith("\r\n") else "\n"
-    lines[tag_index] = f"  tag: {yaml_string(FORGEJO_DEFAULT_IMAGE_TAG)}{newline}"
+    expected_tag_line = f"  tag: {yaml_string(FORGEJO_DEFAULT_IMAGE_TAG)}{newline}"
+    if image["tag"] == FORGEJO_DEFAULT_IMAGE_TAG and lines[tag_index] == expected_tag_line:
+        return False
+    lines[tag_index] = expected_tag_line
     rendered = "".join(lines)
     try:
         rendered_documents = loads_strict_yaml_all(rendered)
@@ -1357,6 +1359,151 @@ def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
     rendered_image = rendered_documents[0].get("image")
     if not isinstance(rendered_image, dict) or rendered_image.get("tag") != FORGEJO_DEFAULT_IMAGE_TAG:
         raise SystemExit(f"failed to refresh Forgejo image.tag in {path}")
+    atomic_write_text(path, rendered)
+    return True
+
+
+def refresh_forgejo_object_storage_credentials(path: Path) -> bool:
+    """Restore secret-backed S3 credentials without re-rendering private values."""
+    text = read_bounded_text(path, encoding="utf-8")
+    try:
+        documents = loads_strict_yaml_all(text)
+    except StrictYamlError as exc:
+        raise SystemExit(
+            f"cannot refresh Forgejo object-storage credentials in invalid YAML {path}: {exc}"
+        ) from exc
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        raise SystemExit(f"expected one Forgejo values mapping in {path}")
+
+    values = documents[0]
+    gitea = values.get("gitea")
+    if not isinstance(gitea, dict):
+        raise SystemExit(f"expected Forgejo gitea mapping in {path}")
+    config = gitea.get("config")
+    if not isinstance(config, dict):
+        raise SystemExit(f"expected Forgejo gitea.config mapping in {path}")
+    storage = config.get("storage")
+    if (
+        not isinstance(storage, dict)
+        or not isinstance(storage.get("MINIO_ENDPOINT"), str)
+        or not storage["MINIO_ENDPOINT"].strip()
+        or not isinstance(storage.get("MINIO_BUCKET"), str)
+        or not storage["MINIO_BUCKET"].strip()
+    ):
+        raise SystemExit(
+            f"cannot infer private Forgejo S3 settings in {path}; expected existing "
+            "gitea.config.storage MINIO_ENDPOINT and MINIO_BUCKET values"
+        )
+    storage_before = copy.deepcopy(storage)
+
+    env_entries = gitea.get("additionalConfigFromEnvs")
+    if env_entries is None:
+        env_entries = []
+        gitea["additionalConfigFromEnvs"] = env_entries
+    if not isinstance(env_entries, list):
+        raise SystemExit(f"expected Forgejo gitea.additionalConfigFromEnvs list in {path}")
+
+    entries_by_name: dict[str, dict[str, object]] = {}
+    for entry in env_entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            raise SystemExit(f"expected named Forgejo additionalConfigFromEnvs mappings in {path}")
+        name = entry["name"]
+        if name in entries_by_name:
+            raise SystemExit(f"duplicate Forgejo environment entry {name!r} in {path}")
+        entries_by_name[name] = entry
+
+    required_keys = {
+        "GITEA__storage__MINIO_ACCESS_KEY_ID": "access-key-id",
+        "GITEA__storage__MINIO_SECRET_ACCESS_KEY": "secret-access-key",
+    }
+    existing_secret_names: set[str] = set()
+    for name in required_keys:
+        entry = entries_by_name.get(name)
+        if not isinstance(entry, dict):
+            continue
+        value_from = entry.get("valueFrom")
+        if not isinstance(value_from, dict):
+            continue
+        secret_ref = value_from.get("secretKeyRef")
+        if isinstance(secret_ref, dict) and isinstance(secret_ref.get("name"), str):
+            existing_secret_name = secret_ref["name"].strip()
+            if existing_secret_name:
+                existing_secret_names.add(existing_secret_name)
+
+    explicit_secret_name = os.environ.get("FORGEJO_S3_SECRET_NAME", "").strip()
+    if explicit_secret_name:
+        secret_name = explicit_secret_name
+    elif len(existing_secret_names) == 1:
+        secret_name = next(iter(existing_secret_names))
+    elif len(existing_secret_names) > 1:
+        raise SystemExit(f"Forgejo S3 credential entries use conflicting Secrets in {path}")
+    else:
+        secret_name = "forgejo-object-storage"
+
+    changed = False
+    for name, secret_key in required_keys.items():
+        required_value_from = {
+            "secretKeyRef": {
+                "name": secret_name,
+                "key": secret_key,
+            }
+        }
+        existing_entry = entries_by_name.get(name)
+        if existing_entry is None:
+            new_entry: dict[str, object] = {
+                "name": name,
+                "valueFrom": required_value_from,
+            }
+            env_entries.append(new_entry)
+            entries_by_name[name] = new_entry
+            changed = True
+            continue
+        if "value" in existing_entry:
+            del existing_entry["value"]
+            changed = True
+        if existing_entry.get("valueFrom") != required_value_from:
+            existing_entry["valueFrom"] = required_value_from
+            changed = True
+
+    if not changed:
+        return False
+
+    rendered = yaml.safe_dump(
+        values,
+        allow_unicode=False,
+        default_flow_style=False,
+        sort_keys=False,
+        width=4096,
+    )
+    try:
+        refreshed_documents = loads_strict_yaml_all(rendered)
+    except StrictYamlError as exc:
+        raise SystemExit(f"refreshed Forgejo values are invalid YAML in {path}: {exc}") from exc
+    refreshed_values = refreshed_documents[0]
+    refreshed_gitea = refreshed_values.get("gitea")
+    if not isinstance(refreshed_gitea, dict):
+        raise SystemExit(f"failed to preserve Forgejo gitea mapping in {path}")
+    refreshed_config = refreshed_gitea.get("config")
+    if not isinstance(refreshed_config, dict) or refreshed_config.get("storage") != storage_before:
+        raise SystemExit(f"failed to preserve private Forgejo S3 settings in {path}")
+    refreshed_entries = refreshed_gitea.get("additionalConfigFromEnvs")
+    if not isinstance(refreshed_entries, list):
+        raise SystemExit(f"failed to refresh Forgejo S3 credential entries in {path}")
+    refreshed_by_name = {
+        entry["name"]: entry
+        for entry in refreshed_entries
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    }
+    for name, secret_key in required_keys.items():
+        expected_value_from = {
+            "secretKeyRef": {
+                "name": secret_name,
+                "key": secret_key,
+            }
+        }
+        if refreshed_by_name.get(name, {}).get("valueFrom") != expected_value_from:
+            raise SystemExit(f"failed to refresh Forgejo S3 environment entry {name!r} in {path}")
+
     atomic_write_text(path, rendered)
     return True
 
@@ -4088,6 +4235,11 @@ def main() -> int:
         help="Refresh only Forgejo's reviewed image pin without rendering private dependencies.",
     )
     parser.add_argument(
+        "--refresh-forgejo-object-storage-credentials",
+        action="store_true",
+        help="Refresh Forgejo's secret-backed S3 credential entries without replacing private S3 settings.",
+    )
+    parser.add_argument(
         "--refresh-cnpg-database-roles",
         action="store_true",
         help="Refresh required CloudNativePG managed roles without re-rendering private storage or backups.",
@@ -4335,10 +4487,17 @@ def main() -> int:
         changed.append(str(args.argocd_values))
 
     if (
+        args.refresh_forgejo_object_storage_credentials
+        and refresh_forgejo_object_storage_credentials(args.forgejo_values)
+    ):
+        changed.append(str(args.forgejo_values))
+
+    if (
         args.refresh_forgejo_release_pin
         and refresh_forgejo_reviewed_image_pin(args.forgejo_values)
     ):
-        changed.append(str(args.forgejo_values))
+        if str(args.forgejo_values) not in changed:
+            changed.append(str(args.forgejo_values))
 
     if (
         args.refresh_cnpg_database_roles

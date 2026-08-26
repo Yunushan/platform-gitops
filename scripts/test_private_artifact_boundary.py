@@ -103,9 +103,14 @@ def check_woodpecker_seed_isolation() -> list[str]:
         for needle, description in required.items()
         if needle not in text
     ]
-    if "--refresh-cnpg-database-roles" not in SEED_SYNC.read_text(encoding="utf-8"):
+    seed_sync_text = SEED_SYNC.read_text(encoding="utf-8")
+    if "--refresh-cnpg-database-roles" not in seed_sync_text:
         problems.append(
             "Woodpecker seed reconciliation is missing focused shared database-role reconciliation"
+        )
+    if "--refresh-forgejo-object-storage-credentials" not in seed_sync_text:
+        problems.append(
+            "Woodpecker seed reconciliation is missing focused Forgejo S3 credential reconciliation"
         )
     for unsafe_override in (
         "PLATFORM_WOODPECKER_REPAIR_SYNC_PULL",

@@ -95,6 +95,7 @@ if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
       # A focused CI repair must not re-render unrelated production apps and
       # accidentally require their private object-storage credentials.
       render_args+=(
+        --refresh-forgejo-object-storage-credentials
         --refresh-forgejo-release-pin
         --refresh-cnpg-database-roles
         --skip-argocd
