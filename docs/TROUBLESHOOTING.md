@@ -131,8 +131,12 @@ The focused reconciliation renders Woodpecker values and shared policy
 artifacts. It leaves private Forgejo configuration, Longhorn, Harbor, backup,
 and monitoring values unchanged, apart from refreshing Forgejo's reviewed image
 pin and the shared CloudNativePG managed roles required by enabled platform
-databases. The role refresh preserves private PostgreSQL storage, backup,
-metadata, and extra roles. During this focused run, static rendered-value secret
+databases. It also restores missing `serverCASecret` and `serverTLSSecret`
+references from the existing matching cert-manager `Certificate`. This bounded
+refresh preserves private PostgreSQL storage, backup, metadata, certificate
+names, distinct CA/leaf secret semantics, and extra roles. It fails closed when a
+reference is missing and no matching Certificate can supply it.
+During this focused run, static rendered-value secret
 validation is limited to Woodpecker; all generated secret contracts, renderer
 and playbook checks, schema validation, security checks, and private-data
 scanning still run. The complete platform production contract also remains
@@ -149,8 +153,9 @@ updates outside those hunks, including reviewed release pins, remain in the
 merged artifact before the focused Woodpecker outputs are rendered. This
 prevents public placeholders from replacing private hostnames or storage
 settings without freezing unrelated production updates. Required shared
-database roles are then reconciled structurally, so an older private PostgreSQL
-block cannot omit a newly enabled Harbor or Grafana role. A conflict in any file
+database roles and server TLS references are then reconciled structurally, so an
+older private PostgreSQL block cannot omit a newly enabled Harbor or Grafana role
+or lose its existing server Certificate binding. A conflict in any file
 outside the renderer's exact output allowlist still stops before the seed remote
 is changed and must be reconciled manually.
 

@@ -93,8 +93,9 @@ if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
     all)
       ;;
     woodpecker)
-      # A focused CI repair must not re-render unrelated production apps and
-      # accidentally require their private object-storage credentials.
+      # A focused CI repair must not re-render unrelated production apps. It
+      # only reconciles the shared CNPG roles and existing TLS secret references
+      # required by Woodpecker, without replacing private storage or backups.
       secret_contract_static_apps=woodpecker
       render_args+=(
         --refresh-forgejo-release-pin

@@ -3464,8 +3464,61 @@ def cnpg_managed_database_roles_block() -> str:
     return "\n".join(blocks)
 
 
+def cnpg_server_certificate_secret(
+    documents: list[object],
+    cluster: dict[str, object],
+    path: Path,
+) -> str | None:
+    """Return the existing server Certificate secret for a private CNPG cluster."""
+    metadata = cluster.get("metadata")
+    if not isinstance(metadata, dict):
+        raise SystemExit(f"expected CloudNativePG metadata mapping in {path}")
+    name = metadata.get("name")
+    namespace = metadata.get("namespace")
+    if not isinstance(name, str) or not name.strip():
+        raise SystemExit(f"expected CloudNativePG metadata.name in {path}")
+    if not isinstance(namespace, str) or not namespace.strip():
+        raise SystemExit(f"expected CloudNativePG metadata.namespace in {path}")
+
+    expected_certificate_name = f"{name}-server"
+    expected_rw_dns = f"{name}-rw.{namespace}.svc.cluster.local"
+    candidates: list[str] = []
+    for document in documents:
+        if (
+            not isinstance(document, dict)
+            or document.get("apiVersion") != "cert-manager.io/v1"
+            or document.get("kind") != "Certificate"
+        ):
+            continue
+        certificate_metadata = document.get("metadata")
+        certificate_spec = document.get("spec")
+        if not isinstance(certificate_metadata, dict) or not isinstance(certificate_spec, dict):
+            continue
+        if certificate_metadata.get("namespace") != namespace:
+            continue
+        dns_names = certificate_spec.get("dnsNames")
+        matches_cluster = certificate_metadata.get("name") == expected_certificate_name or (
+            isinstance(dns_names, list) and expected_rw_dns in dns_names
+        )
+        if not matches_cluster:
+            continue
+        secret_name = certificate_spec.get("secretName")
+        if not isinstance(secret_name, str) or not secret_name.strip():
+            raise SystemExit(
+                f"matching CloudNativePG server Certificate is missing spec.secretName in {path}"
+            )
+        candidates.append(secret_name.strip())
+
+    unique_candidates = sorted(set(candidates))
+    if len(unique_candidates) > 1:
+        raise SystemExit(
+            f"multiple CloudNativePG server Certificate secrets match cluster {name!r} in {path}"
+        )
+    return unique_candidates[0] if unique_candidates else None
+
+
 def refresh_cnpg_managed_database_roles(path: Path) -> bool:
-    """Refresh required CNPG roles without re-rendering private cluster settings."""
+    """Refresh Woodpecker's shared CNPG contract without replacing private state."""
     text = read_bounded_text(path, encoding="utf-8")
     try:
         documents = loads_strict_yaml_all(text)
@@ -3488,6 +3541,37 @@ def refresh_cnpg_managed_database_roles(path: Path) -> bool:
     spec = cluster.get("spec")
     if not isinstance(spec, dict):
         raise SystemExit(f"expected CloudNativePG spec mapping in {path}")
+
+    certificates = spec.get("certificates")
+    if certificates is None:
+        certificates = {}
+        spec["certificates"] = certificates
+    if not isinstance(certificates, dict):
+        raise SystemExit(f"expected CloudNativePG spec.certificates mapping in {path}")
+    certificate_keys = ("serverCASecret", "serverTLSSecret")
+    expected_certificate_references: dict[str, str] = {}
+    missing_certificate_keys: list[str] = []
+    for key in certificate_keys:
+        value = certificates.get(key)
+        if value is None:
+            missing_certificate_keys.append(key)
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise SystemExit(f"expected CloudNativePG spec.certificates.{key} name in {path}")
+        expected_certificate_references[key] = value.strip()
+    discovered_server_secret = (
+        cnpg_server_certificate_secret(documents, cluster, path)
+        if missing_certificate_keys
+        else None
+    )
+    if missing_certificate_keys and discovered_server_secret is None:
+        raise SystemExit(
+            "cannot restore missing CloudNativePG server TLS references in "
+            f"{path}; retain a matching cert-manager Certificate or configure each reference explicitly"
+        )
+    for key in missing_certificate_keys:
+        expected_certificate_references[key] = discovered_server_secret
+
     managed = spec.get("managed")
     if managed is None:
         managed = {}
@@ -3511,6 +3595,10 @@ def refresh_cnpg_managed_database_roles(path: Path) -> bool:
         roles_by_name[name] = role
 
     changed = False
+    for key in missing_certificate_keys:
+        if certificates.get(key) != expected_certificate_references[key]:
+            certificates[key] = expected_certificate_references[key]
+            changed = True
     for required_role in cnpg_required_managed_database_roles():
         name = str(required_role["name"])
         existing_role = roles_by_name.get(name)
@@ -3554,6 +3642,12 @@ def refresh_cnpg_managed_database_roles(path: Path) -> bool:
         and document.get("apiVersion") == "postgresql.cnpg.io/v1"
         and document.get("kind") == "Cluster"
     ]
+    refreshed_certificates = refreshed_clusters[0]["spec"].get("certificates")
+    if not isinstance(refreshed_certificates, dict) or any(
+        refreshed_certificates.get(key) != expected_certificate_references[key]
+        for key in certificate_keys
+    ):
+        raise SystemExit(f"failed to refresh CloudNativePG server TLS references in {path}")
     refreshed_roles = refreshed_clusters[0]["spec"]["managed"]["roles"]
     refreshed_by_name = {
         role["name"]: role
@@ -4091,7 +4185,10 @@ def main() -> int:
     parser.add_argument(
         "--refresh-cnpg-database-roles",
         action="store_true",
-        help="Refresh required CloudNativePG managed roles without re-rendering private storage or backups.",
+        help=(
+            "Refresh required CloudNativePG managed roles and existing server TLS references "
+            "without re-rendering private storage or backups."
+        ),
     )
     parser.add_argument(
         "--woodpecker-values",

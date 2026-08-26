@@ -354,6 +354,8 @@ spec:
             "retentionPolicy: 90d",
             "s3://private-cnpg-backups/cluster",
             "https://objects.private.example.test",
+            "serverCASecret: private-postgres-tls",
+            "serverTLSSecret: private-postgres-tls",
             "name: keycloak",
             "connectionLimit: 25",
             "name: woodpecker",
@@ -367,6 +369,72 @@ spec:
         )
         if cnpg_path.read_text(encoding="utf-8") != first_render:
             raise AssertionError("idempotent CNPG role refresh changed the manifest")
+
+
+def test_focused_cnpg_role_refresh_preserves_distinct_tls_secrets(renderer) -> None:
+    """Focused reconciliation must preserve distinct private CA and leaf secrets."""
+    with tempfile.TemporaryDirectory(prefix="platform-cnpg-distinct-tls-") as tmp:
+        cnpg_path = write(
+            Path(tmp) / "postgres-cluster.yaml",
+            """apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: private-postgres-server
+  namespace: private-databases
+spec:
+  secretName: private-postgres-tls
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: private-postgres
+  namespace: private-databases
+spec:
+  certificates:
+    serverCASecret: different-private-ca
+""",
+        )
+        with patched_env(
+            {
+                "PLATFORM_PRODUCTION_STRICT": "true",
+                "WOODPECKER_DATABASE_MODE": "postgres",
+                "HARBOR_DATABASE_MODE": "internal",
+                "GRAFANA_DATABASE_MODE": "sqlite",
+            }
+        ):
+            renderer.refresh_cnpg_managed_database_roles(cnpg_path)
+        assert_contains(
+            cnpg_path,
+            "serverCASecret: different-private-ca",
+            "serverTLSSecret: private-postgres-tls",
+        )
+
+
+def test_focused_cnpg_role_refresh_requires_certificate_for_missing_tls(renderer) -> None:
+    """Focused reconciliation must not infer a missing TLS reference from the CA field."""
+    with tempfile.TemporaryDirectory(prefix="platform-cnpg-missing-tls-source-") as tmp:
+        cnpg_path = write(
+            Path(tmp) / "postgres-cluster.yaml",
+            """apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: private-postgres
+  namespace: private-databases
+spec:
+  certificates:
+    serverCASecret: private-postgres-ca
+""",
+        )
+        original = cnpg_path.read_text(encoding="utf-8")
+        try:
+            renderer.refresh_cnpg_managed_database_roles(cnpg_path)
+        except SystemExit as exc:
+            if "cannot restore missing CloudNativePG server TLS references" not in str(exc):
+                raise AssertionError(f"unexpected missing CNPG TLS source error: {exc}") from exc
+        else:
+            raise AssertionError("focused CNPG refresh inferred a leaf secret from the CA field")
+        if cnpg_path.read_text(encoding="utf-8") != original:
+            raise AssertionError("failed CNPG TLS refresh modified the private manifest")
 
 
 def test_strict_longhorn_render_requires_explicit_disk_path(renderer) -> None:
@@ -395,6 +463,8 @@ def main() -> int:
     test_forgejo_image_matches_reviewed_chart(renderer)
     test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer)
     test_focused_cnpg_role_refresh_preserves_private_state(renderer)
+    test_focused_cnpg_role_refresh_preserves_distinct_tls_secrets(renderer)
+    test_focused_cnpg_role_refresh_requires_certificate_for_missing_tls(renderer)
     test_strict_longhorn_render_requires_explicit_disk_path(renderer)
 
     with tempfile.TemporaryDirectory(prefix="platform-private-render-") as tmp:

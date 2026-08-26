@@ -106,7 +106,7 @@ def check_woodpecker_seed_isolation() -> list[str]:
     seed_sync_text = SEED_SYNC.read_text(encoding="utf-8")
     if "--refresh-cnpg-database-roles" not in seed_sync_text:
         problems.append(
-            "Woodpecker seed reconciliation is missing focused shared database-role reconciliation"
+            "Woodpecker seed reconciliation is missing focused shared database/TLS reconciliation"
         )
     if "--refresh-forgejo-object-storage-credentials" in seed_sync_text:
         problems.append(
