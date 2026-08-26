@@ -17,6 +17,9 @@ from test_bash_support import BashRuntimeUnavailable, bash_executable, bash_path
 ROOT = Path(__file__).resolve().parents[1]
 PRIVATE_DIRS = ("private", "rendered", "secrets")
 WOODPECKER_RECONCILER = ROOT / "scripts" / "bootstrap" / "reconcile-woodpecker-gitops-source.sh"
+KNOWN_RENDERED_CONFLICT_PATH = (
+    "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml"
+)
 ALLOWED_TRACKED_PATHS = {
     "private/.gitkeep",
     "private/README.md",
@@ -86,6 +89,11 @@ def check_woodpecker_seed_isolation() -> list[str]:
         "PLATFORM_WOODPECKER_REPAIR_ALLOW_EMPTY_SEED": "fail-closed empty-seed initialization",
         'PLATFORM_SEED_GIT_EXPECTED_HEAD="${seed_destination_head:-absent}"': "a race-safe destination seed lease",
         'git -C "${seed_checkout}" merge --no-edit "${source_head}"': "public source reconciliation on the private seed base",
+        "diff --name-only --diff-filter=U -z": "exact merge-conflict discovery",
+        "private_seed_conflict=preserve-seed": "bounded private render conflict recovery",
+        "outside-rendered-private-boundary": "fail-closed source conflict handling",
+        KNOWN_RENDERED_CONFLICT_PATH: "an explicit rendered-output conflict boundary",
+        'git -C "${seed_checkout}" commit --no-edit': "an isolated resolved merge commit",
         'cd "${seed_checkout}"': "execution inside the isolated checkout",
     }
     problems = [
@@ -131,6 +139,8 @@ def check_woodpecker_seed_behavior() -> list[str]:
         fake_bin.mkdir()
         (repo / "inventory").mkdir()
         (repo / "private").mkdir()
+        rendered_conflict = repo / KNOWN_RENDERED_CONFLICT_PATH
+        rendered_conflict.parent.mkdir(parents=True)
         script.write_text(WOODPECKER_RECONCILER.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
         (script.parent / "load-env-file.sh").write_text(
             (ROOT / "scripts" / "bootstrap" / "load-env-file.sh").read_text(encoding="utf-8"),
@@ -143,6 +153,11 @@ def check_woodpecker_seed_behavior() -> list[str]:
             newline="\n",
         )
         (repo / "tracked.txt").write_text("public template\n", encoding="utf-8", newline="\n")
+        rendered_conflict.write_text(
+            "shared public baseline\n",
+            encoding="utf-8",
+            newline="\n",
+        )
         (repo / "inventory" / "hosts.local.ini").write_text(
             "[rke2_servers]\nnode-1 ansible_host=192.0.2.10 ansible_user=test\n",
             encoding="utf-8",
@@ -172,6 +187,7 @@ test "$(git config user.email)" = "test@example.test"
 test "$(git config --bool commit.gpgSign)" = "false"
 test "$(cat private-state.txt)" = "retained private platform values"
 test "$(cat public-change.txt)" = "new public repair code"
+test "$(cat gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml)" = "retained private forgejo values"
 pwd -P > "${TEST_MARKER}"
 printf '%s\n' 'private deployment render' >> tracked.txt
 git add tracked.txt
@@ -188,7 +204,14 @@ git commit --quiet -m isolated-render
             return [f"could not initialize Woodpecker seed isolation test repository: {init.stderr.strip()}"]
         run_git(repo, "config", "user.name", "Test")
         run_git(repo, "config", "user.email", "test@example.test")
-        run_git(repo, "add", ".gitignore", "scripts", "tracked.txt")
+        run_git(
+            repo,
+            "add",
+            ".gitignore",
+            "scripts",
+            "tracked.txt",
+            KNOWN_RENDERED_CONFLICT_PATH,
+        )
         committed = run_git(repo, "commit", "--quiet", "-m", "public-template")
         if committed.returncode != 0:
             return [f"could not commit Woodpecker seed isolation fixture: {committed.stderr.strip()}"]
@@ -210,7 +233,12 @@ git commit --quiet -m isolated-render
             encoding="utf-8",
             newline="\n",
         )
-        run_git(seed_repo, "add", "private-state.txt")
+        (seed_repo / KNOWN_RENDERED_CONFLICT_PATH).write_text(
+            "retained private forgejo values\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run_git(seed_repo, "add", "private-state.txt", KNOWN_RENDERED_CONFLICT_PATH)
         private_commit = run_git(seed_repo, "commit", "--quiet", "-m", "private-render")
         if private_commit.returncode != 0:
             return [f"could not commit private seed fixture: {private_commit.stderr.strip()}"]
@@ -234,7 +262,12 @@ git commit --quiet -m isolated-render
             encoding="utf-8",
             newline="\n",
         )
-        run_git(repo, "add", "public-change.txt")
+        rendered_conflict.write_text(
+            "new public forgejo defaults\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run_git(repo, "add", "public-change.txt", KNOWN_RENDERED_CONFLICT_PATH)
         public_commit = run_git(repo, "commit", "--quiet", "-m", "public-repair")
         if public_commit.returncode != 0:
             return [f"could not commit public repair fixture: {public_commit.stderr.strip()}"]
@@ -276,6 +309,87 @@ git commit --quiet -m isolated-render
             problems.append("Woodpecker seed reconciliation wrote private render data into the source checkout")
         if "woodpecker_gitops_source_sync=synced" not in result.stdout:
             problems.append("Woodpecker seed reconciliation did not report successful isolated sync")
+        if (
+            f"private_seed_conflict=preserve-seed path={KNOWN_RENDERED_CONFLICT_PATH}"
+            not in result.stdout
+        ):
+            problems.append("Woodpecker seed reconciliation did not preserve a known private render conflict")
+
+        unsafe_branch = run_git(seed_repo, "checkout", "--quiet", "-b", "unsafe-recovery", source_base)
+        if unsafe_branch.returncode != 0:
+            problems.append(
+                "could not create unsafe private seed fixture branch: "
+                + unsafe_branch.stderr.strip()
+            )
+            return problems
+        (seed_repo / "tracked.txt").write_text(
+            "unsafe private source change\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run_git(seed_repo, "add", "tracked.txt")
+        unsafe_private_commit = run_git(
+            seed_repo,
+            "commit",
+            "--quiet",
+            "-m",
+            "unsafe-private-source-change",
+        )
+        if unsafe_private_commit.returncode != 0:
+            problems.append(
+                "could not commit unsafe private seed fixture: "
+                + unsafe_private_commit.stderr.strip()
+            )
+            return problems
+
+        (repo / "tracked.txt").write_text(
+            "new public source change\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        run_git(repo, "add", "tracked.txt")
+        unsafe_public_commit = run_git(
+            repo,
+            "commit",
+            "--quiet",
+            "-m",
+            "unsafe-public-source-change",
+        )
+        if unsafe_public_commit.returncode != 0:
+            problems.append(
+                "could not commit unsafe public source fixture: "
+                + unsafe_public_commit.stderr.strip()
+            )
+            return problems
+        unsafe_source_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+        marker.unlink(missing_ok=True)
+        unsafe_command = "\n".join(
+            [
+                "set -euo pipefail",
+                f"cd {shlex.quote(repo_bash)}",
+                f"export PATH={shlex.quote(fake_bin_bash)}:$PATH",
+                f"export TEST_MARKER={shlex.quote(marker_bash)}",
+                f"export TEST_EXPECTED_SEED_HEAD={shlex.quote(seed_destination_head)}",
+                "export PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=true",
+                "export PLATFORM_SEED_DEPLOY_ENV_FILE=private/seed-git.env",
+                f"export PLATFORM_WOODPECKER_REPAIR_SEED_BASE_URL={shlex.quote(seed_repo_bash)}",
+                "export PLATFORM_WOODPECKER_REPAIR_SEED_BASE_REF=refs/heads/unsafe-recovery",
+                "bash scripts/bootstrap/reconcile-woodpecker-gitops-source.sh",
+            ]
+        )
+        unsafe_result = run_bash(unsafe_command)
+        if unsafe_result.returncode == 0:
+            problems.append("Woodpecker seed reconciliation accepted a conflict outside rendered outputs")
+        if "outside-rendered-private-boundary path=tracked.txt" not in unsafe_result.stderr:
+            problems.append("Woodpecker seed reconciliation did not classify an unsafe source conflict")
+        if marker.exists():
+            problems.append("Woodpecker seed reconciliation rendered after an unsafe source conflict")
+        if run_git(repo, "rev-parse", "HEAD").stdout.strip() != unsafe_source_head:
+            problems.append("unsafe Woodpecker seed reconciliation changed the source repository HEAD")
+        if run_git(repo, "status", "--porcelain", "--untracked-files=normal").stdout.strip():
+            problems.append("unsafe Woodpecker seed reconciliation changed the source working tree")
+        if run_git(seed_repo, "rev-parse", "refs/heads/main").stdout.strip() != seed_destination_head:
+            problems.append("unsafe Woodpecker seed reconciliation changed the destination seed branch")
         return problems
 
 

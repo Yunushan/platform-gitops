@@ -133,6 +133,14 @@ monitoring values unchanged, so a missing unrelated S3 endpoint cannot block a
 Woodpecker repair. Configure those production values before running their own
 deployment or health gates.
 
+When the selected private seed base and current public source both changed a
+known premium rendered artifact, focused reconciliation keeps the private seed
+version for that artifact, merges public code everywhere else, and then
+rerenders the focused Woodpecker outputs. This prevents public placeholders
+from replacing private hostnames or storage settings during recovery. A conflict
+in any file outside the renderer's exact output allowlist still stops before the
+seed remote is changed and must be reconciled manually.
+
 The premium renderer does not use the chart-generated
 `woodpecker-default-agent-secret`. That chart secret depends on random Helm
 rendering and can change during an Argo CD comparison. Instead,
