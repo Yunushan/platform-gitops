@@ -251,6 +251,108 @@ def test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer) -> 
         assert_contains(woodpecker_path, 'WOODPECKER_HOST: "https://ci.example.test"')
 
 
+def test_focused_cnpg_role_refresh_preserves_private_state(renderer) -> None:
+    """Focused reconciliation restores shared roles without replacing private state."""
+    with tempfile.TemporaryDirectory(prefix="platform-cnpg-role-refresh-") as tmp:
+        cnpg_path = write(
+            Path(tmp) / "postgres-cluster.yaml",
+            """apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: private-postgres-server
+  namespace: private-databases
+spec:
+  secretName: private-postgres-tls
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: private-postgres
+  namespace: private-databases
+  labels:
+    private-owner: platform-team
+spec:
+  instances: 5
+  storage:
+    size: 250Gi
+    storageClass: private-longhorn
+  backup:
+    retentionPolicy: 90d
+    barmanObjectStore:
+      destinationPath: s3://private-cnpg-backups/cluster
+      endpointURL: https://objects.private.example.test
+  managed:
+    roles:
+      - name: keycloak
+        ensure: present
+        login: true
+        superuser: false
+        connectionLimit: 25
+        passwordSecret:
+          name: keycloak-database
+      - name: woodpecker
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: woodpecker-database
+      - name: reporting
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: reporting-database
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: private-postgres-daily
+  namespace: private-databases
+spec:
+  schedule: 0 3 * * *
+  cluster:
+    name: private-postgres
+""",
+        )
+        focused_env = {
+            "PLATFORM_PRODUCTION_STRICT": "true",
+            "WOODPECKER_DATABASE_MODE": "postgres",
+            "HARBOR_DATABASE_MODE": "external",
+            "GRAFANA_DATABASE_MODE": "postgres",
+        }
+        with patched_env(focused_env):
+            if not renderer.refresh_cnpg_managed_database_roles(cnpg_path):
+                raise AssertionError("focused CNPG role refresh did not update a stale manifest")
+            first_render = cnpg_path.read_text(encoding="utf-8")
+            if renderer.refresh_cnpg_managed_database_roles(cnpg_path):
+                raise AssertionError("focused CNPG role refresh was not idempotent")
+
+        assert_contains(
+            cnpg_path,
+            "name: private-postgres",
+            "namespace: private-databases",
+            "private-owner: platform-team",
+            "instances: 5",
+            "size: 250Gi",
+            "storageClass: private-longhorn",
+            "retentionPolicy: 90d",
+            "s3://private-cnpg-backups/cluster",
+            "https://objects.private.example.test",
+            "name: keycloak",
+            "connectionLimit: 25",
+            "name: woodpecker",
+            "name: harbor",
+            "name: harbor-database",
+            "name: grafana",
+            "name: grafana-database",
+            "name: reporting",
+            "name: reporting-database",
+            "schedule: 0 3 * * *",
+        )
+        if cnpg_path.read_text(encoding="utf-8") != first_render:
+            raise AssertionError("idempotent CNPG role refresh changed the manifest")
+
+
 def test_strict_longhorn_render_requires_explicit_disk_path(renderer) -> None:
     """Strict rendering must not silently restore the root-backed default."""
     with tempfile.TemporaryDirectory(prefix="platform-longhorn-render-") as tmp:
@@ -276,6 +378,7 @@ def main() -> int:
     contract_validator = load_contract_validator()
     test_forgejo_image_matches_reviewed_chart(renderer)
     test_focused_woodpecker_cli_refreshes_only_forgejo_release_pin(renderer)
+    test_focused_cnpg_role_refresh_preserves_private_state(renderer)
     test_strict_longhorn_render_requires_explicit_disk_path(renderer)
 
     with tempfile.TemporaryDirectory(prefix="platform-private-render-") as tmp:

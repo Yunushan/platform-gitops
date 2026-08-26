@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+import yaml
+
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
 from strict_yaml import StrictYamlError, loads_strict_yaml_all
@@ -3361,6 +3363,216 @@ def render_velero(path: Path) -> bool:
     return changed
 
 
+def cnpg_required_managed_database_roles() -> list[dict[str, object]]:
+    """Return the application roles required by the selected database modes."""
+    roles: list[dict[str, object]] = [
+        {
+            "name": "keycloak",
+            "ensure": "present",
+            "login": True,
+            "superuser": False,
+            "passwordSecret": {
+                "name": os.environ.get(
+                    "KEYCLOAK_DATABASE_SECRET_NAME", "keycloak-database"
+                ).strip()
+                or "keycloak-database"
+            },
+        }
+    ]
+
+    woodpecker_database_mode = (
+        os.environ.get("WOODPECKER_DATABASE_MODE", "postgres").strip().lower()
+        or "postgres"
+    )
+    if woodpecker_database_mode in {"postgres", "postgresql", "external"}:
+        roles.append(
+            {
+                "name": os.environ.get(
+                    "WOODPECKER_DATABASE_USER", "woodpecker"
+                ).strip()
+                or "woodpecker",
+                "ensure": "present",
+                "login": True,
+                "superuser": False,
+                "passwordSecret": {
+                    "name": os.environ.get(
+                        "WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database"
+                    ).strip()
+                    or "woodpecker-database"
+                },
+            }
+        )
+
+    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
+    harbor_database_mode = os.environ.get(
+        "HARBOR_DATABASE_MODE", "external" if production_strict else "internal"
+    ).strip().lower()
+    if harbor_database_mode in {"external", "postgres", "postgresql"}:
+        roles.append(
+            {
+                "name": os.environ.get("HARBOR_DATABASE_USER", "harbor").strip()
+                or "harbor",
+                "ensure": "present",
+                "login": True,
+                "superuser": False,
+                "passwordSecret": {
+                    "name": os.environ.get(
+                        "HARBOR_DATABASE_SECRET_NAME", "harbor-database"
+                    ).strip()
+                    or "harbor-database"
+                },
+            }
+        )
+
+    grafana_database_mode = os.environ.get(
+        "GRAFANA_DATABASE_MODE", "postgres" if production_strict else "sqlite"
+    ).strip().lower()
+    if grafana_database_mode in {"external", "postgres", "postgresql"}:
+        roles.append(
+            {
+                "name": os.environ.get("GRAFANA_DATABASE_USER", "grafana").strip()
+                or "grafana",
+                "ensure": "present",
+                "login": True,
+                "superuser": False,
+                "passwordSecret": {
+                    "name": os.environ.get(
+                        "GRAFANA_DATABASE_SECRET_NAME", "grafana-database"
+                    ).strip()
+                    or "grafana-database"
+                },
+            }
+        )
+    return roles
+
+
+def cnpg_managed_database_roles_block() -> str:
+    blocks: list[str] = []
+    for role in cnpg_required_managed_database_roles():
+        password_secret = role["passwordSecret"]
+        if not isinstance(password_secret, dict):
+            raise AssertionError("CNPG managed role passwordSecret must be a mapping")
+        blocks.append(
+            f"""      - name: {yaml_string(str(role['name']))}
+        ensure: present
+        login: true
+        superuser: false
+        passwordSecret:
+          name: {yaml_string(str(password_secret['name']))}"""
+        )
+    return "\n".join(blocks)
+
+
+def refresh_cnpg_managed_database_roles(path: Path) -> bool:
+    """Refresh required CNPG roles without re-rendering private cluster settings."""
+    text = read_bounded_text(path, encoding="utf-8")
+    try:
+        documents = loads_strict_yaml_all(text)
+    except StrictYamlError as exc:
+        raise SystemExit(f"cannot refresh CNPG managed roles in invalid YAML {path}: {exc}") from exc
+    if not documents or any(not isinstance(document, dict) for document in documents):
+        raise SystemExit(f"expected only Kubernetes resource mappings in {path}")
+
+    clusters = [
+        document
+        for document in documents
+        if isinstance(document, dict)
+        and document.get("apiVersion") == "postgresql.cnpg.io/v1"
+        and document.get("kind") == "Cluster"
+    ]
+    if len(clusters) != 1:
+        raise SystemExit(f"expected exactly one CloudNativePG Cluster in {path}")
+
+    cluster = clusters[0]
+    spec = cluster.get("spec")
+    if not isinstance(spec, dict):
+        raise SystemExit(f"expected CloudNativePG spec mapping in {path}")
+    managed = spec.get("managed")
+    if managed is None:
+        managed = {}
+        spec["managed"] = managed
+    if not isinstance(managed, dict):
+        raise SystemExit(f"expected CloudNativePG spec.managed mapping in {path}")
+    roles = managed.get("roles")
+    if roles is None:
+        roles = []
+        managed["roles"] = roles
+    if not isinstance(roles, list):
+        raise SystemExit(f"expected CloudNativePG spec.managed.roles list in {path}")
+
+    roles_by_name: dict[str, dict[str, object]] = {}
+    for role in roles:
+        if not isinstance(role, dict) or not isinstance(role.get("name"), str):
+            raise SystemExit(f"expected named CloudNativePG managed role mappings in {path}")
+        name = role["name"]
+        if name in roles_by_name:
+            raise SystemExit(f"duplicate CloudNativePG managed role {name!r} in {path}")
+        roles_by_name[name] = role
+
+    changed = False
+    for required_role in cnpg_required_managed_database_roles():
+        name = str(required_role["name"])
+        existing_role = roles_by_name.get(name)
+        if existing_role is None:
+            new_role = {
+                key: dict(value) if isinstance(value, dict) else value
+                for key, value in required_role.items()
+            }
+            roles.append(new_role)
+            roles_by_name[name] = new_role
+            changed = True
+            continue
+        for key, required_value in required_role.items():
+            normalized_value = (
+                dict(required_value)
+                if isinstance(required_value, dict)
+                else required_value
+            )
+            if existing_role.get(key) != normalized_value:
+                existing_role[key] = normalized_value
+                changed = True
+
+    if not changed:
+        return False
+
+    rendered = yaml.safe_dump_all(
+        documents,
+        allow_unicode=False,
+        default_flow_style=False,
+        sort_keys=False,
+        width=4096,
+    )
+    try:
+        refreshed_documents = loads_strict_yaml_all(rendered)
+    except StrictYamlError as exc:
+        raise SystemExit(f"refreshed CNPG manifest is invalid YAML in {path}: {exc}") from exc
+    refreshed_clusters = [
+        document
+        for document in refreshed_documents
+        if isinstance(document, dict)
+        and document.get("apiVersion") == "postgresql.cnpg.io/v1"
+        and document.get("kind") == "Cluster"
+    ]
+    refreshed_roles = refreshed_clusters[0]["spec"]["managed"]["roles"]
+    refreshed_by_name = {
+        role["name"]: role
+        for role in refreshed_roles
+        if isinstance(role, dict) and isinstance(role.get("name"), str)
+    }
+    for required_role in cnpg_required_managed_database_roles():
+        refreshed_role = refreshed_by_name.get(required_role["name"])
+        if not isinstance(refreshed_role, dict) or any(
+            refreshed_role.get(key) != value
+            for key, value in required_role.items()
+        ):
+            raise SystemExit(
+                f"failed to refresh required CNPG role {required_role['name']!r} in {path}"
+            )
+
+    atomic_write_text(path, rendered)
+    return True
+
+
 def cnpg_postgres_cluster_manifest(
     namespace: str,
     name: str,
@@ -3414,48 +3626,7 @@ spec:
     name: {yaml_string(name)}
   method: barmanObjectStore"""
 
-    woodpecker_database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "postgres").strip().lower() or "postgres"
-    woodpecker_role_block = ""
-    if woodpecker_database_mode in {"postgres", "postgresql", "external"}:
-        woodpecker_role_name = os.environ.get("WOODPECKER_DATABASE_USER", "woodpecker").strip() or "woodpecker"
-        woodpecker_secret_name = (
-            os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip()
-            or "woodpecker-database"
-        )
-        woodpecker_role_block = f"""
-      - name: {yaml_string(woodpecker_role_name)}
-        ensure: present
-        login: true
-        superuser: false
-        passwordSecret:
-          name: {yaml_string(woodpecker_secret_name)}"""
-
-    production_strict = env_bool("PLATFORM_PRODUCTION_STRICT", True)
-    harbor_database_mode = os.environ.get(
-        "HARBOR_DATABASE_MODE", "external" if production_strict else "internal"
-    ).strip().lower()
-    harbor_role_block = ""
-    if harbor_database_mode in {"external", "postgres", "postgresql"}:
-        harbor_role_block = f"""
-      - name: {yaml_string(os.environ.get("HARBOR_DATABASE_USER", "harbor").strip() or "harbor")}
-        ensure: present
-        login: true
-        superuser: false
-        passwordSecret:
-          name: {yaml_string(os.environ.get("HARBOR_DATABASE_SECRET_NAME", "harbor-database").strip() or "harbor-database")}"""
-
-    grafana_database_mode = os.environ.get(
-        "GRAFANA_DATABASE_MODE", "postgres" if production_strict else "sqlite"
-    ).strip().lower()
-    grafana_role_block = ""
-    if grafana_database_mode in {"external", "postgres", "postgresql"}:
-        grafana_role_block = f"""
-      - name: {yaml_string(os.environ.get("GRAFANA_DATABASE_USER", "grafana").strip() or "grafana")}
-        ensure: present
-        login: true
-        superuser: false
-        passwordSecret:
-          name: {yaml_string(os.environ.get("GRAFANA_DATABASE_SECRET_NAME", "grafana-database").strip() or "grafana-database")}"""
+    managed_roles_block = cnpg_managed_database_roles_block()
 
     return f"""apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -3511,15 +3682,7 @@ spec:
     serverTLSSecret: {yaml_string(name + "-server-tls")}
   managed:
     roles:
-      - name: keycloak
-        ensure: present
-        login: true
-        superuser: false
-        passwordSecret:
-          name: {yaml_string(os.environ.get("KEYCLOAK_DATABASE_SECRET_NAME", "keycloak-database").strip() or "keycloak-database")}
-{woodpecker_role_block}
-{harbor_role_block}
-{grafana_role_block}
+{managed_roles_block}
   bootstrap:
     initdb:
       database: {yaml_string(app_database)}
@@ -3925,6 +4088,11 @@ def main() -> int:
         help="Refresh only Forgejo's reviewed image pin without rendering private dependencies.",
     )
     parser.add_argument(
+        "--refresh-cnpg-database-roles",
+        action="store_true",
+        help="Refresh required CloudNativePG managed roles without re-rendering private storage or backups.",
+    )
+    parser.add_argument(
         "--woodpecker-values",
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"),
@@ -4172,6 +4340,13 @@ def main() -> int:
     ):
         changed.append(str(args.forgejo_values))
 
+    if (
+        args.refresh_cnpg_database_roles
+        and args.cnpg_postgres_cluster.exists()
+        and refresh_cnpg_managed_database_roles(args.cnpg_postgres_cluster)
+    ):
+        changed.append(str(args.cnpg_postgres_cluster))
+
     if not args.skip_forgejo and render_forgejo(args.forgejo_values, inventory):
         if str(args.forgejo_values) in changed:
             changed.remove(str(args.forgejo_values))
@@ -4216,6 +4391,8 @@ def main() -> int:
         and cnpg_render_mode in {"1", "true", "yes", "bootstrap"}
         and render_cnpg_postgres_cluster(args.cnpg_postgres_cluster)
     ):
+        if str(args.cnpg_postgres_cluster) in changed:
+            changed.remove(str(args.cnpg_postgres_cluster))
         changed.append(str(args.cnpg_postgres_cluster))
 
     if (

@@ -130,9 +130,11 @@ environment instead of the default `auto` detection.
 The focused reconciliation renders Woodpecker values and shared policy
 artifacts. It leaves private Forgejo configuration, Longhorn, Harbor, backup,
 and monitoring values unchanged, apart from refreshing Forgejo's reviewed image
-pin. A missing unrelated S3 endpoint therefore cannot block a Woodpecker repair.
-Configure those production values before running their own deployment or health
-gates.
+pin and the shared CloudNativePG managed roles required by enabled platform
+databases. The role refresh preserves private PostgreSQL storage, backup,
+metadata, and extra roles. A missing unrelated S3 endpoint therefore cannot
+block a Woodpecker repair. Configure those production values before running
+their own deployment or health gates.
 
 When the selected private seed base and current public source both changed a
 known premium rendered artifact, focused reconciliation performs a three-way
@@ -140,7 +142,9 @@ merge that keeps the private side only for overlapping conflict hunks. Public
 updates outside those hunks, including reviewed release pins, remain in the
 merged artifact before the focused Woodpecker outputs are rendered. This
 prevents public placeholders from replacing private hostnames or storage
-settings without freezing unrelated production updates. A conflict in any file
+settings without freezing unrelated production updates. Required shared
+database roles are then reconciled structurally, so an older private PostgreSQL
+block cannot omit a newly enabled Harbor or Grafana role. A conflict in any file
 outside the renderer's exact output allowlist still stops before the seed remote
 is changed and must be reconciled manually.
 
