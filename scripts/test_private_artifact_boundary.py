@@ -120,13 +120,6 @@ def check_woodpecker_seed_isolation() -> list[str]:
         problems.append(
             "Woodpecker seed reconciliation is missing focused static secret-contract validation"
         )
-    if (
-        "validation_scope=private-seed" not in seed_sync_text
-        or 'PLATFORM_VALIDATION_SCOPE="${validation_scope}"' not in seed_sync_text
-    ):
-        problems.append(
-            "Woodpecker seed reconciliation is missing rendered private-seed validation scope"
-        )
     for unsafe_override in (
         "PLATFORM_WOODPECKER_REPAIR_SYNC_PULL",
         "PLATFORM_WOODPECKER_REPAIR_SYNC_PUSH_ORIGIN",

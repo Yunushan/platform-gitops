@@ -117,25 +117,6 @@ def test_no_secrets_selection() -> None:
         fail("selected_scripts(True) must skip only validate_no_secrets.py")
 
 
-def test_private_seed_selection() -> None:
-    full = run_validation.selected_scripts(skip_no_secrets=False, scope="source")
-    private_seed = run_validation.selected_scripts(
-        skip_no_secrets=False,
-        scope="private-seed",
-    )
-    expected = [
-        script
-        for script in full
-        if script not in run_validation.PRIVATE_SEED_EXCLUDED_SCRIPTS
-    ]
-    if private_seed != expected:
-        fail("private-seed validation must exclude only source-template contracts")
-    if "scripts/validate_platform_contract.py" in private_seed:
-        fail("private-seed validation must not require public template placeholders")
-    if "scripts/validate_no_secrets.py" not in private_seed:
-        fail("private-seed validation must retain the final private-data scan")
-
-
 def test_env_flag() -> None:
     old_value = os.environ.get("PLATFORM_RUN_NO_SECRETS")
     try:
@@ -201,7 +182,6 @@ def test_run_script_timeout() -> None:
 def test_main_list_mode() -> None:
     with (
         mock.patch.object(sys, "argv", ["run_validation.py", "--list"]),
-        mock.patch.dict(os.environ, {"PLATFORM_VALIDATION_SCOPE": "source"}),
         mock.patch("run_validation.run_script") as run_mock,
         redirect_stdout(StringIO()) as stdout,
     ):
@@ -234,7 +214,6 @@ def test_main_stops_on_first_failure() -> None:
 def main() -> int:
     test_validation_script_list()
     test_no_secrets_selection()
-    test_private_seed_selection()
     test_env_flag()
     test_run_script_environment()
     test_run_script_timeout()

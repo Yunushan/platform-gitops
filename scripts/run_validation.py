@@ -112,16 +112,6 @@ VALIDATION_SCRIPTS = (
     "scripts/validate_platform_contract.py",
     "scripts/validate_no_secrets.py",
 )
-PRIVATE_SEED_EXCLUDED_SCRIPTS = frozenset(
-    {
-        # Rendered private values intentionally replace public template
-        # placeholders, so the source-template contract is not applicable.
-        "scripts/validate_platform_contract.py",
-    }
-)
-VALIDATION_SCOPES = frozenset({"source", "private-seed"})
-
-
 def env_flag(name: str, default: bool = True) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -129,22 +119,8 @@ def env_flag(name: str, default: bool = True) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def validation_scope() -> str:
-    scope = os.environ.get("PLATFORM_VALIDATION_SCOPE", "source").strip().lower() or "source"
-    if scope not in VALIDATION_SCOPES:
-        raise ValueError(
-            "PLATFORM_VALIDATION_SCOPE must be one of: "
-            + ", ".join(sorted(VALIDATION_SCOPES))
-        )
-    return scope
-
-
-def selected_scripts(skip_no_secrets: bool, scope: str = "source") -> list[str]:
-    if scope not in VALIDATION_SCOPES:
-        raise ValueError(f"unknown validation scope: {scope}")
+def selected_scripts(skip_no_secrets: bool) -> list[str]:
     scripts = list(VALIDATION_SCRIPTS)
-    if scope == "private-seed":
-        scripts = [script for script in scripts if script not in PRIVATE_SEED_EXCLUDED_SCRIPTS]
     if skip_no_secrets:
         scripts = [script for script in scripts if script != "scripts/validate_no_secrets.py"]
     return scripts
@@ -191,12 +167,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     skip_no_secrets = args.skip_no_secrets or not env_flag("PLATFORM_RUN_NO_SECRETS", True)
-    try:
-        scope = validation_scope()
-        scripts = selected_scripts(skip_no_secrets, scope)
-    except ValueError as exc:
-        print(f"Validation scope configuration failed: {exc}", file=sys.stderr)
-        return 2
+    scripts = selected_scripts(skip_no_secrets)
     if args.list:
         for script in scripts:
             print(script)
