@@ -90,9 +90,10 @@ def check_woodpecker_seed_isolation() -> list[str]:
         'PLATFORM_SEED_GIT_EXPECTED_HEAD="${seed_destination_head:-absent}"': "a race-safe destination seed lease",
         'git -C "${seed_checkout}" merge --no-edit "${source_head}"': "public source reconciliation on the private seed base",
         "diff --name-only --diff-filter=U -z": "exact merge-conflict discovery",
-        "private_seed_conflict=preserve-seed": "bounded private render conflict recovery",
+        "private_seed_conflict=preserve-seed-hunks": "bounded private render conflict recovery",
         "outside-rendered-private-boundary": "fail-closed source conflict handling",
         KNOWN_RENDERED_CONFLICT_PATH: "an explicit rendered-output conflict boundary",
+        "git merge-file --ours --stdout": "three-way conflict-hunk preservation",
         'git -C "${seed_checkout}" commit --no-edit': "an isolated resolved merge commit",
         'cd "${seed_checkout}"': "execution inside the isolated checkout",
     }
@@ -154,7 +155,13 @@ def check_woodpecker_seed_behavior() -> list[str]:
         )
         (repo / "tracked.txt").write_text("public template\n", encoding="utf-8", newline="\n")
         rendered_conflict.write_text(
-            "shared public baseline\n",
+            'privateHost: shared-public-baseline\n'
+            'stableOne: unchanged\n'
+            'stableTwo: unchanged\n'
+            'stableThree: unchanged\n'
+            'stableFour: unchanged\n'
+            'stableFive: unchanged\n'
+            'imageTag: "14.0.0"\n',
             encoding="utf-8",
             newline="\n",
         )
@@ -187,7 +194,8 @@ test "$(git config user.email)" = "test@example.test"
 test "$(git config --bool commit.gpgSign)" = "false"
 test "$(cat private-state.txt)" = "retained private platform values"
 test "$(cat public-change.txt)" = "new public repair code"
-test "$(cat gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml)" = "retained private forgejo values"
+grep -Fx 'privateHost: retained-private-forgejo' gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml
+grep -Fx 'imageTag: "15.0.6"' gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml
 pwd -P > "${TEST_MARKER}"
 printf '%s\n' 'private deployment render' >> tracked.txt
 git add tracked.txt
@@ -234,7 +242,13 @@ git commit --quiet -m isolated-render
             newline="\n",
         )
         (seed_repo / KNOWN_RENDERED_CONFLICT_PATH).write_text(
-            "retained private forgejo values\n",
+            'privateHost: retained-private-forgejo\n'
+            'stableOne: unchanged\n'
+            'stableTwo: unchanged\n'
+            'stableThree: unchanged\n'
+            'stableFour: unchanged\n'
+            'stableFive: unchanged\n'
+            'imageTag: "14.0.0"\n',
             encoding="utf-8",
             newline="\n",
         )
@@ -263,7 +277,13 @@ git commit --quiet -m isolated-render
             newline="\n",
         )
         rendered_conflict.write_text(
-            "new public forgejo defaults\n",
+            'privateHost: new-public-placeholder\n'
+            'stableOne: unchanged\n'
+            'stableTwo: unchanged\n'
+            'stableThree: unchanged\n'
+            'stableFour: unchanged\n'
+            'stableFive: unchanged\n'
+            'imageTag: "15.0.6"\n',
             encoding="utf-8",
             newline="\n",
         )
@@ -310,10 +330,13 @@ git commit --quiet -m isolated-render
         if "woodpecker_gitops_source_sync=synced" not in result.stdout:
             problems.append("Woodpecker seed reconciliation did not report successful isolated sync")
         if (
-            f"private_seed_conflict=preserve-seed path={KNOWN_RENDERED_CONFLICT_PATH}"
+            f"private_seed_conflict=preserve-seed-hunks path={KNOWN_RENDERED_CONFLICT_PATH}"
             not in result.stdout
         ):
-            problems.append("Woodpecker seed reconciliation did not preserve a known private render conflict")
+            problems.append(
+                "Woodpecker seed reconciliation did not preserve private conflict hunks "
+                "while accepting public updates"
+            )
 
         unsafe_branch = run_git(seed_repo, "checkout", "--quiet", "-b", "unsafe-recovery", source_base)
         if unsafe_branch.returncode != 0:

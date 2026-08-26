@@ -196,14 +196,55 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
       exit 2
     fi
 
+    merge_input_root="${temporary_root}/merge-inputs"
+    mkdir -p "${merge_input_root}"
+    conflict_index=0
     for conflict_path in "${conflict_paths[@]}"; do
-      if git -C "${seed_checkout}" cat-file -e ":2:${conflict_path}" 2>/dev/null; then
-        git -C "${seed_checkout}" checkout --ours -- "${conflict_path}"
-        git -C "${seed_checkout}" add -- "${conflict_path}"
-      else
+      conflict_index=$((conflict_index + 1))
+      base_file="${merge_input_root}/${conflict_index}.base"
+      ours_file="${merge_input_root}/${conflict_index}.ours"
+      theirs_file="${merge_input_root}/${conflict_index}.theirs"
+      merged_file="${merge_input_root}/${conflict_index}.merged"
+
+      if ! git -C "${seed_checkout}" cat-file -e ":2:${conflict_path}" 2>/dev/null; then
         git -C "${seed_checkout}" rm --quiet --force --ignore-unmatch -- "${conflict_path}"
+        printf 'private_seed_conflict=preserve-seed-deletion path=%s\n' "${conflict_path}"
+        continue
       fi
-      printf 'private_seed_conflict=preserve-seed path=%s\n' "${conflict_path}"
+
+      git -C "${seed_checkout}" cat-file blob ":2:${conflict_path}" >"${ours_file}"
+      if git -C "${seed_checkout}" cat-file -e ":1:${conflict_path}" 2>/dev/null; then
+        git -C "${seed_checkout}" cat-file blob ":1:${conflict_path}" >"${base_file}"
+      else
+        : >"${base_file}"
+      fi
+      if git -C "${seed_checkout}" cat-file -e ":3:${conflict_path}" 2>/dev/null; then
+        git -C "${seed_checkout}" cat-file blob ":3:${conflict_path}" >"${theirs_file}"
+      else
+        : >"${theirs_file}"
+      fi
+
+      set +e
+      git merge-file --ours --stdout \
+        "${ours_file}" "${base_file}" "${theirs_file}" >"${merged_file}"
+      merge_file_rc=$?
+      set -e
+      if (( merge_file_rc > 127 )); then
+        git -C "${seed_checkout}" merge --abort >/dev/null 2>&1 || true
+        echo "Could not three-way merge known private rendered output ${conflict_path}." >&2
+        echo "No source or seed remote was changed; inspect the private seed base, then rerun." >&2
+        exit 2
+      fi
+      if grep -Eq '^(<<<<<<<|=======|>>>>>>>)' "${merged_file}"; then
+        git -C "${seed_checkout}" merge --abort >/dev/null 2>&1 || true
+        echo "Three-way merge left conflict markers in known private output ${conflict_path}." >&2
+        echo "No source or seed remote was changed; inspect the private seed base, then rerun." >&2
+        exit 2
+      fi
+
+      cp -- "${merged_file}" "${seed_checkout}/${conflict_path}"
+      git -C "${seed_checkout}" add -- "${conflict_path}"
+      printf 'private_seed_conflict=preserve-seed-hunks path=%s\n' "${conflict_path}"
     done
 
     unresolved_conflicts=()
@@ -217,7 +258,7 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
       exit 2
     fi
     git -C "${seed_checkout}" commit --no-edit
-    echo "Private seed merge retained known rendered private outputs and accepted public source elsewhere."
+    echo "Private seed merge retained private conflict hunks and accepted public updates elsewhere."
   fi
   echo "Private seed base preserved: ${seed_base_ref} (${seed_base_head})."
 elif [[ "${allow_empty_seed}" == "true" ]]; then

@@ -127,19 +127,22 @@ could revert. Source-remote pull and push remain disabled for this focused
 reconciliation. Set `PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=false` only when an
 external process owns the Argo CD source; use `true` to require the private seed
 environment instead of the default `auto` detection.
-The focused reconciliation renders only Woodpecker values and shared policy
-artifacts. It intentionally leaves Forgejo, Longhorn, Harbor, backup, and
-monitoring values unchanged, so a missing unrelated S3 endpoint cannot block a
-Woodpecker repair. Configure those production values before running their own
-deployment or health gates.
+The focused reconciliation renders Woodpecker values and shared policy
+artifacts. It leaves private Forgejo configuration, Longhorn, Harbor, backup,
+and monitoring values unchanged, apart from refreshing Forgejo's reviewed image
+pin. A missing unrelated S3 endpoint therefore cannot block a Woodpecker repair.
+Configure those production values before running their own deployment or health
+gates.
 
 When the selected private seed base and current public source both changed a
-known premium rendered artifact, focused reconciliation keeps the private seed
-version for that artifact, merges public code everywhere else, and then
-rerenders the focused Woodpecker outputs. This prevents public placeholders
-from replacing private hostnames or storage settings during recovery. A conflict
-in any file outside the renderer's exact output allowlist still stops before the
-seed remote is changed and must be reconciled manually.
+known premium rendered artifact, focused reconciliation performs a three-way
+merge that keeps the private side only for overlapping conflict hunks. Public
+updates outside those hunks, including reviewed release pins, remain in the
+merged artifact before the focused Woodpecker outputs are rendered. This
+prevents public placeholders from replacing private hostnames or storage
+settings without freezing unrelated production updates. A conflict in any file
+outside the renderer's exact output allowlist still stops before the seed remote
+is changed and must be reconciled manually.
 
 The premium renderer does not use the chart-generated
 `woodpecker-default-agent-secret`. That chart secret depends on random Helm

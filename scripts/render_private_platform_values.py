@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
+from strict_yaml import StrictYamlError, loads_strict_yaml_all
 
 
 INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"
@@ -1303,6 +1304,59 @@ def forgejo_image_block(image_tag: str) -> str:
     return f"""image:
   rootless: true
 {tag_line}"""
+
+
+def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
+    """Refresh only Forgejo's reviewed image pin in an existing private render."""
+    text = read_bounded_text(path, encoding="utf-8")
+    try:
+        documents = loads_strict_yaml_all(text)
+    except StrictYamlError as exc:
+        raise SystemExit(f"cannot refresh Forgejo image pin in invalid YAML {path}: {exc}") from exc
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        raise SystemExit(f"expected one Forgejo values mapping in {path}")
+    image = documents[0].get("image")
+    if not isinstance(image, dict) or not isinstance(image.get("tag"), str):
+        raise SystemExit(f"expected Forgejo image.tag in {path}")
+    if image["tag"] == FORGEJO_DEFAULT_IMAGE_TAG:
+        return False
+
+    lines = text.splitlines(keepends=True)
+    image_blocks = [
+        index
+        for index, line in enumerate(lines)
+        if line.rstrip("\r\n") == "image:"
+    ]
+    if len(image_blocks) != 1:
+        raise SystemExit(f"expected exactly one top-level Forgejo image block in {path}")
+
+    tag_lines: list[int] = []
+    for index in range(image_blocks[0] + 1, len(lines)):
+        stripped_newline = lines[index].rstrip("\r\n")
+        if (
+            stripped_newline
+            and not stripped_newline[0].isspace()
+            and not stripped_newline.startswith("#")
+        ):
+            break
+        if re.match(r"^  tag:\s*", stripped_newline):
+            tag_lines.append(index)
+    if len(tag_lines) != 1:
+        raise SystemExit(f"expected exactly one Forgejo image.tag scalar in {path}")
+
+    tag_index = tag_lines[0]
+    newline = "\r\n" if lines[tag_index].endswith("\r\n") else "\n"
+    lines[tag_index] = f"  tag: {yaml_string(FORGEJO_DEFAULT_IMAGE_TAG)}{newline}"
+    rendered = "".join(lines)
+    try:
+        rendered_documents = loads_strict_yaml_all(rendered)
+    except StrictYamlError as exc:
+        raise SystemExit(f"refreshed Forgejo values are invalid YAML in {path}: {exc}") from exc
+    rendered_image = rendered_documents[0].get("image")
+    if not isinstance(rendered_image, dict) or rendered_image.get("tag") != FORGEJO_DEFAULT_IMAGE_TAG:
+        raise SystemExit(f"failed to refresh Forgejo image.tag in {path}")
+    atomic_write_text(path, rendered)
+    return True
 
 
 def forgejo_bootstrap_values(host: str, data_size: str, storage_class: str, image_tag: str) -> str:
@@ -3866,6 +3920,11 @@ def main() -> int:
         help="Leave Forgejo values unchanged; useful for focused Woodpecker reconciliation.",
     )
     parser.add_argument(
+        "--refresh-forgejo-release-pin",
+        action="store_true",
+        help="Refresh only Forgejo's reviewed image pin without rendering private dependencies.",
+    )
+    parser.add_argument(
         "--woodpecker-values",
         type=Path,
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"),
@@ -4107,7 +4166,15 @@ def main() -> int:
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
         changed.append(str(args.argocd_values))
 
+    if (
+        args.refresh_forgejo_release_pin
+        and refresh_forgejo_reviewed_image_pin(args.forgejo_values)
+    ):
+        changed.append(str(args.forgejo_values))
+
     if not args.skip_forgejo and render_forgejo(args.forgejo_values, inventory):
+        if str(args.forgejo_values) in changed:
+            changed.remove(str(args.forgejo_values))
         changed.append(str(args.forgejo_values))
 
     if not args.skip_longhorn and args.longhorn_values.exists():
