@@ -137,8 +137,15 @@ databases and restores missing `serverCASecret` and `serverTLSSecret` references
 from the existing matching cert-manager `Certificate`. This bounded refresh
 preserves private PostgreSQL storage, backup, metadata, certificate names,
 distinct CA/leaf secret semantics, extra roles, and unrelated Forgejo keys. It
-fails closed when Forgejo is not PostgreSQL-backed or when a database TLS
-reference is missing and no matching Certificate can supply it.
+leaves an explicitly configured SQLite (`sqlite3`), MySQL (`mysql`), or MSSQL
+(`mssql`) Forgejo backend
+unchanged and logs that the PostgreSQL-only trust refresh was skipped. It still
+fails closed when opaque configuration sources prevent the effective database
+type from being verified, or when a PostgreSQL TLS reference is missing and no
+matching Certificate can supply it. This focused repair never migrates Forgejo
+data between database engines. SQLite remains a lab-only mode; move it through a
+separate, backup-tested database migration before declaring the premium profile
+production ready.
 During this focused run, static rendered-value secret
 validation is limited to Woodpecker; all generated secret contracts, renderer
 and playbook checks, schema validation, security checks, and private-data

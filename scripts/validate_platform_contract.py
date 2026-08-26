@@ -15,6 +15,10 @@ import tempfile
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
 from cleanup_firewalld_cni_interfaces import cleanup_zone_file
+from forgejo_database_contract import (
+    FORGEJO_NON_POSTGRES_DATABASE_TYPES,
+    effective_forgejo_database_type,
+)
 
 root = Path(__file__).resolve().parents[1]
 SOURCE_PATH_RE = re.compile(
@@ -581,16 +585,26 @@ def rendered_optional_sqlite_woodpecker_contract(text: str, needle: str) -> bool
 def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
     if not is_private_rendered(text) or "Forgejo" not in text:
         return False
-    sqlite_mode = "DB_TYPE: sqlite3" in canonical_contract_text(text)
+    database_type = effective_forgejo_database_type(text)
+    sqlite_mode = database_type == "sqlite3"
+    if database_type in FORGEJO_NON_POSTGRES_DATABASE_TYPES and needle in {
+        "DB_TYPE: postgres",
+        "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
+        "SSL_MODE: verify-full",
+        "name: platform-postgres-ca",
+        "mountPath: /data/gitea/git/.postgresql",
+    }:
+        return True
     if sqlite_mode and needle in {
         "additionalConfigFromEnvs:",
         "GITEA__database__PASSWD",
         "name: forgejo-database",
-        "DB_TYPE: postgres",
-        "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
         "NAME: forgejo",
         "USER: forgejo",
-        "SSL_MODE: verify-full",
+        "name: platform-internal-roots",
+        "name: SSL_CERT_FILE",
+        "value: /etc/ssl/platform/ca-certificates.crt",
+        "mountPath: /etc/ssl/platform",
         "PROVIDER: db",
     }:
         return True
