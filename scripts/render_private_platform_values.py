@@ -17,6 +17,7 @@ import yaml
 
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
+from forgejo_database_contract import FORGEJO_NON_POSTGRES_DATABASE_TYPES
 from strict_yaml import StrictYamlError, loads_strict_yaml_all
 
 
@@ -1497,7 +1498,7 @@ def refresh_forgejo_postgres_tls(path: Path) -> bool:
         effective_database_type = database_type
 
     if effective_database_type and effective_database_type not in {"postgres", "postgresql"}:
-        if effective_database_type in {"sqlite", "sqlite3", "mysql", "mariadb"}:
+        if effective_database_type in FORGEJO_NON_POSTGRES_DATABASE_TYPES:
             print(
                 "forgejo_postgres_tls=skipped "
                 f"database_type={effective_database_type} "

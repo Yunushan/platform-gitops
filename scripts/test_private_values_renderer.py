@@ -424,6 +424,41 @@ gitea:
         if sqlite_path.read_text(encoding="utf-8") != sqlite_before:
             raise AssertionError("Forgejo SQLite preservation changed the private values file")
 
+        mssql_path = write(
+            root / "mssql.yaml",
+            """gitea:
+  config:
+    database:
+      DB_TYPE: mssql
+      HOST: mssql.private.example.test:1433
+""",
+        )
+        mssql_before = mssql_path.read_text(encoding="utf-8")
+        if renderer.refresh_forgejo_postgres_tls(mssql_path):
+            raise AssertionError("Forgejo TLS refresh changed the MSSQL backend")
+        if mssql_path.read_text(encoding="utf-8") != mssql_before:
+            raise AssertionError("Forgejo MSSQL preservation changed the private values file")
+
+        for unsupported_alias in ("sqlite", "mariadb"):
+            alias_path = write(
+                root / f"{unsupported_alias}-alias.yaml",
+                f"""gitea:
+  config:
+    database:
+      DB_TYPE: {unsupported_alias}
+""",
+            )
+            alias_before = alias_path.read_text(encoding="utf-8")
+            try:
+                renderer.refresh_forgejo_postgres_tls(alias_path)
+            except SystemExit as exc:
+                if "unsupported database type" not in str(exc):
+                    raise AssertionError(f"unexpected Forgejo alias error: {exc}") from exc
+            else:
+                raise AssertionError(f"Forgejo TLS refresh accepted DB_TYPE alias {unsupported_alias}")
+            if alias_path.read_text(encoding="utf-8") != alias_before:
+                raise AssertionError(f"rejected Forgejo DB_TYPE alias {unsupported_alias} changed values")
+
         opaque_path = write(
             root / "opaque.yaml",
             """gitea:

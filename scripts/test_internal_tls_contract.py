@@ -6,12 +6,16 @@ from __future__ import annotations
 import functools
 import http.server
 import os
-import re
 import shutil
 import subprocess
 import tempfile
 import threading
 from pathlib import Path
+
+from forgejo_database_contract import (
+    FORGEJO_NON_POSTGRES_DATABASE_TYPES,
+    effective_forgejo_database_type,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,10 +53,7 @@ def forgejo_postgres_tls_required(text: str) -> bool:
     """Keep the public contract strict while accepting rendered non-PostgreSQL profiles."""
     if "Forgejo" not in text or "rendered by scripts/render_private_platform_values.py" not in text:
         return True
-    return re.search(
-        r"(?im)^\s*DB_TYPE:\s*['\"]?(?:sqlite3?|mysql|mariadb)['\"]?\s*(?:#.*)?$",
-        text,
-    ) is None
+    return effective_forgejo_database_type(text) not in FORGEJO_NON_POSTGRES_DATABASE_TYPES
 
 
 def run_command(
@@ -323,7 +324,7 @@ def test_public_tls_chain_completion() -> None:
 
 def main() -> int:
     rendered_marker = "rendered by scripts/render_private_platform_values.py"
-    for database_type in ("sqlite3", "mysql"):
+    for database_type in sorted(FORGEJO_NON_POSTGRES_DATABASE_TYPES):
         rendered_non_postgres = (
             f"# Forgejo profile {rendered_marker}.\n"
             f"    DB_TYPE: {database_type}\n"
@@ -338,6 +339,47 @@ def main() -> int:
         f"# Forgejo profile {rendered_marker}.\n    DB_TYPE: postgres\n"
     ):
         raise AssertionError("rendered Forgejo PostgreSQL profile must retain its TLS contract")
+    modern_mysql_override = f"""# Forgejo profile {rendered_marker}.
+gitea:
+  additionalConfigFromEnvs:
+    - name: FORGEJO__DATABASE__DB_TYPE
+      value: mysql
+  config:
+    database:
+      DB_TYPE: postgres
+"""
+    if forgejo_postgres_tls_required(modern_mysql_override):
+        raise AssertionError("modern Forgejo MySQL override did not win database precedence")
+    legacy_mysql_override = modern_mysql_override.replace(
+        "FORGEJO__DATABASE__DB_TYPE",
+        "GITEA__database__DB_TYPE",
+    )
+    if forgejo_postgres_tls_required(legacy_mysql_override):
+        raise AssertionError("legacy Forgejo MySQL override did not win database precedence")
+    modern_postgres_override = modern_mysql_override.replace("value: mysql", "value: postgres").replace(
+        "DB_TYPE: postgres",
+        "DB_TYPE: mysql",
+    )
+    if not forgejo_postgres_tls_required(modern_postgres_override):
+        raise AssertionError("modern Forgejo PostgreSQL override did not win database precedence")
+    opaque_sqlite_source = f"""# Forgejo profile {rendered_marker}.
+gitea:
+  additionalConfigSources:
+    - secret:
+        secretName: forgejo-database
+  config:
+    database:
+      DB_TYPE: sqlite3
+"""
+    if not forgejo_postgres_tls_required(opaque_sqlite_source):
+        raise AssertionError("opaque Forgejo database source bypassed PostgreSQL TLS validation")
+    for unsupported_alias in ("sqlite", "mariadb"):
+        rendered_alias = (
+            f"# Forgejo profile {rendered_marker}.\n"
+            f"    DB_TYPE: {unsupported_alias}\n"
+        )
+        if not forgejo_postgres_tls_required(rendered_alias):
+            raise AssertionError(f"unsupported Forgejo DB_TYPE alias {unsupported_alias} was accepted")
 
     cert_manager_kustomization = read(PREMIUM / "cert-manager/kustomization.yaml")
     internal_ca = read(PREMIUM / "cert-manager/internal-ca.yaml")

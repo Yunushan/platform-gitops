@@ -137,7 +137,8 @@ databases and restores missing `serverCASecret` and `serverTLSSecret` references
 from the existing matching cert-manager `Certificate`. This bounded refresh
 preserves private PostgreSQL storage, backup, metadata, certificate names,
 distinct CA/leaf secret semantics, extra roles, and unrelated Forgejo keys. It
-leaves an explicitly configured SQLite or MySQL/MariaDB Forgejo backend
+leaves an explicitly configured SQLite (`sqlite3`), MySQL (`mysql`), or MSSQL
+(`mssql`) Forgejo backend
 unchanged and logs that the PostgreSQL-only trust refresh was skipped. It still
 fails closed when opaque configuration sources prevent the effective database
 type from being verified, or when a PostgreSQL TLS reference is missing and no
