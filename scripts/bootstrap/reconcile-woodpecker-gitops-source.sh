@@ -43,6 +43,72 @@ if [[ ! -f "${inventory_file}" ]]; then
   exit 2
 fi
 
+# Load only through the repository's strict KEY=value parser. Seed transport
+# overrides may live beside the private render inputs.
+# shellcheck source=scripts/bootstrap/load-env-file.sh
+. "${source_root}/scripts/bootstrap/load-env-file.sh"
+load_env_file "${env_file_path}" preserve-existing
+deploy_branch="${PLATFORM_DEPLOY_BRANCH:-main}"
+
+resolve_seed_base_url() {
+  local first_server_line first_server_name seed_push_host seed_push_user seed_user_prefix
+  local seed_git_root seed_git_repo_name
+
+  first_server_line="$(
+    awk '
+      /^\[rke2_servers\]$/ { in_group=1; next }
+      /^\[/ { in_group=0 }
+      in_group && $0 !~ /^[[:space:]]*(#|$)/ { print; exit }
+    ' "${inventory_file}"
+  )"
+  if [[ -z "${first_server_line}" ]]; then
+    echo "Could not find the first rke2_servers host in ${inventory_file}." >&2
+    return 1
+  fi
+
+  first_server_name="$(awk '{ print $1 }' <<<"${first_server_line}")"
+  seed_push_host="${PLATFORM_SEED_PUSH_HOST:-}"
+  seed_push_user="${PLATFORM_SEED_PUSH_USER:-}"
+  if [[ -z "${seed_push_host}" ]]; then
+    seed_push_host="$(
+      tr ' ' '\n' <<<"${first_server_line}" |
+        awk -F= '$1 == "ansible_host" { print $2; exit }'
+    )"
+  fi
+  if [[ -z "${seed_push_user}" ]]; then
+    seed_push_user="$(
+      tr ' ' '\n' <<<"${first_server_line}" |
+        awk -F= '$1 == "ansible_user" { print $2; exit }'
+    )"
+  fi
+
+  seed_push_host="${seed_push_host:-${first_server_name}}"
+  seed_user_prefix=""
+  if [[ -n "${seed_push_user}" ]]; then
+    seed_user_prefix="${seed_push_user}@"
+  fi
+  seed_git_root="${PLATFORM_SEED_GIT_ROOT:-/opt/platform/seed-git}"
+  seed_git_repo_name="${PLATFORM_SEED_GIT_REPO_NAME:-platform-gitops.git}"
+  printf 'ssh://%s%s%s/%s\n' \
+    "${seed_user_prefix}" "${seed_push_host}" "${seed_git_root}" "${seed_git_repo_name}"
+}
+
+seed_base_url="${PLATFORM_WOODPECKER_REPAIR_SEED_BASE_URL:-$(resolve_seed_base_url)}"
+seed_base_ref="${PLATFORM_WOODPECKER_REPAIR_SEED_BASE_REF:-refs/heads/${deploy_branch}}"
+allow_empty_seed="${PLATFORM_WOODPECKER_REPAIR_ALLOW_EMPTY_SEED:-false}"
+case "${allow_empty_seed}" in
+  true|false) ;;
+  *)
+    echo "PLATFORM_WOODPECKER_REPAIR_ALLOW_EMPTY_SEED must be true or false." >&2
+    exit 2
+    ;;
+esac
+if [[ ! "${seed_base_ref}" =~ ^refs/heads/[A-Za-z0-9._/-]+$ &&
+  ! "${seed_base_ref}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+  echo "PLATFORM_WOODPECKER_REPAIR_SEED_BASE_REF must be a full branch ref or commit SHA." >&2
+  exit 2
+fi
+
 umask 077
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/platform-woodpecker-seed.XXXXXX")"
 seed_checkout="${temporary_root}/repo"
@@ -56,12 +122,40 @@ cleanup() {
 trap cleanup EXIT
 
 git clone --quiet --no-hardlinks --no-checkout "${source_root}" "${seed_checkout}"
-git -C "${seed_checkout}" checkout --quiet --detach "${source_head}"
 seed_git_user_name="${PLATFORM_WOODPECKER_REPAIR_GIT_USER_NAME:-$(git -C "${source_root}" config user.name || true)}"
 seed_git_user_email="${PLATFORM_WOODPECKER_REPAIR_GIT_USER_EMAIL:-$(git -C "${source_root}" config user.email || true)}"
 git -C "${seed_checkout}" config user.name "${seed_git_user_name:-Platform GitOps Repair}"
 git -C "${seed_checkout}" config user.email "${seed_git_user_email:-platform-gitops-repair@localhost}"
 git -C "${seed_checkout}" config commit.gpgSign false
+
+seed_base_head=""
+seed_destination_head=""
+if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
+  "${seed_base_url}" "${seed_base_ref}"; then
+  seed_base_head="$(git -C "${seed_checkout}" rev-parse FETCH_HEAD)"
+  if ! seed_destination_refs="$(GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" ls-remote \
+    --heads "${seed_base_url}" "refs/heads/${deploy_branch}")"; then
+    echo "Could not inspect destination seed branch refs/heads/${deploy_branch} at ${seed_base_url}." >&2
+    exit 2
+  fi
+  seed_destination_head="$(awk '{ print $1; exit }' <<<"${seed_destination_refs}")"
+  git -C "${seed_checkout}" checkout --quiet --detach "${seed_base_head}"
+  if ! git -C "${seed_checkout}" merge --no-edit "${source_head}"; then
+    echo "The existing private seed branch conflicts with public source ${source_head}." >&2
+    echo "No source or seed remote was changed; reconcile the private seed base, then rerun." >&2
+    exit 2
+  fi
+  echo "Private seed base preserved: ${seed_base_ref} (${seed_base_head})."
+elif [[ "${allow_empty_seed}" == "true" ]]; then
+  git -C "${seed_checkout}" checkout --quiet --detach "${source_head}"
+  echo "Private seed base is absent; initializing from public source by explicit opt-in."
+else
+  echo "Could not fetch existing private seed base ${seed_base_ref} from ${seed_base_url}." >&2
+  echo "Focused reconciliation stopped to avoid replacing previously rendered private applications." >&2
+  echo "Set PLATFORM_WOODPECKER_REPAIR_ALLOW_EMPTY_SEED=true only for a confirmed empty seed repository." >&2
+  exit 2
+fi
+
 mkdir -p "${seed_checkout}/inventory"
 cp "${inventory_file}" "${seed_checkout}/inventory/hosts.local.ini"
 
@@ -71,6 +165,7 @@ echo "Reconciling rendered private Woodpecker values in an isolated temporary se
   PLATFORM_SEED_DEPLOY_ENV_FILE="${env_file_path}" \
   PLATFORM_SEED_SYNC_PULL=false \
   PLATFORM_SEED_SYNC_PUSH_ORIGIN=false \
+  PLATFORM_SEED_GIT_EXPECTED_HEAD="${seed_destination_head:-absent}" \
   PLATFORM_AUTO_RENDER_SCOPE=woodpecker \
   PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true \
   PLATFORM_AUTO_COMMIT=true \

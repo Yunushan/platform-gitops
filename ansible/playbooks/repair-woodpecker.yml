@@ -1948,15 +1948,93 @@
           echo "argocd_application_woodpecker=absent"
           exit 0
         fi
+        immutable_recovery_attempted=false
+        immutable_recovery_pending=false
+        immutable_recovery_previous_started_at=
+
+        recover_immutable_server_statefulset() {
+          diagnostics="$1"
+          if [ "${immutable_recovery_attempted}" = "true" ] ||
+            ! printf '%s' "${diagnostics}" | grep -Fq \
+              'StatefulSet.apps "woodpecker-server" is invalid: spec: Forbidden: updates to statefulset spec'; then
+            return 1
+          fi
+          immutable_recovery_attempted=true
+          immutable_recovery_previous_started_at="${operation_started_at:-}"
+
+          if ! "$K" --kubeconfig "$C" -n woodpecker get statefulset/woodpecker-server >/dev/null 2>&1; then
+            echo "woodpecker_statefulset_immutable_recovery=blocked reason=controller-absent pvc_policy=retain"
+            return 1
+          fi
+          pvc_retention="$($K --kubeconfig "$C" -n woodpecker get statefulset/woodpecker-server \
+            -o jsonpath='{.spec.persistentVolumeClaimRetentionPolicy.whenDeleted}' 2>/dev/null || true)"
+          if [ "${pvc_retention}" = "Delete" ]; then
+            echo "woodpecker_statefulset_immutable_recovery=blocked reason=pvc-retention-delete pvc_policy=retain"
+            return 1
+          fi
+
+          unsafe_pvc=false
+          retained_pvcs=0
+          while IFS='|' read -r pvc phase deleting; do
+            case "${pvc}" in
+              *-woodpecker-server-[0-9]*)
+                retained_pvcs=$((retained_pvcs + 1))
+                if [ "${phase}" != "Bound" ] || [ -n "${deleting}" ]; then
+                  echo "woodpecker_statefulset_immutable_recovery=blocked reason=pvc-not-stably-bound pvc=${pvc} phase=${phase:-unknown} pvc_policy=retain"
+                  unsafe_pvc=true
+                fi
+                ;;
+            esac
+          done < <("$K" --kubeconfig "$C" -n woodpecker get pvc \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.status.phase}{"|"}{.metadata.deletionTimestamp}{"\n"}{end}' \
+            2>/dev/null || true)
+          if [ "${unsafe_pvc}" = "true" ]; then
+            return 1
+          fi
+
+          "$K" --kubeconfig "$C" -n woodpecker delete statefulset/woodpecker-server \
+            --cascade=orphan --wait=true
+          "$K" --kubeconfig "$C" -n argocd annotate application/woodpecker \
+            argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+          revision="$($K --kubeconfig "$C" -n argocd get application/woodpecker \
+            -o jsonpath='{.spec.source.targetRevision}' 2>/dev/null || true)"
+          revision="${revision:-main}"
+          "$K" --kubeconfig "$C" -n argocd patch application/woodpecker --type merge \
+            -p "$(printf '{\"operation\":{\"sync\":{\"revision\":\"%s\",\"prune\":false}}}' "${revision}")" >/dev/null
+          immutable_recovery_pending=true
+          echo "woodpecker_statefulset_immutable_recovery=requested controller=woodpecker-server retained_pvcs=${retained_pvcs} pvc_policy=retain"
+          return 0
+        }
+
         deadline=$(( $(date +%s) + TIMEOUT ))
         while [ "$(date +%s)" -lt "${deadline}" ]; do
           sync_status="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
           health_status="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.status.health.status}' 2>/dev/null || true)"
           operation_phase="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.status.operationState.phase}' 2>/dev/null || true)"
+          operation_started_at="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.status.operationState.startedAt}' 2>/dev/null || true)"
+          operation_message="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{.status.operationState.message}' 2>/dev/null || true)"
           conditions="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{range .status.conditions[*]}{.type}{":"}{.message}{";"}{end}' 2>/dev/null || true)"
+          resource_messages="$("$K" --kubeconfig "$C" -n argocd get application/woodpecker -o jsonpath='{range .status.operationState.syncResult.resources[*]}{.kind}{"/"}{.name}{":"}{.message}{";"}{end}' 2>/dev/null || true)"
           echo "woodpecker sync=${sync_status:-unknown} health=${health_status:-unknown} operation=${operation_phase:-none} conditions=${conditions:-none}"
+          if [ "${immutable_recovery_pending}" = "true" ] &&
+            [ "${operation_started_at}" != "${immutable_recovery_previous_started_at}" ] &&
+            [ "${operation_phase}" != "Error" ] && [ "${operation_phase}" != "Failed" ]; then
+            immutable_recovery_pending=false
+            echo "woodpecker_statefulset_immutable_recovery=new-operation-observed startedAt=${operation_started_at:-unknown}"
+          fi
           case "${operation_phase}" in
             Error|Failed)
+              if recover_immutable_server_statefulset \
+                "${conditions};${operation_message};${resource_messages}"; then
+                sleep 5
+                continue
+              fi
+              if [ "${immutable_recovery_pending}" = "true" ] &&
+                [ "${operation_started_at}" = "${immutable_recovery_previous_started_at}" ]; then
+                echo "woodpecker_statefulset_immutable_recovery=waiting-for-new-operation stale_startedAt=${operation_started_at:-unknown}"
+                sleep 5
+                continue
+              fi
               exit 1
               ;;
           esac
@@ -1969,7 +2047,9 @@
       args:
         executable: /bin/bash
       register: platform_woodpecker_argocd_sync_wait
-      changed_when: false
+      changed_when: >-
+        'woodpecker_statefulset_immutable_recovery=requested' in
+        platform_woodpecker_argocd_sync_wait.stdout
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
@@ -2014,10 +2094,16 @@
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         namespace=woodpecker
+        POSTGRES_HOST=platform-postgres-rw.platform-databases.svc.cluster.local
         bundle_file="$(mktemp)"
-        trap 'rm -f "${bundle_file}"' EXIT
+        candidate_ca_file="$(mktemp)"
+        existing_bundle_file="$(mktemp)"
+        postgres_server_leaf_file="$(mktemp)"
+        trap 'rm -f "${bundle_file}" "${candidate_ca_file}" "${existing_bundle_file}" "${postgres_server_leaf_file}"' EXIT
         bundle_ready=false
         refresh_requested=false
+        stale_bundle_reported=false
+        active_server_tls_secret=
 
         # The declarative Bundle is preferred. During a partial bootstrap or
         # while Argo CD is still on an older revision, recover the target from
@@ -2078,6 +2164,10 @@
           if ! grep -q 'BEGIN CERTIFICATE' "${bundle_file}"; then
             return 1
           fi
+          if ! ca_file_verifies_active_postgres_server "${bundle_file}"; then
+            echo "woodpecker_postgres_ca_candidate=${source_label} verification=does-not-match-active-server"
+            return 1
+          fi
           if ! "$K" --kubeconfig "$C" -n "$namespace" create configmap platform-internal-roots \
             --from-file=ca-certificates.crt="${bundle_file}" \
             --dry-run=client -o yaml |
@@ -2096,31 +2186,100 @@
         materialize_bundle_data() {
           source_data="$1"
           source_label="$2"
-          if ! printf '%s' "${source_data}" | base64 -d > "${bundle_file}"; then
+          if ! printf '%s' "${source_data}" | base64 -d > "${candidate_ca_file}"; then
             return 1
           fi
+          : > "${bundle_file}"
+          if grep -q 'BEGIN CERTIFICATE' "${existing_bundle_file}"; then
+            cat "${existing_bundle_file}" >> "${bundle_file}"
+            printf '\n' >> "${bundle_file}"
+          fi
+          cat "${candidate_ca_file}" >> "${bundle_file}"
           materialize_bundle_file "${source_label}"
         }
 
         materialize_bundle_text() {
           source_text="$1"
           source_label="$2"
-          if ! printf '%s\n' "${source_text}" > "${bundle_file}"; then
-            return 1
+          : > "${bundle_file}"
+          if grep -q 'BEGIN CERTIFICATE' "${existing_bundle_file}"; then
+            cat "${existing_bundle_file}" >> "${bundle_file}"
+            printf '\n' >> "${bundle_file}"
           fi
+          printf '%s\n' "${source_text}" >> "${bundle_file}"
           materialize_bundle_file "${source_label}"
         }
 
+        postgres_server_tls_secret_candidates() {
+          status_secret="$($K --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.certificates.serverTLSSecret}' 2>/dev/null || true)"
+          configured_secret="$($K --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.spec.certificates.serverTLSSecret}' 2>/dev/null || true)"
+          {
+            printf '%s\n' \
+              "${status_secret}" \
+              "${configured_secret}" \
+              platform-postgres-server \
+              platform-postgres-server-tls
+            "$K" --kubeconfig "$C" -n platform-databases get secrets \
+              -l cnpg.io/cluster=platform-postgres \
+              -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
+          } | awk 'NF && !seen[$0]++'
+        }
+
+        load_active_postgres_server_leaf() {
+          if ! command -v openssl >/dev/null 2>&1; then
+            echo "woodpecker_postgres_ca_verification=unavailable reason=openssl-not-found"
+            return 1
+          fi
+          while IFS= read -r server_tls_secret; do
+            [ -n "${server_tls_secret}" ] || continue
+            server_data="$($K --kubeconfig "$C" -n platform-databases \
+              get "secret/${server_tls_secret}" \
+              -o jsonpath='{.data.tls\.crt}' 2>/dev/null || true)"
+            if [ -z "${server_data}" ] ||
+              ! printf '%s' "${server_data}" | base64 -d > "${postgres_server_leaf_file}" ||
+              ! openssl x509 -in "${postgres_server_leaf_file}" -noout >/dev/null 2>&1; then
+              continue
+            fi
+            hostname_check="$(openssl x509 -in "${postgres_server_leaf_file}" -noout \
+              -checkhost "${POSTGRES_HOST}" 2>&1 || true)"
+            if ! printf '%s\n' "${hostname_check}" | grep -Fq \
+              "Hostname ${POSTGRES_HOST} does match certificate"; then
+              continue
+            fi
+            active_server_tls_secret="${server_tls_secret}"
+            echo "woodpecker_postgres_active_server_certificate=platform-databases/${server_tls_secret}:tls.crt"
+            return 0
+          done < <(postgres_server_tls_secret_candidates)
+          return 1
+        }
+
+        ca_file_verifies_active_postgres_server() {
+          ca_file="$1"
+          [ -s "${postgres_server_leaf_file}" ] || return 1
+          grep -q 'BEGIN CERTIFICATE' "${ca_file}" || return 1
+          openssl verify -purpose sslserver -verify_hostname "${POSTGRES_HOST}" -CAfile "${ca_file}" \
+            "${postgres_server_leaf_file}" >/dev/null 2>&1
+        }
+
         postgres_ca_secret_candidates() {
+          status_secret="$($K --kubeconfig "$C" -n platform-databases \
+            get cluster.postgresql.cnpg.io/platform-postgres \
+            -o jsonpath='{.status.certificates.serverCASecret}' 2>/dev/null || true)"
           configured_secret="$($K --kubeconfig "$C" -n platform-databases \
             get cluster.postgresql.cnpg.io/platform-postgres \
             -o jsonpath='{.spec.certificates.serverCASecret}' 2>/dev/null || true)"
           {
             printf '%s\n' \
+              "${status_secret}" \
               "${configured_secret}" \
-              platform-postgres-server-tls \
               platform-postgres-ca \
-              platform-postgres-server
+              "${active_server_tls_secret}" \
+              platform-postgres-server \
+              platform-postgres-server-tls
             "$K" --kubeconfig "$C" -n platform-databases get secrets \
               -l cnpg.io/cluster=platform-postgres \
               -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true
@@ -2174,7 +2333,9 @@
             source_data="$($K --kubeconfig "$C" -n platform-databases \
               get "secret/${server_ca_secret}" \
               -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
-            if [ -n "${source_data}" ]; then
+            if [ -n "${source_data}" ] &&
+              printf '%s' "${source_data}" | base64 -d > "${candidate_ca_file}" &&
+              ca_file_verifies_active_postgres_server "${candidate_ca_file}"; then
               return 0
             fi
           done < <(postgres_ca_secret_candidates)
@@ -2189,12 +2350,26 @@
               -o go-template='{{ "{{" }} range $key, $_ := .data {{ "}}" }}{{ "{{" }} $key {{ "}}" }} {{ "{{" }} end {{ "}}" }}' \
               2>/dev/null || true)"
             if [ -n "${source_keys}" ]; then
-              echo "woodpecker_postgres_ca_candidate=platform-databases/${server_ca_secret} keys=${source_keys}"
+              source_data="$($K --kubeconfig "$C" -n platform-databases \
+                get "secret/${server_ca_secret}" \
+                -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+              verification=not-a-matching-ca
+              if [ -n "${source_data}" ] &&
+                printf '%s' "${source_data}" | base64 -d > "${candidate_ca_file}" &&
+                ca_file_verifies_active_postgres_server "${candidate_ca_file}"; then
+                verification=matches-active-server
+              fi
+              echo "woodpecker_postgres_ca_candidate=platform-databases/${server_ca_secret} keys=${source_keys} verification=${verification}"
             else
               echo "woodpecker_postgres_ca_candidate=platform-databases/${server_ca_secret} state=absent-or-empty"
             fi
           done < <(postgres_ca_secret_candidates)
         }
+
+        if ! load_active_postgres_server_leaf; then
+          echo "result=fail reason=woodpecker-postgres-active-server-certificate-missing"
+          exit 1
+        fi
 
         ensure_bundle_resource ||
           echo "woodpecker_postgres_ca_bundle_resource=reconcile-failed"
@@ -2205,9 +2380,15 @@
         for attempt in $(seq 1 18); do
           bundle_value="$($K --kubeconfig "$C" -n "$namespace" get configmap/platform-internal-roots \
             -o jsonpath='{.data.ca-certificates\.crt}' 2>/dev/null || true)"
-          if printf '%s' "${bundle_value}" | grep -q 'BEGIN CERTIFICATE'; then
+          if printf '%s\n' "${bundle_value}" > "${existing_bundle_file}" &&
+            ca_file_verifies_active_postgres_server "${existing_bundle_file}"; then
+            echo "woodpecker_postgres_ca_bundle=verified-against-active-server secret=${active_server_tls_secret}"
             bundle_ready=true
             break
+          elif printf '%s' "${bundle_value}" | grep -q 'BEGIN CERTIFICATE' &&
+            [ "${stale_bundle_reported}" != "true" ]; then
+              echo "woodpecker_postgres_ca_bundle=stale verification=does-not-match-active-server secret=${active_server_tls_secret}"
+              stale_bundle_reported=true
           fi
           if [ "${refresh_requested}" != "true" ]; then
             for application in cert-manager trust-manager; do
@@ -2232,12 +2413,10 @@
         if [ "${bundle_ready}" != "true" ]; then
           echo "woodpecker_postgres_ca_bundle=missing"
           print_postgres_ca_candidate_state
-          if postgres_server_ca_available ||
-            "$K" --kubeconfig "$C" -n cert-manager get secret/platform-internal-root-ca >/dev/null 2>&1 ||
-            "$K" --kubeconfig "$C" -n cert-manager get configmap/platform-internal-root-ca >/dev/null 2>&1; then
+          if postgres_server_ca_available; then
             echo "result=fail reason=woodpecker-postgres-ca-bundle-missing"
           else
-            echo "result=fail reason=woodpecker-postgres-ca-source-missing"
+            echo "result=fail reason=woodpecker-postgres-ca-source-does-not-verify-active-server"
           fi
           exit 1
         fi

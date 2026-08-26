@@ -438,11 +438,20 @@ def main() -> int:
         require(woodpecker, needle, "Woodpecker PostgreSQL TLS values")
     for needle in (
         "materialize_from_postgres_server_ca",
+        ".status.certificates.serverCASecret",
+        ".status.certificates.serverTLSSecret",
         "serverCASecret",
         "platform-postgres-server-tls",
         "platform-postgres-ca",
         "cnpg.io/cluster=platform-postgres",
         "woodpecker_postgres_ca_bundle=materialized-from-postgres-server-ca",
+        "load_active_postgres_server_leaf",
+        "ca_file_verifies_active_postgres_server",
+        "openssl verify -purpose sslserver",
+        '-verify_hostname "${POSTGRES_HOST}"',
+        "Hostname ${POSTGRES_HOST} does match certificate",
+        "verification=does-not-match-active-server",
+        "woodpecker_postgres_ca_bundle=verified-against-active-server",
         "materialize_from_cert_manager_root",
         "configmap/platform-internal-root-ca",
         "root-ca.pem",
@@ -456,6 +465,12 @@ def main() -> int:
         "verification=projected-volume-contract",
         "reason=container-probe-tool-unavailable",
         "pvc=retained",
+        "recover_immutable_server_statefulset",
+        "--cascade=orphan --wait=true",
+        "woodpecker_statefulset_immutable_recovery=requested",
+        "woodpecker_statefulset_immutable_recovery=waiting-for-new-operation",
+        "immutable_recovery_previous_started_at",
+        "pvc_policy=retain",
     ):
         require(woodpecker_repair, needle, "Woodpecker PostgreSQL CA recovery")
     forbid(
