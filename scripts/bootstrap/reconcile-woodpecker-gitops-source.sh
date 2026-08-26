@@ -95,6 +95,7 @@ resolve_seed_base_url() {
 
 seed_base_url="${PLATFORM_WOODPECKER_REPAIR_SEED_BASE_URL:-$(resolve_seed_base_url)}"
 seed_base_ref="${PLATFORM_WOODPECKER_REPAIR_SEED_BASE_REF:-refs/heads/${deploy_branch}}"
+repair_commit_message="${PLATFORM_WOODPECKER_REPAIR_COMMIT_MESSAGE:-Reconcile Woodpecker GitOps source}"
 allow_empty_seed="${PLATFORM_WOODPECKER_REPAIR_ALLOW_EMPTY_SEED:-false}"
 case "${allow_empty_seed}" in
   true|false) ;;
@@ -156,24 +157,74 @@ git -C "${seed_checkout}" config user.name "${seed_git_user_name:-Platform GitOp
 git -C "${seed_checkout}" config user.email "${seed_git_user_email:-platform-gitops-repair@localhost}"
 git -C "${seed_checkout}" config commit.gpgSign false
 
+seed_requested_base_head=""
 seed_base_head=""
 seed_destination_head=""
 if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
   "${seed_base_url}" "${seed_base_ref}"; then
-  seed_base_head="$(git -C "${seed_checkout}" rev-parse FETCH_HEAD)"
+  seed_requested_base_head="$(git -C "${seed_checkout}" rev-parse FETCH_HEAD)"
+  seed_base_head="${seed_requested_base_head}"
+  seed_base_selection="requested"
   if ! seed_destination_refs="$(GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" ls-remote \
     --heads "${seed_base_url}" "refs/heads/${deploy_branch}")"; then
     echo "Could not inspect destination seed branch refs/heads/${deploy_branch} at ${seed_base_url}." >&2
     exit 2
   fi
   seed_destination_head="$(awk '{ print $1; exit }' <<<"${seed_destination_refs}")"
+  if [[ -n "${seed_destination_head}" ]]; then
+    if ! GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
+      "${seed_base_url}" "refs/heads/${deploy_branch}"; then
+      echo "Could not fetch destination seed branch refs/heads/${deploy_branch} from ${seed_base_url}." >&2
+      exit 2
+    fi
+    fetched_destination_head="$(git -C "${seed_checkout}" rev-parse FETCH_HEAD)"
+    if [[ "${fetched_destination_head}" != "${seed_destination_head}" ]]; then
+      echo "Destination seed branch changed while its reconciliation base was selected; rerun safely." >&2
+      exit 2
+    fi
+
+    requested_source_base="$(
+      git -C "${seed_checkout}" merge-base "${seed_requested_base_head}" "${source_head}" 2>/dev/null || true
+    )"
+    destination_source_base="$(
+      git -C "${seed_checkout}" merge-base "${seed_destination_head}" "${source_head}" 2>/dev/null || true
+    )"
+    destination_has_repair_commit=false
+    if git -C "${seed_checkout}" log --format=%s \
+      "${seed_requested_base_head}..${seed_destination_head}" |
+      grep -Fqx -- "${repair_commit_message}"; then
+      destination_has_repair_commit=true
+    fi
+    if [[ "${seed_destination_head}" != "${seed_requested_base_head}" ]] &&
+      git -C "${seed_checkout}" merge-base --is-ancestor \
+        "${seed_requested_base_head}" "${seed_destination_head}" &&
+      [[ -n "${requested_source_base}" && -n "${destination_source_base}" ]] &&
+      {
+        [[ "${destination_has_repair_commit}" == "true" ]] ||
+          {
+            [[ "${destination_source_base}" != "${requested_source_base}" ]] &&
+              git -C "${seed_checkout}" merge-base --is-ancestor \
+                "${requested_source_base}" "${destination_source_base}"
+          }
+      }; then
+      seed_base_head="${seed_destination_head}"
+      seed_base_selection="destination-converged"
+    fi
+  fi
+
   git -C "${seed_checkout}" checkout --quiet --detach "${seed_base_head}"
-  if ! git -C "${seed_checkout}" merge --no-edit "${source_head}"; then
+  merge_log="${temporary_root}/seed-merge.log"
+  set +e
+  git -C "${seed_checkout}" merge --no-edit "${source_head}" >"${merge_log}" 2>&1
+  seed_merge_rc=$?
+  set -e
+  if (( seed_merge_rc != 0 )); then
     conflict_paths=()
     mapfile -d '' conflict_paths < <(
       git -C "${seed_checkout}" diff --name-only --diff-filter=U -z
     )
     if (( ${#conflict_paths[@]} == 0 )); then
+      cat "${merge_log}" >&2
       echo "The existing private seed merge failed without resolvable file conflicts." >&2
       echo "No source or seed remote was changed; inspect the private seed base, then rerun." >&2
       exit 2
@@ -199,6 +250,8 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
     merge_input_root="${temporary_root}/merge-inputs"
     mkdir -p "${merge_input_root}"
     conflict_index=0
+    preserved_deletions=0
+    preserved_hunks=0
     for conflict_path in "${conflict_paths[@]}"; do
       conflict_index=$((conflict_index + 1))
       base_file="${merge_input_root}/${conflict_index}.base"
@@ -208,7 +261,7 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
 
       if ! git -C "${seed_checkout}" cat-file -e ":2:${conflict_path}" 2>/dev/null; then
         git -C "${seed_checkout}" rm --quiet --force --ignore-unmatch -- "${conflict_path}"
-        printf 'private_seed_conflict=preserve-seed-deletion path=%s\n' "${conflict_path}"
+        preserved_deletions=$((preserved_deletions + 1))
         continue
       fi
 
@@ -244,7 +297,7 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
 
       cp -- "${merged_file}" "${seed_checkout}/${conflict_path}"
       git -C "${seed_checkout}" add -- "${conflict_path}"
-      printf 'private_seed_conflict=preserve-seed-hunks path=%s\n' "${conflict_path}"
+      preserved_hunks=$((preserved_hunks + 1))
     done
 
     unresolved_conflicts=()
@@ -257,10 +310,19 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
       echo "No source or seed remote was changed; inspect the private seed base, then rerun." >&2
       exit 2
     fi
-    git -C "${seed_checkout}" commit --no-edit
-    echo "Private seed merge retained private conflict hunks and accepted public updates elsewhere."
+    git -C "${seed_checkout}" commit --no-edit --quiet
+    printf 'private_seed_merge=resolved-known-rendered-conflicts count=%s preserved_hunks=%s preserved_deletions=%s\n' \
+      "${#conflict_paths[@]}" "${preserved_hunks}" "${preserved_deletions}"
+  else
+    echo "private_seed_merge=clean"
   fi
-  echo "Private seed base preserved: ${seed_base_ref} (${seed_base_head})."
+  if [[ "${seed_base_selection}" == "destination-converged" ]]; then
+    printf 'private_seed_base=destination-converged requested_ref=%s requested_head=%s destination_head=%s\n' \
+      "${seed_base_ref}" "${seed_requested_base_head}" "${seed_destination_head}"
+  else
+    printf 'private_seed_base=requested ref=%s head=%s\n' \
+      "${seed_base_ref}" "${seed_base_head}"
+  fi
 elif [[ "${allow_empty_seed}" == "true" ]]; then
   git -C "${seed_checkout}" checkout --quiet --detach "${source_head}"
   echo "Private seed base is absent; initializing from public source by explicit opt-in."
@@ -284,7 +346,7 @@ echo "Reconciling rendered private Woodpecker values in an isolated temporary se
   PLATFORM_AUTO_RENDER_SCOPE=woodpecker \
   PLATFORM_AUTO_RENDER_PRIVATE_VALUES=true \
   PLATFORM_AUTO_COMMIT=true \
-  PLATFORM_AUTO_COMMIT_MESSAGE="${PLATFORM_WOODPECKER_REPAIR_COMMIT_MESSAGE:-Reconcile Woodpecker GitOps source}" \
+  PLATFORM_AUTO_COMMIT_MESSAGE="${repair_commit_message}" \
   PLATFORM_VALIDATE_BEFORE_PUSH=true \
   PLATFORM_RUN_PROFILE_CHECK=true \
   PLATFORM_RUN_NO_SECRETS=true \

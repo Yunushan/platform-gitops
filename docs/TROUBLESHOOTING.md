@@ -128,13 +128,16 @@ reconciliation. Set `PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=false` only when an
 external process owns the Argo CD source; use `true` to require the private seed
 environment instead of the default `auto` detection.
 The focused reconciliation renders Woodpecker values and shared policy
-artifacts. It leaves private Forgejo configuration, Longhorn, Harbor, backup,
-and monitoring values unchanged, apart from refreshing Forgejo's reviewed image
-pin and the shared CloudNativePG managed roles required by enabled platform
-databases. It also restores missing `serverCASecret` and `serverTLSSecret`
-references from the existing matching cert-manager `Certificate`. This bounded
-refresh preserves private PostgreSQL storage, backup, metadata, certificate
-names, distinct CA/leaf secret semantics, and extra roles. It fails closed when a
+artifacts. It leaves private Forgejo hostnames, credentials, object storage,
+Longhorn, Harbor, backup, and monitoring values unchanged. It refreshes
+Forgejo's reviewed image pin and restores only Forgejo's existing PostgreSQL
+`verify-full` mode, internal CA volume, mounts, and `SSL_CERT_FILE`. It also
+refreshes the shared CloudNativePG managed roles required by enabled platform
+databases and restores missing `serverCASecret` and `serverTLSSecret` references
+from the existing matching cert-manager `Certificate`. This bounded refresh
+preserves private PostgreSQL storage, backup, metadata, certificate names,
+distinct CA/leaf secret semantics, extra roles, and unrelated Forgejo keys. It
+fails closed when Forgejo is not PostgreSQL-backed or when a database TLS
 reference is missing and no matching Certificate can supply it.
 During this focused run, static rendered-value secret
 validation is limited to Woodpecker; all generated secret contracts, renderer
@@ -158,6 +161,17 @@ older private PostgreSQL block cannot omit a newly enabled Harbor or Grafana rol
 or lose its existing server Certificate binding. A conflict in any file
 outside the renderer's exact output allowlist still stops before the seed remote
 is changed and must be reconciled manually.
+
+An explicitly selected recovery branch is a bootstrap base, not a permanent
+fork point. After a successful seed push, later repairs detect that private
+`main` contains a newer reconciled public lineage and use that destination as the
+next base, even when the old recovery ref remains in the command environment.
+The validated reconciliation commit also records convergence when the recovery
+ref already contains the current public commit, so that edge case does not
+replay the frozen base.
+Handled rendered-file conflicts are reported as one bounded summary instead of
+raw `Auto-merging` and `CONFLICT` output. This makes repeated repair runs
+convergent while retaining force-with-lease protection on private `main`.
 
 The premium renderer does not use the chart-generated
 `woodpecker-default-agent-secret`. That chart secret depends on random Helm

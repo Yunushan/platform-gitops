@@ -1362,6 +1362,143 @@ def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
     return True
 
 
+def refresh_forgejo_postgres_tls(path: Path) -> bool:
+    """Restore Forgejo's PostgreSQL trust contract without rendering private dependencies."""
+    text = read_bounded_text(path, encoding="utf-8")
+    try:
+        documents = loads_strict_yaml_all(text)
+    except StrictYamlError as exc:
+        raise SystemExit(f"cannot refresh Forgejo PostgreSQL TLS in invalid YAML {path}: {exc}") from exc
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        raise SystemExit(f"expected one Forgejo values mapping in {path}")
+
+    values = documents[0]
+
+    def mapping(parent: dict, key: str, label: str, *, create: bool = False) -> dict:
+        value = parent.get(key)
+        if value is None and create:
+            value = {}
+            parent[key] = value
+        if not isinstance(value, dict):
+            raise SystemExit(f"expected Forgejo {label} mapping in {path}")
+        return value
+
+    def upsert_list_entry(
+        key: str,
+        identity: dict[str, str],
+        desired: dict,
+        *,
+        parent: dict | None = None,
+    ) -> bool:
+        container = values if parent is None else parent
+        entries = container.get(key)
+        if entries is None:
+            entries = []
+            container[key] = entries
+        if not isinstance(entries, list):
+            raise SystemExit(f"expected Forgejo {key} list in {path}")
+        matches = [
+            index
+            for index, entry in enumerate(entries)
+            if isinstance(entry, dict)
+            and all(entry.get(identity_key) == identity_value for identity_key, identity_value in identity.items())
+        ]
+        if len(matches) > 1:
+            identity_text = ", ".join(f"{name}={value}" for name, value in identity.items())
+            raise SystemExit(f"found duplicate Forgejo {key} entries for {identity_text} in {path}")
+        if matches:
+            index = matches[0]
+            if entries[index] == desired:
+                return False
+            entries[index] = desired
+            return True
+        entries.append(desired)
+        return True
+
+    gitea = mapping(values, "gitea", "gitea")
+    config = mapping(gitea, "config", "gitea.config")
+    database = mapping(config, "database", "gitea.config.database")
+    database_type = str(database.get("DB_TYPE", "")).strip().lower()
+    if database_type not in {"postgres", "postgresql"}:
+        raise SystemExit(
+            f"focused Forgejo PostgreSQL TLS refresh requires gitea.config.database.DB_TYPE=postgres in {path}"
+        )
+
+    changed = False
+    if database.get("SSL_MODE") != "verify-full":
+        database["SSL_MODE"] = "verify-full"
+        changed = True
+
+    deployment = mapping(values, "deployment", "deployment", create=True)
+    changed |= upsert_list_entry(
+        "env",
+        {"name": "SSL_CERT_FILE"},
+        {
+            "name": "SSL_CERT_FILE",
+            "value": "/etc/ssl/platform/ca-certificates.crt",
+        },
+        parent=deployment,
+    )
+    changed |= upsert_list_entry(
+        "extraVolumes",
+        {"name": "platform-postgres-ca"},
+        {
+            "name": "platform-postgres-ca",
+            "configMap": {
+                "name": "platform-internal-roots",
+                "items": [
+                    {"key": "ca-certificates.crt", "path": "root.crt"},
+                    {"key": "ca-certificates.crt", "path": "ca-certificates.crt"},
+                ],
+            },
+        },
+    )
+    for mount_path in ("/data/gitea/git/.postgresql", "/etc/ssl/platform"):
+        changed |= upsert_list_entry(
+            "extraContainerVolumeMounts",
+            {"name": "platform-postgres-ca", "mountPath": mount_path},
+            {
+                "name": "platform-postgres-ca",
+                "mountPath": mount_path,
+                "readOnly": True,
+            },
+        )
+    changed |= upsert_list_entry(
+        "extraInitVolumeMounts",
+        {"name": "platform-postgres-ca", "mountPath": "/data/gitea/git/.postgresql"},
+        {
+            "name": "platform-postgres-ca",
+            "mountPath": "/data/gitea/git/.postgresql",
+            "readOnly": True,
+        },
+    )
+
+    canonical_needles = (
+        "SSL_MODE: verify-full",
+        "name: platform-internal-roots",
+        "mountPath: /data/gitea/git/.postgresql",
+        "name: SSL_CERT_FILE",
+        "value: /etc/ssl/platform/ca-certificates.crt",
+    )
+    if not changed and all(needle in text for needle in canonical_needles):
+        return False
+
+    rendered = yaml.safe_dump(
+        values,
+        allow_unicode=False,
+        default_flow_style=False,
+        sort_keys=False,
+    )
+    try:
+        rendered_documents = loads_strict_yaml_all(rendered)
+    except StrictYamlError as exc:
+        raise SystemExit(f"refreshed Forgejo PostgreSQL TLS values are invalid in {path}: {exc}") from exc
+    if len(rendered_documents) != 1 or not isinstance(rendered_documents[0], dict):
+        raise SystemExit(f"failed to refresh Forgejo PostgreSQL TLS values in {path}")
+    atomic_write_text(path, rendered)
+    return True
+
+
 def forgejo_bootstrap_values(host: str, data_size: str, storage_class: str, image_tag: str) -> str:
     return f"""# Forgejo bootstrap profile rendered by scripts/render_private_platform_values.py.
 # This opt-in mode uses SQLite and in-process cache/queue for dependency-light
@@ -4183,6 +4320,14 @@ def main() -> int:
         help="Refresh only Forgejo's reviewed image pin without rendering private dependencies.",
     )
     parser.add_argument(
+        "--refresh-forgejo-postgres-tls",
+        action="store_true",
+        help=(
+            "Refresh only Forgejo's existing PostgreSQL CA mounts and verify-full mode "
+            "without rendering private object storage or credentials."
+        ),
+    )
+    parser.add_argument(
         "--refresh-cnpg-database-roles",
         action="store_true",
         help=(
@@ -4431,6 +4576,13 @@ def main() -> int:
 
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
         changed.append(str(args.argocd_values))
+
+    if (
+        args.refresh_forgejo_postgres_tls
+        and refresh_forgejo_postgres_tls(args.forgejo_values)
+    ):
+        if str(args.forgejo_values) not in changed:
+            changed.append(str(args.forgejo_values))
 
     if (
         args.refresh_forgejo_release_pin

@@ -4347,7 +4347,8 @@ def main() -> None:
         "seed_destination_head=",
         'git -C "${seed_checkout}" merge --no-edit "${source_head}"',
         "diff --name-only --diff-filter=U -z",
-        "private_seed_conflict=preserve-seed-hunks",
+        "private_seed_merge=resolved-known-rendered-conflicts",
+        "private_seed_base=destination-converged",
         "outside-rendered-private-boundary",
         "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml",
         "gitops/clusters/rke2-main/premium-3node/apps/platform-postgres/postgres-cluster.yaml",
@@ -5731,6 +5732,7 @@ def main() -> None:
     for needle in (
         "PLATFORM_AUTO_RENDER_SCOPE must be all or woodpecker.",
         "--refresh-forgejo-release-pin",
+        "--refresh-forgejo-postgres-tls",
         "--skip-forgejo",
         "--skip-platform-image-integrity",
     ):
