@@ -249,9 +249,12 @@ def validate_argocd_cleanup_contract() -> list[str]:
         retry_block = text[retry_index:prune_index]
         for fragment in (
             "read_application_state()",
+            "read_operation_message()",
             'if ! read_application_state "${app}"; then',
             "reason=state-unavailable-after-wait",
+            "reason=sync-request-failed",
             "reason=retry-${operation_phase}",
+            "message=${operation_message:-unavailable}",
             'exit "${failed}"',
         ):
             if fragment not in retry_block:

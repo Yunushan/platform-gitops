@@ -510,12 +510,12 @@ If Woodpecker is `Synced` but still `Progressing`, or agents are running an old
 make platform-woodpecker-repair
 ```
 
-That hard-refreshes and syncs the Woodpecker Argo CD application, waits for the
-server and agents, verifies the running server and agent image tags, and runs
-service-path consumer refresh after the strict Woodpecker rollout gate before
-`make platform-ci-health`. It reconciles only Woodpecker's agent, database, and
-Forgejo OAuth secrets; use `make platform-app-secrets` for the full production
-secret gate, including Harbor S3 and backup credentials.
+That reconciles Woodpecker's focused secrets and private seed source before
+Argo CD service repair, then syncs the application, waits for the server and
+agents, verifies the running image tags, and refreshes service-path consumers
+after the strict rollout gate before `make platform-ci-health`. Use
+`make platform-app-secrets` for the full production secret gate, including
+Harbor S3 and backup credentials.
 
 Before final production registration, prove that the selected profile has no
 unresolved placeholders:
