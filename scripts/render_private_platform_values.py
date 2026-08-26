@@ -3549,35 +3549,28 @@ def refresh_cnpg_managed_database_roles(path: Path) -> bool:
     if not isinstance(certificates, dict):
         raise SystemExit(f"expected CloudNativePG spec.certificates mapping in {path}")
     certificate_keys = ("serverCASecret", "serverTLSSecret")
-    configured_secrets: list[str] = []
+    expected_certificate_references: dict[str, str] = {}
+    missing_certificate_keys: list[str] = []
     for key in certificate_keys:
         value = certificates.get(key)
         if value is None:
+            missing_certificate_keys.append(key)
             continue
         if not isinstance(value, str) or not value.strip():
             raise SystemExit(f"expected CloudNativePG spec.certificates.{key} name in {path}")
-        configured_secrets.append(value.strip())
-    if len(set(configured_secrets)) > 1:
-        raise SystemExit(
-            f"CloudNativePG serverCASecret and serverTLSSecret disagree in {path}"
-        )
-    discovered_server_secret = cnpg_server_certificate_secret(documents, cluster, path)
-    expected_server_secret = (
-        configured_secrets[0] if configured_secrets else discovered_server_secret
+        expected_certificate_references[key] = value.strip()
+    discovered_server_secret = (
+        cnpg_server_certificate_secret(documents, cluster, path)
+        if missing_certificate_keys
+        else None
     )
-    if expected_server_secret is None:
+    if missing_certificate_keys and discovered_server_secret is None:
         raise SystemExit(
-            "cannot infer CloudNativePG server TLS secret in "
-            f"{path}; retain a matching cert-manager Certificate or configure both certificate references"
+            "cannot restore missing CloudNativePG server TLS references in "
+            f"{path}; retain a matching cert-manager Certificate or configure each reference explicitly"
         )
-    if (
-        discovered_server_secret is not None
-        and discovered_server_secret != expected_server_secret
-    ):
-        raise SystemExit(
-            "CloudNativePG certificate references do not match the existing server Certificate "
-            f"in {path}"
-        )
+    for key in missing_certificate_keys:
+        expected_certificate_references[key] = discovered_server_secret
 
     managed = spec.get("managed")
     if managed is None:
@@ -3602,9 +3595,9 @@ def refresh_cnpg_managed_database_roles(path: Path) -> bool:
         roles_by_name[name] = role
 
     changed = False
-    for key in certificate_keys:
-        if certificates.get(key) != expected_server_secret:
-            certificates[key] = expected_server_secret
+    for key in missing_certificate_keys:
+        if certificates.get(key) != expected_certificate_references[key]:
+            certificates[key] = expected_certificate_references[key]
             changed = True
     for required_role in cnpg_required_managed_database_roles():
         name = str(required_role["name"])
@@ -3651,7 +3644,7 @@ def refresh_cnpg_managed_database_roles(path: Path) -> bool:
     ]
     refreshed_certificates = refreshed_clusters[0]["spec"].get("certificates")
     if not isinstance(refreshed_certificates, dict) or any(
-        refreshed_certificates.get(key) != expected_server_secret
+        refreshed_certificates.get(key) != expected_certificate_references[key]
         for key in certificate_keys
     ):
         raise SystemExit(f"failed to refresh CloudNativePG server TLS references in {path}")

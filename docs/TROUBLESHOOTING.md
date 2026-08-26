@@ -134,7 +134,8 @@ pin and the shared CloudNativePG managed roles required by enabled platform
 databases. It also restores missing `serverCASecret` and `serverTLSSecret`
 references from the existing matching cert-manager `Certificate`. This bounded
 refresh preserves private PostgreSQL storage, backup, metadata, certificate
-names, and extra roles, and fails closed if the existing TLS resources disagree.
+names, distinct CA/leaf secret semantics, and extra roles. It fails closed when a
+reference is missing and no matching Certificate can supply it.
 During this focused run, static rendered-value secret
 validation is limited to Woodpecker; all generated secret contracts, renderer
 and playbook checks, schema validation, security checks, and private-data
