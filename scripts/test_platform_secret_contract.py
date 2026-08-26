@@ -981,10 +981,9 @@ def main() -> int:
     check_static_values(static_apps)
     check_renderer_and_secret_playbook()
     check_custom_rendering()
-    static_scope = "all" if static_apps is None else ",".join(sorted(static_apps))
     print(
         f"Platform app secret contract validation passed for {len(CONTRACTS)} generated "
-        f"secret contracts (static apps: {static_scope})."
+        "secret contracts."
     )
     return 0
 
