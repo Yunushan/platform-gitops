@@ -4347,10 +4347,11 @@ def main() -> None:
         "seed_destination_head=",
         'git -C "${seed_checkout}" merge --no-edit "${source_head}"',
         "diff --name-only --diff-filter=U -z",
-        "private_seed_conflict=preserve-seed",
+        "private_seed_conflict=preserve-seed-hunks",
         "outside-rendered-private-boundary",
         "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml",
         "gitops/clusters/rke2-main/premium-3node/apps/platform-postgres/postgres-cluster.yaml",
+        "git merge-file --ours --stdout",
         'git -C "${seed_checkout}" commit --no-edit',
         "Focused reconciliation stopped to avoid replacing previously rendered private applications.",
         "PLATFORM_AUTO_RENDER_SCOPE=woodpecker",
@@ -5729,6 +5730,7 @@ def main() -> None:
         fail("seed sync must expose an explicit private-render scope")
     for needle in (
         "PLATFORM_AUTO_RENDER_SCOPE must be all or woodpecker.",
+        "--refresh-forgejo-release-pin",
         "--skip-forgejo",
         "--skip-platform-image-integrity",
     ):
