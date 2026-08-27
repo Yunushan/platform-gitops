@@ -143,24 +143,27 @@ PY
 ingress_address="$(sed -n 's/^address=//p' "${work_directory}/ingress-selection" | head -1)"
 mapfile -t tls_secrets < <(sed -n 's/^secret=//p' "${work_directory}/ingress-selection")
 tls_route="$(sed -n 's/^tls_route=//p' "${work_directory}/ingress-selection" | head -1)"
+forgejo_tls_binding_repaired=false
 repair_known_forgejo_tls_bindings() {
+  local current_secrets=""
   local current_secret=""
   local ingress_name=""
 
   # The chart Ingress and the endpoint-mode fallback are both platform-owned.
-  # Reconcile both so an old route cannot keep Traefik on its default certificate.
+  # Repair only empty bindings so explicitly configured custom Secrets stay intact.
   for ingress_name in platform-forgejo forgejo; do
     if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
       get "ingress/${ingress_name}" >/dev/null 2>&1; then
-      current_secret="$(
+      current_secrets="$(
         "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
-          get "ingress/${ingress_name}" -o jsonpath='{.spec.tls[0].secretName}' 2>/dev/null || true
+          get "ingress/${ingress_name}" -o jsonpath='{range .spec.tls[*]}{.secretName}{"\n"}{end}' 2>/dev/null || true
       )"
-      if [ "${current_secret}" != "${forgejo_tls_secret_name}" ]; then
+      if [ -z "${current_secrets}" ]; then
         "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo patch \
           "ingress/${ingress_name}" --type=merge \
           -p "{\"spec\":{\"tls\":[{\"hosts\":[\"${forgejo_host}\"],\"secretName\":\"${forgejo_tls_secret_name}\"}]}}" \
           >/dev/null
+        forgejo_tls_binding_repaired=true
         echo "forgejo_ingress_tls_binding=${ingress_name} secret=${forgejo_tls_secret_name} state=repaired"
       fi
     fi
@@ -172,23 +175,38 @@ repair_known_forgejo_tls_bindings() {
       "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
         get ingressroute/forgejo-http -o jsonpath='{.spec.tls.secretName}' 2>/dev/null || true
     )"
-    if [ "${current_secret}" != "${forgejo_tls_secret_name}" ]; then
+    if [ -z "${current_secret}" ]; then
       "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo patch \
         ingressroute/forgejo-http --type=merge \
         -p "{\"spec\":{\"tls\":{\"secretName\":\"${forgejo_tls_secret_name}\"}}}" \
         >/dev/null
+      forgejo_tls_binding_repaired=true
       echo "forgejo_ingressroute_tls_binding=forgejo-http secret=${forgejo_tls_secret_name} state=repaired"
     fi
   fi
 }
 
+canonical_tls_available=false
 if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
   get "secret/${forgejo_tls_secret_name}" >/dev/null 2>&1; then
-  # Always normalize platform-owned bindings, even when the chart Ingress already
-  # names the Secret. This also repairs stale IngressRoutes left by older fallbacks.
-  tls_secrets=("${forgejo_tls_secret_name}")
+  canonical_tls_available=true
+  if [ "${#tls_secrets[@]}" -lt 1 ]; then
+    tls_secrets=("${forgejo_tls_secret_name}")
+  fi
   if [ "${auto_repair}" = "true" ]; then
     repair_known_forgejo_tls_bindings
+  fi
+  if [ "${forgejo_tls_binding_repaired}" = "true" ]; then
+    canonical_secret_present=false
+    for secret in "${tls_secrets[@]}"; do
+      if [ "${secret}" = "${forgejo_tls_secret_name}" ]; then
+        canonical_secret_present=true
+        break
+      fi
+    done
+    if [ "${canonical_secret_present}" = "false" ]; then
+      tls_secrets+=("${forgejo_tls_secret_name}")
+    fi
   fi
 elif [ "${#tls_secrets[@]}" -lt 1 ]; then
   if [ "${tls_route}" = "true" ]; then
@@ -424,4 +442,3 @@ done
 tail -20 "${work_directory}/served-probe" || true
 echo "result=fail reason=forgejo-oauth-tls-chain-did-not-converge repaired=${repaired}"
 exit 1
-

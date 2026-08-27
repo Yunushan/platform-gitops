@@ -3147,6 +3147,9 @@ def main() -> None:
         "reconcile_matching_tls_secrets",
         "repair_known_forgejo_tls_bindings",
         'tls_secrets=("${forgejo_tls_secret_name}")',
+        "forgejo_tls_binding_repaired=false",
+        'if [ -z "${current_secrets}" ]; then',
+        'if [ -z "${current_secret}" ]; then',
     ):
         require_text(
             woodpecker_tls_repair_helper_text,

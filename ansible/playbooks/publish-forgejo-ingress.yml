@@ -424,4 +424,3 @@
           DNS/hosts entry:
           {{ rke2_ingress_vip_effective }} {{ platform_forgejo_host_effective }}
       run_once: true
-
