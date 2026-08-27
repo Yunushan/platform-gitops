@@ -643,10 +643,26 @@ consumption of the refresh annotation or an advanced `status.reconciledAt`.
 A positively acknowledged refresh is separate from an active application sync:
 the following operation phase waits up to
 `PLATFORM_ARGOCD_SERVICE_REPAIR_APP_SYNC_TIMEOUT` (600 seconds by default), then
-re-evaluates and retries an operation that ended in `Error` or `Failed`. If Argo
-CD does not acknowledge the hint but the application remains idle and `Synced`,
-the hint is removed and repair continues. Legacy Traefik pruning is skipped in
-that case so the repair never prunes from an unrefreshed resource inventory.
+re-evaluates and retries an operation that ended in `Error` or `Failed`. When the
+same operation remains `Running` for that entire interval, the repair requires
+a nonempty controller-recorded `startedAt`, verifies that timestamp and the
+revision again, atomically marks only that unchanged operation `Terminating`,
+and waits another 180 seconds before retrying without pruning. A pre-existing
+operation waits only the remainder of that interval based on `startedAt`, so
+rerunning repair does not reset the stale-operation clock. Recovery fails closed
+when `startedAt` is absent because revisions are not unique operation identities.
+The patch tests the Application resource version, so a concurrent or newer sync
+is never canceled. A stale `Running` status with no requested operation is
+cleared only when the application is already `Synced` and the same nonempty
+`startedAt` still matches; ambiguous or changed state still fails closed. Set
+`PLATFORM_ARGOCD_SERVICE_REPAIR_RECOVER_STUCK_OPERATIONS=false` to disable this
+recovery or change its final wait with
+`PLATFORM_ARGOCD_SERVICE_REPAIR_OPERATION_TERMINATION_TIMEOUT`.
+
+If Argo CD does not acknowledge the refresh hint but the application remains
+idle and `Synced`, the hint is removed and repair continues. Legacy Traefik
+pruning is skipped in that case so the repair never prunes from an unrefreshed
+resource inventory.
 
 If the controller then times out to a pod IP such as `10.42.x.x:8081`, the
 cluster still has a pod-to-pod path problem. The repair target defaults to a
