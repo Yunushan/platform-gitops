@@ -296,7 +296,9 @@
                   "nativeLB": false
                 }]
               }],
-              "tls": {}
+              "tls": {
+                "secretName": "forgejo-tls"
+              }
             }
           }'
         fi
