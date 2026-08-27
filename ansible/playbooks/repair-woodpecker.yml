@@ -121,6 +121,17 @@
           Forgejo. The repair attempted to complete missing intermediates from
           the certificate's cryptographically verified AIA issuer path.
 
+          {% if platform_woodpecker_forgejo_tls_chain_repair.stdout | default('', true) | regex_search('reason=forgejo-ingress-tls-(secret|material)-missing') %}
+          The Forgejo TLS route is not bound to the managed forgejo-tls Secret,
+          or that Secret is absent. The repair fixes older fallback routes
+          automatically when forgejo-tls exists. If the Secret is absent,
+          distribute the pre-issued wildcard certificate first:
+
+          PLATFORM_WILDCARD_TLS_CERT_FILE=/secure/path/wildcard.crt \
+          PLATFORM_WILDCARD_TLS_KEY_FILE=/secure/path/wildcard.key \
+          make platform-tls
+
+          {% endif %}
           {{ platform_woodpecker_forgejo_tls_chain_repair.stdout | default('No TLS-chain diagnostics were returned.', true) }}
           {{ platform_woodpecker_forgejo_tls_chain_repair.stderr | default('', true) }}
       when: (platform_woodpecker_forgejo_tls_chain_repair.rc | default(1) | int) != 0

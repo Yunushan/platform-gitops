@@ -486,6 +486,9 @@ platform-woodpecker-repair:
 		if grep -Eq 'reason=woodpecker-postgres-ca-(bundle|mount|file|controller|container|source)-missing|open /etc/ssl/platform-postgres/ca-certificates\\.crt: no such file or directory' "$$repair_log"; then \
 			application_config_repair=true; \
 		fi; \
+		if grep -Eq 'reason=forgejo-ingress-tls-(secret|material)-missing|forgejo-oauth-tls-chain-(untrusted|did-not-converge)' "$$repair_log"; then \
+			application_config_repair=true; \
+		fi; \
 		if grep -Eq 'reason=woodpecker-scheduling-capacity-insufficient|reason=woodpecker-scheduling-blocked-by-node-taint' "$$repair_log"; then \
 			scheduling_capacity=true; \
 		fi; \

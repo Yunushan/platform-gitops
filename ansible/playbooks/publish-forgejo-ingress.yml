@@ -182,6 +182,7 @@
             tls:
               - hosts:
                   - {{ platform_forgejo_host_effective }}
+                secretName: forgejo-tls
       register: platform_forgejo_ingress_apply
       changed_when: "'created' in platform_forgejo_ingress_apply.stdout or 'configured' in platform_forgejo_ingress_apply.stdout"
       delegate_to: "{{ rke2_first_server }}"
@@ -221,7 +222,8 @@
                   port: 3000
                   scheme: http
                   nativeLB: true
-          tls: {}
+          tls:
+            secretName: forgejo-tls
         INGRESSROUTE
         sed -i "s#PLATFORM_TRAEFIK_INGRESSROUTE_API_VERSION#${api_version}#" /tmp/platform-forgejo-ingressroute.yaml
         "$K" --kubeconfig "$C" apply -f /tmp/platform-forgejo-ingressroute.yaml

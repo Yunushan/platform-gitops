@@ -478,6 +478,12 @@ continues Woodpecker reconciliation. If ready Traefik replicas retain the old ce
 repair recycles them serially and waits for full replica readiness after each
 replacement. It never enables Woodpecker's TLS skip-verification setting.
 
+The Forgejo fallback Ingress and IngressRoute both bind forgejo-tls. If an
+older fallback route was created with TLS enabled but without that Secret name,
+the Woodpecker repair repairs the known platform fallback binding automatically
+when forgejo-tls exists. If the Secret is absent, distribute the pre-issued
+wildcard certificate with make platform-tls before rerunning the repair.
+
 If Woodpecker redirects to `/login?error=registration_closed`, OAuth has
 completed but the Woodpecker user is not registered. This is caused by the
 intentional `WOODPECKER_OPEN=false` production default, not by Forgejo TLS.
