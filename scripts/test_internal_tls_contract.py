@@ -16,6 +16,7 @@ from forgejo_database_contract import (
     FORGEJO_NON_POSTGRES_DATABASE_TYPES,
     effective_forgejo_database_type,
 )
+from reconcile_forgejo_tls_routes import build_patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +83,88 @@ def run_command(
 class QuietRequestHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         del format, args
+
+
+def test_forgejo_route_reconciliation() -> None:
+    target_host = "gitops.example.test"
+    canonical_secret = "forgejo-tls"
+
+    stale_ingress = {
+        "spec": {
+            "rules": [{"host": "forgejo.example.test", "http": {"paths": []}}],
+            "tls": [{"hosts": ["forgejo.example.test"], "secretName": "custom-tls"}],
+        }
+    }
+    ingress_patch = build_patch(stale_ingress, "Ingress", "forgejo", target_host, canonical_secret)
+    if not ingress_patch:
+        raise AssertionError("stale platform Ingress did not produce a route repair patch")
+    rule_patch = next(item for item in ingress_patch if item["path"] == "/spec/rules/0/host")
+    if rule_patch["value"] != target_host:
+        raise AssertionError("platform Ingress host was not reconciled to Woodpecker's host")
+    tls_patch = next(item for item in ingress_patch if item["path"] == "/spec/tls")
+    if tls_patch["value"][0]["secretName"] != "custom-tls":
+        raise AssertionError("explicit custom Ingress TLS Secret was replaced")
+    if target_host not in tls_patch["value"][0]["hosts"]:
+        raise AssertionError("repaired Ingress TLS entry does not cover the live host")
+
+    empty_fallback = {
+        "spec": {
+            "rules": [{"host": target_host}],
+            "tls": [{"hosts": [target_host]}],
+        }
+    }
+    fallback_patch = build_patch(
+        empty_fallback,
+        "Ingress",
+        "platform-forgejo",
+        target_host,
+        canonical_secret,
+    )
+    fallback_tls = next(item for item in fallback_patch if item["path"] == "/spec/tls")
+    if fallback_tls["value"][0]["secretName"] != canonical_secret:
+        raise AssertionError("empty platform Ingress TLS binding did not select forgejo-tls")
+
+    unrelated_ingress = {
+        "spec": {
+            "rules": [{"host": "unrelated.example.test"}],
+            "tls": [],
+        }
+    }
+    if build_patch(unrelated_ingress, "Ingress", "unrelated", target_host, canonical_secret):
+        raise AssertionError("unrelated Ingress was modified by Forgejo route reconciliation")
+
+    stale_route = {
+        "spec": {
+            "routes": [
+                {
+                    "match": "Host(`forgejo.example.test`) && PathPrefix(`/`)",
+                    "kind": "Rule",
+                }
+            ],
+            "tls": {},
+        }
+    }
+    route_patch = build_patch(
+        stale_route,
+        "IngressRoute",
+        "forgejo-http",
+        target_host,
+        canonical_secret,
+    )
+    if not any(item["path"] == "/spec/routes/0/match" and target_host in item["value"] for item in route_patch):
+        raise AssertionError("stale platform IngressRoute host was not reconciled")
+    route_tls = next(item for item in route_patch if item["path"] == "/spec/tls")
+    if route_tls["value"].get("secretName") != canonical_secret:
+        raise AssertionError("empty platform IngressRoute TLS binding did not select forgejo-tls")
+
+    custom_route = {
+        "spec": {
+            "routes": [{"match": f"Host(`{target_host}`)", "kind": "Rule"}],
+            "tls": {"secretName": "custom-tls"},
+        }
+    }
+    if build_patch(custom_route, "IngressRoute", "custom", target_host, canonical_secret):
+        raise AssertionError("explicit custom IngressRoute TLS binding was modified")
 
 
 def test_public_tls_chain_completion() -> None:
@@ -685,6 +768,7 @@ gitea:
         "reconcile_matching_tls_secrets",
     ):
         require(woodpecker_tls_repair_helper, needle, "Woodpecker OAuth TLS repair helper")
+    test_forgejo_route_reconciliation()
     test_public_tls_chain_completion()
 
     for needle in (

@@ -16,6 +16,7 @@ chain_helper="$3"
 kubectl_bin="${KUBECTL_BIN:-/var/lib/rancher/rke2/bin/kubectl}"
 kubeconfig_path="${KUBECONFIG_PATH:-/etc/rancher/rke2/rke2.yaml}"
 forgejo_tls_secret_name="forgejo-tls"
+route_reconciler="${FORGEJO_ROUTE_RECONCILER:-/run/platform-woodpecker-reconcile-forgejo-tls-routes.py}"
 
 case "${auto_repair}" in
   true|false) ;;
@@ -106,18 +107,28 @@ fi
 
 "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
   get ingress -o json >"${work_directory}/ingresses.json"
-python3 - "${work_directory}/ingresses.json" "${forgejo_host}" \
-  >"${work_directory}/ingress-selection" <<'PY'
+if ! "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+  get ingressroute -o json >"${work_directory}/ingressroutes.json" 2>/dev/null; then
+  printf '%s\n' '{"items":[]}' >"${work_directory}/ingressroutes.json"
+fi
+
+refresh_ingress_selection() {
+  python3 - "${work_directory}/ingresses.json" "${work_directory}/ingressroutes.json" "${forgejo_host}" \
+    >"${work_directory}/ingress-selection" <<'PY'
 import json
+import re
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as handle:
-    data = json.load(handle)
-wanted = sys.argv[2]
+    ingresses = json.load(handle)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    ingressroutes = json.load(handle)
+wanted = sys.argv[3]
+host_term = re.compile(r"Host\s*\(\s*([`\"'])([^`\"']+)\1\s*\)")
 secrets = set()
 addresses = []
 matched_tls = False
-for ingress in data.get("items", []):
+for ingress in ingresses.get("items", []):
     spec = ingress.get("spec", {})
     rule_hosts = {str(rule.get("host") or "") for rule in spec.get("rules", [])}
     if wanted not in rule_hosts:
@@ -134,56 +145,101 @@ for ingress in data.get("items", []):
         secret = str(tls.get("secretName") or "").strip()
         if secret:
             secrets.add(secret)
+for ingressroute in ingressroutes.get("items", []):
+    spec = ingressroute.get("spec", {})
+    route_matches = [
+        str(route.get("match") or "")
+        for route in spec.get("routes", [])
+        if isinstance(route, dict)
+    ]
+    if not any(wanted in {match.group(2).strip() for match in host_term.finditer(route_match)}
+               for route_match in route_matches):
+        continue
+    matched_tls = True
+    tls = spec.get("tls") or {}
+    secret = str(tls.get("secretName") or "").strip() if isinstance(tls, dict) else ""
+    if secret:
+        secrets.add(secret)
 print(f"address={addresses[0] if addresses else ''}")
 print(f"tls_route={'true' if matched_tls else 'false'}")
 for secret in sorted(secrets):
     print(f"secret={secret}")
 PY
+}
+
+refresh_ingress_selection
 
 ingress_address="$(sed -n 's/^address=//p' "${work_directory}/ingress-selection" | head -1)"
 mapfile -t tls_secrets < <(sed -n 's/^secret=//p' "${work_directory}/ingress-selection")
 tls_route="$(sed -n 's/^tls_route=//p' "${work_directory}/ingress-selection" | head -1)"
 forgejo_tls_binding_repaired=false
 repair_known_forgejo_tls_bindings() {
-  local current_secrets=""
-  local current_secret=""
-  local ingress_name=""
+  local kind=""
+  local collection=""
+  local resource=""
+  local resource_name=""
+  local resource_json=""
+  local patch_json=""
+  local patch_count=""
+  local kubectl_kind=""
+  local -a resource_names=()
 
-  # The chart Ingress and the endpoint-mode fallback are both platform-owned.
-  # Repair only empty bindings so explicitly configured custom Secrets stay intact.
-  for ingress_name in platform-forgejo forgejo; do
-    if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
-      get "ingress/${ingress_name}" >/dev/null 2>&1; then
-      current_secrets="$(
-        "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
-          get "ingress/${ingress_name}" -o jsonpath='{range .spec.tls[*]}{.secretName}{"\n"}{end}' 2>/dev/null || true
-      )"
-      if [ -z "${current_secrets}" ]; then
-        "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo patch \
-          "ingress/${ingress_name}" --type=merge \
-          -p "{\"spec\":{\"tls\":[{\"hosts\":[\"${forgejo_host}\"],\"secretName\":\"${forgejo_tls_secret_name}\"}]}}" \
-          >/dev/null
-        forgejo_tls_binding_repaired=true
-        echo "forgejo_ingress_tls_binding=${ingress_name} secret=${forgejo_tls_secret_name} state=repaired"
-      fi
-    fi
-  done
-
-  if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
-    get ingressroute/forgejo-http >/dev/null 2>&1; then
-    current_secret="$(
-      "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
-        get ingressroute/forgejo-http -o jsonpath='{.spec.tls.secretName}' 2>/dev/null || true
-    )"
-    if [ -z "${current_secret}" ]; then
-      "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo patch \
-        ingressroute/forgejo-http --type=merge \
-        -p "{\"spec\":{\"tls\":{\"secretName\":\"${forgejo_tls_secret_name}\"}}}" \
-        >/dev/null
-      forgejo_tls_binding_repaired=true
-      echo "forgejo_ingressroute_tls_binding=forgejo-http secret=${forgejo_tls_secret_name} state=repaired"
-    fi
+  if [ ! -x "${route_reconciler}" ]; then
+    echo "result=fail reason=forgejo-route-reconciler-missing path=${route_reconciler}"
+    return 1
   fi
+
+  # Inspect every Forgejo route.  The Python helper limits mutations to the
+  # platform-owned names or routes already matching the live OAuth hostname.
+  for kind in Ingress IngressRoute; do
+    if [ "${kind}" = "Ingress" ]; then
+      collection="${work_directory}/ingresses.json"
+      kubectl_kind=ingress
+    else
+      collection="${work_directory}/ingressroutes.json"
+      kubectl_kind=ingressroute
+    fi
+    mapfile -t resource_names < <(
+      python3 - "${collection}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+for item in data.get("items", []):
+    name = str(item.get("metadata", {}).get("name") or "").strip()
+    if name:
+        print(name)
+PY
+    )
+
+    for resource_name in "${resource_names[@]}"; do
+      resource_json="${work_directory}/${kubectl_kind}-${resource_name}.json"
+      patch_json="${work_directory}/${kubectl_kind}-${resource_name}.patch.json"
+      if ! "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+        get "${kubectl_kind}/${resource_name}" -o json >"${resource_json}" 2>/dev/null; then
+        continue
+      fi
+      python3 "${route_reconciler}" "${resource_json}" "${kind}" "${resource_name}" \
+        "${forgejo_host}" "${forgejo_tls_secret_name}" >"${patch_json}"
+      patch_count="$(python3 - "${patch_json}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(len(json.load(handle)))
+PY
+      )"
+      if [ "${patch_count}" -lt 1 ]; then
+        continue
+      fi
+      resource="${kubectl_kind}/${resource_name}"
+      "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+        patch "${resource}" --type=json --patch-file "${patch_json}" >/dev/null
+      forgejo_tls_binding_repaired=true
+      echo "forgejo_${kubectl_kind}_tls_binding=${resource_name} host=${forgejo_host} state=repaired"
+    done
+  done
 }
 
 canonical_tls_available=false
@@ -195,6 +251,21 @@ if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
   fi
   if [ "${auto_repair}" = "true" ]; then
     repair_known_forgejo_tls_bindings
+    # A repaired hostname or IngressRoute may expose a custom Secret that was
+    # not visible during the first discovery pass.  Re-read all routes before
+    # deciding which certificate material must be verified and reconciled.
+    if [ "${forgejo_tls_binding_repaired}" = "true" ]; then
+      "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+        get ingress -o json >"${work_directory}/ingresses.json"
+      if ! "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+        get ingressroute -o json >"${work_directory}/ingressroutes.json" 2>/dev/null; then
+        printf '%s\n' '{"items":[]}' >"${work_directory}/ingressroutes.json"
+      fi
+      refresh_ingress_selection
+      ingress_address="$(sed -n 's/^address=//p' "${work_directory}/ingress-selection" | head -1)"
+      mapfile -t tls_secrets < <(sed -n 's/^secret=//p' "${work_directory}/ingress-selection")
+      tls_route="$(sed -n 's/^tls_route=//p' "${work_directory}/ingress-selection" | head -1)"
+    fi
   fi
   if [ "${forgejo_tls_binding_repaired}" = "true" ]; then
     canonical_secret_present=false

@@ -75,6 +75,8 @@
           destination: platform-woodpecker-complete-tls-chain.sh
         - source: repair_woodpecker_oauth_tls.sh
           destination: platform-woodpecker-repair-oauth-tls.sh
+        - source: reconcile_forgejo_tls_routes.py
+          destination: platform-woodpecker-reconcile-forgejo-tls-routes.py
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       tags:
@@ -102,6 +104,7 @@
       loop:
         - platform-woodpecker-complete-tls-chain.sh
         - platform-woodpecker-repair-oauth-tls.sh
+        - platform-woodpecker-reconcile-forgejo-tls-routes.py
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       tags:

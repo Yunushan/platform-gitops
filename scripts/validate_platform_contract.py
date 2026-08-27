@@ -77,6 +77,7 @@ platform_tls_playbook = root / "ansible/playbooks/manage-platform-tls.yml"
 platform_tls_verify_playbook = root / "ansible/playbooks/verify-platform-tls.yml"
 platform_tls_chain_helper = root / "scripts/complete_tls_chain.sh"
 woodpecker_tls_repair_helper = root / "scripts/repair_woodpecker_oauth_tls.sh"
+forgejo_tls_route_reconciler = root / "scripts/reconcile_forgejo_tls_routes.py"
 production_evidence_script = root / "scripts/verify_production_evidence.py"
 production_evidence_runner = root / "scripts/bootstrap/run-platform-production-evidence.sh"
 production_evidence_test = root / "scripts/test_production_evidence.py"
@@ -3119,6 +3120,7 @@ def main() -> None:
 
     platform_tls_chain_helper_text = read(platform_tls_chain_helper)
     woodpecker_tls_repair_helper_text = read(woodpecker_tls_repair_helper)
+    forgejo_tls_route_reconciler_text = read(forgejo_tls_route_reconciler)
     for needle in (
         "authorityInfoAccess",
         "--proto '=http,https'",
@@ -3148,13 +3150,28 @@ def main() -> None:
         "repair_known_forgejo_tls_bindings",
         'tls_secrets=("${forgejo_tls_secret_name}")',
         "forgejo_tls_binding_repaired=false",
-        'if [ -z "${current_secrets}" ]; then',
-        'if [ -z "${current_secret}" ]; then',
+        "route_reconciler",
+        "get ingressroute -o json",
+        "refresh_ingress_selection",
+        '--type=json --patch-file "${patch_json}"',
+        "Re-read all routes before",
     ):
         require_text(
             woodpecker_tls_repair_helper_text,
             needle,
             f"Woodpecker OAuth TLS repair must retain fail-closed controls: {needle}",
+        )
+    for needle in (
+        "KNOWN_INGRESS_NAMES",
+        "KNOWN_INGRESSROUTE_NAMES",
+        "target_host",
+        "never replaces a non-empty",
+        r"Host\s*",
+    ):
+        require_text(
+            forgejo_tls_route_reconciler_text,
+            needle,
+            f"Forgejo TLS route reconciler must retain route safety controls: {needle}",
         )
 
     for path in (
