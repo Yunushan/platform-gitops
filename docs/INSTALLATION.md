@@ -847,7 +847,9 @@ leave a fourth rollout pod permanently Pending.
 If Woodpecker remains `Synced` but `Progressing`, or agents still show an old
 `next-*` image after you pushed corrected values, run the focused repair. It
 reconciles the focused secrets and private seed source before Argo CD service
-repair, then syncs the Woodpecker application, waits for the server and agents,
+repair, refreshes an unresolved public Argo CD hostname from the local inventory
+without replacing private Argo CD settings, then syncs the Woodpecker application,
+waits for the server and agents,
 verifies the running image tags, refreshes service-path consumers so agents are
 not blocked by stale ClusterIP routing, and runs the focused CI health gate:
 

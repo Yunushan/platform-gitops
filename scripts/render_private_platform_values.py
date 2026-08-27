@@ -231,6 +231,23 @@ def platform_host(
     return f"{default_prefix}.{domain}" if domain else ""
 
 
+def argocd_host(inventory: dict[str, str]) -> str:
+    host = require(
+        "PLATFORM_ARGOCD_HOST or platform_argocd_host",
+        platform_host(
+            "PLATFORM_ARGOCD_HOST",
+            inventory,
+            ("platform_argocd_host",),
+            "argocd",
+        ),
+    )
+    if re.search(r"<[A-Z0-9_]+>", host):
+        raise SystemExit(
+            "PLATFORM_ARGOCD_HOST or platform_argocd_host must resolve to a real hostname"
+        )
+    return host
+
+
 def render_longhorn(
     path: Path,
     backup_target: str,
@@ -1957,16 +1974,27 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
     return changed
 
 
+def refresh_argocd_host(path: Path, inventory: dict[str, str]) -> bool:
+    """Replace only the public Argo CD hostname placeholder in a private seed."""
+    text = read_bounded_text(path, encoding="utf-8")
+    placeholder = "argocd.<PLATFORM_DOMAIN>"
+    if placeholder not in text:
+        return False
+
+    host = argocd_host(inventory)
+    rendered = text.replace(placeholder, host)
+    if placeholder in rendered:
+        raise SystemExit(
+            f"Argo CD values still contain the unresolved hostname placeholder: {path}"
+        )
+    changed = rendered != text
+    if changed:
+        atomic_write_text(path, rendered)
+    return changed
+
+
 def render_argocd(path: Path, inventory: dict[str, str]) -> bool:
-    host = require(
-        "PLATFORM_ARGOCD_HOST or platform_argocd_host",
-        platform_host(
-            "PLATFORM_ARGOCD_HOST",
-            inventory,
-            ("platform_argocd_host",),
-            "argocd",
-        ),
-    )
+    host = argocd_host(inventory)
 
     text = read_bounded_text(path, encoding="utf-8")
     sso_enabled = platform_sso_enabled()
@@ -4433,6 +4461,14 @@ def main() -> int:
         default=Path("gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml"),
     )
     parser.add_argument(
+        "--refresh-argocd-host",
+        action="store_true",
+        help=(
+            "Refresh only Argo CD's public hostname placeholder without changing "
+            "private SSO, admin, storage, or sync settings."
+        ),
+    )
+    parser.add_argument(
         "--skip-forgejo",
         action="store_true",
         help="Leave Forgejo values unchanged; useful for focused Woodpecker reconciliation.",
@@ -4696,6 +4732,13 @@ def main() -> int:
         print(f"PLATFORM_POLICY_ENFORCEMENT={os.environ.get('PLATFORM_POLICY_ENFORCEMENT', 'Audit')}")
         print(f"PLATFORM_IMAGE_INTEGRITY_MODE={os.environ.get('PLATFORM_IMAGE_INTEGRITY_MODE', 'disabled')}")
         return 0 if host else 1
+
+    if (
+        args.refresh_argocd_host
+        and args.argocd_values.exists()
+        and refresh_argocd_host(args.argocd_values, inventory)
+    ):
+        changed.append(str(args.argocd_values))
 
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
         changed.append(str(args.argocd_values))
