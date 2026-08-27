@@ -69,6 +69,7 @@ required = [
     'ansible/playbooks/verify-platform-tls.yml',
     'scripts/complete_tls_chain.sh',
     'scripts/repair_woodpecker_oauth_tls.sh',
+    'scripts/reconcile_forgejo_tls_routes.py',
     'ansible/playbooks/repair-platform-service-path-consumers.yml',
     'ansible/playbooks/repair-woodpecker.yml',
     'ansible/playbooks/repair-woodpecker-service-path-nodes.yml',
