@@ -143,38 +143,60 @@ PY
 ingress_address="$(sed -n 's/^address=//p' "${work_directory}/ingress-selection" | head -1)"
 mapfile -t tls_secrets < <(sed -n 's/^secret=//p' "${work_directory}/ingress-selection")
 tls_route="$(sed -n 's/^tls_route=//p' "${work_directory}/ingress-selection" | head -1)"
-if [ "${#tls_secrets[@]}" -lt 1 ]; then
-  if [ "${tls_route}" = "true" ] &&
-    "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
-      get "secret/${forgejo_tls_secret_name}" >/dev/null 2>&1; then
-    tls_secrets=("${forgejo_tls_secret_name}")
-    # Older fallback routes enabled TLS without naming the managed Secret.
-    # Repair only the known platform resources; explicit custom Secrets stay untouched.
-    for ingress_name in platform-forgejo forgejo; do
-      if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
-        get "ingress/${ingress_name}" >/dev/null 2>&1; then
+repair_known_forgejo_tls_bindings() {
+  local current_secret=""
+  local ingress_name=""
+
+  # The chart Ingress and the endpoint-mode fallback are both platform-owned.
+  # Reconcile both so an old route cannot keep Traefik on its default certificate.
+  for ingress_name in platform-forgejo forgejo; do
+    if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+      get "ingress/${ingress_name}" >/dev/null 2>&1; then
+      current_secret="$(
+        "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+          get "ingress/${ingress_name}" -o jsonpath='{.spec.tls[0].secretName}' 2>/dev/null || true
+      )"
+      if [ "${current_secret}" != "${forgejo_tls_secret_name}" ]; then
         "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo patch \
           "ingress/${ingress_name}" --type=merge \
           -p "{\"spec\":{\"tls\":[{\"hosts\":[\"${forgejo_host}\"],\"secretName\":\"${forgejo_tls_secret_name}\"}]}}" \
           >/dev/null
         echo "forgejo_ingress_tls_binding=${ingress_name} secret=${forgejo_tls_secret_name} state=repaired"
       fi
-    done
-    if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
-      get ingressroute/forgejo-http >/dev/null 2>&1; then
+    fi
+  done
+
+  if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+    get ingressroute/forgejo-http >/dev/null 2>&1; then
+    current_secret="$(
+      "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+        get ingressroute/forgejo-http -o jsonpath='{.spec.tls.secretName}' 2>/dev/null || true
+    )"
+    if [ "${current_secret}" != "${forgejo_tls_secret_name}" ]; then
       "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo patch \
         ingressroute/forgejo-http --type=merge \
         -p "{\"spec\":{\"tls\":{\"secretName\":\"${forgejo_tls_secret_name}\"}}}" \
         >/dev/null
       echo "forgejo_ingressroute_tls_binding=forgejo-http secret=${forgejo_tls_secret_name} state=repaired"
     fi
-  elif [ "${tls_route}" = "true" ]; then
+  fi
+}
+
+if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+  get "secret/${forgejo_tls_secret_name}" >/dev/null 2>&1; then
+  # Always normalize platform-owned bindings, even when the chart Ingress already
+  # names the Secret. This also repairs stale IngressRoutes left by older fallbacks.
+  tls_secrets=("${forgejo_tls_secret_name}")
+  if [ "${auto_repair}" = "true" ]; then
+    repair_known_forgejo_tls_bindings
+  fi
+elif [ "${#tls_secrets[@]}" -lt 1 ]; then
+  if [ "${tls_route}" = "true" ]; then
     echo "result=fail reason=forgejo-ingress-tls-material-missing resource=forgejo/${forgejo_tls_secret_name} host=${forgejo_host}"
     exit 1
-  else
-    echo "result=fail reason=forgejo-ingress-tls-secret-missing host=${forgejo_host}"
-    exit 1
   fi
+  echo "result=fail reason=forgejo-ingress-tls-secret-missing host=${forgejo_host}"
+  exit 1
 fi
 if [ -z "${ingress_address}" ]; then
   ingress_address="$(
@@ -402,3 +424,4 @@ done
 tail -20 "${work_directory}/served-probe" || true
 echo "result=fail reason=forgejo-oauth-tls-chain-did-not-converge repaired=${repaired}"
 exit 1
+

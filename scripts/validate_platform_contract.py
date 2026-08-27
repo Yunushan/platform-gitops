@@ -3145,6 +3145,8 @@ def main() -> None:
         "traefik-serial-refresh-timeout",
         "matching-wildcard-leaf-fingerprint",
         "reconcile_matching_tls_secrets",
+        "repair_known_forgejo_tls_bindings",
+        'tls_secrets=("${forgejo_tls_secret_name}")',
     ):
         require_text(
             woodpecker_tls_repair_helper_text,
@@ -3922,6 +3924,28 @@ def main() -> None:
             forgejo_ingress_publish_text,
             needle,
             f"Forgejo ingress result selection must tolerate skipped tasks: {needle}",
+        )
+    endpoint_fallback_start = forgejo_ingress_publish_text.find(
+        "Retry Forgejo ingress with endpoint load balancing after native path failure"
+    )
+    endpoint_fallback_end = forgejo_ingress_publish_text.find(
+        "Verify Forgejo ingress after endpoint-mode fallback",
+        endpoint_fallback_start,
+    )
+    if endpoint_fallback_start < 0 or endpoint_fallback_end < 0:
+        fail("Forgejo endpoint-mode fallback task could not be located")
+    endpoint_fallback_text = forgejo_ingress_publish_text[
+        endpoint_fallback_start:endpoint_fallback_end
+    ]
+    require_text(
+        endpoint_fallback_text,
+        '"secretName": "forgejo-tls"',
+        "Forgejo endpoint-mode fallback must retain the managed TLS Secret",
+    )
+    if '"tls": {}' in endpoint_fallback_text:
+        fail(
+            "Forgejo endpoint-mode fallback must not select Traefik's "
+            "self-signed default certificate"
         )
     profile_check_text = read(profile_check_script)
     profile_check_test_text = read(profile_check_test)
