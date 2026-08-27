@@ -5745,6 +5745,7 @@ def main() -> None:
         fail("seed sync must expose an explicit private-render scope")
     for needle in (
         "PLATFORM_AUTO_RENDER_SCOPE must be all or woodpecker.",
+        "--refresh-argocd-host",
         "--refresh-forgejo-release-pin",
         "--refresh-forgejo-postgres-tls",
         "--skip-forgejo",

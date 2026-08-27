@@ -86,8 +86,9 @@ make platform-woodpecker-repair
 ```
 
 It reconciles Woodpecker's focused secrets and private seed source before Argo
-CD service repair, so stale public placeholders cannot block private-state
-recovery. It then hard-refreshes and syncs the application, waits for the server
+CD service repair, including a hostname-only refresh when the private seed still
+contains the public `argocd.<PLATFORM_DOMAIN>` placeholder, so stale public
+placeholders cannot block private-state recovery. It then hard-refreshes and syncs the application, waits for the server
 and agents, verifies the runtime image tags, refreshes service-path consumers,
 and runs `make platform-ci-health`. An unrelated Harbor S3 or backup credential
 cannot block this focused workflow. Use `make platform-app-secrets` to enforce

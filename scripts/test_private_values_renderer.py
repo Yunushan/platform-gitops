@@ -200,6 +200,21 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
     with tempfile.TemporaryDirectory(prefix="platform-woodpecker-render-") as tmp:
         repo = Path(tmp)
         inventory_path = write(repo / "inventory/hosts.local.ini", TEST_INVENTORY)
+        argocd_path = write(
+            repo / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml",
+            "global:\n"
+            "  domain: argocd.<PLATFORM_DOMAIN>\n"
+            "server:\n"
+            "  ingress:\n"
+            "    hostname: argocd.<PLATFORM_DOMAIN>\n"
+            "    tls:\n"
+            "      - hosts:\n"
+            "          - argocd.<PLATFORM_DOMAIN>\n"
+            "configs:\n"
+            "  cm:\n"
+            "    admin.enabled: \"false\"\n"
+            "    private.setting: retained\n",
+        )
         forgejo_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml",
             'image:\n  rootless: true\n  tag: "14.0.0"\n\n'
@@ -241,10 +256,14 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
                 str(RENDERER_PATH),
                 "--inventory",
                 str(inventory_path),
+                "--argocd-values",
+                str(argocd_path),
                 "--forgejo-values",
                 str(forgejo_path),
                 "--woodpecker-values",
                 str(woodpecker_path),
+                "--refresh-argocd-host",
+                "--skip-argocd",
                 "--skip-forgejo",
                 "--refresh-forgejo-postgres-tls",
                 "--refresh-forgejo-release-pin",
@@ -283,7 +302,32 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
         )
         if renderer.refresh_forgejo_postgres_tls(forgejo_path):
             raise AssertionError("focused Forgejo PostgreSQL TLS refresh is not idempotent")
+        assert_contains(
+            argocd_path,
+            "domain: argocd.example.test",
+            "hostname: argocd.example.test",
+            "- argocd.example.test",
+            "private.setting: retained",
+        )
+        assert_not_contains(argocd_path, "argocd.<PLATFORM_DOMAIN>")
+        if renderer.refresh_argocd_host(argocd_path, renderer.read_inventory_vars(inventory_path)):
+            raise AssertionError("focused Argo CD hostname refresh is not idempotent")
         assert_contains(woodpecker_path, 'WOODPECKER_HOST: "https://ci.example.test"')
+
+
+def test_focused_argocd_host_refresh_preserves_private_hostname(renderer) -> None:
+    """A private Argo CD hostname is never rewritten by the focused refresh."""
+    with tempfile.TemporaryDirectory(prefix="platform-argocd-host-refresh-") as tmp:
+        argocd_path = write(
+            Path(tmp) / "values.yaml",
+            "global:\n  domain: argocd.private.example.test\n"
+            "configs:\n  cm:\n    private.setting: retained\n",
+        )
+        inventory = renderer.read_inventory_vars(write(Path(tmp) / "hosts.ini", TEST_INVENTORY))
+        with patched_env({}):
+            if renderer.refresh_argocd_host(argocd_path, inventory):
+                raise AssertionError("focused Argo CD refresh rewrote an existing private hostname")
+        assert_contains(argocd_path, "argocd.private.example.test", "private.setting: retained")
 
 
 def test_focused_forgejo_tls_preserves_private_object_storage(renderer) -> None:
@@ -677,6 +721,7 @@ def main() -> int:
     contract_validator = load_contract_validator()
     test_forgejo_image_matches_reviewed_chart(renderer)
     test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer)
+    test_focused_argocd_host_refresh_preserves_private_hostname(renderer)
     test_focused_forgejo_tls_preserves_private_object_storage(renderer)
     test_focused_forgejo_tls_rejects_ambiguous_legacy_database(renderer)
     test_focused_forgejo_tls_honors_chart_config_precedence(renderer)
