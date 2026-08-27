@@ -15,6 +15,7 @@ convergence_timeout="$2"
 chain_helper="$3"
 kubectl_bin="${KUBECTL_BIN:-/var/lib/rancher/rke2/bin/kubectl}"
 kubeconfig_path="${KUBECONFIG_PATH:-/etc/rancher/rke2/rke2.yaml}"
+forgejo_tls_secret_name="forgejo-tls"
 
 case "${auto_repair}" in
   true|false) ;;
@@ -115,6 +116,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 wanted = sys.argv[2]
 secrets = set()
 addresses = []
+matched_tls = False
 for ingress in data.get("items", []):
     spec = ingress.get("spec", {})
     rule_hosts = {str(rule.get("host") or "") for rule in spec.get("rules", [])}
@@ -126,19 +128,53 @@ for ingress in data.get("items", []):
             addresses.append(address)
     for tls in spec.get("tls", []) or []:
         tls_hosts = {str(host) for host in tls.get("hosts", []) or []}
+        if tls_hosts and wanted not in tls_hosts:
+            continue
+        matched_tls = True
         secret = str(tls.get("secretName") or "").strip()
-        if secret and (not tls_hosts or wanted in tls_hosts):
+        if secret:
             secrets.add(secret)
 print(f"address={addresses[0] if addresses else ''}")
+print(f"tls_route={'true' if matched_tls else 'false'}")
 for secret in sorted(secrets):
     print(f"secret={secret}")
 PY
 
 ingress_address="$(sed -n 's/^address=//p' "${work_directory}/ingress-selection" | head -1)"
 mapfile -t tls_secrets < <(sed -n 's/^secret=//p' "${work_directory}/ingress-selection")
+tls_route="$(sed -n 's/^tls_route=//p' "${work_directory}/ingress-selection" | head -1)"
 if [ "${#tls_secrets[@]}" -lt 1 ]; then
-  echo "result=fail reason=forgejo-ingress-tls-secret-missing host=${forgejo_host}"
-  exit 1
+  if [ "${tls_route}" = "true" ] &&
+    "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+      get "secret/${forgejo_tls_secret_name}" >/dev/null 2>&1; then
+    tls_secrets=("${forgejo_tls_secret_name}")
+    # Older fallback routes enabled TLS without naming the managed Secret.
+    # Repair only the known platform resources; explicit custom Secrets stay untouched.
+    for ingress_name in platform-forgejo forgejo; do
+      if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+        get "ingress/${ingress_name}" >/dev/null 2>&1; then
+        "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo patch \
+          "ingress/${ingress_name}" --type=merge \
+          -p "{\"spec\":{\"tls\":[{\"hosts\":[\"${forgejo_host}\"],\"secretName\":\"${forgejo_tls_secret_name}\"}]}}" \
+          >/dev/null
+        echo "forgejo_ingress_tls_binding=${ingress_name} secret=${forgejo_tls_secret_name} state=repaired"
+      fi
+    done
+    if "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
+      get ingressroute/forgejo-http >/dev/null 2>&1; then
+      "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo patch \
+        ingressroute/forgejo-http --type=merge \
+        -p "{\"spec\":{\"tls\":{\"secretName\":\"${forgejo_tls_secret_name}\"}}}" \
+        >/dev/null
+      echo "forgejo_ingressroute_tls_binding=forgejo-http secret=${forgejo_tls_secret_name} state=repaired"
+    fi
+  elif [ "${tls_route}" = "true" ]; then
+    echo "result=fail reason=forgejo-ingress-tls-material-missing resource=forgejo/${forgejo_tls_secret_name} host=${forgejo_host}"
+    exit 1
+  else
+    echo "result=fail reason=forgejo-ingress-tls-secret-missing host=${forgejo_host}"
+    exit 1
+  fi
 fi
 if [ -z "${ingress_address}" ]; then
   ingress_address="$(
