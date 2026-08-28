@@ -96,16 +96,8 @@ def test_forgejo_route_reconciliation() -> None:
         }
     }
     ingress_patch = build_patch(stale_ingress, "Ingress", "forgejo", target_host, canonical_secret)
-    if not ingress_patch:
-        raise AssertionError("stale platform Ingress did not produce a route repair patch")
-    rule_patch = next(item for item in ingress_patch if item["path"] == "/spec/rules/0/host")
-    if rule_patch["value"] != target_host:
-        raise AssertionError("platform Ingress host was not reconciled to Woodpecker's host")
-    tls_patch = next(item for item in ingress_patch if item["path"] == "/spec/tls")
-    if tls_patch["value"][0]["secretName"] != "custom-tls":
-        raise AssertionError("explicit custom Ingress TLS Secret was replaced")
-    if target_host not in tls_patch["value"][0]["hosts"]:
-        raise AssertionError("repaired Ingress TLS entry does not cover the live host")
+    if ingress_patch:
+        raise AssertionError("stale Woodpecker host was allowed to rewrite the Forgejo Ingress")
 
     empty_fallback = {
         "spec": {
@@ -151,8 +143,27 @@ def test_forgejo_route_reconciliation() -> None:
         target_host,
         canonical_secret,
     )
-    if not any(item["path"] == "/spec/routes/0/match" and target_host in item["value"] for item in route_patch):
-        raise AssertionError("stale platform IngressRoute host was not reconciled")
+    if route_patch:
+        raise AssertionError("stale Woodpecker host was allowed to rewrite the Forgejo IngressRoute")
+
+    matching_route = {
+        "spec": {
+            "routes": [
+                {
+                    "match": f"Host(`{target_host}`) && PathPrefix(`/`)",
+                    "kind": "Rule",
+                }
+            ],
+            "tls": {},
+        }
+    }
+    route_patch = build_patch(
+        matching_route,
+        "IngressRoute",
+        "forgejo-http",
+        target_host,
+        canonical_secret,
+    )
     route_tls = next(item for item in route_patch if item["path"] == "/spec/tls")
     if route_tls["value"].get("secretName") != canonical_secret:
         raise AssertionError("empty platform IngressRoute TLS binding did not select forgejo-tls")
@@ -781,8 +792,18 @@ gitea:
         "traefik-serial-refresh-timeout",
         "matching-wildcard-leaf-fingerprint",
         "reconcile_matching_tls_secrets",
+        "woodpecker-forgejo-url-route-drift",
+        "forgejo-route-hosts-ambiguous",
+        "platform_route_hosts",
     ):
         require(woodpecker_tls_repair_helper, needle, "Woodpecker OAuth TLS repair helper")
+    for needle in (
+        "woodpecker_forgejo_url_repair=true",
+        "reconcile-woodpecker-gitops-source.sh",
+        "forgejo_ingress_repair=true",
+        "applying the canonical Forgejo ingress contract",
+    ):
+        require(makefile, needle, "Woodpecker classified prerequisite recovery")
     test_forgejo_route_reconciliation()
     test_woodpecker_route_reconciler_bundle()
     test_public_tls_chain_completion()

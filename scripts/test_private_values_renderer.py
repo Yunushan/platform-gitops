@@ -199,7 +199,11 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
     """A Woodpecker render restores bounded Forgejo contracts without private dependencies."""
     with tempfile.TemporaryDirectory(prefix="platform-woodpecker-render-") as tmp:
         repo = Path(tmp)
-        inventory_path = write(repo / "inventory/hosts.local.ini", TEST_INVENTORY)
+        focused_inventory = TEST_INVENTORY.replace(
+            "platform_git_host=git.example.test\n",
+            "",
+        )
+        inventory_path = write(repo / "inventory/hosts.local.ini", focused_inventory)
         argocd_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/values.yaml",
             "global:\n"
@@ -218,14 +222,15 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
         forgejo_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/forgejo/values.yaml",
             'image:\n  rootless: true\n  tag: "14.0.0"\n\n'
-            'ingress:\n  hosts:\n    - host: forgejo.private.example.test\n\n'
+            'ingress:\n  hosts:\n    - host: code.private.example.test\n\n'
             'gitea:\n'
             '  additionalConfigFromEnvs:\n'
             '    - name: PRIVATE_FEATURE_FLAG\n'
             '      value: enabled\n'
             '  config:\n'
             '    server:\n'
-            '      DOMAIN: forgejo.private.example.test\n'
+            '      DOMAIN: code.private.example.test\n'
+            '      ROOT_URL: https://code.private.example.test/\n'
             '    database:\n'
             '      DB_TYPE: postgres\n'
             '      HOST: private-postgres.private-databases.svc.cluster.local:5432\n'
@@ -279,8 +284,8 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
         assert_contains(
             forgejo_path,
             'tag: "15.0.6"',
-            "host: forgejo.private.example.test",
-            "DOMAIN: forgejo.private.example.test",
+            "host: code.private.example.test",
+            "DOMAIN: code.private.example.test",
             "PRIVATE_FEATURE_FLAG",
             "HOST: private-postgres.private-databases.svc.cluster.local:5432",
             "NAME: private-forgejo",
@@ -312,7 +317,47 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
         assert_not_contains(argocd_path, "argocd.<PLATFORM_DOMAIN>")
         if renderer.refresh_argocd_host(argocd_path, renderer.read_inventory_vars(inventory_path)):
             raise AssertionError("focused Argo CD hostname refresh is not idempotent")
-        assert_contains(woodpecker_path, 'WOODPECKER_HOST: "https://ci.example.test"')
+        assert_contains(
+            woodpecker_path,
+            'WOODPECKER_HOST: "https://ci.example.test"',
+            'WOODPECKER_FORGEJO_URL: "https://code.private.example.test"',
+        )
+
+
+def test_focused_woodpecker_rejects_ambiguous_forgejo_host(renderer) -> None:
+    """Focused reconciliation fails closed when preserved Forgejo routes disagree."""
+    with tempfile.TemporaryDirectory(prefix="platform-woodpecker-host-drift-") as tmp:
+        repo = Path(tmp)
+        inventory = renderer.read_inventory_vars(
+            write(
+                repo / "inventory/hosts.local.ini",
+                TEST_INVENTORY.replace("platform_git_host=git.example.test\n", ""),
+            )
+        )
+        forgejo_path = write(
+            repo / "forgejo-values.yaml",
+            "ingress:\n"
+            "  hosts:\n"
+            "    - host: routed.example.test\n"
+            "gitea:\n"
+            "  config:\n"
+            "    server:\n"
+            "      DOMAIN: configured.example.test\n",
+        )
+        woodpecker_path = write(repo / "woodpecker-values.yaml")
+
+        with patched_env({}):
+            try:
+                renderer.render_woodpecker(
+                    woodpecker_path,
+                    inventory,
+                    forgejo_path,
+                )
+            except SystemExit as exc:
+                if "existing Forgejo public hostname is inconsistent" not in str(exc):
+                    raise AssertionError(f"unexpected Forgejo hostname drift error: {exc}") from exc
+            else:
+                raise AssertionError("focused Woodpecker render accepted ambiguous Forgejo hosts")
 
 
 def test_focused_argocd_host_refresh_preserves_private_hostname(renderer) -> None:
@@ -721,6 +766,7 @@ def main() -> int:
     contract_validator = load_contract_validator()
     test_forgejo_image_matches_reviewed_chart(renderer)
     test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer)
+    test_focused_woodpecker_rejects_ambiguous_forgejo_host(renderer)
     test_focused_argocd_host_refresh_preserves_private_hostname(renderer)
     test_focused_forgejo_tls_preserves_private_object_storage(renderer)
     test_focused_forgejo_tls_rejects_ambiguous_legacy_database(renderer)

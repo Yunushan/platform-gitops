@@ -112,6 +112,57 @@ if ! "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n forgejo \
   printf '%s\n' '{"items":[]}' >"${work_directory}/ingressroutes.json"
 fi
 
+mapfile -t platform_route_hosts < <(
+  python3 - "${work_directory}/ingresses.json" "${work_directory}/ingressroutes.json" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    ingresses = json.load(handle)
+with open(sys.argv[2], encoding="utf-8") as handle:
+    ingressroutes = json.load(handle)
+
+hosts = set()
+for ingress in ingresses.get("items", []):
+    if str(ingress.get("metadata", {}).get("name") or "") not in {
+        "forgejo",
+        "platform-forgejo",
+    }:
+        continue
+    for rule in ingress.get("spec", {}).get("rules", []) or []:
+        if isinstance(rule, dict):
+            host = str(rule.get("host") or "").strip().lower().rstrip(".")
+            if host:
+                hosts.add(host)
+
+host_term = re.compile(r"Host\s*\(\s*([`\"'])([^`\"']+)\1\s*\)")
+for ingressroute in ingressroutes.get("items", []):
+    if str(ingressroute.get("metadata", {}).get("name") or "") != "forgejo-http":
+        continue
+    for route in ingressroute.get("spec", {}).get("routes", []) or []:
+        if not isinstance(route, dict):
+            continue
+        for match in host_term.finditer(str(route.get("match") or "")):
+            host = match.group(2).strip().lower().rstrip(".")
+            if host:
+                hosts.add(host)
+
+for host in sorted(hosts):
+    print(host)
+PY
+)
+if [ "${#platform_route_hosts[@]}" -gt 1 ]; then
+  printf 'result=fail reason=forgejo-route-hosts-ambiguous hosts=%s\n' \
+    "$(IFS=,; echo "${platform_route_hosts[*]}")"
+  exit 1
+fi
+if [ "${#platform_route_hosts[@]}" -eq 1 ] && \
+  [ "${platform_route_hosts[0]}" != "${forgejo_host}" ]; then
+  echo "result=fail reason=woodpecker-forgejo-url-route-drift woodpecker_host=${forgejo_host} route_host=${platform_route_hosts[0]}"
+  exit 1
+fi
+
 refresh_ingress_selection() {
   python3 - "${work_directory}/ingresses.json" "${work_directory}/ingressroutes.json" "${forgejo_host}" \
     >"${work_directory}/ingress-selection" <<'PY'
@@ -189,8 +240,8 @@ repair_known_forgejo_tls_bindings() {
     return 1
   fi
 
-  # Inspect every Forgejo route.  The Python helper limits mutations to the
-  # platform-owned names or routes already matching the live OAuth hostname.
+  # Inspect every Forgejo route. The Python helper only completes TLS bindings
+  # on routes that already match the canonical OAuth hostname.
   for kind in Ingress IngressRoute; do
     if [ "${kind}" = "Ingress" ]; then
       collection="${work_directory}/ingresses.json"
