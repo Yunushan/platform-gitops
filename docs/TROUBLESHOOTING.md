@@ -469,6 +469,16 @@ remain unchanged. Internal hostnames are allowed only in that isolated private
 checkout; plaintext credentials, private keys, kubeconfigs, and private IPs
 remain blocked by the safety scanner.
 
+Before touching Argo CD or ingress, the same repair loads the selected ignored
+deployment environment and reconciles Woodpecker plus its direct Forgejo
+database, Redis, and object-storage Secrets. Explicitly exported values take
+precedence; `PLATFORM_WOODPECKER_REPAIR_ENV_FILE` can select a dedicated file.
+If `forgejo/forgejo-object-storage` was deleted, the repair recreates it from
+`FORGEJO_S3_ACCESS_KEY_ID` and `FORGEJO_S3_SECRET_ACCESS_KEY` (or the shared AWS
+credential variables). If those values are unavailable, it stops immediately
+with the missing-credential message instead of misclassifying the unready
+Forgejo backend as an ingress TLS failure.
+
 The repair verifies Forgejo from the ingress VIP with SNI and the system trust
 store. If an intermediate is missing, it completes the existing Forgejo TLS
 Secret from the certificate's cryptographically verified CA Issuers AIA path,

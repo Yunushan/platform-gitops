@@ -138,6 +138,7 @@ argocd_service_repair_playbook = root / "ansible/playbooks/repair-argocd-service
 service_path_consumers_playbook = root / "ansible/playbooks/repair-platform-service-path-consumers.yml"
 woodpecker_repair_playbook = root / "ansible/playbooks/repair-woodpecker.yml"
 woodpecker_gitops_source_reconciler = root / "scripts/bootstrap/reconcile-woodpecker-gitops-source.sh"
+woodpecker_secret_reconciler = root / "scripts/bootstrap/run-woodpecker-secret-reconcile.sh"
 woodpecker_service_path_nodes_playbook = root / "ansible/playbooks/repair-woodpecker-service-path-nodes.yml"
 cilium_vxlan_overlay_repair_playbook = root / "ansible/playbooks/repair-cilium-vxlan-overlay.yml"
 longhorn_runtime_repair_playbook = root / "ansible/playbooks/repair-longhorn-runtime.yml"
@@ -4368,7 +4369,7 @@ def main() -> None:
     argocd_repair = "@$(MAKE) platform-argocd-service-repair"
     consumer_refresh = "@$(MAKE) platform-service-path-consumers-repair"
     strict_repair = "ansible/playbooks/repair-woodpecker.yml"
-    focused_secret_repair = "ansible/playbooks/configure-platform-app-secrets.yml --tags woodpecker"
+    focused_secret_repair = "scripts/bootstrap/run-woodpecker-secret-reconcile.sh"
     gitops_source_reconcile = "scripts/bootstrap/reconcile-woodpecker-gitops-source.sh"
     pressure_cleanup = "$(MAKE) platform-node-storage-cleanup"
     first_consumer_refresh = woodpecker_repair_body.find(consumer_refresh)
@@ -4392,12 +4393,13 @@ def main() -> None:
     if "@$(MAKE) platform-dns-repair" in woodpecker_repair_body:
         fail("platform-woodpecker-repair must not duplicate the Argo CD DNS/API service-path preflight")
     if focused_secret_repair not in woodpecker_repair_body:
-        fail("platform-woodpecker-repair must reconcile only Woodpecker application secrets")
+        fail("platform-woodpecker-repair must reconcile Woodpecker and its direct Forgejo secrets")
     if "@$(MAKE) platform-app-secrets" in woodpecker_repair_body:
         fail("platform-woodpecker-repair must not enforce unrelated platform application secrets")
     woodpecker_gitops_source_reconciler_text = read(woodpecker_gitops_source_reconciler)
     for needle in (
         "PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS",
+        "PLATFORM_WOODPECKER_REPAIR_ENV_FILE",
         "git clone --quiet --no-hardlinks --no-checkout",
         'cd "${seed_checkout}"',
         "PLATFORM_SEED_SYNC_PULL=false",
@@ -4463,6 +4465,25 @@ def main() -> None:
         ):
             fail(f"platform app secret task must carry the Woodpecker focus tag: {task_name}")
     for task_name in (
+        "Reject plaintext Forgejo cache transport in production mode",
+        "Generate or preserve Forgejo external database password secret",
+        "Check Forgejo external database password secret state",
+        "Generate or preserve Forgejo Redis URI secret",
+        "Check Forgejo Redis URI secret state",
+        "Generate or preserve Forgejo object storage credentials secret",
+        "Check Forgejo object storage credentials secret state",
+        "Require Forgejo production dependency secrets when enabled",
+    ):
+        task = re.search(
+            rf"(?ms)^    - name: {re.escape(task_name)}\n(?P<body>.*?)(?=^    - name:|\Z)",
+            app_secrets_text,
+        )
+        if not task or not re.search(
+            r"(?m)^      tags:\n        - forgejo$",
+            task.group("body"),
+        ):
+            fail(f"platform app secret task must carry the Forgejo focus tag: {task_name}")
+    for task_name in (
         "Generate or preserve Harbor bootstrap secrets",
         "Generate or preserve Harbor external database password secret",
         "Check Harbor external database password secret state",
@@ -4482,16 +4503,24 @@ def main() -> None:
             task.group("body"),
         ):
             fail(f"platform app secret task must carry the Harbor focus tag: {task_name}")
+    woodpecker_secret_reconciler_text = read(woodpecker_secret_reconciler)
     for needle in (
+        "PLATFORM_WOODPECKER_REPAIR_ENV_FILE",
+        "PLATFORM_SEED_DEPLOY_ENV_FILE",
+        "PLATFORM_FIRST_DEPLOY_ENV_FILE",
+        "private/seed-git.env",
+        "private/first-deploy.env",
+        'load_env_file "${env_file}" preserve-existing',
         "PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=false",
         "PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=false",
         "PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=false",
-        "--tags woodpecker --skip-tags harbor",
+        "--tags forgejo,woodpecker",
+        "--skip-tags harbor",
     ):
         require_text(
-            makefile_text,
+            woodpecker_secret_reconciler_text,
             needle,
-            f"platform-woodpecker-repair must isolate Harbor secret gates with {needle}",
+            f"Woodpecker secret reconciliation must preserve its focused dependency boundary with {needle}",
         )
     longhorn_runtime_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-runtime-repair")
     longhorn_bootstrap_index = woodpecker_repair_body.find("$(MAKE) platform-longhorn-bootstrap")
