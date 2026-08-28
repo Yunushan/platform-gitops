@@ -5062,6 +5062,10 @@ def main() -> None:
         "cilium-health status --verbose",
         "cilium-dbg bpf tunnel list",
         "make platform-woodpecker-repair",
+        "source: bounded_file.py",
+        "source: strict_json.py",
+        "- bounded_file.py",
+        "- strict_json.py",
     ):
         require_text(
             woodpecker_repair_text,
