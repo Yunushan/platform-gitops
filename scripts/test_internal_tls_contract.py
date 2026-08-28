@@ -167,6 +167,21 @@ def test_forgejo_route_reconciliation() -> None:
         raise AssertionError("explicit custom IngressRoute TLS binding was modified")
 
 
+def test_woodpecker_route_reconciler_bundle() -> None:
+    playbook = read(WOODPECKER_REPAIR_PLAYBOOK)
+    for dependency in ("bounded_file.py", "strict_json.py"):
+        require(
+            playbook,
+            f"source: {dependency}",
+            "Woodpecker TLS route reconciler bundle",
+        )
+        require(
+            playbook,
+            f"- {dependency}",
+            "Woodpecker TLS route reconciler cleanup",
+        )
+
+
 def test_public_tls_chain_completion() -> None:
     if os.name == "nt":
         print("Public TLS chain behavior test skipped on Windows; static contract still enforced.")
@@ -769,6 +784,7 @@ gitea:
     ):
         require(woodpecker_tls_repair_helper, needle, "Woodpecker OAuth TLS repair helper")
     test_forgejo_route_reconciliation()
+    test_woodpecker_route_reconciler_bundle()
     test_public_tls_chain_completion()
 
     for needle in (

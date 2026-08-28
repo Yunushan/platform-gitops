@@ -77,6 +77,13 @@
           destination: platform-woodpecker-repair-oauth-tls.sh
         - source: reconcile_forgejo_tls_routes.py
           destination: platform-woodpecker-reconcile-forgejo-tls-routes.py
+        # The route reconciler imports these shared parsers.  Keep the
+        # temporary remote bundle self-contained instead of relying on the
+        # repository checkout being present on the RKE2 server.
+        - source: bounded_file.py
+          destination: bounded_file.py
+        - source: strict_json.py
+          destination: strict_json.py
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       tags:
@@ -105,6 +112,8 @@
         - platform-woodpecker-complete-tls-chain.sh
         - platform-woodpecker-repair-oauth-tls.sh
         - platform-woodpecker-reconcile-forgejo-tls-routes.py
+        - bounded_file.py
+        - strict_json.py
       delegate_to: "{{ rke2_first_server }}"
       run_once: true
       tags:
