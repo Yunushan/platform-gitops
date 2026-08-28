@@ -231,6 +231,112 @@ def platform_host(
     return f"{default_prefix}.{domain}" if domain else ""
 
 
+def normalize_forgejo_public_host(value: object, source: str, *, url: bool = False) -> str:
+    raw = str(value or "").strip()
+    if not raw or re.search(r"<[A-Z0-9_]+>", raw):
+        return ""
+    if url:
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        host = (parsed.hostname or "").rstrip(".").lower()
+    else:
+        host = raw.rstrip(".").lower()
+    labels = host.split(".")
+    if (
+        not host
+        or len(host) > 253
+        or any(
+            not label
+            or len(label) > 63
+            or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) is None
+            for label in labels
+        )
+    ):
+        raise SystemExit(f"{source} must contain a valid Forgejo hostname")
+    return host
+
+
+def existing_forgejo_public_host(path: Path) -> str:
+    """Read the canonical public host from an existing private Forgejo render."""
+    if not path.is_file():
+        return ""
+    try:
+        documents = loads_strict_yaml_all(read_bounded_text(path, encoding="utf-8"))
+    except StrictYamlError as exc:
+        raise SystemExit(f"cannot infer Forgejo hostname from invalid YAML {path}: {exc}") from exc
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        raise SystemExit(f"expected one Forgejo values mapping in {path}")
+
+    values = documents[0]
+    candidates: dict[str, set[str]] = {}
+
+    def add_candidate(value: object, source: str, *, url: bool = False) -> None:
+        host = normalize_forgejo_public_host(value, source, url=url)
+        if host:
+            candidates.setdefault(host, set()).add(source)
+
+    ingress = values.get("ingress")
+    if isinstance(ingress, dict):
+        hosts = ingress.get("hosts")
+        if isinstance(hosts, list):
+            for index, entry in enumerate(hosts):
+                if isinstance(entry, dict):
+                    add_candidate(
+                        entry.get("host"),
+                        f"{path}: ingress.hosts[{index}].host",
+                    )
+                elif isinstance(entry, str):
+                    add_candidate(entry, f"{path}: ingress.hosts[{index}]")
+
+    for chart_key in ("gitea", "forgejo"):
+        chart = values.get(chart_key)
+        config = chart.get("config") if isinstance(chart, dict) else None
+        server = config.get("server") if isinstance(config, dict) else None
+        if not isinstance(server, dict):
+            continue
+        add_candidate(server.get("DOMAIN"), f"{path}: {chart_key}.config.server.DOMAIN")
+        add_candidate(
+            server.get("ROOT_URL"),
+            f"{path}: {chart_key}.config.server.ROOT_URL",
+            url=True,
+        )
+
+    if len(candidates) > 1:
+        details = ", ".join(
+            f"{host} ({'; '.join(sorted(sources))})"
+            for host, sources in sorted(candidates.items())
+        )
+        raise SystemExit(
+            f"existing Forgejo public hostname is inconsistent in {path}: {details}"
+        )
+    return next(iter(candidates), "")
+
+
+def forgejo_public_host(
+    inventory: dict[str, str],
+    *,
+    existing_values_path: Path | None = None,
+) -> str:
+    """Resolve one Forgejo hostname without inventing drift during focused renders."""
+    host = env_or_inventory(
+        "PLATFORM_FORGEJO_HOST",
+        inventory,
+        "platform_forgejo_host",
+        "platform_git_host",
+    )
+    if not host:
+        host = env_or_inventory("PLATFORM_GIT_HOST", inventory, "platform_git_host")
+    if not host and existing_values_path is not None:
+        host = existing_forgejo_public_host(existing_values_path)
+    if not host:
+        domain = platform_domain(inventory)
+        host = f"forgejo.{domain}" if domain else ""
+    host = require("PLATFORM_FORGEJO_HOST or platform_git_host", host)
+    return normalize_forgejo_public_host(
+        host,
+        "PLATFORM_FORGEJO_HOST or platform_git_host",
+    )
+
+
 def argocd_host(inventory: dict[str, str]) -> str:
     host = require(
         "PLATFORM_ARGOCD_HOST or platform_argocd_host",
@@ -1874,24 +1980,7 @@ resources:
 
 
 def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
-    host = env_or_inventory(
-        "PLATFORM_FORGEJO_HOST",
-        inventory,
-        "platform_forgejo_host",
-        "platform_git_host",
-    )
-    if not host:
-        host = env_or_inventory("PLATFORM_GIT_HOST", inventory, "platform_git_host")
-    if not host:
-        domain = env_or_inventory(
-            "PLATFORM_DOMAIN",
-            inventory,
-            "platform_domain",
-            "rke2_platform_domain",
-        )
-        if domain:
-            host = f"forgejo.{domain}"
-    host = require("PLATFORM_FORGEJO_HOST or platform_git_host", host)
+    host = forgejo_public_host(inventory)
 
     data_size = os.environ.get("FORGEJO_DATA_SIZE", "20Gi").strip() or "20Gi"
     storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical-encrypted").strip()
@@ -2277,7 +2366,11 @@ def normalize_woodpecker_image_tag(image_tag: str) -> str:
     return tag
 
 
-def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
+def render_woodpecker(
+    path: Path,
+    inventory: dict[str, str],
+    forgejo_values_path: Path | None = None,
+) -> bool:
     host = require(
         "PLATFORM_WOODPECKER_HOST or platform_ci_host",
         platform_host(
@@ -2287,14 +2380,9 @@ def render_woodpecker(path: Path, inventory: dict[str, str]) -> bool:
             "woodpecker",
         ),
     )
-    forgejo_host = require(
-        "PLATFORM_FORGEJO_HOST or platform_git_host",
-        platform_host(
-            "PLATFORM_FORGEJO_HOST",
-            inventory,
-            ("platform_forgejo_host", "platform_git_host"),
-            "forgejo",
-        ),
+    forgejo_host = forgejo_public_host(
+        inventory,
+        existing_values_path=forgejo_values_path,
     )
     data_size = os.environ.get("WOODPECKER_DATA_SIZE", "10Gi").strip() or "10Gi"
     storage_class = os.environ.get("WOODPECKER_STORAGE_CLASS", "longhorn-standard-encrypted").strip() or "longhorn-standard-encrypted"
@@ -4781,7 +4869,11 @@ def main() -> int:
     if (
         not args.skip_woodpecker
         and args.woodpecker_values.exists()
-        and render_woodpecker(args.woodpecker_values, inventory)
+        and render_woodpecker(
+            args.woodpecker_values,
+            inventory,
+            args.forgejo_values,
+        )
     ):
         changed.append(str(args.woodpecker_values))
 

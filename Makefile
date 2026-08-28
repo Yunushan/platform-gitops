@@ -474,6 +474,8 @@ platform-woodpecker-repair:
 		service_path_repair=false; \
 		longhorn_runtime_repair=false; \
 		application_config_repair=false; \
+		forgejo_ingress_repair=false; \
+		woodpecker_forgejo_url_repair=false; \
 		scheduling_capacity=false; \
 		longhorn_bootstrap_ran=false; \
 		if grep -Eq 'reason=postgres-endpoint-path-unreachable|cnpg-webhook-service.*(i/o timeout|context deadline exceeded|connection refused)|failed calling webhook.*(cnpg|mcluster)|mcluster\.cnpg\.io.*context deadline exceeded|Instance Status Extraction Error: HTTP communication issue|:8000/(readyz|healthz|startupz).*(i/o timeout|context deadline exceeded|Client\.Timeout exceeded)' "$$repair_log"; then \
@@ -486,23 +488,35 @@ platform-woodpecker-repair:
 		if grep -Eq 'reason=woodpecker-postgres-ca-(bundle|mount|file|controller|container|source)-missing|open /etc/ssl/platform-postgres/ca-certificates\\.crt: no such file or directory' "$$repair_log"; then \
 			application_config_repair=true; \
 		fi; \
-		if grep -Eq 'reason=forgejo-ingress-tls-(secret|material)-missing|forgejo-oauth-tls-chain-(untrusted|did-not-converge)' "$$repair_log"; then \
+		if grep -Eq 'reason=forgejo-ingress-tls-(secret|material)-missing|reason=forgejo-route-hosts-ambiguous|forgejo-oauth-tls-chain-(untrusted|did-not-converge)' "$$repair_log"; then \
+			forgejo_ingress_repair=true; \
+		fi; \
+		if grep -Fq 'reason=woodpecker-forgejo-url-route-drift' "$$repair_log"; then \
 			application_config_repair=true; \
+			woodpecker_forgejo_url_repair=true; \
 		fi; \
 		if grep -Eq 'reason=woodpecker-scheduling-capacity-insufficient|reason=woodpecker-scheduling-blocked-by-node-taint' "$$repair_log"; then \
 			scheduling_capacity=true; \
 		fi; \
-		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair application_config=$$application_config_repair scheduling_capacity=$$scheduling_capacity"; \
-		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ] && [ "$$scheduling_capacity" != "true" ]; then \
-			echo "Woodpecker repair failed without a recognized PostgreSQL service-path, Longhorn CSI, application trust-bundle, or scheduling-capacity classification; automatic fallback skipped." >&2; \
+		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair application_config=$$application_config_repair forgejo_ingress=$$forgejo_ingress_repair scheduling_capacity=$$scheduling_capacity"; \
+		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ] && [ "$$forgejo_ingress_repair" != "true" ] && [ "$$scheduling_capacity" != "true" ]; then \
+			echo "Woodpecker repair failed without a recognized PostgreSQL service-path, Longhorn CSI, application configuration, Forgejo ingress, or scheduling-capacity classification; automatic fallback skipped." >&2; \
 			exit "$$repair_rc"; \
 		fi; \
-		if [ "$$scheduling_capacity" = "true" ] && [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ]; then \
+		if [ "$$scheduling_capacity" = "true" ] && [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ] && [ "$$forgejo_ingress_repair" != "true" ]; then \
 			echo "Woodpecker remains unschedulable after guarded disk-pressure cleanup. Add allocatable CPU or remove the reported non-DiskPressure taint; automatic repair will not reduce three-node HA or weaken hard topology spread." >&2; \
 			exit "$$repair_rc"; \
 		fi; \
-		if [ "$$application_config_repair" = "true" ]; then \
+		if [ "$$woodpecker_forgejo_url_repair" = "true" ]; then \
+			echo "Woodpecker's Forgejo OAuth URL drifted from the GitOps-owned route; re-rendering the private Woodpecker source and waiting for Argo CD reconciliation."; \
+			bash scripts/bootstrap/reconcile-woodpecker-gitops-source.sh; \
+			$(MAKE) platform-argocd-service-repair; \
+		elif [ "$$application_config_repair" = "true" ]; then \
 			echo "Woodpecker PostgreSQL trust-bundle configuration failed; refreshing the bundle and repairing the server mount before retry."; \
+		fi; \
+		if [ "$$forgejo_ingress_repair" = "true" ]; then \
+			echo "Forgejo's HTTPS route or TLS binding failed; applying the canonical Forgejo ingress contract before retry."; \
+			$(MAKE) platform-forgejo-ingress; \
 		fi; \
 		if [ "$$service_path_repair" = "true" ]; then \
 			echo "Woodpecker PostgreSQL or CloudNativePG service path failed; applying all-node CNI/firewalld recovery."; \

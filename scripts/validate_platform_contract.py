@@ -3153,6 +3153,9 @@ def main() -> None:
         "route_reconciler",
         "get ingressroute -o json",
         "refresh_ingress_selection",
+        "platform_route_hosts",
+        "woodpecker-forgejo-url-route-drift",
+        "forgejo-route-hosts-ambiguous",
         '--type=json --patch-file "${patch_json}"',
         "Re-read all routes before",
     ):
@@ -3162,10 +3165,9 @@ def main() -> None:
             f"Woodpecker OAuth TLS repair must retain fail-closed controls: {needle}",
         )
     for needle in (
-        "KNOWN_INGRESS_NAMES",
-        "KNOWN_INGRESSROUTE_NAMES",
         "target_host",
-        "never replaces a non-empty",
+        "never rewrites route hosts",
+        "if not target_rule:",
         r"Host\s*",
     ):
         require_text(
@@ -4351,6 +4353,9 @@ def main() -> None:
         "guarded rolling RKE2 restart",
         "automatic fallback skipped",
         "scripts/bootstrap/reconcile-woodpecker-gitops-source.sh",
+        "woodpecker_forgejo_url_repair=true",
+        "forgejo_ingress_repair=true",
+        "applying the canonical Forgejo ingress contract",
     ):
         require_text(makefile_text, needle, f"platform-woodpecker-repair must cover {needle}")
     woodpecker_repair_target = re.search(
