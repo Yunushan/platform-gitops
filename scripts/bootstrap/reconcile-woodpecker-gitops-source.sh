@@ -2,7 +2,7 @@
 set -euo pipefail
 
 mode="${PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS:-auto}"
-env_file="${PLATFORM_SEED_DEPLOY_ENV_FILE:-private/seed-git.env}"
+env_file="${PLATFORM_WOODPECKER_REPAIR_ENV_FILE:-${PLATFORM_SEED_DEPLOY_ENV_FILE:-private/seed-git.env}}"
 source_root="$(git rev-parse --show-toplevel)"
 source_head="$(git rev-parse HEAD)"
 
