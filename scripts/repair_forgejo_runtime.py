@@ -42,6 +42,7 @@ POSTGRES_HOST = os.environ.get(
 OBJECT_STORAGE_SECRET = os.environ.get("FORGEJO_S3_SECRET_NAME", "forgejo-object-storage")
 REQUESTED_STORAGE_MODE = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip().lower()
 MOUNT_PATHS = ("/data/gitea/git/.postgresql", "/etc/ssl/platform")
+POSTGRES_CA_ITEM_PATHS = ("ca-certificates.crt", "root.crt")
 COMMAND_TIMEOUT_SECONDS = 60
 
 
@@ -163,6 +164,92 @@ def storage_backend(workload: dict[str, Any]) -> tuple[str, bool]:
     return "filesystem", credentials
 
 
+def database_backend(workload: dict[str, Any]) -> str:
+    """Resolve the effective live Forgejo database type without logging secrets."""
+    named_presence = {"forgejo": False, "gitea": False}
+    named_values: dict[str, list[str]] = {"forgejo": [], "gitea": []}
+    pod_spec = (workload.get("spec") or {}).get("template", {}).get("spec") or {}
+    containers = (pod_spec.get("containers", []) or []) + (
+        pod_spec.get("initContainers", []) or []
+    )
+    for container in containers:
+        for env in container.get("env", []) or []:
+            if not isinstance(env, dict):
+                continue
+            name = str(env.get("name") or "").strip().lower()
+            if name not in {
+                "forgejo__database__db_type",
+                "gitea__database__db_type",
+            }:
+                continue
+            source = "forgejo" if name.startswith("forgejo__") else "gitea"
+            named_presence[source] = True
+            value = env.get("value")
+            if isinstance(value, str) and value.strip():
+                named_values[source].append(value)
+
+    material = bytearray(json.dumps(workload, sort_keys=True).encode())
+    for name in ("forgejo", "forgejo-inline-config"):
+        for value in secret_data(FORGEJO_NAMESPACE, name).values():
+            material.extend(b"\n")
+            material.extend(value)
+    configured_values = re.findall(
+        rb"(?im)(?:^|[\"'])"
+        rb"(?:db_type|database_type)[\"']?\s*[:=]\s*[\"']?"
+        rb"([a-z0-9_.+-]+)",
+        bytes(material),
+    )
+
+    def normalize(value: str) -> str | None:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9_.+-]+", normalized):
+            return None
+        return {"postgresql": "postgres", "mariadb": "mysql"}.get(
+            normalized, normalized
+        )
+
+    for source in ("forgejo", "gitea"):
+        if not named_presence[source]:
+            continue
+        values = unique(
+            normalized
+            for normalized in (
+                normalize(value) for value in named_values[source]
+            )
+            if normalized
+        )
+        if len(values) != 1:
+            fail(
+                "forgejo-database-type-unknown",
+                "Forgejo live configuration does not expose one unambiguous "
+                "database backend; refusing PostgreSQL-specific repair.",
+            )
+        return values[0]
+
+    values = unique(
+        normalized
+        for normalized in (
+            normalize(value.decode("ascii", errors="ignore"))
+            for value in configured_values
+        )
+        if normalized
+    )
+    if len(values) > 1:
+        fail(
+            "forgejo-database-type-ambiguous",
+            "Forgejo live configuration exposes conflicting database backends; "
+            "refusing PostgreSQL-specific repair.",
+        )
+    if values:
+        return values[0]
+    fail(
+        "forgejo-database-type-unknown",
+        "Forgejo live configuration does not expose an explicit DB_TYPE; "
+        "refusing to assume PostgreSQL.",
+    )
+    return "unknown"
+
+
 def validate_storage_contract(workload: dict[str, Any]) -> str:
     if REQUESTED_STORAGE_MODE not in {
         "",
@@ -201,8 +288,8 @@ def validate_storage_contract(workload: dict[str, Any]) -> str:
     if backend == "minio" and not credentials:
         fail(
             "forgejo-object-storage-secret-missing",
-            f"Forgejo live configuration uses MinIO, but forgejo/{OBJECT_STORAGE_SECRET} "
-            "does not contain both object-storage credentials. Configure S3/MinIO "
+            "Forgejo live configuration uses MinIO, but the configured object-storage "
+            "Secret does not contain both credentials. Configure S3/MinIO "
             "credentials, or explicitly render filesystem mode before retrying.",
         )
     if object_requested and backend != "minio":
@@ -212,7 +299,7 @@ def validate_storage_contract(workload: dict[str, Any]) -> str:
             "not contain MinIO/S3 settings. Reconcile the Forgejo GitOps values first.",
         )
     if backend == "minio":
-        print(f"forgejo_storage_backend=minio secret={OBJECT_STORAGE_SECRET} state=present")
+        print("forgejo_storage_backend=minio state=present")
         return backend
 
     if filesystem_requested:
@@ -431,12 +518,16 @@ def mount_contract_ready(workload: dict[str, Any]) -> bool:
     )
     config_map = (volume or {}).get("configMap") or {}
     items = config_map.get("items") or []
+    configured_items = {
+        (item.get("key"), item.get("path"))
+        for item in items
+        if isinstance(item, dict)
+    }
     volume_ready = (
         config_map.get("name") == "platform-internal-roots"
-        and any(
-            item.get("key") == "ca-certificates.crt"
-            and item.get("path") == "ca-certificates.crt"
-            for item in items
+        and all(
+            ("ca-certificates.crt", path) in configured_items
+            for path in POSTGRES_CA_ITEM_PATHS
         )
     )
     if not volume_ready:
@@ -481,7 +572,10 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
                         "name": "platform-postgres-ca",
                         "configMap": {
                             "name": "platform-internal-roots",
-                            "items": [{"key": "ca-certificates.crt", "path": "ca-certificates.crt"}],
+                            "items": [
+                                {"key": "ca-certificates.crt", "path": path}
+                                for path in POSTGRES_CA_ITEM_PATHS
+                            ],
                         },
                     }],
                     "containers": [
@@ -627,34 +721,46 @@ def main() -> int:
             )
 
         validate_storage_contract(document)
-        with tempfile.TemporaryDirectory(prefix="platform-forgejo-runtime-") as temporary:
-            temp_dir = Path(temporary)
-            cluster = postgres_cluster()
-            active_tls_secret, leaf_path = active_postgres_certificate(cluster, temp_dir)
-            bundle_changed = refresh_forgejo_bundle(
-                cluster, active_tls_secret, leaf_path, temp_dir
-            )
-            mount_changed = patch_mount_contract(workload, document)
-            restart_needed = bundle_changed or mount_changed or ready_pods() == 0
-            if restart_needed:
-                restarted = kube(
-                    "rollout",
-                    "restart",
-                    workload,
-                    namespace=FORGEJO_NAMESPACE,
-                    check=False,
-                )
-                if restarted.returncode != 0:
-                    fail(
-                        "forgejo-runtime-restart-failed",
-                        f"Could not restart {FORGEJO_NAMESPACE}/{workload}.",
-                    )
-                print(f"forgejo_runtime=restart-requested workload={workload}")
-            wait_for_runtime(workload, timeout)
+        database_type = database_backend(document)
+        print(f"forgejo_database_backend={database_type}")
 
-        print(
-            f"result=ok workload={workload} postgres_ca={POSTGRES_NAMESPACE}/{active_tls_secret}"
-        )
+        bundle_changed = False
+        mount_changed = False
+        postgres_ca = "skipped"
+        if database_type == "postgres":
+            with tempfile.TemporaryDirectory(prefix="platform-forgejo-runtime-") as temporary:
+                temp_dir = Path(temporary)
+                cluster = postgres_cluster()
+                active_tls_secret, leaf_path = active_postgres_certificate(cluster, temp_dir)
+                bundle_changed = refresh_forgejo_bundle(
+                    cluster, active_tls_secret, leaf_path, temp_dir
+                )
+                mount_changed = patch_mount_contract(workload, document)
+                postgres_ca = f"{POSTGRES_NAMESPACE}/{active_tls_secret}"
+        else:
+            print(
+                "forgejo_postgres_runtime=skipped "
+                f"database_type={database_type} reason=non-postgres-backend"
+            )
+
+        restart_needed = bundle_changed or mount_changed or ready_pods() == 0
+        if restart_needed:
+            restarted = kube(
+                "rollout",
+                "restart",
+                workload,
+                namespace=FORGEJO_NAMESPACE,
+                check=False,
+            )
+            if restarted.returncode != 0:
+                fail(
+                    "forgejo-runtime-restart-failed",
+                    f"Could not restart {FORGEJO_NAMESPACE}/{workload}.",
+                )
+            print(f"forgejo_runtime=restart-requested workload={workload}")
+        wait_for_runtime(workload, timeout)
+
+        print(f"result=ok workload={workload} postgres_ca={postgres_ca}")
         return 0
     except RepairError:
         return 1
