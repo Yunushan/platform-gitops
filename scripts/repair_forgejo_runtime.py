@@ -746,7 +746,7 @@ def diagnostic_tail(value: str, limit: int = 8000) -> str:
     value = value.strip()
     if len(value) <= limit:
         return value
-    return "[diagnostics truncated to the most recent output]\\n" + value[-limit:]
+    return "[diagnostics truncated to the most recent output]\n" + value[-limit:]
 
 
 def runtime_diagnostics() -> str:
