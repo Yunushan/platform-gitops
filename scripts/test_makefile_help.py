@@ -135,6 +135,24 @@ def main() -> int:
             print(f" - target dependency cycle: {cycle}")
         return 1
 
+    render_marker = "platform-render-private-values:\n"
+    if render_marker not in text:
+        raise AssertionError("Makefile is missing platform-render-private-values")
+    render_block = text.split(render_marker, 1)[1].split("\n\n", 1)[0]
+    for needle in (
+        'PLATFORM_RENDER_ENV_FILE',
+        'PLATFORM_SEED_DEPLOY_ENV_FILE',
+        'PLATFORM_FIRST_DEPLOY_ENV_FILE',
+        'private/seed-git.env',
+        'private/first-deploy.env',
+        'load_env_file "$${env_file}" preserve-existing',
+    ):
+        if needle not in render_block:
+            raise AssertionError(
+                "platform-render-private-values must load the selected private env file: "
+                f"missing {needle}"
+            )
+
     print(f"Makefile target validation passed for {len(phony)} public targets.")
     return 0
 

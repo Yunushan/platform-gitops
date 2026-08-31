@@ -54,7 +54,7 @@ help:
 	@echo "  forge-transition-rollback  Stop transition and restore source CI from STATE"
 	@echo "  forge-transition-proof-verify  Verify stored transition PROOF integrity and acceptance"
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
-	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env or inventory"
+	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env/private env file or inventory"
 	@echo "  platform-profile-check  Verify selected GitOps profile is structurally complete and has no unresolved placeholders"
 	@echo "  platform-bootstrap  Verify RKE2/API VIP, bootstrap Argo CD, configure app VIP when ready, and print access report"
 	@echo "  platform-first-deploy  First private GitOps deploy: bootstrap Argo CD, register repo credentials, publish ingress, and print status"
@@ -347,7 +347,14 @@ bootstrap-plan:
 	@bash scripts/bootstrap-plan.sh
 
 platform-render-private-values:
-	@$(PYTHON) scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
+	@make_python="$(PYTHON)"; \
+		env_file="$${PLATFORM_RENDER_ENV_FILE:-}"; \
+		if [[ -z "$${env_file}" && -n "$${PLATFORM_SEED_DEPLOY_ENV_FILE:-}" ]]; then env_file="$${PLATFORM_SEED_DEPLOY_ENV_FILE}"; fi; \
+		if [[ -z "$${env_file}" && -n "$${PLATFORM_FIRST_DEPLOY_ENV_FILE:-}" ]]; then env_file="$${PLATFORM_FIRST_DEPLOY_ENV_FILE}"; fi; \
+		if [[ -z "$${env_file}" && -f private/seed-git.env ]]; then env_file=private/seed-git.env; fi; \
+		if [[ -z "$${env_file}" && -f private/first-deploy.env ]]; then env_file=private/first-deploy.env; fi; \
+		if [[ -n "$${env_file}" ]]; then . scripts/bootstrap/load-env-file.sh; load_env_file "$${env_file}" preserve-existing; fi; \
+		exec "$${make_python}" scripts/render_private_platform_values.py --inventory inventory/hosts.local.ini
 
 platform-profile-check:
 	@$(PYTHON) scripts/check_gitops_profile.py --repo-root . --profile "$${PLATFORM_PROFILE:-premium-3node}" --require-structure
