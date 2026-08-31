@@ -804,9 +804,13 @@ gitea:
         require(woodpecker_tls_repair_helper, needle, "Woodpecker OAuth TLS repair helper")
     for needle in (
         "validate_storage_contract",
+        "database_backend",
+        "forgejo-database-type-unknown",
+        "non-postgres-backend",
         "forgejo-object-storage-secret-missing",
         "forgejo-object-storage-mode-not-applied",
         "active_postgres_certificate",
+        "root.crt",
         "serverCASecret",
         "openssl",
         "configmap/platform-internal-roots",
