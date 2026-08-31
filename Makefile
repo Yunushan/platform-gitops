@@ -696,8 +696,8 @@ platform-forgejo-repair: platform-inventory-preflight
 		PLATFORM_NODE_STORAGE_LONGHORN_PRESSURE_EVICTION=true \
 		$(MAKE) platform-node-storage-cleanup
 	@$(MAKE) platform-longhorn-runtime-repair
-	@$(MAKE) platform-forgejo-runtime-repair
 	@$(MAKE) platform-forgejo-storage-repair
+	@$(MAKE) platform-forgejo-runtime-repair
 	@$(MAKE) platform-forgejo-ingress
 
 platform-forgejo-runtime-repair: platform-inventory-preflight
