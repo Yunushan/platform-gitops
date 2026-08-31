@@ -722,7 +722,7 @@ def main() -> int:
 
         validate_storage_contract(document)
         database_type = database_backend(document)
-        print(f"forgejo_database_backend={database_type}")
+        print("forgejo_database_backend=detected")
 
         bundle_changed = False
         mount_changed = False
@@ -739,8 +739,7 @@ def main() -> int:
                 postgres_ca = f"{POSTGRES_NAMESPACE}/{active_tls_secret}"
         else:
             print(
-                "forgejo_postgres_runtime=skipped "
-                f"database_type={database_type} reason=non-postgres-backend"
+                "forgejo_postgres_runtime=skipped reason=non-postgres-backend"
             )
 
         restart_needed = bundle_changed or mount_changed or ready_pods() == 0
