@@ -259,8 +259,9 @@ ingress publisher while the public certificate is known to be unusable.
 
 The Forgejo runtime recovery also refreshes the `forgejo/platform-internal-roots`
 ConfigMap against the active CloudNativePG server CA, repairs the PostgreSQL
-CA mounts on Forgejo application and init containers, and restarts only the
-Forgejo workload. It never deletes a PVC, PV, Longhorn volume, or replica. If
+client CA mount on Forgejo's application and database-related init containers,
+removes any stale application-only trust-directory mount from init containers,
+and restarts only the Forgejo workload. It never deletes a PVC, PV, Longhorn volume, or replica. If
 it reports `forgejo-object-storage-secret-missing`, the live values still use
 MinIO/S3 and credentials must be supplied. If no S3-compatible service is
 available, explicitly render the lab-only filesystem profile before retrying:
