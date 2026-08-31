@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import importlib.util
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -36,6 +37,13 @@ RENDERER_ENV_PREFIXES = (
     "MINIO_",
     "KEYCLOAK_",
     "STEP_CA_",
+)
+LONGHORN_BACKUP_SECRET_STATIC_PATTERN = (
+    r'(?m)^\s*backupTargetCredentialSecret:\s*'
+    r'(?:"<LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>"|'
+    r'<LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>|'
+    r'"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?"|'
+    r'[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)\s*$'
 )
 
 
@@ -71,8 +79,9 @@ CONTRACTS = [
             "VIRTUAL_HOSTED_STYLE",
         ],
         "static_file": PREMIUM_APPS / "longhorn" / "values.yaml",
-        "static_needles": [
-            "backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>",
+        "static_needles": [],
+        "static_patterns": [
+            LONGHORN_BACKUP_SECRET_STATIC_PATTERN,
         ],
         "rendered_app": "longhorn",
         "custom_secret": "longhorn-backup-custom",
@@ -700,6 +709,12 @@ def check_static_values(
                 needle_variants(needle),
                 f"{static_file.relative_to(ROOT)} for {contract['label']}",
             )
+        for pattern in contract.get("static_patterns", []):
+            if re.search(str(pattern), text) is None:
+                raise AssertionError(
+                    f"{static_file.relative_to(ROOT)} for {contract['label']} "
+                    f"does not match required pattern: {pattern!r}"
+                )
         for related_file, related_needles in contract.get("static_related", []):
             related_text = related_file.read_text(encoding="utf-8")
             for needle in related_needles:
@@ -715,8 +730,13 @@ def check_static_scope_behavior() -> None:
         root = Path(tmp)
         forgejo_values = root / "forgejo.yaml"
         woodpecker_values = root / "woodpecker.yaml"
+        longhorn_values = root / "longhorn.yaml"
         forgejo_values.write_text("legacy: true\n", encoding="utf-8")
         woodpecker_values.write_text("required: present\n", encoding="utf-8")
+        longhorn_values.write_text(
+            "backupTargetCredentialSecret: longhorn-backup-target\n",
+            encoding="utf-8",
+        )
         contracts: list[dict[str, object]] = [
             {
                 "label": "legacy Forgejo fixture",
@@ -731,7 +751,15 @@ def check_static_scope_behavior() -> None:
                 "static_needles": ["required: present"],
             },
         ]
+        rendered_longhorn_contract = {
+            "label": "rendered Longhorn fixture",
+            "rendered_app": "longhorn",
+            "static_file": longhorn_values,
+            "static_needles": [],
+            "static_patterns": CONTRACTS[1]["static_patterns"],
+        }
         check_static_values({"woodpecker"}, contracts)
+        check_static_values({"longhorn"}, [rendered_longhorn_contract])
         try:
             check_static_values(None, contracts)
         except AssertionError:

@@ -760,6 +760,27 @@ def test_strict_longhorn_render_requires_explicit_disk_path(renderer) -> None:
                 raise AssertionError("strict Longhorn rendering accepted a missing disk path")
 
 
+def test_lab_longhorn_without_backup_target_preserves_public_secret_placeholder(renderer) -> None:
+    """A lab profile without object storage must remain valid public-shaped YAML."""
+    with tempfile.TemporaryDirectory(prefix="platform-longhorn-lab-render-") as tmp:
+        values_path = write(
+            Path(tmp) / "longhorn-values.yaml",
+            'defaultSettings:\n  defaultDataPath: "<PLATFORM_LONGHORN_DEFAULT_DISK_PATH>"\n'
+            '  backupTarget: "<LONGHORN_BACKUP_TARGET>"\n'
+            "  backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>\n",
+        )
+        env = synthetic_environment(Path(tmp) / "cosign.pub")
+        env["PLATFORM_PRODUCTION_STRICT"] = "false"
+        env["LONGHORN_BACKUP_TARGET"] = ""
+        with patched_env(env):
+            renderer.render_longhorn(values_path, "")
+        assert_contains(
+            values_path,
+            'backupTarget: ""',
+            "backupTargetCredentialSecret: <LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>",
+        )
+
+
 def main() -> int:
     renderer = load_renderer()
     checker = load_checker()
@@ -775,6 +796,7 @@ def main() -> int:
     test_focused_cnpg_role_refresh_preserves_distinct_tls_secrets(renderer)
     test_focused_cnpg_role_refresh_requires_certificate_for_missing_tls(renderer)
     test_strict_longhorn_render_requires_explicit_disk_path(renderer)
+    test_lab_longhorn_without_backup_target_preserves_public_secret_placeholder(renderer)
 
     with tempfile.TemporaryDirectory(prefix="platform-private-render-") as tmp:
         repo = Path(tmp)
