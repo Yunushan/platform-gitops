@@ -395,6 +395,11 @@ def render_longhorn(
         raise SystemExit(
             "PLATFORM_LONGHORN_DEFAULT_DISK_PATH must be an absolute directory path"
         )
+    backup_secret_value = (
+        backup_secret_name
+        if backup_target
+        else "<LONGHORN_BACKUP_CREDENTIAL_SECRET_NAME>"
+    )
     text = read_bounded_text(path, encoding="utf-8")
     rendered = re.sub(
         r"^(\s*backupTarget:\s*).*$",
@@ -404,7 +409,7 @@ def render_longhorn(
     )
     rendered = re.sub(
         r"^(\s*backupTargetCredentialSecret:\s*).*$",
-        lambda match: f"{match.group(1)}{backup_secret_name}",
+        lambda match: f"{match.group(1)}{backup_secret_value}",
         rendered,
         flags=re.MULTILINE,
     )
