@@ -30,6 +30,8 @@ PUBLIC_TLS_VERIFY_PLAYBOOK = ROOT / "ansible/playbooks/verify-platform-tls.yml"
 WOODPECKER_REPAIR_PLAYBOOK = ROOT / "ansible/playbooks/repair-woodpecker.yml"
 TLS_CHAIN_HELPER = ROOT / "scripts/complete_tls_chain.sh"
 WOODPECKER_TLS_REPAIR_HELPER = ROOT / "scripts/repair_woodpecker_oauth_tls.sh"
+FORGEJO_RUNTIME_REPAIR_PLAYBOOK = ROOT / "ansible/playbooks/repair-forgejo-runtime.yml"
+FORGEJO_RUNTIME_REPAIR_HELPER = ROOT / "scripts/repair_forgejo_runtime.py"
 PKI_DOC = ROOT / "docs/INTERNAL_PKI.md"
 PRODUCTION_READINESS = ROOT / "docs/PRODUCTION_READINESS.md"
 
@@ -527,6 +529,8 @@ gitea:
     woodpecker_repair = read(WOODPECKER_REPAIR_PLAYBOOK)
     tls_chain_helper = read(TLS_CHAIN_HELPER)
     woodpecker_tls_repair_helper = read(WOODPECKER_TLS_REPAIR_HELPER)
+    forgejo_runtime_repair_playbook = read(FORGEJO_RUNTIME_REPAIR_PLAYBOOK)
+    forgejo_runtime_repair_helper = read(FORGEJO_RUNTIME_REPAIR_HELPER)
     makefile = read(MAKEFILE)
     pki_doc = read(PKI_DOC)
     readiness = read(PRODUCTION_READINESS)
@@ -783,6 +787,7 @@ gitea:
     for needle in (
         "forgejo_oauth_tls_chain=verified",
         "forgejo-oauth-tls-chain-untrusted",
+        "forgejo-oauth-tls-chain-self-signed",
         "WOODPECKER_FORGEJO_URL",
         "-verify_return_error",
         '-verify_hostname "${forgejo_host}"',
@@ -798,9 +803,39 @@ gitea:
     ):
         require(woodpecker_tls_repair_helper, needle, "Woodpecker OAuth TLS repair helper")
     for needle in (
+        "validate_storage_contract",
+        "forgejo-object-storage-secret-missing",
+        "forgejo-object-storage-mode-not-applied",
+        "active_postgres_certificate",
+        "serverCASecret",
+        "openssl",
+        "configmap/platform-internal-roots",
+        "mount_contract_ready",
+        "rollout",
+        "result=ok",
+    ):
+        require(
+            forgejo_runtime_repair_helper,
+            needle,
+            f"Forgejo runtime repair must retain fail-closed controls: {needle}",
+        )
+    forbid(
+        forgejo_runtime_repair_helper,
+        "delete pvc",
+        "Forgejo runtime repair",
+    )
+    for needle in (
+        "repair_forgejo_runtime.py",
+        "Repair Forgejo runtime dependencies and PostgreSQL trust",
+        "Stop when Forgejo runtime repair cannot converge",
+    ):
+        require(forgejo_runtime_repair_playbook, needle, "Forgejo runtime repair playbook")
+    for needle in (
         "woodpecker_forgejo_url_repair=true",
         "reconcile-woodpecker-gitops-source.sh",
         "forgejo_ingress_repair=true",
+        "forgejo_tls_self_signed=true",
+        "platform-forgejo-runtime-repair",
         "applying the canonical Forgejo ingress contract",
     ):
         require(makefile, needle, "Woodpecker classified prerequisite recovery")

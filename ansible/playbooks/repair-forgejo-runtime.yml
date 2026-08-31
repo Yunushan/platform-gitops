@@ -1,0 +1,75 @@
+---
+- name: Repair Forgejo runtime dependencies and PostgreSQL trust
+  hosts: rke2_servers
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    rke2_first_server: "{{ groups['rke2_servers'][0] }}"
+    platform_forgejo_runtime_repair_timeout_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_RUNTIME_REPAIR_TIMEOUT') }}"
+    platform_forgejo_runtime_repair_timeout_effective: "{{ platform_forgejo_runtime_repair_timeout | default(platform_forgejo_runtime_repair_timeout_from_env, true) | default(600, true) | int }}"
+  tasks:
+    - block:
+        - name: Create temporary Forgejo runtime repair workspace
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: platform-forgejo-runtime-repair-
+          register: platform_forgejo_runtime_repair_workspace
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Install Forgejo runtime repair bundle temporarily
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+            dest: "{{ platform_forgejo_runtime_repair_workspace.path }}/{{ item }}"
+            owner: root
+            group: root
+            mode: "0700"
+          loop:
+            - repair_forgejo_runtime.py
+            - bounded_file.py
+            - bounded_subprocess.py
+            - strict_json.py
+            - subprocess_timeout.py
+          changed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Repair Forgejo runtime dependencies and PostgreSQL trust
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ platform_forgejo_runtime_repair_workspace.path }}/repair_forgejo_runtime.py"
+              - "{{ platform_forgejo_runtime_repair_timeout_effective | string }}"
+          register: platform_forgejo_runtime_repair
+          changed_when: >-
+            'forgejo_postgres_ca_bundle=materialized' in platform_forgejo_runtime_repair.stdout or
+            'mount=patched' in platform_forgejo_runtime_repair.stdout or
+            'restart-requested' in platform_forgejo_runtime_repair.stdout
+          failed_when: false
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
+
+        - name: Show Forgejo runtime repair result
+          ansible.builtin.debug:
+            var: platform_forgejo_runtime_repair.stdout_lines
+          run_once: true
+
+        - name: Stop when Forgejo runtime repair cannot converge
+          ansible.builtin.fail:
+            msg: |
+              Forgejo runtime repair did not converge.
+
+              {{ platform_forgejo_runtime_repair.stdout | default('', true) }}
+              {{ platform_forgejo_runtime_repair.stderr | default('', true) }}
+          when: (platform_forgejo_runtime_repair.rc | default(1) | int) != 0
+          run_once: true
+      always:
+        - name: Remove Forgejo runtime repair helper
+          ansible.builtin.file:
+            path: "{{ platform_forgejo_runtime_repair_workspace.path }}"
+            state: absent
+          when: platform_forgejo_runtime_repair_workspace.path is defined
+          delegate_to: "{{ rke2_first_server }}"
+          run_once: true
