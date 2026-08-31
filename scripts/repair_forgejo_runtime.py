@@ -619,6 +619,22 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
         print(f"forgejo_postgres_ca_mount=present workload={workload}")
         return False
 
+    # Clean up the previous helper's init-container mutation before creating
+    # another ReplicaSet. The application trust directory is runtime-only.
+    init_mount_removed = remove_stale_init_application_mount(workload)
+    if init_mount_removed:
+        refreshed = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+        if not refreshed:
+            fail(
+                "forgejo-runtime-workload-missing-after-mount-patch",
+                f"Could not re-read {FORGEJO_NAMESPACE}/{workload} after "
+                "removing the stale init-container mount.",
+            )
+        document = refreshed
+        if mount_contract_ready(document):
+            print(f"forgejo_postgres_ca_mount=present workload={workload}")
+            return True
+
     pod_spec = (document.get("spec") or {}).get("template", {}).get("spec") or {}
     runtime_containers = [
         container
