@@ -361,6 +361,15 @@ probe_served_chain() {
     </dev/null >"${work_directory}/served-probe" 2>&1
 }
 
+served_chain_failure_reason() {
+  if grep -Eiq 'self-signed certificate|verify return code:[[:space:]]*18' \
+    "${work_directory}/served-probe"; then
+    printf '%s\n' self-signed
+  else
+    printf '%s\n' untrusted
+  fi
+}
+
 ready_traefik_pods() {
   "${kubectl_bin}" --kubeconfig "${kubeconfig_path}" -n traefik get pods \
     -l app.kubernetes.io/name=traefik \
@@ -507,7 +516,12 @@ if probe_served_chain; then
 fi
 if [ "${auto_repair}" != "true" ]; then
   tail -20 "${work_directory}/served-probe" || true
-  echo "result=fail reason=forgejo-oauth-tls-chain-untrusted auto_repair=disabled"
+  failure_reason="$(served_chain_failure_reason)"
+  if [ "${failure_reason}" = "self-signed" ]; then
+    echo "result=fail reason=forgejo-oauth-tls-chain-self-signed auto_repair=disabled"
+  else
+    echo "result=fail reason=forgejo-oauth-tls-chain-untrusted auto_repair=disabled"
+  fi
   exit 1
 fi
 
@@ -562,5 +576,10 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
 done
 
 tail -20 "${work_directory}/served-probe" || true
-echo "result=fail reason=forgejo-oauth-tls-chain-did-not-converge repaired=${repaired}"
+failure_reason="$(served_chain_failure_reason)"
+if [ "${failure_reason}" = "self-signed" ]; then
+  echo "result=fail reason=forgejo-oauth-tls-chain-self-signed repaired=${repaired}"
+else
+  echo "result=fail reason=forgejo-oauth-tls-chain-did-not-converge repaired=${repaired}"
+fi
 exit 1

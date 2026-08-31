@@ -2,6 +2,7 @@ SHELL := bash
 PYTHON ?= python3
 
 .PHONY: platform-inventory-preflight
+.PHONY: platform-forgejo-runtime-repair
 
 .PHONY: help init-local validate no-secrets security-scan supply-chain-posture supply-chain-verify vendored-chart-provenance-verify github-governance-plan github-governance-security-apply github-governance-apply github-governance-verify rendered-schema-verify rendered-private-schema-verify policy-cel-verify forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-workspace-validate forge-workspace-export forge-workspace-import forge-pipeline-convert forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify forge-transition-validate forge-transition-discover forge-transition-prepare forge-transition-verify-shadow forge-transition-enter forge-transition-status forge-transition-reconcile forge-transition-relay forge-transition-fallback forge-transition-finalize forge-transition-failback forge-transition-rollback forge-transition-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-network-isolation-verify platform-internal-tls-verify platform-openbao-status platform-openbao-verify platform-openbao-ceremony-digest platform-openbao-ceremony-evidence-verify platform-observability-verify platform-capacity-verify platform-image-inventory-verify platform-production-evidence platform-production-score platform-production-check platform-node-storage-diagnose platform-node-storage-cleanup platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-repair platform-forgejo-storage-repair platform-forgejo-ingress platform-forgejo-recovery-drill platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
@@ -100,6 +101,7 @@ help:
 	@echo "  platform-longhorn-crd-repair  Restore missing Longhorn CRDs and restart Longhorn manager"
 	@echo "  platform-forgejo-diagnose  Show Forgejo init, logs, PVC/PV, Longhorn volume, service, and ingress diagnostics"
 	@echo "  platform-forgejo-repair  Safely repair Longhorn/Forgejo runtime and verify the published ingress"
+	@echo "  platform-forgejo-runtime-repair  Repair Forgejo PostgreSQL trust and runtime dependency drift without changing data volumes"
 	@echo "  platform-forgejo-storage-repair  Repair first-deploy Forgejo PVC, Longhorn disk, and volume attach issues"
 	@echo "  platform-forgejo-ingress  Publish and verify Forgejo through Traefik on the app VIP"
 	@echo "  platform-forgejo-recovery-drill  Opt-in cross-node Forgejo failover drill with encrypted-storage proof"
@@ -478,6 +480,7 @@ platform-woodpecker-repair:
 		longhorn_runtime_repair=false; \
 		application_config_repair=false; \
 		forgejo_ingress_repair=false; \
+		forgejo_tls_self_signed=false; \
 		woodpecker_forgejo_url_repair=false; \
 		scheduling_capacity=false; \
 		longhorn_bootstrap_ran=false; \
@@ -491,7 +494,10 @@ platform-woodpecker-repair:
 		if grep -Eq 'reason=woodpecker-postgres-ca-(bundle|mount|file|controller|container|source)-missing|open /etc/ssl/platform-postgres/ca-certificates\\.crt: no such file or directory' "$$repair_log"; then \
 			application_config_repair=true; \
 		fi; \
-		if grep -Eq 'reason=forgejo-ingress-tls-(secret|material)-missing|reason=forgejo-route-hosts-ambiguous|forgejo-oauth-tls-chain-(untrusted|did-not-converge)' "$$repair_log"; then \
+		if grep -Fq 'reason=forgejo-oauth-tls-chain-self-signed' "$$repair_log"; then \
+			forgejo_tls_self_signed=true; \
+		fi; \
+		if grep -Eq 'reason=forgejo-ingress-tls-(secret|material)-missing|reason=forgejo-route-hosts-ambiguous|forgejo-oauth-tls-chain-(self-signed|untrusted|did-not-converge)' "$$repair_log"; then \
 			forgejo_ingress_repair=true; \
 		fi; \
 		if grep -Fq 'reason=woodpecker-forgejo-url-route-drift' "$$repair_log"; then \
@@ -501,7 +507,7 @@ platform-woodpecker-repair:
 		if grep -Eq 'reason=woodpecker-scheduling-capacity-insufficient|reason=woodpecker-scheduling-blocked-by-node-taint' "$$repair_log"; then \
 			scheduling_capacity=true; \
 		fi; \
-		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair application_config=$$application_config_repair forgejo_ingress=$$forgejo_ingress_repair scheduling_capacity=$$scheduling_capacity"; \
+		echo "Woodpecker prerequisite classification: service_path=$$service_path_repair longhorn_runtime=$$longhorn_runtime_repair application_config=$$application_config_repair forgejo_ingress=$$forgejo_ingress_repair forgejo_tls_self_signed=$$forgejo_tls_self_signed scheduling_capacity=$$scheduling_capacity"; \
 		if [ "$$service_path_repair" != "true" ] && [ "$$longhorn_runtime_repair" != "true" ] && [ "$$application_config_repair" != "true" ] && [ "$$forgejo_ingress_repair" != "true" ] && [ "$$scheduling_capacity" != "true" ]; then \
 			echo "Woodpecker repair failed without a recognized PostgreSQL service-path, Longhorn CSI, application configuration, Forgejo ingress, or scheduling-capacity classification; automatic fallback skipped." >&2; \
 			exit "$$repair_rc"; \
@@ -518,7 +524,16 @@ platform-woodpecker-repair:
 			echo "Woodpecker PostgreSQL trust-bundle configuration failed; refreshing the bundle and repairing the server mount before retry."; \
 		fi; \
 		if [ "$$forgejo_ingress_repair" = "true" ]; then \
-			echo "Forgejo's HTTPS route or TLS binding failed; applying the canonical Forgejo ingress contract before retry."; \
+			if [ "$$forgejo_tls_self_signed" = "true" ]; then \
+				echo "Forgejo is serving a self-signed wildcard certificate; repairing the backend, but the public certificate must be replaced before Woodpecker OAuth can pass."; \
+			else \
+				echo "Forgejo's HTTPS route or TLS binding failed; repairing Forgejo's backend and trust contract before applying the canonical Forgejo ingress contract."; \
+			fi; \
+			$(MAKE) platform-forgejo-runtime-repair; \
+			if [ "$$forgejo_tls_self_signed" = "true" ]; then \
+				echo "Install a CA-signed wildcard certificate with PLATFORM_WILDCARD_TLS_CERT_FILE and PLATFORM_WILDCARD_TLS_KEY_FILE, run make platform-tls, then rerun make platform-woodpecker-repair." >&2; \
+				exit "$$repair_rc"; \
+			fi; \
 			$(MAKE) platform-forgejo-ingress; \
 		fi; \
 		if [ "$$service_path_repair" = "true" ]; then \
@@ -682,7 +697,11 @@ platform-forgejo-repair: platform-inventory-preflight
 		$(MAKE) platform-node-storage-cleanup
 	@$(MAKE) platform-longhorn-runtime-repair
 	@$(MAKE) platform-forgejo-storage-repair
+	@$(MAKE) platform-forgejo-runtime-repair
 	@$(MAKE) platform-forgejo-ingress
+
+platform-forgejo-runtime-repair: platform-inventory-preflight
+	@bash scripts/bootstrap/run-forgejo-runtime-repair.sh
 
 platform-forgejo-storage-repair: platform-inventory-preflight
 	@bash scripts/bootstrap/run-forgejo-storage-repair.sh

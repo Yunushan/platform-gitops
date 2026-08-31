@@ -249,6 +249,35 @@ decoded value contains a PEM certificate before creating the ConfigMap and
 never disables PostgreSQL certificate verification. If neither authoritative
 source exists, the repair still fails closed.
 
+If the Woodpecker OAuth preflight reports
+`forgejo-oauth-tls-chain-self-signed`, the wildcard certificate itself is not
+trusted. Completing intermediates or recycling Traefik cannot repair a
+self-signed public certificate. Distribute the CA-signed wildcard certificate
+and its private key with `make platform-tls`, then rerun the repair. The
+preflight now repairs Forgejo's backend first and does not loop through the
+ingress publisher while the public certificate is known to be unusable.
+
+The Forgejo runtime recovery also refreshes the `forgejo/platform-internal-roots`
+ConfigMap against the active CloudNativePG server CA, repairs the PostgreSQL
+CA mounts on Forgejo application and init containers, and restarts only the
+Forgejo workload. It never deletes a PVC, PV, Longhorn volume, or replica. If
+it reports `forgejo-object-storage-secret-missing`, the live values still use
+MinIO/S3 and credentials must be supplied. If no S3-compatible service is
+available, explicitly render the lab-only filesystem profile before retrying:
+
+```bash
+PLATFORM_PRODUCTION_STRICT=false \
+FORGEJO_OBJECT_STORAGE_MODE=filesystem \
+PLATFORM_SEED_DEPLOY_ENV_FILE=private/seed-git.env \
+make platform-render-private-values
+```
+
+Reconcile those rendered Forgejo values through the private seed Git source
+before running `make platform-forgejo-runtime-repair`. Do not switch an
+existing MinIO-backed Forgejo instance to filesystem storage without a
+backup-tested asset migration; the runtime repair deliberately stops instead
+of making that data-affecting choice.
+
 When the StatefulSet template has the trust mount but an older, unhealthy Pod
 still lacks it, `platform-woodpecker-repair` recycles stale server Pods one at a
 time, starting with the highest unready ordinal. Every PVC is retained, each

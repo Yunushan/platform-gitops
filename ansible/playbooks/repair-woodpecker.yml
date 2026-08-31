@@ -144,6 +144,18 @@
           make platform-tls
 
           {% endif %}
+          {% if platform_woodpecker_forgejo_tls_chain_repair.stdout | default('', true) | regex_search('reason=forgejo-oauth-tls-chain-self-signed') %}
+          The wildcard certificate itself is self-signed. A self-signed public
+          certificate cannot be repaired by completing intermediates; install
+          the CA-signed wildcard certificate issued for this platform:
+
+          PLATFORM_WILDCARD_TLS_CERT_FILE=/secure/path/wildcard-fullchain.crt \
+          PLATFORM_WILDCARD_TLS_KEY_FILE=/secure/path/wildcard.key \
+          make platform-tls
+
+          Then rerun make platform-woodpecker-repair.
+
+          {% endif %}
           {{ platform_woodpecker_forgejo_tls_chain_repair.stdout | default('No TLS-chain diagnostics were returned.', true) }}
           {{ platform_woodpecker_forgejo_tls_chain_repair.stderr | default('', true) }}
       when: (platform_woodpecker_forgejo_tls_chain_repair.rc | default(1) | int) != 0
