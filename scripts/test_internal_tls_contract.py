@@ -19,6 +19,7 @@ from forgejo_database_contract import (
 from repair_forgejo_runtime import (
     MOUNT_PATHS,
     POSTGRES_CA_BUNDLE_PATH,
+    POSTGRES_SERVER_CERTIFICATE_SECRET,
     mount_contract_ready,
     stale_init_application_mount_patch,
     tls_env_contract_ready,
@@ -695,6 +696,11 @@ gitea:
     forbid(openbao_values, "tls_disable = 1", "OpenBao TLS values")
     forbid(openbao_values, "insecureSkipVerify: true", "OpenBao TLS values")
 
+    require(
+        POSTGRES_SERVER_CERTIFICATE_SECRET,
+        "platform-postgres-server-tls",
+        "canonical PostgreSQL certificate Secret",
+    )
     for needle in (
         "kind: Certificate",
         "name: platform-postgres-server",
@@ -911,6 +917,16 @@ gitea:
         "forgejo-object-storage-secret-missing",
         "forgejo-object-storage-mode-not-applied",
         "active_postgres_certificate",
+        "POSTGRES_SERVER_CERTIFICATE_SECRET",
+        "validate_postgres_server_certificate_secret",
+        "reconcile_postgres_certificate_contract",
+        "postgres_server_handshake_verifies",
+        '"-starttls"',
+        '"-verify_return_error"',
+        "tls.key",
+        "platform-postgres-rw",
+        "forgejo_postgres_certificates=reconciled",
+        "forgejo_postgres_certificates=verified",
         "root.crt",
         "serverCASecret",
         "openssl",
