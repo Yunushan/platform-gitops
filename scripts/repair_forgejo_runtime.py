@@ -44,6 +44,8 @@ REQUESTED_STORAGE_MODE = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip
 MOUNT_PATHS = ("/data/gitea/git/.postgresql", "/etc/ssl/platform")
 POSTGRES_CA_ITEM_PATHS = ("ca-certificates.crt", "root.crt")
 COMMAND_TIMEOUT_SECONDS = 60
+STALE_INIT_MOUNT_CLEANUP_RETRIES = 5
+STALE_INIT_MOUNT_CLEANUP_DELAY_SECONDS = 1
 
 
 def command(args: list[str], *, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -560,15 +562,16 @@ def mount_contract_ready(workload: dict[str, Any]) -> bool:
     return True
 
 
-def remove_stale_init_application_mount(workload: str) -> bool:
-    document = resource_json(workload, namespace=FORGEJO_NAMESPACE)
-    if not document:
+def stale_init_application_mount_patch(document: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = document.get("metadata") or {}
+    resource_version = metadata.get("resourceVersion")
+    if not isinstance(resource_version, str) or not resource_version:
         fail(
-            "forgejo-runtime-workload-missing-after-mount-patch",
-            f"Could not re-read {FORGEJO_NAMESPACE}/{workload} after the CA mount patch.",
+            "forgejo-runtime-resource-version-missing",
+            "Forgejo workload has no resourceVersion for guarded init-mount cleanup.",
         )
     pod_spec = (document.get("spec") or {}).get("template", {}).get("spec") or {}
-    operations: list[dict[str, Any]] = []
+    remove_operations: list[dict[str, Any]] = []
     for container_index, container in enumerate(
         pod_spec.get("initContainers", []) or []
     ):
@@ -580,7 +583,7 @@ def remove_stale_init_application_mount(workload: str) -> bool:
                 and mount.get("name") == "platform-postgres-ca"
                 and mount.get("mountPath") == MOUNT_PATHS[1]
             ):
-                operations.append(
+                remove_operations.append(
                     {
                         "op": "remove",
                         "path": (
@@ -589,29 +592,63 @@ def remove_stale_init_application_mount(workload: str) -> bool:
                         ),
                     }
                 )
-    if not operations:
-        return False
+    if not remove_operations:
+        return []
+    # JSON Patch applies test plus remove atomically. A concurrent Argo CD
+    # write changes resourceVersion and makes the whole patch fail safely.
+    return [
+        {
+            "op": "test",
+            "path": "/metadata/resourceVersion",
+            "value": resource_version,
+        },
+        *remove_operations,
+    ]
 
-    patched = kube(
-        "patch",
-        workload,
-        "--type=json",
-        "-p",
-        json.dumps(operations, separators=(",", ":")),
-        namespace=FORGEJO_NAMESPACE,
-        check=False,
-    )
-    if patched.returncode != 0:
-        fail(
-            "forgejo-runtime-init-mount-cleanup-failed",
-            f"Could not remove the application-only CA mount from init containers "
-            f"in {FORGEJO_NAMESPACE}/{workload}.",
+
+def remove_stale_init_application_mount(workload: str) -> bool:
+    for attempt in range(STALE_INIT_MOUNT_CLEANUP_RETRIES):
+        document = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+        if not document:
+            fail(
+                "forgejo-runtime-init-mount-cleanup-read-failed",
+                f"Could not read {FORGEJO_NAMESPACE}/{workload} for guarded "
+                "init-container mount cleanup.",
+            )
+        operations = stale_init_application_mount_patch(document)
+        if not operations:
+            return False
+
+        patched = kube(
+            "patch",
+            workload,
+            "--type=json",
+            "-p",
+            json.dumps(operations, separators=(",", ":")),
+            namespace=FORGEJO_NAMESPACE,
+            check=False,
         )
-    print(
-        "forgejo_postgres_ca_init_mount=removed "
-        f"workload={workload} mountPath={MOUNT_PATHS[1]}"
+        if patched.returncode == 0:
+            print(
+                "forgejo_postgres_ca_init_mount=removed "
+                f"workload={workload} mountPath={MOUNT_PATHS[1]}"
+            )
+            return True
+
+        # The resourceVersion test rejects a stale index atomically. Re-read
+        # before retrying; another reconciler may already have removed it.
+        latest = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+        if latest and not stale_init_application_mount_patch(latest):
+            return False
+        if attempt + 1 < STALE_INIT_MOUNT_CLEANUP_RETRIES:
+            time.sleep(STALE_INIT_MOUNT_CLEANUP_DELAY_SECONDS)
+
+    fail(
+        "forgejo-runtime-init-mount-cleanup-failed",
+        f"Could not remove the application-only CA mount from init containers "
+        f"in {FORGEJO_NAMESPACE}/{workload} after guarded retries.",
     )
-    return True
+    return False
 
 
 def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
@@ -622,18 +659,17 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
     # Clean up the previous helper's init-container mutation before creating
     # another ReplicaSet. The application trust directory is runtime-only.
     init_mount_removed = remove_stale_init_application_mount(workload)
-    if init_mount_removed:
-        refreshed = resource_json(workload, namespace=FORGEJO_NAMESPACE)
-        if not refreshed:
-            fail(
-                "forgejo-runtime-workload-missing-after-mount-patch",
-                f"Could not re-read {FORGEJO_NAMESPACE}/{workload} after "
-                "removing the stale init-container mount.",
-            )
-        document = refreshed
-        if mount_contract_ready(document):
-            print(f"forgejo_postgres_ca_mount=present workload={workload}")
-            return True
+    refreshed = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+    if not refreshed:
+        fail(
+            "forgejo-runtime-workload-missing-after-mount-patch",
+            f"Could not re-read {FORGEJO_NAMESPACE}/{workload} after "
+            "guarded init-container mount cleanup.",
+        )
+    document = refreshed
+    if mount_contract_ready(document):
+        print(f"forgejo_postgres_ca_mount=present workload={workload}")
+        return init_mount_removed
 
     pod_spec = (document.get("spec") or {}).get("template", {}).get("spec") or {}
     runtime_containers = [
