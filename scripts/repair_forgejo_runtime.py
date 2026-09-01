@@ -44,6 +44,8 @@ REQUESTED_STORAGE_MODE = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip
 MOUNT_PATHS = ("/data/gitea/git/.postgresql", "/etc/ssl/platform")
 POSTGRES_CA_ITEM_PATHS = ("ca-certificates.crt", "root.crt")
 COMMAND_TIMEOUT_SECONDS = 60
+STALE_INIT_MOUNT_CLEANUP_RETRIES = 5
+STALE_INIT_MOUNT_CLEANUP_DELAY_SECONDS = 1
 
 
 def command(args: list[str], *, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -506,6 +508,16 @@ def refresh_forgejo_bundle(
     )
 
 
+def container_mount_paths(container: dict[str, Any]) -> set[str]:
+    return {
+        item.get("mountPath")
+        for item in container.get("volumeMounts", []) or []
+        if isinstance(item, dict)
+        and item.get("name") == "platform-postgres-ca"
+        and isinstance(item.get("mountPath"), str)
+    }
+
+
 def mount_contract_ready(workload: dict[str, Any]) -> bool:
     pod_spec = (workload.get("spec") or {}).get("template", {}).get("spec") or {}
     volume = next(
@@ -532,18 +544,111 @@ def mount_contract_ready(workload: dict[str, Any]) -> bool:
     )
     if not volume_ready:
         return False
-    containers = (pod_spec.get("containers", []) or []) + (pod_spec.get("initContainers", []) or [])
-    if not containers:
+
+    runtime_containers = pod_spec.get("containers", []) or []
+    if not runtime_containers:
         return False
-    for container in containers:
-        mounts = {
-            item.get("mountPath")
-            for item in container.get("volumeMounts", []) or []
-            if item.get("name") == "platform-postgres-ca"
-        }
-        if not set(MOUNT_PATHS).issubset(mounts):
+    for container in runtime_containers:
+        if not set(MOUNT_PATHS).issubset(container_mount_paths(container)):
+            return False
+
+    # Forgejo's configure-gitea init container needs root.crt, but the
+    # application trust directory is a runtime-only mount. A previous
+    # repair could have left that application mount on init containers.
+    for container in pod_spec.get("initContainers", []) or []:
+        mounts = container_mount_paths(container)
+        if MOUNT_PATHS[0] not in mounts or MOUNT_PATHS[1] in mounts:
             return False
     return True
+
+
+def stale_init_application_mount_patch(document: dict[str, Any]) -> list[dict[str, Any]]:
+    metadata = document.get("metadata") or {}
+    resource_version = metadata.get("resourceVersion")
+    if not isinstance(resource_version, str) or not resource_version:
+        fail(
+            "forgejo-runtime-resource-version-missing",
+            "Forgejo workload has no resourceVersion for guarded init-mount cleanup.",
+        )
+    pod_spec = (document.get("spec") or {}).get("template", {}).get("spec") or {}
+    remove_operations: list[dict[str, Any]] = []
+    for container_index, container in enumerate(
+        pod_spec.get("initContainers", []) or []
+    ):
+        mounts = container.get("volumeMounts", []) or []
+        for mount_index in range(len(mounts) - 1, -1, -1):
+            mount = mounts[mount_index]
+            if (
+                isinstance(mount, dict)
+                and mount.get("name") == "platform-postgres-ca"
+                and mount.get("mountPath") == MOUNT_PATHS[1]
+            ):
+                remove_operations.append(
+                    {
+                        "op": "remove",
+                        "path": (
+                            "/spec/template/spec/initContainers/"
+                            f"{container_index}/volumeMounts/{mount_index}"
+                        ),
+                    }
+                )
+    if not remove_operations:
+        return []
+    # JSON Patch applies test plus remove atomically. A concurrent Argo CD
+    # write changes resourceVersion and makes the whole patch fail safely.
+    return [
+        {
+            "op": "test",
+            "path": "/metadata/resourceVersion",
+            "value": resource_version,
+        },
+        *remove_operations,
+    ]
+
+
+def remove_stale_init_application_mount(workload: str) -> bool:
+    for attempt in range(STALE_INIT_MOUNT_CLEANUP_RETRIES):
+        document = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+        if not document:
+            fail(
+                "forgejo-runtime-init-mount-cleanup-read-failed",
+                f"Could not read {FORGEJO_NAMESPACE}/{workload} for guarded "
+                "init-container mount cleanup.",
+            )
+        operations = stale_init_application_mount_patch(document)
+        if not operations:
+            return False
+
+        patched = kube(
+            "patch",
+            workload,
+            "--type=json",
+            "-p",
+            json.dumps(operations, separators=(",", ":")),
+            namespace=FORGEJO_NAMESPACE,
+            check=False,
+        )
+        if patched.returncode == 0:
+            print(
+                "forgejo_postgres_ca_init_mount=removed "
+                f"workload={workload} mountPath={MOUNT_PATHS[1]}"
+            )
+            return True
+
+        # The resourceVersion test rejects a stale index atomically. Re-read
+        # before retrying; another reconciler may already have removed it.
+        latest = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+        if latest and not stale_init_application_mount_patch(latest):
+            return False
+        if attempt + 1 < STALE_INIT_MOUNT_CLEANUP_RETRIES:
+            time.sleep(STALE_INIT_MOUNT_CLEANUP_DELAY_SECONDS)
+
+    fail(
+        "forgejo-runtime-init-mount-cleanup-failed",
+        f"Could not remove the application-only CA mount from init containers "
+        f"in {FORGEJO_NAMESPACE}/{workload} after guarded retries.",
+    )
+    return False
 
 
 def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
@@ -551,49 +656,80 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
         print(f"forgejo_postgres_ca_mount=present workload={workload}")
         return False
 
+    # Clean up the previous helper's init-container mutation before creating
+    # another ReplicaSet. The application trust directory is runtime-only.
+    init_mount_removed = remove_stale_init_application_mount(workload)
+    refreshed = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+    if not refreshed:
+        fail(
+            "forgejo-runtime-workload-missing-after-mount-patch",
+            f"Could not re-read {FORGEJO_NAMESPACE}/{workload} after "
+            "guarded init-container mount cleanup.",
+        )
+    document = refreshed
+    if mount_contract_ready(document):
+        print(f"forgejo_postgres_ca_mount=present workload={workload}")
+        return init_mount_removed
+
     pod_spec = (document.get("spec") or {}).get("template", {}).get("spec") or {}
-    containers = [
-        {"name": container["name"], "volumeMounts": [
-            {"name": "platform-postgres-ca", "mountPath": MOUNT_PATHS[0], "readOnly": True},
-            {"name": "platform-postgres-ca", "mountPath": MOUNT_PATHS[1], "readOnly": True},
-        ]}
-        for key in ("containers", "initContainers")
-        for container in pod_spec.get(key, []) or []
+    runtime_containers = [
+        container
+        for container in pod_spec.get("containers", []) or []
         if container.get("name")
     ]
-    if not any(item["name"] for item in containers):
-        fail("forgejo-runtime-container-missing", "Forgejo workload has no named containers to patch.")
+    if not runtime_containers:
+        fail(
+            "forgejo-runtime-container-missing",
+            "Forgejo workload has no named runtime containers to patch.",
+        )
+    init_containers = [
+        container
+        for container in pod_spec.get("initContainers", []) or []
+        if container.get("name")
+    ]
 
-    patch = {
-        "spec": {
-            "template": {
-                "spec": {
-                    "volumes": [{
+    pod_patch: dict[str, Any] = {
+        "volumes": [{
+            "name": "platform-postgres-ca",
+            "configMap": {
+                "name": "platform-internal-roots",
+                "items": [
+                    {"key": "ca-certificates.crt", "path": path}
+                    for path in POSTGRES_CA_ITEM_PATHS
+                ],
+            },
+        }],
+        "containers": [
+            {
+                "name": container["name"],
+                "volumeMounts": [
+                    {
                         "name": "platform-postgres-ca",
-                        "configMap": {
-                            "name": "platform-internal-roots",
-                            "items": [
-                                {"key": "ca-certificates.crt", "path": path}
-                                for path in POSTGRES_CA_ITEM_PATHS
-                            ],
-                        },
-                    }],
-                    "containers": [
-                        item for item in containers
-                        if item["name"] in {
-                            container["name"] for container in pod_spec.get("containers", []) or []
-                        }
-                    ],
-                    "initContainers": [
-                        item for item in containers
-                        if item["name"] in {
-                            container["name"] for container in pod_spec.get("initContainers", []) or []
-                        }
-                    ],
-                }
+                        "mountPath": path,
+                        "readOnly": True,
+                    }
+                    for path in MOUNT_PATHS
+                ],
             }
-        }
+            for container in runtime_containers
+        ],
     }
+    if init_containers:
+        # Only the PostgreSQL client trust file belongs in init containers.
+        # Do not add /etc/ssl/platform there; it is application-only.
+        pod_patch["initContainers"] = [
+            {
+                "name": container["name"],
+                "volumeMounts": [{
+                    "name": "platform-postgres-ca",
+                    "mountPath": MOUNT_PATHS[0],
+                    "readOnly": True,
+                }],
+            }
+            for container in init_containers
+        ]
+
+    patch = {"spec": {"template": {"spec": pod_patch}}}
     patched = kube(
         "patch",
         workload,
@@ -608,6 +744,7 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
             "forgejo-runtime-mount-patch-failed",
             f"Could not add the PostgreSQL CA mount to {FORGEJO_NAMESPACE}/{workload}.",
         )
+    remove_stale_init_application_mount(workload)
     print(f"forgejo_postgres_ca_mount=patched workload={workload}")
     return True
 
@@ -652,9 +789,85 @@ def ready_endpoints() -> int:
             continue
         for endpoint in (slice_document.get("endpoints") or []):
             conditions = endpoint.get("conditions") or {}
-            if conditions.get("ready") is not False and endpoint.get("addresses"):
+            if conditions.get("ready") is True and endpoint.get("addresses"):
                 count += 1
     return count
+
+
+def diagnostic_tail(value: str, limit: int = 8000) -> str:
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    return "[diagnostics truncated to the most recent output]\n" + value[-limit:]
+
+
+def runtime_diagnostics() -> str:
+    parts: list[str] = []
+    listing = kube(
+        "get",
+        "pods,service,endpointslice",
+        "-o",
+        "wide",
+        namespace=FORGEJO_NAMESPACE,
+        check=False,
+    ).stdout.strip()
+    if listing:
+        parts.append(listing)
+
+    pods = resource_json(
+        "pods",
+        namespace=FORGEJO_NAMESPACE,
+        selector=FORGEJO_SELECTOR,
+    )
+    for pod in (pods or {}).get("items", []) or []:
+        if not isinstance(pod, dict):
+            continue
+        metadata = pod.get("metadata") or {}
+        pod_name = metadata.get("name")
+        if not isinstance(pod_name, str) or not pod_name:
+            continue
+        status = pod.get("status") or {}
+        for status_key, kind in (
+            ("initContainerStatuses", "init"),
+            ("containerStatuses", "container"),
+        ):
+            for container_status in status.get(status_key, []) or []:
+                if not isinstance(container_status, dict):
+                    continue
+                current = container_status.get("state") or {}
+                previous = container_status.get("lastState") or {}
+                waiting = current.get("waiting") or {}
+                terminated = current.get("terminated") or {}
+                previous_terminated = previous.get("terminated") or {}
+                failed_terminated = (
+                    terminated
+                    if terminated and terminated.get("exitCode", 1) != 0
+                    else {}
+                )
+                previous_failed = (
+                    previous_terminated
+                    if previous_terminated
+                    and previous_terminated.get("exitCode", 1) != 0
+                    else {}
+                )
+                if not waiting and not failed_terminated and not previous_failed:
+                    continue
+                failure = waiting or failed_terminated or previous_failed
+                message = " ".join(str(failure.get("message") or "").split())
+                detail = [
+                    f"pod={pod_name}",
+                    f"type={kind}",
+                    f"name={container_status.get('name', 'unknown')}",
+                    f"reason={failure.get('reason', 'unknown')}",
+                    f"restart_count={container_status.get('restartCount', 0)}",
+                ]
+                if "exitCode" in failure:
+                    detail.append(f"exit_code={failure['exitCode']}")
+                if message:
+                    detail.append(f"message={message[:500]}")
+                parts.append("forgejo_container_failure=" + " ".join(detail))
+
+    return diagnostic_tail("\n".join(parts))
 
 
 def wait_for_runtime(workload: str, timeout: int) -> None:
@@ -672,14 +885,7 @@ def wait_for_runtime(workload: str, timeout: int) -> None:
             print(f"forgejo_runtime=ready pods={ready_pods()} endpoints={ready_endpoints()}")
             return
         time.sleep(5)
-    diagnostics = kube(
-        "get",
-        "pods,service,endpointslice",
-        "-o",
-        "wide",
-        namespace=FORGEJO_NAMESPACE,
-        check=False,
-    ).stdout.strip()
+    diagnostics = runtime_diagnostics()
     fail(
         "forgejo-runtime-readiness-timeout",
         f"Forgejo workload {FORGEJO_NAMESPACE}/{workload} did not become ready "

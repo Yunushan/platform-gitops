@@ -16,6 +16,11 @@ from forgejo_database_contract import (
     FORGEJO_NON_POSTGRES_DATABASE_TYPES,
     effective_forgejo_database_type,
 )
+from repair_forgejo_runtime import (
+    MOUNT_PATHS,
+    mount_contract_ready,
+    stale_init_application_mount_patch,
+)
 from reconcile_forgejo_tls_routes import build_patch
 
 
@@ -57,6 +62,77 @@ def forgejo_postgres_tls_required(text: str) -> bool:
     if "Forgejo" not in text or "rendered by scripts/render_private_platform_values.py" not in text:
         return True
     return effective_forgejo_database_type(text) not in FORGEJO_NON_POSTGRES_DATABASE_TYPES
+
+
+def test_forgejo_runtime_mount_contract_scope() -> None:
+    def workload(init_paths: tuple[str, ...]) -> dict[str, object]:
+        return {
+            "metadata": {"resourceVersion": "17"},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "volumes": [{
+                            "name": "platform-postgres-ca",
+                            "configMap": {
+                                "name": "platform-internal-roots",
+                                "items": [
+                                    {
+                                        "key": "ca-certificates.crt",
+                                        "path": path,
+                                    }
+                                    for path in ("ca-certificates.crt", "root.crt")
+                                ],
+                            },
+                        }],
+                        "containers": [{
+                            "name": "forgejo",
+                            "volumeMounts": [
+                                {
+                                    "name": "platform-postgres-ca",
+                                    "mountPath": path,
+                                }
+                                for path in MOUNT_PATHS
+                            ],
+                        }],
+                        "initContainers": [{
+                            "name": "configure-gitea",
+                            "volumeMounts": [
+                                {
+                                    "name": "platform-postgres-ca",
+                                    "mountPath": path,
+                                }
+                                for path in init_paths
+                            ],
+                        }],
+                    }
+                }
+            }
+        }
+
+    if not mount_contract_ready(workload((MOUNT_PATHS[0],))):
+        raise AssertionError(
+            "a PostgreSQL root.crt mount on the init container must satisfy the contract"
+        )
+    if mount_contract_ready(workload(MOUNT_PATHS)):
+        raise AssertionError(
+            "the application trust-directory mount must not be accepted on init containers"
+        )
+    if mount_contract_ready(workload(())):
+        raise AssertionError("an init container without PostgreSQL trust must fail closed")
+
+    guarded_patch = stale_init_application_mount_patch(workload(MOUNT_PATHS))
+    if len(guarded_patch) != 2:
+        raise AssertionError("stale init mount cleanup must emit one guard and one remove")
+    if guarded_patch[0] != {
+        "op": "test",
+        "path": "/metadata/resourceVersion",
+        "value": "17",
+    }:
+        raise AssertionError("stale init mount cleanup must guard the resourceVersion")
+    if guarded_patch[1].get("op") != "remove" or not guarded_patch[1].get(
+        "path", ""
+    ).endswith("/volumeMounts/1"):
+        raise AssertionError("stale init mount cleanup targeted the wrong mount index")
 
 
 def run_command(
@@ -815,6 +891,15 @@ gitea:
         "openssl",
         "configmap/platform-internal-roots",
         "mount_contract_ready",
+        "container_mount_paths",
+        "stale_init_application_mount_patch",
+        '"op": "test"',
+        "metadata/resourceVersion",
+        "STALE_INIT_MOUNT_CLEANUP_RETRIES",
+        "forgejo_postgres_ca_init_mount=removed",
+        "initContainerStatuses",
+        'conditions.get("ready") is True',
+        "application-only",
         "rollout",
         "result=ok",
     ):
@@ -843,6 +928,7 @@ gitea:
         "applying the canonical Forgejo ingress contract",
     ):
         require(makefile, needle, "Woodpecker classified prerequisite recovery")
+    test_forgejo_runtime_mount_contract_scope()
     test_forgejo_route_reconciliation()
     test_woodpecker_route_reconciler_bundle()
     test_public_tls_chain_completion()
