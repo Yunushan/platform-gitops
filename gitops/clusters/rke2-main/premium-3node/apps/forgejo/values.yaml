@@ -13,7 +13,7 @@ podDisruptionBudget:
 deployment:
   env:
     - name: SSL_CERT_FILE
-      value: /etc/ssl/platform/ca-certificates.crt
+      value: /data/gitea/git/.postgresql/ca-certificates.crt
 
 image:
   rootless: true
