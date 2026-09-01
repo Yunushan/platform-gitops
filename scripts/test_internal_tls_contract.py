@@ -18,8 +18,10 @@ from forgejo_database_contract import (
 )
 from repair_forgejo_runtime import (
     MOUNT_PATHS,
+    POSTGRES_CA_BUNDLE_PATH,
     mount_contract_ready,
     stale_init_application_mount_patch,
+    tls_env_contract_ready,
 )
 from reconcile_forgejo_tls_routes import build_patch
 
@@ -65,7 +67,11 @@ def forgejo_postgres_tls_required(text: str) -> bool:
 
 
 def test_forgejo_runtime_mount_contract_scope() -> None:
-    def workload(init_paths: tuple[str, ...]) -> dict[str, object]:
+    def workload(
+        init_paths: tuple[str, ...],
+        *,
+        ca_path: str = POSTGRES_CA_BUNDLE_PATH,
+    ) -> dict[str, object]:
         return {
             "metadata": {"resourceVersion": "17"},
             "spec": {
@@ -86,6 +92,10 @@ def test_forgejo_runtime_mount_contract_scope() -> None:
                         }],
                         "containers": [{
                             "name": "forgejo",
+                            "env": [{
+                                "name": "SSL_CERT_FILE",
+                                "value": ca_path,
+                            }],
                             "volumeMounts": [
                                 {
                                     "name": "platform-postgres-ca",
@@ -96,6 +106,10 @@ def test_forgejo_runtime_mount_contract_scope() -> None:
                         }],
                         "initContainers": [{
                             "name": "configure-gitea",
+                            "env": [{
+                                "name": "SSL_CERT_FILE",
+                                "value": ca_path,
+                            }],
                             "volumeMounts": [
                                 {
                                     "name": "platform-postgres-ca",
@@ -119,6 +133,17 @@ def test_forgejo_runtime_mount_contract_scope() -> None:
         )
     if mount_contract_ready(workload(())):
         raise AssertionError("an init container without PostgreSQL trust must fail closed")
+    if not tls_env_contract_ready(workload((MOUNT_PATHS[0],))):
+        raise AssertionError(
+            "all Forgejo containers must use the shared PostgreSQL CA bundle via SSL_CERT_FILE"
+        )
+    if tls_env_contract_ready(
+        workload(
+            (MOUNT_PATHS[0],),
+            ca_path="/etc/ssl/platform/ca-certificates.crt",
+        )
+    ):
+        raise AssertionError("a stale SSL_CERT_FILE path must fail closed")
 
     guarded_patch = stale_init_application_mount_patch(workload(MOUNT_PATHS))
     if len(guarded_patch) != 2:
@@ -890,13 +915,18 @@ gitea:
         "serverCASecret",
         "openssl",
         "configmap/platform-internal-roots",
+        "POSTGRES_CA_BUNDLE_PATH",
         "mount_contract_ready",
         "container_mount_paths",
+        "container_env_value",
+        "tls_env_contract_ready",
         "stale_init_application_mount_patch",
         '"op": "test"',
         "metadata/resourceVersion",
         "STALE_INIT_MOUNT_CLEANUP_RETRIES",
         "forgejo_postgres_ca_init_mount=removed",
+        "forgejo_postgres_ca_env=patched",
+        "SSL_CERT_FILE",
         "redact_diagnostic_text",
         "--previous",
         "forgejo_container_log=",
