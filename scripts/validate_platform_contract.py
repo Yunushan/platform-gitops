@@ -605,7 +605,7 @@ def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
         "USER: forgejo",
         "name: platform-internal-roots",
         "name: SSL_CERT_FILE",
-        "value: /etc/ssl/platform/ca-certificates.crt",
+        "value: /data/gitea/git/.postgresql/ca-certificates.crt",
         "mountPath: /etc/ssl/platform",
         "PROVIDER: db",
     }:
@@ -1179,7 +1179,7 @@ def main() -> None:
         "name: platform-internal-roots",
         "mountPath: /data/gitea/git/.postgresql",
         "name: SSL_CERT_FILE",
-        "value: /etc/ssl/platform/ca-certificates.crt",
+        "value: /data/gitea/git/.postgresql/ca-certificates.crt",
         "mountPath: /etc/ssl/platform",
         "PROVIDER: db",
         "GITEA__cache__HOST",
