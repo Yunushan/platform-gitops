@@ -1686,7 +1686,7 @@ def refresh_forgejo_postgres_tls(path: Path) -> bool:
         {"name": "SSL_CERT_FILE"},
         {
             "name": "SSL_CERT_FILE",
-            "value": "/etc/ssl/platform/ca-certificates.crt",
+            "value": "/data/gitea/git/.postgresql/ca-certificates.crt",
         },
         parent=deployment,
     )
@@ -1729,7 +1729,7 @@ def refresh_forgejo_postgres_tls(path: Path) -> bool:
         "name: platform-internal-roots",
         "mountPath: /data/gitea/git/.postgresql",
         "name: SSL_CERT_FILE",
-        "value: /etc/ssl/platform/ca-certificates.crt",
+        "value: /data/gitea/git/.postgresql/ca-certificates.crt",
     )
     if not changed and all(needle in text for needle in canonical_needles):
         return False
@@ -1914,7 +1914,7 @@ podDisruptionBudget:
 deployment:
   env:
     - name: SSL_CERT_FILE
-      value: /etc/ssl/platform/ca-certificates.crt
+      value: /data/gitea/git/.postgresql/ca-certificates.crt
 
 {forgejo_image_block(image_tag)}
 
