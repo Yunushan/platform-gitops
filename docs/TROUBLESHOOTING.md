@@ -257,12 +257,19 @@ and its private key with `make platform-tls`, then rerun the repair. The
 preflight now repairs Forgejo's backend first and does not loop through the
 ingress publisher while the public certificate is known to be unusable.
 
-The Forgejo runtime recovery also refreshes the `forgejo/platform-internal-roots`
-ConfigMap against the active CloudNativePG server CA, repairs the PostgreSQL
-client CA mount on Forgejo's application and database-related init containers,
-removes any stale application-only trust-directory mount from init containers,
-and restarts only the Forgejo workload. It never deletes a PVC, PV, Longhorn volume, or replica. If
-it reports `forgejo-object-storage-secret-missing`, the live values still use
+The Forgejo runtime recovery first validates the cert-manager-managed
+`platform-postgres-server-tls` Secret and reconciles live CloudNativePG
+`serverCASecret` and `serverTLSSecret` references to that Secret when live
+state still points at generated `platform-postgres-server`/`platform-postgres-ca`
+certificates. It then proves the PostgreSQL STARTTLS handshake for
+`platform-postgres-rw.platform-databases.svc.cluster.local` with that CA before
+refreshing the `forgejo/platform-internal-roots` ConfigMap. It repairs the
+PostgreSQL client CA mount on Forgejo's application and database-related init
+containers, removes any stale application-only trust-directory mount from init
+containers, and restarts only the Forgejo workload. It never deletes a PVC, PV,
+Longhorn volume, or replica. If the canonical certificate Secret is missing,
+invalid, or the live handshake cannot be verified, the repair fails closed.
+If it reports `forgejo-object-storage-secret-missing`, the live values still use
 MinIO/S3 and credentials must be supplied. If no S3-compatible service is
 available, explicitly render the lab-only filesystem profile before retrying:
 
