@@ -794,11 +794,64 @@ def ready_endpoints() -> int:
     return count
 
 
+DIAGNOSTIC_LOG_LIMIT = 4000
+SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r"(?ix)"
+    r"(\b(?:password|passwd|secret|token|api[-_]?key|access[-_]?key)\b"
+    r"\s*(?:=|:)\s*|"
+    r"--(?:password|passwd|secret|token|api[-_]?key|access[-_]?key)\s+)"
+    r"([^\s,;&]+)"
+)
+URI_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)(://)([^/@\s:]*):([^/@\s]+)@"
+)
+AUTHORIZATION_PATTERN = re.compile(
+    r"(?i)(\b(?:authorization|proxy-authorization)\s*:\s*"
+    r"(?:basic|bearer)\s+)\S+"
+)
+
+
+def redact_diagnostic_text(value: str, limit: int = DIAGNOSTIC_LOG_LIMIT) -> str:
+    """Keep failure diagnostics useful without echoing common credential forms."""
+    value = "".join(
+        character if character in "\n\t" or ord(character) >= 32 else " "
+        for character in value
+    )
+    value = URI_CREDENTIAL_PATTERN.sub(r"\1[REDACTED]:[REDACTED]@", value)
+    value = SECRET_ASSIGNMENT_PATTERN.sub(r"\1[REDACTED]", value)
+    value = AUTHORIZATION_PATTERN.sub(r"\1[REDACTED]", value)
+    value = " ".join(value.split())
+    if len(value) <= limit:
+        return value
+    return "[log excerpt truncated] " + value[-limit:]
+
+
 def diagnostic_tail(value: str, limit: int = 8000) -> str:
     value = value.strip()
     if len(value) <= limit:
         return value
     return "[diagnostics truncated to the most recent output]\n" + value[-limit:]
+
+
+def container_logs(
+    pod_name: str,
+    container_name: str,
+    *,
+    previous: bool,
+) -> str:
+    log_args = [
+        "logs",
+        f"pod/{pod_name}",
+        "-c",
+        container_name,
+        "--tail=80",
+    ]
+    if previous:
+        log_args.append("--previous")
+    result = kube(*log_args, namespace=FORGEJO_NAMESPACE, check=False)
+    if result.returncode != 0:
+        return ""
+    return result.stdout
 
 
 def runtime_diagnostics() -> str:
@@ -852,23 +905,66 @@ def runtime_diagnostics() -> str:
                 )
                 if not waiting and not failed_terminated and not previous_failed:
                     continue
-                failure = waiting or failed_terminated or previous_failed
-                message = " ".join(str(failure.get("message") or "").split())
+
+                name = str(container_status.get("name") or "unknown")
                 detail = [
                     f"pod={pod_name}",
                     f"type={kind}",
-                    f"name={container_status.get('name', 'unknown')}",
-                    f"reason={failure.get('reason', 'unknown')}",
+                    f"name={name}",
                     f"restart_count={container_status.get('restartCount', 0)}",
                 ]
-                if "exitCode" in failure:
-                    detail.append(f"exit_code={failure['exitCode']}")
-                if message:
-                    detail.append(f"message={message[:500]}")
+                if waiting:
+                    detail.append(f"reason={waiting.get('reason', 'unknown')}")
+                    waiting_message = " ".join(
+                        str(waiting.get("message") or "").split()
+                    )
+                    if waiting_message:
+                        detail.append(f"message={waiting_message[:500]}")
+                if failed_terminated:
+                    detail.append(f"exit_code={failed_terminated.get('exitCode')}")
+                    current_reason = failed_terminated.get("reason")
+                    if current_reason:
+                        detail.append(f"termination_reason={current_reason}")
+                if previous_failed:
+                    detail.append(
+                        f"last_exit_code={previous_failed.get('exitCode')}"
+                    )
+                    last_reason = previous_failed.get("reason")
+                    if last_reason:
+                        detail.append(f"last_reason={last_reason}")
+                    last_message = " ".join(
+                        str(previous_failed.get("message") or "").split()
+                    )
+                    if last_message:
+                        detail.append(f"last_message={last_message[:500]}")
                 parts.append("forgejo_container_failure=" + " ".join(detail))
 
-    return diagnostic_tail("\n".join(parts))
+                # CrashLoopBackOff exposes the useful migration error only in
+                # the previous container log. Fall back to the current log for
+                # containers that have not restarted yet.
+                log_sources = ["previous", "current"] if (
+                    waiting or previous_failed
+                ) else ["current"]
+                log_excerpt = ""
+                selected_source = ""
+                for source in log_sources:
+                    log_excerpt = container_logs(
+                        pod_name,
+                        name,
+                        previous=source == "previous",
+                    )
+                    if log_excerpt.strip():
+                        selected_source = source
+                        break
+                if log_excerpt.strip():
+                    safe_log = redact_diagnostic_text(log_excerpt)
+                    parts.append(
+                        "forgejo_container_log="
+                        f"pod={pod_name} type={kind} name={name} "
+                        f"source={selected_source} text={safe_log}"
+                    )
 
+    return diagnostic_tail("\n".join(parts))
 
 def wait_for_runtime(workload: str, timeout: int) -> None:
     deadline = time.monotonic() + timeout

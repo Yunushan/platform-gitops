@@ -688,7 +688,7 @@ gitea:
             "name: platform-internal-roots",
             "mountPath: /data/gitea/git/.postgresql",
             "name: SSL_CERT_FILE",
-            "value: /etc/ssl/platform/ca-certificates.crt",
+            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
         ):
             require(forgejo, needle, "Forgejo PostgreSQL TLS values")
     for needle in (
@@ -897,6 +897,10 @@ gitea:
         "metadata/resourceVersion",
         "STALE_INIT_MOUNT_CLEANUP_RETRIES",
         "forgejo_postgres_ca_init_mount=removed",
+        "redact_diagnostic_text",
+        "--previous",
+        "forgejo_container_log=",
+        "last_exit_code=",
         "initContainerStatuses",
         'conditions.get("ready") is True',
         "application-only",
