@@ -16,7 +16,11 @@ from forgejo_database_contract import (
     FORGEJO_NON_POSTGRES_DATABASE_TYPES,
     effective_forgejo_database_type,
 )
-from repair_forgejo_runtime import MOUNT_PATHS, mount_contract_ready
+from repair_forgejo_runtime import (
+    MOUNT_PATHS,
+    mount_contract_ready,
+    stale_init_application_mount_patch,
+)
 from reconcile_forgejo_tls_routes import build_patch
 
 
@@ -63,6 +67,7 @@ def forgejo_postgres_tls_required(text: str) -> bool:
 def test_forgejo_runtime_mount_contract_scope() -> None:
     def workload(init_paths: tuple[str, ...]) -> dict[str, object]:
         return {
+            "metadata": {"resourceVersion": "17"},
             "spec": {
                 "template": {
                     "spec": {
@@ -114,6 +119,20 @@ def test_forgejo_runtime_mount_contract_scope() -> None:
         )
     if mount_contract_ready(workload(())):
         raise AssertionError("an init container without PostgreSQL trust must fail closed")
+
+    guarded_patch = stale_init_application_mount_patch(workload(MOUNT_PATHS))
+    if len(guarded_patch) != 2:
+        raise AssertionError("stale init mount cleanup must emit one guard and one remove")
+    if guarded_patch[0] != {
+        "op": "test",
+        "path": "/metadata/resourceVersion",
+        "value": "17",
+    }:
+        raise AssertionError("stale init mount cleanup must guard the resourceVersion")
+    if guarded_patch[1].get("op") != "remove" or not guarded_patch[1].get(
+        "path", ""
+    ).endswith("/volumeMounts/1"):
+        raise AssertionError("stale init mount cleanup targeted the wrong mount index")
 
 
 def run_command(
@@ -873,6 +892,10 @@ gitea:
         "configmap/platform-internal-roots",
         "mount_contract_ready",
         "container_mount_paths",
+        "stale_init_application_mount_patch",
+        '"op": "test"',
+        "metadata/resourceVersion",
+        "STALE_INIT_MOUNT_CLEANUP_RETRIES",
         "forgejo_postgres_ca_init_mount=removed",
         "initContainerStatuses",
         'conditions.get("ready") is True',
