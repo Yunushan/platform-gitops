@@ -295,7 +295,7 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
             "name: platform-internal-roots",
             "mountPath: /data/gitea/git/.postgresql",
             "name: SSL_CERT_FILE",
-            "value: /etc/ssl/platform/ca-certificates.crt",
+            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
         )
         assert_not_contains(forgejo_path, 'tag: "14.0.0"')
         assert_not_contains(
@@ -428,7 +428,7 @@ gitea:
             "SSL_MODE: verify-full",
             "name: platform-internal-roots",
             "mountPath: /data/gitea/git/.postgresql",
-            "value: /etc/ssl/platform/ca-certificates.crt",
+            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
         )
 
 
@@ -1029,7 +1029,7 @@ def main() -> int:
             "name: platform-internal-roots",
             "mountPath: /data/gitea/git/.postgresql",
             "name: SSL_CERT_FILE",
-            "value: /etc/ssl/platform/ca-certificates.crt",
+            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
             "mountPath: /etc/ssl/platform",
         ):
             if not contract_validator.rendered_optional_forgejo_database_contract(
@@ -1091,7 +1091,7 @@ def main() -> int:
             "MINIO_USE_SSL: true",
             "mountPath: /data/gitea/git/.postgresql",
             "name: SSL_CERT_FILE",
-            "value: /etc/ssl/platform/ca-certificates.crt",
+            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
             "mountPath: /etc/ssl/platform",
         )
         assert_not_contains(external_forgejo_path, "FORGEJO_REDIS_URL", "redis://")
