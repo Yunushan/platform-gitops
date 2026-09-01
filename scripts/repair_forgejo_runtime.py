@@ -43,6 +43,7 @@ OBJECT_STORAGE_SECRET = os.environ.get("FORGEJO_S3_SECRET_NAME", "forgejo-object
 REQUESTED_STORAGE_MODE = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip().lower()
 MOUNT_PATHS = ("/data/gitea/git/.postgresql", "/etc/ssl/platform")
 POSTGRES_CA_ITEM_PATHS = ("ca-certificates.crt", "root.crt")
+POSTGRES_CA_BUNDLE_PATH = "/data/gitea/git/.postgresql/ca-certificates.crt"
 COMMAND_TIMEOUT_SECONDS = 60
 STALE_INIT_MOUNT_CLEANUP_RETRIES = 5
 STALE_INIT_MOUNT_CLEANUP_DELAY_SECONDS = 1
@@ -651,25 +652,68 @@ def remove_stale_init_application_mount(workload: str) -> bool:
     return False
 
 
+def container_env_value(container: dict[str, Any], name: str) -> str | None:
+    for item in container.get("env", []) or []:
+        if not isinstance(item, dict) or item.get("name") != name:
+            continue
+        value = item.get("value")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def tls_env_contract_ready(workload: dict[str, Any]) -> bool:
+    pod_spec = (workload.get("spec") or {}).get("template", {}).get("spec") or {}
+    containers = [
+        container
+        for container in (
+            (pod_spec.get("containers", []) or [])
+            + (pod_spec.get("initContainers", []) or [])
+        )
+        if isinstance(container, dict)
+    ]
+    if not containers:
+        return False
+    return all(
+        container_env_value(container, "SSL_CERT_FILE")
+        == POSTGRES_CA_BUNDLE_PATH
+        for container in containers
+    )
+
+
 def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
-    if mount_contract_ready(document):
+    mount_ready = mount_contract_ready(document)
+    env_ready = tls_env_contract_ready(document)
+    if mount_ready and env_ready:
         print(f"forgejo_postgres_ca_mount=present workload={workload}")
+        print(
+            "forgejo_postgres_ca_env=present "
+            f"workload={workload} path={POSTGRES_CA_BUNDLE_PATH}"
+        )
         return False
 
-    # Clean up the previous helper's init-container mutation before creating
-    # another ReplicaSet. The application trust directory is runtime-only.
-    init_mount_removed = remove_stale_init_application_mount(workload)
-    refreshed = resource_json(workload, namespace=FORGEJO_NAMESPACE)
-    if not refreshed:
-        fail(
-            "forgejo-runtime-workload-missing-after-mount-patch",
-            f"Could not re-read {FORGEJO_NAMESPACE}/{workload} after "
-            "guarded init-container mount cleanup.",
-        )
-    document = refreshed
-    if mount_contract_ready(document):
-        print(f"forgejo_postgres_ca_mount=present workload={workload}")
-        return init_mount_removed
+    init_mount_removed = False
+    if not mount_ready:
+        # Clean up the previous helper's init-container mutation before
+        # creating another ReplicaSet. The application trust directory is
+        # runtime-only.
+        init_mount_removed = remove_stale_init_application_mount(workload)
+        refreshed = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+        if not refreshed:
+            fail(
+                "forgejo-runtime-workload-missing-after-mount-patch",
+                f"Could not re-read {FORGEJO_NAMESPACE}/{workload} after "
+                "guarded init-container mount cleanup.",
+            )
+        document = refreshed
+        mount_ready = mount_contract_ready(document)
+        env_ready = tls_env_contract_ready(document)
+        if mount_ready and env_ready:
+            print(f"forgejo_postgres_ca_mount=present workload={workload}")
+            print(
+                "forgejo_postgres_ca_env=present "
+                f"workload={workload} path={POSTGRES_CA_BUNDLE_PATH}"
+            )
+            return init_mount_removed
 
     pod_spec = (document.get("spec") or {}).get("template", {}).get("spec") or {}
     runtime_containers = [
@@ -688,6 +732,14 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
         if container.get("name")
     ]
 
+    def tls_env_patch() -> dict[str, Any]:
+        # Remove a stale valueFrom source, if a previous render used one.
+        return {
+            "name": "SSL_CERT_FILE",
+            "value": POSTGRES_CA_BUNDLE_PATH,
+            "valueFrom": None,
+        }
+
     pod_patch: dict[str, Any] = {
         "volumes": [{
             "name": "platform-postgres-ca",
@@ -702,6 +754,7 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
         "containers": [
             {
                 "name": container["name"],
+                "env": [tls_env_patch()],
                 "volumeMounts": [
                     {
                         "name": "platform-postgres-ca",
@@ -720,6 +773,7 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
         pod_patch["initContainers"] = [
             {
                 "name": container["name"],
+                "env": [tls_env_patch()],
                 "volumeMounts": [{
                     "name": "platform-postgres-ca",
                     "mountPath": MOUNT_PATHS[0],
@@ -745,9 +799,38 @@ def patch_mount_contract(workload: str, document: dict[str, Any]) -> bool:
             f"Could not add the PostgreSQL CA mount to {FORGEJO_NAMESPACE}/{workload}.",
         )
     remove_stale_init_application_mount(workload)
-    print(f"forgejo_postgres_ca_mount=patched workload={workload}")
-    return True
 
+    patched_document = resource_json(workload, namespace=FORGEJO_NAMESPACE)
+    if not patched_document:
+        fail(
+            "forgejo-runtime-workload-missing-after-contract-patch",
+            f"Could not re-read {FORGEJO_NAMESPACE}/{workload} after "
+            "the guarded PostgreSQL trust contract patch.",
+        )
+    if not mount_contract_ready(patched_document) or not tls_env_contract_ready(
+        patched_document
+    ):
+        fail(
+            "forgejo-runtime-contract-patch-not-applied",
+            f"{FORGEJO_NAMESPACE}/{workload} did not retain the complete "
+            "PostgreSQL trust mount and SSL_CERT_FILE contract after patching.",
+        )
+
+    if mount_ready:
+        print(f"forgejo_postgres_ca_mount=present workload={workload}")
+    else:
+        print(f"forgejo_postgres_ca_mount=patched workload={workload}")
+    if env_ready:
+        print(
+            "forgejo_postgres_ca_env=present "
+            f"workload={workload} path={POSTGRES_CA_BUNDLE_PATH}"
+        )
+    else:
+        print(
+            "forgejo_postgres_ca_env=patched "
+            f"workload={workload} path={POSTGRES_CA_BUNDLE_PATH}"
+        )
+    return True
 
 def ready_pods() -> int:
     pods = resource_json(
