@@ -269,6 +269,17 @@ containers, removes any stale application-only trust-directory mount from init
 containers, and restarts only the Forgejo workload. It never deletes a PVC, PV,
 Longhorn volume, or replica. If the canonical certificate Secret is missing,
 invalid, or the live handshake cannot be verified, the repair fails closed.
+The `forgejo_postgres_certificates=reconciled` line confirms the CNPG references
+were updated; `forgejo_postgres_certificates=verified` additionally proves the
+live TLS handshake. The probe sends PostgreSQL SSLRequest, verifies the CA and
+hostname, and closes after the handshake without waiting for application data
+or server shutdown. Each attempt has a shared 10-second budget for Service
+lookup, TCP connection, SSLRequest, and TLS handshake. Transient timeouts retry
+within the 180-second certificate repair window. A persistent failure prints
+`forgejo_postgres_tls_probe=retry` with the phase and reason, plus CNPG
+certificate status and a bounded read-only pod, Service, and EndpointSlice
+listing. TCP/SSLRequest timeouts require checking the ready endpoints and
+node-to-Service path; they do not prove a certificate error.
 If it reports `forgejo-object-storage-secret-missing`, the live values still use
 MinIO/S3 and credentials must be supplied. If no S3-compatible service is
 available, explicitly render the lab-only filesystem profile before retrying:

@@ -3,14 +3,23 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import http.server
+import io
 import os
 import shutil
+import socket
+import ssl
+import struct
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
+from unittest import mock
+
+import repair_forgejo_runtime as forgejo_runtime
 
 from forgejo_database_contract import (
     FORGEJO_NON_POSTGRES_DATABASE_TYPES,
@@ -187,6 +196,248 @@ def run_command(
 class QuietRequestHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         del format, args
+
+
+def test_forgejo_postgres_tls_probe() -> None:
+    openssl = shutil.which("openssl")
+    if not openssl:
+        raise AssertionError("OpenSSL is required for PostgreSQL TLS probe tests")
+    with tempfile.TemporaryDirectory(prefix="platform-postgres-probe-test-") as temporary:
+        directory = Path(temporary)
+        for name in ("trusted", "unrelated"):
+            run_command(
+                [openssl, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                 "-days", "2", "-subj", f"/CN={name}",
+                 "-addext", "basicConstraints=critical,CA:TRUE",
+                 "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+                 "-addext", "subjectKeyIdentifier=hash",
+                 "-keyout", str(directory / f"{name}.key"),
+                 "-out", str(directory / f"{name}.crt")],
+                cwd=directory,
+            )
+        run_command(
+            [openssl, "req", "-new", "-newkey", "rsa:2048", "-nodes",
+             "-subj", f"/CN={forgejo_runtime.POSTGRES_HOST}",
+             "-keyout", str(directory / "server.key"),
+             "-out", str(directory / "server.csr")],
+            cwd=directory,
+        )
+        (directory / "server.ext").write_text(
+            "basicConstraints=critical,CA:FALSE\n"
+            "keyUsage=critical,digitalSignature,keyEncipherment\n"
+            "extendedKeyUsage=serverAuth\n"
+            "subjectKeyIdentifier=hash\n"
+            "authorityKeyIdentifier=keyid,issuer\n"
+            f"subjectAltName=DNS:{forgejo_runtime.POSTGRES_HOST}\n",
+            encoding="utf-8",
+        )
+        run_command(
+            [openssl, "x509", "-req", "-in", str(directory / "server.csr"),
+             "-CA", str(directory / "trusted.crt"),
+             "-CAkey", str(directory / "trusted.key"), "-CAcreateserial",
+             "-days", "2", "-extfile", str(directory / "server.ext"),
+             "-out", str(directory / "server.crt")],
+            cwd=directory,
+        )
+        server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_context.load_cert_chain(directory / "server.crt", directory / "server.key")
+        real_connect = socket.create_connection
+
+        @contextlib.contextmanager
+        def postgres_server(mode: str = "tls"):
+            stop = threading.Event()
+            failures: list[BaseException] = []
+            with socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                listener.settimeout(3)
+                port = listener.getsockname()[1]
+
+                def serve() -> None:
+                    try:
+                        with listener.accept()[0] as connection:
+                            connection.settimeout(3)
+                            request = b""
+                            while len(request) < 8:
+                                chunk = connection.recv(8 - len(request))
+                                if not chunk:
+                                    raise AssertionError("probe closed before SSLRequest")
+                                request += chunk
+                            if request != struct.pack("!II", 8, 80877103):
+                                raise AssertionError("probe did not use PostgreSQL SSLRequest")
+                            if mode == "request-stall":
+                                stop.wait(3)
+                                return
+                            if mode in {"refuse", "error"}:
+                                connection.sendall(
+                                    b"N" if mode == "refuse" else b"Euntrusted-server-text"
+                                )
+                                return
+                            connection.sendall(b"S")
+                            if mode == "handshake-stall":
+                                stop.wait(3)
+                                return
+                            try:
+                                with server_context.wrap_socket(connection, server_side=True) as channel:
+                                    # Keep the server open until the probe closes. No
+                                    # application reply or server shutdown is needed.
+                                    if channel.recv(1) != b"":
+                                        raise AssertionError("TLS probe sent application data")
+                            except (ssl.SSLError, ConnectionError):
+                                # Certificate rejection or a completed client-side
+                                # probe may close before the server sends TLS tickets.
+                                pass
+                    except BaseException as exc:
+                        failures.append(exc)
+
+                worker = threading.Thread(target=serve, daemon=True)
+                worker.start()
+
+                def connect(address, *, timeout):
+                    if address != ("127.0.0.1", 5432):
+                        raise AssertionError("probe bypassed the read-write Service")
+                    return real_connect(("127.0.0.1", port), timeout=timeout)
+
+                try:
+                    with mock.patch.object(
+                        forgejo_runtime, "postgres_service_cluster_ip", return_value="127.0.0.1"
+                    ), mock.patch.object(socket, "create_connection", side_effect=connect):
+                        yield
+                finally:
+                    stop.set()
+                    worker.join(timeout=4)
+                    if worker.is_alive():
+                        raise AssertionError("PostgreSQL test server failed to stop")
+                    if failures:
+                        raise failures[0]
+
+        trusted = directory / "trusted.crt"
+        output = io.StringIO()
+        with postgres_server(), contextlib.redirect_stdout(output):
+            started = time.monotonic()
+            if not forgejo_runtime.postgres_server_handshake_verifies(trusted):
+                raise AssertionError(
+                    "valid PostgreSQL certificate failed verification: " + output.getvalue()
+                )
+            if time.monotonic() - started >= 2:
+                raise AssertionError("probe waited for PostgreSQL to close a verified connection")
+        for ca_path, hostname in (
+            (directory / "unrelated.crt", forgejo_runtime.POSTGRES_HOST),
+            (trusted, "wrong-postgres.example.test"),
+        ):
+            output = io.StringIO()
+            with postgres_server(), mock.patch.object(
+                forgejo_runtime, "POSTGRES_HOST", hostname
+            ), contextlib.redirect_stdout(output):
+                if forgejo_runtime.postgres_server_handshake_verifies(ca_path):
+                    raise AssertionError("untrusted or wrong-host certificate was accepted")
+            if "reason=certificate-verification-failed" not in output.getvalue():
+                raise AssertionError("certificate failure lost its classification")
+        for mode, expected_phase in (
+            ("refuse", "ssl-request"), ("error", "ssl-request"),
+            ("request-stall", "ssl-request"), ("handshake-stall", "tls-handshake"),
+        ):
+            output = io.StringIO()
+            with postgres_server(mode), mock.patch.object(
+                forgejo_runtime, "POSTGRES_TLS_PROBE_TIMEOUT_SECONDS", 0.2
+            ), contextlib.redirect_stdout(output):
+                started = time.monotonic()
+                if forgejo_runtime.postgres_server_handshake_verifies(trusted):
+                    raise AssertionError("stalled or unencrypted PostgreSQL was accepted")
+                if time.monotonic() - started >= 2:
+                    raise AssertionError("probe exceeded its bounded attempt timeout")
+            if f"phase={expected_phase}" not in output.getvalue():
+                raise AssertionError("probe failure did not identify the stalled phase")
+            if "untrusted-server-text" in output.getvalue():
+                raise AssertionError("probe exposed unauthenticated server text")
+
+        for phase in ("tcp-connect", "service-discovery"):
+            output = io.StringIO()
+            discovery = (
+                subprocess.TimeoutExpired(["kubectl"], 10)
+                if phase == "service-discovery" else None
+            )
+            with mock.patch.object(
+                forgejo_runtime, "postgres_service_cluster_ip",
+                side_effect=discovery, return_value="127.0.0.1",
+            ), mock.patch.object(socket, "create_connection", side_effect=TimeoutError), \
+                    contextlib.redirect_stdout(output):
+                if forgejo_runtime.postgres_server_handshake_verifies(trusted):
+                    raise AssertionError("a timed-out probe was accepted")
+            if f"phase={phase} reason=timeout" not in output.getvalue():
+                raise AssertionError("transient timeout escaped the retry path")
+
+        with mock.patch.object(
+            forgejo_runtime, "postgres_service_cluster_ip", return_value="127.0.0.1"
+        ), mock.patch.object(socket, "create_connection", side_effect=ConnectionRefusedError), \
+                contextlib.redirect_stdout(io.StringIO()):
+            if forgejo_runtime.postgres_server_handshake_verifies(trusted):
+                raise AssertionError("connection refusal was treated as a verified handshake")
+
+
+def test_forgejo_postgres_probe_retry_deadline() -> None:
+    expected = forgejo_runtime.POSTGRES_SERVER_CERTIFICATE_SECRET
+    cluster = {"spec": {"certificates": {
+        "serverCASecret": expected, "serverTLSSecret": expected,
+    }}}
+    ca_path = Path("probe-ca.crt")
+    for recover in (True, False):
+        clock = [0.0]
+        attempts: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            clock[0] += seconds
+
+        def probe(path: Path, *, deadline: float) -> bool:
+            if path != ca_path:
+                raise AssertionError("probe changed the configured trust root")
+            attempts.append(clock[0])
+            clock[0] += min(10, deadline - clock[0])
+            return recover and len(attempts) == 2
+
+        output = io.StringIO()
+        with mock.patch.object(forgejo_runtime, "validate_postgres_server_certificate_secret",
+                               return_value=(ca_path, Path("leaf.crt"))), \
+                mock.patch.object(forgejo_runtime, "postgres_cluster", return_value=cluster), \
+                mock.patch.object(forgejo_runtime, "postgres_server_handshake_verifies", side_effect=probe), \
+                mock.patch.object(forgejo_runtime, "postgres_runtime_diagnostics", return_value="probe-diagnostics"), \
+                mock.patch.object(forgejo_runtime, "POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS", 23), \
+                mock.patch.object(forgejo_runtime.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(forgejo_runtime.time, "sleep", side_effect=sleep), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            try:
+                result = forgejo_runtime.reconcile_postgres_certificate_contract(cluster, Path("."))
+            except forgejo_runtime.RepairError as exc:
+                if recover or str(exc) != "forgejo-postgres-certificate-contract-timeout":
+                    raise
+            else:
+                if not recover or result != (cluster, expected):
+                    raise AssertionError("repair falsely succeeded or failed to recover")
+        if attempts != [0.0, 15.0] or clock[0] != 23:
+            raise AssertionError("retry loop exceeded its remaining deadline")
+        if not recover and "probe-diagnostics" not in output.getvalue():
+            raise AssertionError("exhausted retry did not include PostgreSQL diagnostics")
+
+    with mock.patch.object(forgejo_runtime, "run_bounded") as runner:
+        runner.return_value = subprocess.CompletedProcess([], 0, '{"spec":{"clusterIP":"::1"}}', "")
+        if forgejo_runtime.postgres_service_cluster_ip(timeout_seconds=0.25) != "::1":
+            raise AssertionError("numeric IPv6 Service addresses must be retained")
+        if runner.call_args.kwargs["timeout"] > 0.25:
+            raise AssertionError("Service lookup ignored the probe's remaining budget")
+        forgejo_runtime.postgres_cluster(timeout_seconds=0.25)
+        if runner.call_args.kwargs["timeout"] > 0.25:
+            raise AssertionError("CNPG lookup ignored the retry loop's remaining budget")
+
+    with mock.patch.object(forgejo_runtime, "validate_postgres_server_certificate_secret",
+                           return_value=(ca_path, Path("leaf.crt"))), \
+            mock.patch.object(forgejo_runtime, "postgres_cluster", side_effect=[
+                subprocess.TimeoutExpired(["kubectl"], 10), cluster,
+            ]), \
+            mock.patch.object(forgejo_runtime, "postgres_server_handshake_verifies", return_value=True), \
+            mock.patch.object(forgejo_runtime.time, "sleep"), \
+            contextlib.redirect_stdout(io.StringIO()):
+        if forgejo_runtime.reconcile_postgres_certificate_contract(cluster, Path(".")) != (cluster, expected):
+            raise AssertionError("transient CNPG discovery timeout prevented recovery")
 
 
 def test_forgejo_route_reconciliation() -> None:
@@ -921,8 +1172,6 @@ gitea:
         "validate_postgres_server_certificate_secret",
         "reconcile_postgres_certificate_contract",
         "postgres_server_handshake_verifies",
-        '"-starttls"',
-        '"-verify_return_error"',
         "tls.key",
         "platform-postgres-rw",
         "forgejo_postgres_certificates=reconciled",
@@ -979,6 +1228,8 @@ gitea:
     ):
         require(makefile, needle, "Woodpecker classified prerequisite recovery")
     test_forgejo_runtime_mount_contract_scope()
+    test_forgejo_postgres_tls_probe()
+    test_forgejo_postgres_probe_retry_deadline()
     test_forgejo_route_reconciliation()
     test_woodpecker_route_reconciler_bundle()
     test_public_tls_chain_completion()
