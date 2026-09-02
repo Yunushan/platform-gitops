@@ -833,18 +833,20 @@ def test_forgejo_storage_bindings(renderer) -> None:
                     raise AssertionError("incomplete S3 configuration accepted")
             assert path.read_bytes() == before
 
-        custom = copy.deepcopy(config)
-        custom["lfs"]["MINIO_ENDPOINT"] = "other-private-store.test"
-        reset(custom)
-        before = path.read_bytes()
-        with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": ""}):
-            try:
-                renderer.refresh_forgejo_storage(path)
-            except SystemExit:
-                pass
-            else:
-                raise AssertionError("custom subsystem endpoint overwritten")
-        assert path.read_bytes() == before
+        for section in ("attachment", "lfs", "storage.packages"):
+            for key, value in (("MINIO_ENDPOINT", "other-private-store.test"), ("MINIO_BUCKET", "custom-bucket"), ("MINIO_BASE_PATH", "existing/prefix/")):
+                custom = copy.deepcopy(config)
+                custom[section][key] = value
+                reset(custom)
+                before = path.read_bytes()
+                with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": ""}):
+                    try:
+                        renderer.refresh_forgejo_storage(path)
+                    except SystemExit:
+                        pass
+                    else:
+                        raise AssertionError(f"custom subsystem {key} was overwritten")
+                assert path.read_bytes() == before
 
         mixed = copy.deepcopy(config)
         mixed["storage.minio"] = {"STORAGE_TYPE": "minio", "MINIO_ENDPOINT": "template-store.test", "MINIO_BUCKET": "platform-forgejo"}

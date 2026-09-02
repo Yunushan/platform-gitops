@@ -97,8 +97,7 @@ def repair_minio_inheritance(config: dict, env: list[dict]) -> bool:
     for section in selected:
         if section == "storage":
             continue
-        if any(key.startswith("MINIO_") and key not in {"MINIO_BUCKET", "MINIO_BASE_PATH"}
-               for key in config.get(section, {})):
+        if any(key.startswith("MINIO_") for key in config.get(section, {})):
             raise StorageContractError("Mixed per-subsystem MinIO settings require manual reconciliation; no storage was changed.")
     if not valid_minio_endpoint(str(common.get("MINIO_ENDPOINT", ""))) or not common.get("MINIO_BUCKET"):
         raise StorageContractError("MinIO is selected but its shared MINIO_ENDPOINT/MINIO_BUCKET is missing or invalid. Select filesystem explicitly if no S3 service exists.")
