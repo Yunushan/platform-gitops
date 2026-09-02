@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import ipaddress
 import json
 import os
 import re
@@ -25,7 +24,7 @@ if str(SCRIPT_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
 from bounded_file import read_bounded_bytes, read_bounded_text
-from bounded_subprocess import run_bounded
+from bounded_subprocess import BoundedSubprocessError, run_bounded
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
@@ -433,31 +432,6 @@ def validate_postgres_server_certificate_secret(
     return ca_path, leaf_path
 
 
-def postgres_service_cluster_ip(*, timeout_seconds: float | None = None) -> str:
-    service = resource_json(
-        "service/platform-postgres-rw",
-        namespace=POSTGRES_NAMESPACE,
-        timeout_seconds=timeout_seconds,
-    )
-    if not service:
-        fail(
-            "forgejo-postgres-service-missing",
-            f"PostgreSQL read-write Service platform-postgres-rw is not "
-            f"available in {POSTGRES_NAMESPACE}.",
-        )
-    cluster_ip = (service.get("spec") or {}).get("clusterIP")
-    try:
-        # A numeric ClusterIP avoids an unbounded DNS lookup in the TLS probe.
-        return str(ipaddress.ip_address(str(cluster_ip).strip()))
-    except ValueError:
-        fail(
-            "forgejo-postgres-service-cluster-ip-missing",
-            f"PostgreSQL read-write Service platform-postgres-rw in "
-            f"{POSTGRES_NAMESPACE} has no usable ClusterIP.",
-        )
-    return ""
-
-
 def postgres_server_handshake_verifies(
     ca_path: Path, *, deadline: float | None = None,
 ) -> bool:
@@ -471,45 +445,85 @@ def postgres_server_handshake_verifies(
             raise TimeoutError("PostgreSQL TLS probe deadline reached")
         return seconds
 
-    phase = "service-discovery"
-    cluster_ip = "unresolved"
+    phase = "port-forward"
+    reason = "port-forward-failed"
+    address = "pending"
+    verified = False
+    announcement = bytearray()
+
+    def verify_forwarded_port(chunk: bytes) -> bool:
+        nonlocal phase, reason, address, verified
+        announcement.extend(chunk)
+        if len(announcement) > 4096:
+            reason = "port-forward-output-invalid"
+            return True
+        match = re.search(
+            rb"(?m)^Forwarding from 127\.0\.0\.1:([0-9]{1,5}) -> 5432\r?\n",
+            announcement,
+        )
+        if match is None:
+            return False
+        port = int(match.group(1))
+        if not 0 < port <= 65535:
+            reason = "port-forward-output-invalid"
+            return True
+        address = f"127.0.0.1:{port}"
+        try:
+            phase = "ca-load"
+            context = ssl.create_default_context(cafile=str(ca_path))
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            phase = "tcp-connect"
+            with socket.create_connection(("127.0.0.1", port), timeout=remaining()) as connection:
+                phase = "ssl-request"
+                connection.settimeout(remaining())
+                connection.sendall(struct.pack("!II", 8, 80877103))
+                connection.settimeout(remaining())
+                if connection.recv(1) != b"S":
+                    reason = "ssl-request-rejected"
+                    return True
+                phase = "tls-handshake"
+                connection.settimeout(remaining())
+                # Verify the Service identity, not localhost, and send no SQL.
+                with context.wrap_socket(connection, server_hostname=POSTGRES_HOST):
+                    verified = True
+        except ssl.SSLCertVerificationError:
+            reason = "certificate-verification-failed"
+        except TimeoutError:
+            reason = "timeout"
+        except ssl.SSLError:
+            reason = "tls-protocol-error"
+        except OSError:
+            reason = "connection-error"
+        return True
+
     try:
-        cluster_ip = postgres_service_cluster_ip(timeout_seconds=remaining())
-        phase = "ca-load"
-        context = ssl.create_default_context(cafile=str(ca_path))
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
-        phase = "tcp-connect"
-        with socket.create_connection((cluster_ip, 5432), timeout=remaining()) as connection:
-            phase = "ssl-request"
-            connection.settimeout(remaining())
-            # PostgreSQL SSLRequest is length=8 followed by code=80877103.
-            connection.sendall(struct.pack("!II", 8, 80877103))
-            connection.settimeout(remaining())
-            response = connection.recv(1)
-            if response != b"S":
-                print(
-                    "forgejo_postgres_tls_probe=retry "
-                    f"address={cluster_ip}:5432 phase={phase} "
-                    "reason=ssl-request-rejected"
-                )
-                return False
-            phase = "tls-handshake"
-            connection.settimeout(remaining())
-            # Close immediately after certificate/hostname verification. Waiting
-            # for PostgreSQL application data or TLS shutdown can stall a probe.
-            with context.wrap_socket(connection, server_hostname=POSTGRES_HOST):
-                return True
-    except ssl.SSLCertVerificationError:
-        reason = "certificate-verification-failed"
+        # The node's host network is not an application namespace. Verify the
+        # primary through the API; application readiness remains a separate gate.
+        run_bounded(
+            [KUBECTL, "--kubeconfig", KUBECONFIG, "-n", POSTGRES_NAMESPACE,
+             "port-forward", "--address=127.0.0.1",
+             "service/platform-postgres-rw", ":5432"],
+            input=b"", timeout=remaining(), output_max_bytes=8192,
+            stdout_callback=verify_forwarded_port,
+        )
     except (TimeoutError, subprocess.TimeoutExpired):
         reason = "timeout"
-    except ssl.SSLError:
-        reason = "tls-protocol-error"
+        verified = False
+    except BoundedSubprocessError:
+        reason = "port-forward-capture-failed"
+        verified = False
     except OSError:
-        reason = "connection-error"
+        reason = "port-forward-unavailable"
+        verified = False
+    if verified:
+        print(
+            "forgejo_postgres_tls_probe=verified transport=kubernetes-api "
+            "service=platform-postgres-rw application_network=not-tested"
+        )
+        return True
     print(
         "forgejo_postgres_tls_probe=retry "
-        f"address={cluster_ip}:5432 phase={phase} reason={reason}"
+        f"transport=kubernetes-api address={address} phase={phase} reason={reason}"
     )
     return False
 
@@ -607,9 +621,12 @@ def reconcile_postgres_certificate_contract(
         f"{POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS}s.\n"
         f"CNPG status: serverCASecret={status_ca or 'unset'} "
         f"serverTLSSecret={status_tls or 'unset'}.\n"
-        "The probe lines identify a TCP, SSLRequest, TLS, or API timeout. "
-        "Check the PostgreSQL ready endpoints and node-to-Service path when "
-        "TCP/SSLRequest times out; check certificate reload for verification failures.\n"
+        "The certificate probe uses a localhost-only Kubernetes API port-forward, "
+        "not the node-to-ClusterIP path. Check API/kubelet connectivity and "
+        "pods/portforward RBAC for port-forward failures, the primary listener "
+        "for SSLRequest timeouts, and certificate reload for verification failures. "
+        "This probe does not validate Forgejo's pod-to-Service network path; "
+        "Forgejo initialization, rollout, and ready endpoints are still required.\n"
         f"{postgres_runtime_diagnostics()}",
     )
     return cluster, expected
