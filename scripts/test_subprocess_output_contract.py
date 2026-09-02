@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from unittest import mock
 
 
@@ -162,6 +163,63 @@ def test_check_behavior() -> None:
         raise AssertionError("check=True accepted a non-zero subprocess")
 
 
+def test_stdout_callback_stops_and_reaps_child() -> None:
+    received = bytearray()
+
+    def ready(chunk: bytes) -> bool:
+        received.extend(chunk)
+        return b"ready" in received
+
+    started = time.monotonic()
+    with mock.patch.object(subprocess, "Popen", wraps=subprocess.Popen) as spawn:
+        result = bounded_subprocess.run_bounded(
+            [sys.executable, "-c", "import sys,time; "
+             "print('ready', flush=True); time.sleep(30)"],
+            timeout=5, output_max_bytes=1024, stdout_callback=ready,
+        )
+        if spawn.call_count != 1 or result.returncode == 0:
+            raise AssertionError("callback did not terminate its long-lived child")
+    if time.monotonic() - started >= 4 or received.splitlines() != [b"ready"]:
+        raise AssertionError("streaming callback waited for the child timeout")
+
+    def broken(chunk: bytes) -> bool:
+        del chunk
+        raise RuntimeError("callback-test-error")
+
+    try:
+        bounded_subprocess.run_bounded(
+            [sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(30)"],
+            timeout=5, output_max_bytes=1024, stdout_callback=broken,
+        )
+    except bounded_subprocess.SubprocessCaptureError as exc:
+        if "callback-test-error" not in str(exc):
+            raise AssertionError("callback failure was lost") from exc
+    else:
+        raise AssertionError("callback exception was ignored")
+
+    callback = mock.Mock(return_value=False)
+    try:
+        bounded_subprocess.run_bounded(
+            [sys.executable, "-c", "print('x' * 10000, flush=True)"],
+            timeout=5, output_max_bytes=32, stdout_callback=callback,
+        )
+    except bounded_subprocess.SubprocessOutputLimitExceeded:
+        if sum(len(call.args[0]) for call in callback.call_args_list) > 32:
+            raise AssertionError("callback received output beyond the capture limit")
+    else:
+        raise AssertionError("callback bypassed the output limit")
+
+    try:
+        bounded_subprocess.run_bounded(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout=0.2, output_max_bytes=1024, stdout_callback=ready,
+        )
+    except subprocess.TimeoutExpired:
+        pass
+    else:
+        raise AssertionError("silent streaming child escaped its deadline")
+
+
 def test_production_capture_uses_shared_runner() -> None:
     direct_capture: list[str] = []
     unbounded_runner: list[str] = []
@@ -247,6 +305,7 @@ def test_injected_runner_defaults_to_bounded_capture() -> None:
 
 
 def main() -> int:
+    test_stdout_callback_stops_and_reaps_child()
     test_limit_validation()
     test_text_and_binary_capture()
     test_combined_output_limit()

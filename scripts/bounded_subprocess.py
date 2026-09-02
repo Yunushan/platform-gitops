@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import locale
 import math
 import os
@@ -98,8 +98,14 @@ def run_bounded(
     errors: str | None = None,
     check: bool = False,
     output_max_bytes: int | None = None,
+    stdout_callback: Callable[[bytes], bool] | None = None,
 ) -> subprocess.CompletedProcess[Any]:
-    """Run a command while retaining at most a bounded combined output size."""
+    """Capture bounded output; an optional callback can stop a streaming child.
+
+    The callback receives stdout chunks on its reader thread and must bound its
+    own work by the caller's deadline. Returning True kills and reaps the child;
+    the returned process exit code still reflects that termination.
+    """
     if timeout is None or not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("timeout must be greater than zero")
     limit = (
@@ -166,6 +172,17 @@ def run_bounded(
                 if should_terminate:
                     terminate()
                     return
+                if label == "stdout" and stdout_callback is not None:
+                    try:
+                        stop = stdout_callback(chunk)
+                    except Exception as exc:
+                        with lock:
+                            reader_failures.append(f"stdout callback: {exc}")
+                        terminate()
+                        return
+                    if stop:
+                        terminate()
+                        return
         except (OSError, ValueError) as exc:
             with lock:
                 reader_failures.append(f"{label}: {exc}")

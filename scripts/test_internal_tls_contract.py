@@ -13,6 +13,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -241,7 +242,7 @@ def test_forgejo_postgres_tls_probe() -> None:
         )
         server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         server_context.load_cert_chain(directory / "server.crt", directory / "server.key")
-        real_connect = socket.create_connection
+        real_runner = forgejo_runtime.run_bounded
 
         @contextlib.contextmanager
         def postgres_server(mode: str = "tls"):
@@ -293,15 +294,27 @@ def test_forgejo_postgres_tls_probe() -> None:
                 worker = threading.Thread(target=serve, daemon=True)
                 worker.start()
 
-                def connect(address, *, timeout):
-                    if address != ("127.0.0.1", 5432):
-                        raise AssertionError("probe bypassed the read-write Service")
-                    return real_connect(("127.0.0.1", port), timeout=timeout)
+                def forward(args, **kwargs):
+                    expected = [
+                        forgejo_runtime.KUBECTL, "--kubeconfig", forgejo_runtime.KUBECONFIG,
+                        "-n", forgejo_runtime.POSTGRES_NAMESPACE, "port-forward",
+                        "--address=127.0.0.1", "service/platform-postgres-rw", ":5432",
+                    ]
+                    if args != expected:
+                        raise AssertionError("probe did not select a loopback-only primary Service tunnel")
+                    # A real long-lived child exercises readiness output, early
+                    # termination, and cleanup, while the local fixture supplies TLS.
+                    return real_runner(
+                        [sys.executable, "-c", "import time; "
+                         f"print('Forwarding from 127.0.0.1:{port} -> 5432', flush=True); "
+                         "time.sleep(30)"],
+                        **kwargs,
+                    )
 
                 try:
                     with mock.patch.object(
-                        forgejo_runtime, "postgres_service_cluster_ip", return_value="127.0.0.1"
-                    ), mock.patch.object(socket, "create_connection", side_effect=connect):
+                        forgejo_runtime, "run_bounded", side_effect=forward
+                    ):
                         yield
                 finally:
                     stop.set()
@@ -339,7 +352,7 @@ def test_forgejo_postgres_tls_probe() -> None:
         ):
             output = io.StringIO()
             with postgres_server(mode), mock.patch.object(
-                forgejo_runtime, "POSTGRES_TLS_PROBE_TIMEOUT_SECONDS", 0.2
+                forgejo_runtime, "POSTGRES_TLS_PROBE_TIMEOUT_SECONDS", 0.5
             ), contextlib.redirect_stdout(output):
                 started = time.monotonic()
                 if forgejo_runtime.postgres_server_handshake_verifies(trusted):
@@ -351,15 +364,19 @@ def test_forgejo_postgres_tls_probe() -> None:
             if "untrusted-server-text" in output.getvalue():
                 raise AssertionError("probe exposed unauthenticated server text")
 
-        for phase in ("tcp-connect", "service-discovery"):
+        def announced_forward(args, **kwargs):
+            del args
+            kwargs["stdout_callback"](b"Forwarding from 127.0.0.1:34567 -> 5432\n")
+            return subprocess.CompletedProcess([], -9, b"", b"")
+
+        for phase in ("tcp-connect", "port-forward"):
             output = io.StringIO()
-            discovery = (
-                subprocess.TimeoutExpired(["kubectl"], 10)
-                if phase == "service-discovery" else None
+            forward = (
+                subprocess.TimeoutExpired(["kubectl"], 0.5)
+                if phase == "port-forward" else announced_forward
             )
             with mock.patch.object(
-                forgejo_runtime, "postgres_service_cluster_ip",
-                side_effect=discovery, return_value="127.0.0.1",
+                forgejo_runtime, "run_bounded", side_effect=forward,
             ), mock.patch.object(socket, "create_connection", side_effect=TimeoutError), \
                     contextlib.redirect_stdout(output):
                 if forgejo_runtime.postgres_server_handshake_verifies(trusted):
@@ -368,7 +385,7 @@ def test_forgejo_postgres_tls_probe() -> None:
                 raise AssertionError("transient timeout escaped the retry path")
 
         with mock.patch.object(
-            forgejo_runtime, "postgres_service_cluster_ip", return_value="127.0.0.1"
+            forgejo_runtime, "run_bounded", side_effect=announced_forward
         ), mock.patch.object(socket, "create_connection", side_effect=ConnectionRefusedError), \
                 contextlib.redirect_stdout(io.StringIO()):
             if forgejo_runtime.postgres_server_handshake_verifies(trusted):
@@ -419,11 +436,7 @@ def test_forgejo_postgres_probe_retry_deadline() -> None:
             raise AssertionError("exhausted retry did not include PostgreSQL diagnostics")
 
     with mock.patch.object(forgejo_runtime, "run_bounded") as runner:
-        runner.return_value = subprocess.CompletedProcess([], 0, '{"spec":{"clusterIP":"::1"}}', "")
-        if forgejo_runtime.postgres_service_cluster_ip(timeout_seconds=0.25) != "::1":
-            raise AssertionError("numeric IPv6 Service addresses must be retained")
-        if runner.call_args.kwargs["timeout"] > 0.25:
-            raise AssertionError("Service lookup ignored the probe's remaining budget")
+        runner.return_value = subprocess.CompletedProcess([], 0, '{"spec":{}}', "")
         forgejo_runtime.postgres_cluster(timeout_seconds=0.25)
         if runner.call_args.kwargs["timeout"] > 0.25:
             raise AssertionError("CNPG lookup ignored the retry loop's remaining budget")
@@ -438,6 +451,77 @@ def test_forgejo_postgres_probe_retry_deadline() -> None:
             contextlib.redirect_stdout(io.StringIO()):
         if forgejo_runtime.reconcile_postgres_certificate_contract(cluster, Path(".")) != (cluster, expected):
             raise AssertionError("transient CNPG discovery timeout prevented recovery")
+
+
+def test_forgejo_postgres_tunnel_failures() -> None:
+    for chunks, expected in (
+        ([], "port-forward-failed"),
+        ([b"Forwarding from 0.0.0.0:5432 -> 5432\n"], "port-forward-failed"),
+        ([b"Forwarding from 127.0.0.1:99999 -> 5432\n"], "port-forward-output-invalid"),
+        ([b"x" * 4097], "port-forward-output-invalid"),
+    ):
+        def run(args, **kwargs):
+            del args
+            for chunk in chunks:
+                if kwargs["stdout_callback"](chunk):
+                    break
+            return subprocess.CompletedProcess([], 1, b"", b"unauthenticated-error-text")
+
+        output = io.StringIO()
+        with mock.patch.object(forgejo_runtime, "run_bounded", side_effect=run), \
+                mock.patch.object(socket, "create_connection") as connect, \
+                contextlib.redirect_stdout(output):
+            if forgejo_runtime.postgres_server_handshake_verifies(Path("unused")):
+                raise AssertionError("missing or invalid tunnel readiness was accepted")
+        if connect.called or expected not in output.getvalue():
+            raise AssertionError("tunnel failure was not isolated from the TLS probe")
+        if "unauthenticated-error-text" in output.getvalue():
+            raise AssertionError("raw tunnel stderr leaked into diagnostics")
+
+    def fragmented(args, **kwargs):
+        del args
+        if kwargs["stdout_callback"](b"Forwarding from 127.0."):
+            raise AssertionError("partial tunnel announcement was accepted")
+        if not kwargs["stdout_callback"](b"0.1:34567 -> 5432\n"):
+            raise AssertionError("complete fragmented announcement was ignored")
+        return subprocess.CompletedProcess([], -9, b"", b"")
+
+    output = io.StringIO()
+    with mock.patch.object(forgejo_runtime, "run_bounded", side_effect=fragmented), \
+            mock.patch.object(ssl, "create_default_context", side_effect=OSError), \
+            contextlib.redirect_stdout(output):
+        if forgejo_runtime.postgres_server_handshake_verifies(Path("unused")):
+            raise AssertionError("CA-load failure was accepted")
+    if "address=127.0.0.1:34567 phase=ca-load" not in output.getvalue():
+        raise AssertionError("split readiness output did not select the announced port")
+
+
+def test_forgejo_runtime_still_requires_application_readiness() -> None:
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(sys, "argv", ["repair_forgejo_runtime.py", "1"]))
+        stack.enter_context(mock.patch.object(Path, "is_file", return_value=True))
+        stack.enter_context(mock.patch.object(os, "access", return_value=True))
+        stack.enter_context(mock.patch.object(shutil, "which", return_value="openssl"))
+        for name, value in (
+            ("resource_json", {"kind": "Deployment"}),
+            ("validate_storage_contract", "filesystem"), ("database_backend", "postgres"),
+            ("postgres_cluster", {}), ("reconcile_postgres_certificate_contract", ({}, "tls")),
+            ("active_postgres_certificate", ("tls", Path("leaf"))),
+            ("refresh_forgejo_bundle", False), ("patch_mount_contract", False),
+            ("ready_pods", 1),
+        ):
+            stack.enter_context(mock.patch.object(forgejo_runtime, name, return_value=value))
+        readiness = stack.enter_context(mock.patch.object(
+            forgejo_runtime, "wait_for_runtime",
+            side_effect=forgejo_runtime.RepairError("application-network-not-ready"),
+        ))
+        output = io.StringIO()
+        stack.enter_context(contextlib.redirect_stdout(output))
+        if forgejo_runtime.main() != 1:
+            raise AssertionError("verified server certificate bypassed application readiness")
+        readiness.assert_called_once_with("deployment/forgejo", 1)
+        if "result=ok" in output.getvalue():
+            raise AssertionError("failed application network was reported as repaired")
 
 
 def test_forgejo_route_reconciliation() -> None:
@@ -1230,6 +1314,8 @@ gitea:
     test_forgejo_runtime_mount_contract_scope()
     test_forgejo_postgres_tls_probe()
     test_forgejo_postgres_probe_retry_deadline()
+    test_forgejo_postgres_tunnel_failures()
+    test_forgejo_runtime_still_requires_application_readiness()
     test_forgejo_route_reconciliation()
     test_woodpecker_route_reconciler_bundle()
     test_public_tls_chain_completion()

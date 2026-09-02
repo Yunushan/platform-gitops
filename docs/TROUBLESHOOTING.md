@@ -271,15 +271,27 @@ Longhorn volume, or replica. If the canonical certificate Secret is missing,
 invalid, or the live handshake cannot be verified, the repair fails closed.
 The `forgejo_postgres_certificates=reconciled` line confirms the CNPG references
 were updated; `forgejo_postgres_certificates=verified` additionally proves the
-live TLS handshake. The probe sends PostgreSQL SSLRequest, verifies the CA and
-hostname, and closes after the handshake without waiting for application data
-or server shutdown. Each attempt has a shared 10-second budget for Service
-lookup, TCP connection, SSLRequest, and TLS handshake. Transient timeouts retry
+live TLS handshake through a temporary Kubernetes API port-forward to
+`service/platform-postgres-rw`. The tunnel binds only `127.0.0.1` on an OS-selected
+port and is stopped and reaped after each attempt. The probe sends PostgreSQL
+SSLRequest, verifies the CA and the PostgreSQL Service hostname (not localhost),
+and closes without sending SQL or waiting for application data or server shutdown.
+Each attempt has a shared 10-second budget for tunnel startup, TCP connection,
+SSLRequest, and TLS handshake. Transient timeouts retry
 within the 180-second certificate repair window. A persistent failure prints
 `forgejo_postgres_tls_probe=retry` with the phase and reason, plus CNPG
 certificate status and a bounded read-only pod, Service, and EndpointSlice
-listing. TCP/SSLRequest timeouts require checking the ready endpoints and
-node-to-Service path; they do not prove a certificate error.
+listing. Port-forward failures require checking API/kubelet connectivity, the
+read-write Service's primary, and `pods/portforward` RBAC; SSLRequest timeouts
+require checking the primary's PostgreSQL listener. Neither proves a CA error.
+
+Older versions probed the ClusterIP from the Ansible node's host network. That
+path can time out under namespace-based database isolation even when approved
+application pods can connect. The certificate repair no longer requires that
+host path or broadens any NetworkPolicy. `transport=kubernetes-api` with
+`application_network=not-tested` explicitly separates certificate verification
+from application connectivity: Forgejo must still finish database initialization,
+complete rollout, and expose ready endpoints before the repair reports success.
 If it reports `forgejo-object-storage-secret-missing`, the live values still use
 MinIO/S3 and credentials must be supplied. If no S3-compatible service is
 available, explicitly render the lab-only filesystem profile before retrying:
