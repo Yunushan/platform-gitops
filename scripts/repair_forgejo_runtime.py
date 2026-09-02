@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import configparser
 import json
 import os
 import re
@@ -25,6 +26,10 @@ if str(SCRIPT_DIRECTORY) not in sys.path:
 
 from bounded_file import read_bounded_bytes, read_bounded_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from forgejo_storage_contract import (
+    STORAGE_SECTIONS, StorageContractError, config_env_key,
+    minio_sections, validate_minio_config,
+)
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
@@ -42,7 +47,6 @@ POSTGRES_HOST = os.environ.get(
     "PLATFORM_POSTGRES_HOST",
     "platform-postgres-rw.platform-databases.svc.cluster.local",
 )
-OBJECT_STORAGE_SECRET = os.environ.get("FORGEJO_S3_SECRET_NAME", "forgejo-object-storage")
 REQUESTED_STORAGE_MODE = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip().lower()
 MOUNT_PATHS = ("/data/gitea/git/.postgresql", "/etc/ssl/platform")
 POSTGRES_CA_ITEM_PATHS = ("ca-certificates.crt", "root.crt")
@@ -159,36 +163,52 @@ def secret_data(namespace: str, name: str) -> dict[str, bytes]:
     return decoded
 
 
-def storage_backend(workload: dict[str, Any]) -> tuple[str, bool]:
-    material = bytearray(json.dumps(workload, sort_keys=True).encode())
-    for name in ("forgejo", "forgejo-inline-config"):
-        for value in secret_data(FORGEJO_NAMESPACE, name).values():
-            material.extend(b"\n")
-            material.extend(value)
-    lowered = bytes(material).lower()
-    minio = any(
-        marker in lowered
-        for marker in (
-            b"minio_endpoint",
-            b"minio_access_key",
-            b"minio_secret_key",
-            b"storage_type: minio",
-            b"storage_type = minio",
-            b"storage_type=minio",
-        )
-    )
-    filesystem = bool(
-        re.search(rb"storage_type\s*[:=]\s*(local|filesystem|file)", lowered)
-    )
-    credentials = all(
-        secret_data(FORGEJO_NAMESPACE, OBJECT_STORAGE_SECRET).get(key)
-        for key in ("access-key-id", "secret-access-key")
-    )
-    if minio:
-        return "minio", credentials
-    if filesystem:
-        return "filesystem", credentials
-    return "filesystem", credentials
+def storage_configuration(workload: dict[str, Any]) -> dict:
+    """Read the chart's section-per-key INI and explicit configuration envs."""
+    sections = set(STORAGE_SECTIONS) | {"storage.minio", "storage.local", "picture"}
+    config: dict = {}
+    pod_spec = (workload.get("spec") or {}).get("template", {}).get("spec") or {}
+    containers = (pod_spec.get("initContainers") or []) + (pod_spec.get("containers") or [])
+    config_init = next((item for item in containers if item.get("name") == "init-app-ini"), {})
+    mounts = config_init.get("volumeMounts") or []
+    if any(str(item.get("mountPath", "")).startswith("/env-to-ini-mounts/additionals") for item in mounts):
+        fail("forgejo-storage-config-unknown", "Additional Forgejo configuration sources require explicit storage reconciliation.")
+    inline_mount = next((item for item in mounts if item.get("mountPath") == "/env-to-ini-mounts/inlines/"), {})
+    volume = next((item for item in pod_spec.get("volumes", []) if item.get("name") == inline_mount.get("name")), {})
+    secret_name = (volume.get("secret") or {}).get("secretName", "forgejo-inline-config")
+    data = secret_data(FORGEJO_NAMESPACE, secret_name)
+    if not data:
+        fail("forgejo-storage-config-unknown", "Forgejo inline configuration could not be read; refusing to assume filesystem storage.")
+    try:
+        for section, raw in data.items():
+            if section not in sections:
+                continue
+            parser = configparser.ConfigParser(interpolation=None, delimiters=("=",), strict=True)
+            parser.optionxform = str.upper
+            parser.read_string(f"[{section}]\n" + raw.decode("utf-8"))
+            if parser.sections() != [section] or parser.defaults():
+                raise ValueError("unexpected INI section")
+            config[section] = dict(parser[section])
+        for prefix in ("GITEA__", "FORGEJO__"):
+            for container in containers:
+                if container.get("envFrom"):
+                    raise ValueError("opaque environment source")
+                for entry in container.get("env", []) or []:
+                    name = str(entry.get("name", ""))
+                    key = config_env_key(name)
+                    if not name.upper().startswith(prefix) or not key or key[0] not in sections:
+                        continue
+                    value = entry.get("value")
+                    if value is None:
+                        ref = (entry.get("valueFrom") or {}).get("secretKeyRef") or {}
+                        value = secret_data(FORGEJO_NAMESPACE, ref.get("name", "")).get(ref.get("key", "")) if ref.get("name") else None
+                        if value is None:
+                            raise ValueError("unresolved storage environment reference")
+                        value = value.decode("utf-8")
+                    config.setdefault(key[0], {})[key[1]] = value
+    except (ValueError, UnicodeError, configparser.Error):
+        fail("forgejo-storage-config-unknown", "Forgejo storage configuration is invalid or has unresolved environment references; no credentials were logged.")
+    return config
 
 
 def database_backend(workload: dict[str, Any]) -> str:
@@ -295,7 +315,12 @@ def validate_storage_contract(workload: dict[str, Any]) -> str:
             "FORGEJO_OBJECT_STORAGE_MODE must be filesystem or s3.",
         )
 
-    backend, credentials = storage_backend(workload)
+    config = storage_configuration(workload)
+    for section, values in config.items():
+        for key in ("STORAGE_TYPE", "AVATAR_STORAGE_TYPE"):
+            if str(values.get(key, "")).lower() not in {"", "local", "minio"}:
+                fail("forgejo-storage-config-unknown", f"Custom storage type in {section} requires explicit reconciliation.")
+    backend = "minio" if minio_sections(config) else "filesystem"
     filesystem_requested = REQUESTED_STORAGE_MODE in {"filesystem", "file", "local", "disk"}
     object_requested = REQUESTED_STORAGE_MODE in {
         "s3",
@@ -312,13 +337,6 @@ def validate_storage_contract(workload: dict[str, Any]) -> str:
             "but filesystem mode was requested. Render and reconcile the filesystem "
             "configuration before restarting Forgejo.",
         )
-    if backend == "minio" and not credentials:
-        fail(
-            "forgejo-object-storage-secret-missing",
-            "Forgejo live configuration uses MinIO, but the configured object-storage "
-            "Secret does not contain both credentials. Configure S3/MinIO "
-            "credentials, or explicitly render filesystem mode before retrying.",
-        )
     if object_requested and backend != "minio":
         fail(
             "forgejo-object-storage-mode-not-applied",
@@ -326,7 +344,12 @@ def validate_storage_contract(workload: dict[str, Any]) -> str:
             "not contain MinIO/S3 settings. Reconcile the Forgejo GitOps values first.",
         )
     if backend == "minio":
-        print("forgejo_storage_backend=minio state=present")
+        try:
+            validate_minio_config(config)
+        except StorageContractError as exc:
+            reason = "forgejo-object-storage-secret-missing" if "credential" in str(exc) else "forgejo-object-storage-config-invalid"
+            fail(reason, f"{exc} Run make platform-woodpecker-repair with GitOps synchronization enabled to refresh the private Forgejo storage bindings. Storage data was not changed.")
+        print("forgejo_storage_backend=minio state=config-validated application_network=not-tested")
         return backend
 
     if filesystem_requested:

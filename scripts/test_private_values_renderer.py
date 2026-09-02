@@ -781,8 +781,93 @@ def test_lab_longhorn_without_backup_target_preserves_public_secret_placeholder(
         )
 
 
+def test_forgejo_storage_bindings(renderer) -> None:
+    import copy
+    import yaml
+    from forgejo_storage_contract import minio_sections, validate_minio_config
+
+    config = {
+        "database": {"DB_TYPE": "postgres", "HOST": "private-db.test:5432"},
+        "attachment": {"STORAGE_TYPE": "minio"},
+        "lfs": {"STORAGE_TYPE": "minio"},
+        "picture": {"AVATAR_STORAGE_TYPE": "minio"},
+        "storage.packages": {"STORAGE_TYPE": "minio"},
+        "storage": {"MINIO_ENDPOINT": "private-s3.test:9000", "MINIO_BUCKET": "private-bucket", "MINIO_USE_SSL": True},
+    }
+    env = [{"name": "GITEA__storage__" + key, "valueFrom": {"secretKeyRef": {"name": "private-object", "key": secret_key}}}
+           for key, secret_key in (("MINIO_ACCESS_KEY_ID", "access-key-id"), ("MINIO_SECRET_ACCESS_KEY", "secret-access-key"))]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "values.yaml"
+        def reset(current):
+            path.write_text(yaml.safe_dump({"gitea": {"config": current, "additionalConfigFromEnvs": env}, "persistence": {"existingClaim": "keep-me"}}), encoding="utf-8")
+
+        reset(config)
+        with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": ""}):
+            assert renderer.refresh_forgejo_storage(path)
+            assert not renderer.refresh_forgejo_storage(path)
+        result = yaml.safe_load(path.read_text(encoding="utf-8"))
+        repaired = result["gitea"]["config"]
+        assert repaired["database"] == config["database"]
+        assert repaired["storage"] == config["storage"]
+        assert result["persistence"] == {"existingClaim": "keep-me"}
+        assert repaired["storage.minio"]["MINIO_ENDPOINT"] == "private-s3.test:9000"
+        aliases = result["gitea"]["additionalConfigFromEnvs"][2:]
+        assert len(aliases) == 2
+        assert all(item["name"].startswith("FORGEJO__STORAGE_0X2E_MINIO__") for item in aliases)
+        assert all(item["valueFrom"]["secretKeyRef"]["name"] == "private-object" for item in aliases)
+        for item in aliases:
+            repaired["storage.minio"][item["name"].split("__")[2]] = "test-credential"
+        validate_minio_config(repaired)
+
+        for broken in ({}, {"MINIO_ENDPOINT": "https://bad.test/path", "MINIO_BUCKET": "bucket"}):
+            invalid = copy.deepcopy(config)
+            invalid["storage"] = broken
+            reset(invalid)
+            before = path.read_bytes()
+            with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": ""}):
+                try:
+                    renderer.refresh_forgejo_storage(path)
+                except SystemExit:
+                    pass
+                else:
+                    raise AssertionError("incomplete S3 configuration accepted")
+            assert path.read_bytes() == before
+
+        custom = copy.deepcopy(config)
+        custom["lfs"]["MINIO_ENDPOINT"] = "other-private-store.test"
+        reset(custom)
+        before = path.read_bytes()
+        with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": ""}):
+            try:
+                renderer.refresh_forgejo_storage(path)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("custom subsystem endpoint overwritten")
+        assert path.read_bytes() == before
+
+        reset(config)
+        with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": "filesystem", "PLATFORM_PRODUCTION_STRICT": "true"}):
+            try:
+                renderer.refresh_forgejo_storage(path)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("strict production storage gate bypassed")
+        with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": "filesystem", "PLATFORM_PRODUCTION_STRICT": "false"}):
+            assert renderer.refresh_forgejo_storage(path)
+            assert not renderer.refresh_forgejo_storage(path)
+            _, block = renderer.forgejo_object_storage_values()
+        local = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert not minio_sections(local["gitea"]["config"])
+        assert not local["gitea"]["additionalConfigFromEnvs"]
+        assert local["persistence"] == {"existingClaim": "keep-me"}
+        assert yaml.safe_load(block)["attachment"]["STORAGE_TYPE"] == "local"
+
+
 def main() -> int:
     renderer = load_renderer()
+    test_forgejo_storage_bindings(renderer)
     checker = load_checker()
     contract_validator = load_contract_validator()
     test_forgejo_image_matches_reviewed_chart(renderer)

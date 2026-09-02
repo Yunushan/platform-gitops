@@ -77,6 +77,67 @@ def forgejo_postgres_tls_required(text: str) -> bool:
     return effective_forgejo_database_type(text) not in FORGEJO_NON_POSTGRES_DATABASE_TYPES
 
 
+def test_forgejo_runtime_storage_preflight() -> None:
+    import copy
+    from forgejo_storage_contract import valid_minio_endpoint
+
+    for endpoint in ("objects.example.test", "objects.example.test:9000", "127.0.0.1:9000", "[::1]:9000"):
+        assert valid_minio_endpoint(endpoint)
+    for endpoint in ("", "https://objects.example.test", "user:password@host", "host/path", "<ENDPOINT>", "host:0", "host:99999", "white space", "bad_host"):
+        assert not valid_minio_endpoint(endpoint)
+    inline = {
+        "attachment": b"STORAGE_TYPE=minio\n",
+        "storage": b"MINIO_ENDPOINT=objects.example.test\nMINIO_BUCKET=forgejo\n",
+    }
+    credential_env = [{"name": "FORGEJO__STORAGE_0X2E_MINIO__" + key, "valueFrom": {"secretKeyRef": {"name": "custom-s3", "key": secret_key}}}
+                      for key, secret_key in (("MINIO_ACCESS_KEY_ID", "access-key-id"), ("MINIO_SECRET_ACCESS_KEY", "secret-access-key"))]
+    workload = {"spec": {"template": {"spec": {"initContainers": [{"name": "init-app-ini", "env": credential_env}]}}}}
+    def data(namespace, name):
+        return inline if name == "forgejo-inline-config" else {"access-key-id": b"test-key", "secret-access-key": b"never-log-test-secret"}
+    output = io.StringIO()
+    with mock.patch.object(forgejo_runtime, "secret_data", side_effect=data), mock.patch.object(forgejo_runtime, "REQUESTED_STORAGE_MODE", ""), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+        # Reproduces the user's crash: global endpoint + explicit attachment
+        # minio is not sufficient without a named storage.minio section.
+        try:
+            forgejo_runtime.validate_storage_contract(workload)
+        except forgejo_runtime.RepairError as exc:
+            assert str(exc) == "forgejo-object-storage-config-invalid"
+        else:
+            raise AssertionError("broken attachment inheritance passed runtime preflight")
+        inline["storage.minio"] = b"STORAGE_TYPE=minio\nMINIO_ENDPOINT=objects.example.test\nMINIO_BUCKET=forgejo\n"
+        assert forgejo_runtime.validate_storage_contract(workload) == "minio"
+        with mock.patch.object(forgejo_runtime, "REQUESTED_STORAGE_MODE", "filesystem"):
+            try:
+                forgejo_runtime.validate_storage_contract(workload)
+            except forgejo_runtime.RepairError as exc:
+                assert str(exc) == "forgejo-object-storage-mode-not-applied"
+            else:
+                raise AssertionError("explicit filesystem request ignored")
+        local_workload = copy.deepcopy(workload)
+        local_workload["spec"]["template"]["spec"]["initContainers"][0]["env"] = []
+        inline["attachment"] = b"STORAGE_TYPE=local\n"
+        # Leftover MinIO keys/credentials alone do not select that backend.
+        assert forgejo_runtime.validate_storage_contract(local_workload) == "filesystem"
+        inline["attachment"] = b"STORAGE_TYPE=minio\n"
+        try:
+            forgejo_runtime.validate_storage_contract(local_workload)
+        except forgejo_runtime.RepairError as exc:
+            assert str(exc) == "forgejo-object-storage-secret-missing"
+        else:
+            raise AssertionError("unbound S3 credentials accepted")
+        inline["attachment"] = b"STORAGE_TYPE=minio\nSTORAGE_TYPE=local\n"
+        try:
+            forgejo_runtime.validate_storage_contract(workload)
+        except forgejo_runtime.RepairError as exc:
+            assert str(exc) == "forgejo-storage-config-unknown"
+        else:
+            raise AssertionError("ambiguous INI accepted")
+    assert "never-log-test-secret" not in output.getvalue()
+    playbook = read(FORGEJO_RUNTIME_REPAIR_PLAYBOOK)
+    require(playbook, "- forgejo_storage_contract.py", "runtime storage bundle")
+    require(playbook, "lookup('ansible.builtin.env', 'FORGEJO_OBJECT_STORAGE_MODE')", "remote storage mode")
+
+
 def test_forgejo_runtime_mount_contract_scope() -> None:
     def workload(
         init_paths: tuple[str, ...],
@@ -1312,6 +1373,7 @@ gitea:
     ):
         require(makefile, needle, "Woodpecker classified prerequisite recovery")
     test_forgejo_runtime_mount_contract_scope()
+    test_forgejo_runtime_storage_preflight()
     test_forgejo_postgres_tls_probe()
     test_forgejo_postgres_probe_retry_deadline()
     test_forgejo_postgres_tunnel_failures()

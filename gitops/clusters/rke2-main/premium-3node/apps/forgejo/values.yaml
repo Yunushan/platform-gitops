@@ -93,6 +93,16 @@ gitea:
         secretKeyRef:
           name: forgejo-object-storage
           key: secret-access-key
+    - name: FORGEJO__STORAGE_0X2E_MINIO__MINIO_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: forgejo-object-storage
+          key: access-key-id
+    - name: FORGEJO__STORAGE_0X2E_MINIO__MINIO_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: forgejo-object-storage
+          key: secret-access-key
   config:
     server:
       DOMAIN: forgejo.<PLATFORM_DOMAIN>
@@ -121,6 +131,12 @@ gitea:
     'storage.packages':
       STORAGE_TYPE: minio
     storage:
+      MINIO_ENDPOINT: platform-minio.object-storage.svc.cluster.local:9000
+      MINIO_LOCATION: us-east-1
+      MINIO_BUCKET: platform-forgejo
+      MINIO_USE_SSL: false
+    storage.minio:
+      STORAGE_TYPE: minio
       MINIO_ENDPOINT: platform-minio.object-storage.svc.cluster.local:9000
       MINIO_LOCATION: us-east-1
       MINIO_BUCKET: platform-forgejo
