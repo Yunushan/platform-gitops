@@ -18,6 +18,10 @@ import yaml
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
 from forgejo_database_contract import FORGEJO_NON_POSTGRES_DATABASE_TYPES
+from forgejo_storage_contract import (
+    FILESYSTEM_MODES, OBJECT_MODES, StorageContractError, repair_minio_inheritance,
+    select_filesystem_storage,
+)
 from strict_yaml import StrictYamlError, loads_strict_yaml_all
 
 
@@ -115,7 +119,9 @@ def forgejo_object_storage_values() -> tuple[str, str]:
             raise SystemExit(
                 "FORGEJO_OBJECT_STORAGE_MODE must be s3 in production-strict mode"
             )
-        return "", ""
+        config: dict = {}
+        select_filesystem_storage(config, [])
+        return "", "\n".join("    " + line for line in yaml.safe_dump(config, sort_keys=False).splitlines())
     if mode not in {"s3", "minio", "object", "object-storage", "object_storage"}:
         raise SystemExit(
             "FORGEJO_OBJECT_STORAGE_MODE must be filesystem or s3"
@@ -182,6 +188,15 @@ def forgejo_object_storage_values() -> tuple[str, str]:
       MINIO_LOCATION: {yaml_string(region)}
       MINIO_BUCKET: {yaml_string(bucket)}
       MINIO_USE_SSL: {str(secure).lower()}"""
+    config = loads_strict_yaml_all(config_block)[0]
+    env = loads_strict_yaml_all(env_block)[0]
+    repair_minio_inheritance(config, env)
+    # Keep the existing global entries for compatibility; modern Forgejo also
+    # needs the named storage type and its secret-backed environment bindings.
+    alias = yaml.safe_dump({"storage.minio": config["storage.minio"]}, sort_keys=False)
+    config_block += "\n" + "\n".join("    " + line for line in alias.splitlines())
+    for entry in env[2:]:
+        env_block += "\n" + "\n".join("    " + line for line in yaml.safe_dump([entry], sort_keys=False).splitlines())
     return env_block, config_block
 
 
@@ -1488,6 +1503,47 @@ def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
     if not isinstance(rendered_image, dict) or rendered_image.get("tag") != FORGEJO_DEFAULT_IMAGE_TAG:
         raise SystemExit(f"failed to refresh Forgejo image.tag in {path}")
     atomic_write_text(path, rendered)
+    return True
+
+
+def refresh_forgejo_storage(path: Path) -> bool:
+    """Fix generated storage bindings without re-rendering private dependencies."""
+    text = read_bounded_text(path, encoding="utf-8")
+    documents = loads_strict_yaml_all(text)
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        raise SystemExit(f"expected one Forgejo values mapping in {path}")
+    values = documents[0]
+    gitea = values.get("gitea")
+    if not isinstance(gitea, dict) or not isinstance(gitea.get("config"), dict):
+        raise SystemExit(f"expected Forgejo gitea.config mapping in {path}")
+    config = gitea["config"]
+    env = gitea.setdefault("additionalConfigFromEnvs", [])
+    if not isinstance(env, list) or any(not isinstance(item, dict) for item in env):
+        raise SystemExit(f"expected Forgejo additionalConfigFromEnvs list in {path}")
+    if gitea.get("additionalConfigSources"):
+        raise SystemExit("Focused Forgejo storage refresh cannot reconcile opaque additionalConfigSources.")
+    before = json.dumps(values, sort_keys=True)
+    mode = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip().lower()
+    if mode and mode not in FILESYSTEM_MODES | OBJECT_MODES:
+        raise SystemExit("FORGEJO_OBJECT_STORAGE_MODE must be filesystem or s3")
+    try:
+        if mode in FILESYSTEM_MODES:
+            if env_bool("PLATFORM_PRODUCTION_STRICT", True):
+                raise SystemExit("FORGEJO_OBJECT_STORAGE_MODE must be s3 in production-strict mode")
+            select_filesystem_storage(config, env)
+        else:
+            repair_minio_inheritance(config, env)
+    except StorageContractError as exc:
+        raise SystemExit(str(exc)) from exc
+    if json.dumps(values, sort_keys=True) == before:
+        return False
+    header = []
+    for line in text.splitlines(keepends=True):
+        if line.strip() and not line.lstrip().startswith("#"):
+            break
+        header.append(line)
+    atomic_write_text(path, "".join(header) + yaml.safe_dump(values, sort_keys=False))
+    print("forgejo_storage_bindings=refreshed data_migration=not-performed")
     return True
 
 
@@ -4572,6 +4628,11 @@ def main() -> int:
         help="Refresh only Forgejo's reviewed image pin without rendering private dependencies.",
     )
     parser.add_argument(
+        "--refresh-forgejo-storage",
+        action="store_true",
+        help="Repair existing MinIO bindings or apply explicitly requested filesystem storage without migrating data.",
+    )
+    parser.add_argument(
         "--refresh-forgejo-postgres-tls",
         action="store_true",
         help=(
@@ -4835,6 +4896,13 @@ def main() -> int:
 
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
         changed.append(str(args.argocd_values))
+
+    if (
+        args.refresh_forgejo_storage
+        and refresh_forgejo_storage(args.forgejo_values)
+    ):
+        if str(args.forgejo_values) not in changed:
+            changed.append(str(args.forgejo_values))
 
     if (
         args.refresh_forgejo_postgres_tls

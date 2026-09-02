@@ -613,6 +613,43 @@ Forgejo and provide `FORGEJO_S3_ACCESS_KEY_ID` plus
 `FORGEJO_S3_SECRET_ACCESS_KEY`; strict rendering stores attachments, LFS,
 avatars, and packages in HTTPS S3-compatible storage instead of the RWO
 filesystem.
+
+If Forgejo exits with `Creating Minio storage at :` and an invalid-endpoint
+error, its per-subsystem storage selector is missing a complete configuration.
+In Forgejo 15, an explicit `attachment.STORAGE_TYPE=minio` does not inherit the
+global `storage.MINIO_ENDPOINT`. The renderer now supplies a named
+`storage.minio` configuration and secret-backed `FORGEJO__STORAGE_0X2E_MINIO__*`
+environment bindings. See the [Forgejo storage configuration documentation](https://forgejo.org/docs/v15.0/admin/setup/storage/).
+Focused Woodpecker seed reconciliation repairs the old generated split layout
+using the existing private endpoint, bucket, and credential references. It
+refuses ambiguous custom subsystem settings instead of changing their store.
+
+For an installation intentionally using only the existing Forgejo PVC, put
+these settings in the ignored `private/seed-git.env`:
+
+```dotenv
+PLATFORM_PRODUCTION_STRICT=false
+FORGEJO_OBJECT_STORAGE_MODE=filesystem
+PLATFORM_APP_SECRET_REQUIRE_FORGEJO_OBJECT_STORAGE=false
+```
+
+Then reconcile the private GitOps source and repair the workloads:
+
+```bash
+PLATFORM_SEED_DEPLOY_ENV_FILE=private/seed-git.env \
+PLATFORM_WOODPECKER_REPAIR_SYNC_GITOPS=true \
+make platform-woodpecker-repair
+```
+
+This explicitly sets the managed storage selectors to `local` and removes
+their S3 credential environment references, while retaining PVCs and configured
+paths. It does not move or delete any stored objects. Do not use this as a
+migration from a populated S3 bucket: migrate and verify the data separately
+before changing backends. Filesystem-only mode does not meet this repository's
+strict production object-storage and off-cluster backup requirements.
+Running only `platform-forgejo-runtime-repair` checks the live configuration;
+it does not publish private GitOps settings or switch storage backends.
+
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
 `GRAFANA_DATABASE_MODE=postgres`.
 
