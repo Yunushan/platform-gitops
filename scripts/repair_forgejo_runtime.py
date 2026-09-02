@@ -477,6 +477,7 @@ def postgres_server_handshake_verifies(
         cluster_ip = postgres_service_cluster_ip(timeout_seconds=remaining())
         phase = "ca-load"
         context = ssl.create_default_context(cafile=str(ca_path))
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         phase = "tcp-connect"
         with socket.create_connection((cluster_ip, 5432), timeout=remaining()) as connection:
             phase = "ssl-request"
