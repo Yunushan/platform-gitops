@@ -44,6 +44,11 @@ REQUESTED_STORAGE_MODE = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip
 MOUNT_PATHS = ("/data/gitea/git/.postgresql", "/etc/ssl/platform")
 POSTGRES_CA_ITEM_PATHS = ("ca-certificates.crt", "root.crt")
 POSTGRES_CA_BUNDLE_PATH = "/data/gitea/git/.postgresql/ca-certificates.crt"
+POSTGRES_SERVER_CERTIFICATE_SECRET = "platform-postgres-server-tls"
+POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS = 180
+POSTGRES_CERTIFICATE_REPAIR_DELAY_SECONDS = 5
+BUNDLE_VERIFY_RETRIES = 6
+BUNDLE_VERIFY_DELAY_SECONDS = 2
 COMMAND_TIMEOUT_SECONDS = 60
 STALE_INIT_MOUNT_CLEANUP_RETRIES = 5
 STALE_INIT_MOUNT_CLEANUP_DELAY_SECONDS = 1
@@ -312,8 +317,10 @@ def validate_storage_contract(workload: dict[str, Any]) -> str:
     return "filesystem"
 
 
-def openssl(*args: str) -> subprocess.CompletedProcess[str]:
-    return command(["openssl", *args], check=False)
+def openssl(
+    *args: str, input_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    return command(["openssl", *args], check=False, input_text=input_text)
 
 
 def certificate_matches_host(path: Path) -> bool:
@@ -349,12 +356,181 @@ def postgres_cluster() -> dict[str, Any]:
     return cluster
 
 
-def postgres_server_candidates(cluster: dict[str, Any]) -> list[str]:
+
+def postgres_certificate_refs(cluster: dict[str, Any]) -> tuple[str, str]:
+    certificates = (cluster.get("spec") or {}).get("certificates") or {}
+    if not isinstance(certificates, dict):
+        return "", ""
+    return (
+        str(certificates.get("serverCASecret") or ""),
+        str(certificates.get("serverTLSSecret") or ""),
+    )
+
+
+def postgres_status_certificate_refs(cluster: dict[str, Any]) -> tuple[str, str]:
+    certificates = (cluster.get("status") or {}).get("certificates") or {}
+    if not isinstance(certificates, dict):
+        return "", ""
+    return (
+        str(certificates.get("serverCASecret") or ""),
+        str(certificates.get("serverTLSSecret") or ""),
+    )
+
+
+def validate_postgres_server_certificate_secret(
+    temp_dir: Path,
+) -> tuple[Path, Path]:
+    data = secret_data(POSTGRES_NAMESPACE, POSTGRES_SERVER_CERTIFICATE_SECRET)
+    missing = [
+        key for key in ("ca.crt", "tls.crt", "tls.key") if not data.get(key)
+    ]
+    if missing:
+        fail(
+            "forgejo-postgres-certificate-secret-invalid",
+            f"{POSTGRES_NAMESPACE}/{POSTGRES_SERVER_CERTIFICATE_SECRET} is "
+            "missing required certificate data: " + ", ".join(missing) + ".",
+        )
+
+    ca_path = temp_dir / "postgres-server-ca.crt"
+    leaf_path = temp_dir / "postgres-server.crt"
+    write_private_bytes(ca_path, data["ca.crt"])
+    write_private_bytes(leaf_path, data["tls.crt"])
+    if not certificate_matches_host(leaf_path):
+        fail(
+            "forgejo-postgres-certificate-hostname-invalid",
+            f"{POSTGRES_NAMESPACE}/{POSTGRES_SERVER_CERTIFICATE_SECRET} does "
+            f"not contain a certificate valid for {POSTGRES_HOST}.",
+        )
+    if not certificate_verifies(ca_path, leaf_path):
+        fail(
+            "forgejo-postgres-certificate-chain-invalid",
+            f"{POSTGRES_NAMESPACE}/{POSTGRES_SERVER_CERTIFICATE_SECRET} does "
+            "not verify its server certificate with its CA bundle.",
+        )
+    return ca_path, leaf_path
+
+
+def postgres_service_cluster_ip() -> str:
+    service = resource_json(
+        "service/platform-postgres-rw",
+        namespace=POSTGRES_NAMESPACE,
+    )
+    if not service:
+        fail(
+            "forgejo-postgres-service-missing",
+            f"PostgreSQL read-write Service platform-postgres-rw is not "
+            f"available in {POSTGRES_NAMESPACE}.",
+        )
+    cluster_ip = (service.get("spec") or {}).get("clusterIP")
+    if not isinstance(cluster_ip, str) or not cluster_ip.strip() or cluster_ip.lower() == "none":
+        fail(
+            "forgejo-postgres-service-cluster-ip-missing",
+            f"PostgreSQL read-write Service platform-postgres-rw in "
+            f"{POSTGRES_NAMESPACE} has no usable ClusterIP.",
+        )
+    return cluster_ip.strip()
+
+
+def postgres_server_handshake_verifies(ca_path: Path) -> bool:
+    cluster_ip = postgres_service_cluster_ip()
+    result = openssl(
+        "s_client",
+        "-starttls",
+        "postgres",
+        "-connect",
+        f"{cluster_ip}:5432",
+        "-servername",
+        POSTGRES_HOST,
+        "-verify_hostname",
+        POSTGRES_HOST,
+        "-verify_return_error",
+        "-CAfile",
+        str(ca_path),
+        input_text="",
+    )
+    return result.returncode == 0
+
+
+def reconcile_postgres_certificate_contract(
+    cluster: dict[str, Any],
+    temp_dir: Path,
+) -> tuple[dict[str, Any], str]:
+    ca_path, _ = validate_postgres_server_certificate_secret(temp_dir)
+    expected = POSTGRES_SERVER_CERTIFICATE_SECRET
+    current_ca, current_tls = postgres_certificate_refs(cluster)
+
+    if (current_ca, current_tls) != (expected, expected):
+        patch = {
+            "spec": {
+                "certificates": {
+                    "serverCASecret": expected,
+                    "serverTLSSecret": expected,
+                }
+            }
+        }
+        patched = kube(
+            "patch",
+            "cluster.postgresql.cnpg.io/platform-postgres",
+            "--type=merge",
+            "-p",
+            json.dumps(patch, separators=(",", ":")),
+            namespace=POSTGRES_NAMESPACE,
+            check=False,
+        )
+        # A concurrent Argo CD reconciliation may have won the write. Re-read
+        # before failing so an already-converged object is accepted safely.
+        cluster = postgres_cluster()
+        current_ca, current_tls = postgres_certificate_refs(cluster)
+        if (current_ca, current_tls) != (expected, expected):
+            fail(
+                "forgejo-postgres-certificate-contract-patch-failed",
+                f"Could not set CloudNativePG serverCASecret and serverTLSSecret "
+                f"to {expected} in {POSTGRES_NAMESPACE}/platform-postgres."
+                if patched.returncode != 0
+                else f"CloudNativePG platform-postgres did not retain the "
+                f"canonical certificate references in {POSTGRES_NAMESPACE}.",
+            )
+        print(
+            "forgejo_postgres_certificates=reconciled "
+            f"serverCASecret={expected} serverTLSSecret={expected}"
+        )
+
+    deadline = time.monotonic() + POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS
+    while True:
+        current = postgres_cluster()
+        current_ca, current_tls = postgres_certificate_refs(current)
+        if (
+            (current_ca, current_tls) == (expected, expected)
+            and postgres_server_handshake_verifies(ca_path)
+        ):
+            print(
+                "forgejo_postgres_certificates=verified "
+                f"serverCASecret={expected} serverTLSSecret={expected}"
+            )
+            return current, expected
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(POSTGRES_CERTIFICATE_REPAIR_DELAY_SECONDS)
+
+    fail(
+        "forgejo-postgres-certificate-contract-timeout",
+        f"CloudNativePG did not serve a PostgreSQL STARTTLS certificate "
+        f"verified by {POSTGRES_NAMESPACE}/{expected} within "
+        f"{POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS}s.",
+    )
+    return cluster, expected
+
+
+def postgres_server_candidates(
+    cluster: dict[str, Any], preferred_tls_secret: str = ""
+) -> list[str]:
     status = cluster.get("status") or {}
     spec = cluster.get("spec") or {}
     status_certs = status.get("certificates") or {}
     spec_certs = spec.get("certificates") or {}
     candidates = [
+        preferred_tls_secret,
+        POSTGRES_SERVER_CERTIFICATE_SECRET,
         status_certs.get("serverTLSSecret", ""),
         spec_certs.get("serverTLSSecret", ""),
         "platform-postgres-server",
@@ -380,10 +556,11 @@ def postgres_ca_candidates(cluster: dict[str, Any], active_tls_secret: str) -> l
     status_certs = status.get("certificates") or {}
     spec_certs = spec.get("certificates") or {}
     candidates = [
+        POSTGRES_SERVER_CERTIFICATE_SECRET,
+        active_tls_secret,
         status_certs.get("serverCASecret", ""),
         spec_certs.get("serverCASecret", ""),
         "platform-postgres-ca",
-        active_tls_secret,
         "platform-postgres-server",
         "platform-postgres-server-tls",
     ]
@@ -402,9 +579,11 @@ def postgres_ca_candidates(cluster: dict[str, Any], active_tls_secret: str) -> l
 
 
 def active_postgres_certificate(
-    cluster: dict[str, Any], temp_dir: Path
+    cluster: dict[str, Any],
+    temp_dir: Path,
+    preferred_tls_secret: str = "",
 ) -> tuple[str, Path]:
-    for name in postgres_server_candidates(cluster):
+    for name in postgres_server_candidates(cluster, preferred_tls_secret):
         encoded = (secret_data(POSTGRES_NAMESPACE, name)).get("tls.crt")
         if not encoded:
             continue
@@ -488,6 +667,23 @@ def refresh_forgejo_bundle(
         )
         if applied.returncode != 0:
             continue
+
+        final_bundle_path = temp_dir / "final-bundle.crt"
+        final_bundle_verified = False
+        for attempt in range(BUNDLE_VERIFY_RETRIES):
+            final_bundle = resource_text(
+                "configmap/platform-internal-roots",
+                namespace=FORGEJO_NAMESPACE,
+            )
+            write_private_bytes(final_bundle_path, final_bundle.encode())
+            if certificate_verifies(final_bundle_path, leaf_path):
+                final_bundle_verified = True
+                break
+            if attempt + 1 < BUNDLE_VERIFY_RETRIES:
+                time.sleep(BUNDLE_VERIFY_DELAY_SECONDS)
+        if not final_bundle_verified:
+            continue
+
         print(f"forgejo_postgres_ca_bundle=materialized source={POSTGRES_NAMESPACE}/{name}:ca.crt")
         for application in ("cert-manager", "trust-manager"):
             if resource_json(f"application/{application}", namespace="argocd"):
@@ -1116,7 +1312,12 @@ def main() -> int:
             with tempfile.TemporaryDirectory(prefix="platform-forgejo-runtime-") as temporary:
                 temp_dir = Path(temporary)
                 cluster = postgres_cluster()
-                active_tls_secret, leaf_path = active_postgres_certificate(cluster, temp_dir)
+                cluster, preferred_tls_secret = reconcile_postgres_certificate_contract(
+                    cluster, temp_dir
+                )
+                active_tls_secret, leaf_path = active_postgres_certificate(
+                    cluster, temp_dir, preferred_tls_secret
+                )
                 bundle_changed = refresh_forgejo_bundle(
                     cluster, active_tls_secret, leaf_path, temp_dir
                 )

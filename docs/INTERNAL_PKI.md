@@ -14,8 +14,9 @@ ingress boundary.
   operating-system roots. It never distributes `tls.key` or `ca.key`.
 - OpenBao receives a 90-day server certificate with a 15-day renewal window.
 - cert-manager issues the `platform-postgres-server` certificate from the
-  platform internal CA. CloudNativePG consumes the resulting Secret for its
-  server CA and server leaf, and reloads it when cert-manager renews it.
+  platform internal CA into the `platform-postgres-server-tls` Secret.
+  CloudNativePG consumes that same Secret for its server CA and server leaf,
+  and reloads it when cert-manager renews it.
 - cert-manager also issues `platform-valkey-server`. Valkey disables its
   plaintext listener, encrypts replication and Sentinel traffic, and reloads
   renewed leaf certificates every five minutes. HAProxy and the metrics
@@ -28,6 +29,13 @@ ingress boundary.
   only `platform-internal-roots`; the Valkey private key remains confined to
   the Valkey pods.
 
+The CNPG `spec.certificates.serverCASecret` and
+`spec.certificates.serverTLSSecret` references are part of this contract and
+both point to `platform-postgres-server-tls`. During live-state drift, CNPG
+may still report generated `platform-postgres-server` and
+`platform-postgres-ca` objects; the Forgejo runtime repair validates the
+cert-manager Secret, converges those live references, and proves PostgreSQL
+STARTTLS with the canonical CA before restarting Forgejo.
 The bootstrap root uses `rotationPolicy: Never`. Root replacement is a planned
 two-root ceremony: add the next public root to the bundle, issue and roll leaf
 certificates from the next issuer, verify all clients, and only then remove the
@@ -62,7 +70,9 @@ make platform-internal-tls-verify
 ```
 
 The proof fails unless the root, issuer, leaf certificate, and trust bundle are
-Ready; the distributed bundle contains no private key; OpenBao verifies its own
+Ready; it also confirms that CloudNativePG is serving the
+cert-manager-managed `platform-postgres-server-tls` certificate rather than a
+generated fallback; the distributed bundle contains no private key; OpenBao verifies its own
 service certificate; and PostgreSQL STARTTLS verifies the
 `platform-postgres-rw.platform-databases.svc.cluster.local` identity. Sealed or
 uninitialized OpenBao may return its documented status code, but a TLS trust
