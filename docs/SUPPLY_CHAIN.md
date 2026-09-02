@@ -106,6 +106,25 @@ check for chart or verifier changes, weekly to detect upstream package
 replacement, and on demand. Ordinary unrelated pull requests remain independent
 of upstream chart repository availability.
 
+### Reviewed Package Replacements
+
+On 2026-09-02, the Longhorn `1.12.1` archive checksum was reviewed after the
+provenance gate detected an upstream package replacement. The
+[official chart index](https://charts.longhorn.io/index.yaml) and the GitHub
+asset digest for the [official release](https://github.com/longhorn/charts/releases/tag/longhorn-1.12.1)
+both matched the freshly downloaded package. GitHub reports that the current
+archive asset was created on 2026-08-26. All 42 regular chart files matched the
+committed chart byte-for-byte, with no added, removed, or changed paths.
+
+- Previous archive SHA-256: `d70764e2d6cce673482da4d91da5b44a9791cda842c1914f77e7806ad1cd94bb`.
+- Reviewed archive SHA-256: `c8cf4b35a9d872cd5f7e44fd26d8e6ac7c2abaee42f4e2f2a0b0ebbc6e3a6116`.
+- Unchanged upstream and vendored tree SHA-256: `5763a12eeb12666511193bf59f9d5b61a763623d43f7482c3661508981df15c0`.
+
+Only the exact archive pin changed. The chart version, file contents, tree pins,
+and empty patch list were retained. Future archive replacements still fail the
+gate until independently reviewed; identical tree contents never automatically
+waive an archive checksum mismatch.
+
 ## Migration Parser Fuzzing and Coverage
 
 `.github/workflows/fuzz.yml` uses ClusterFuzzLite and Atheris to fuzz the
