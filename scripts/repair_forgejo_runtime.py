@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
+import ssl
+import struct
 import subprocess
 import sys
 import tempfile
@@ -47,6 +51,7 @@ POSTGRES_CA_BUNDLE_PATH = "/data/gitea/git/.postgresql/ca-certificates.crt"
 POSTGRES_SERVER_CERTIFICATE_SECRET = "platform-postgres-server-tls"
 POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS = 180
 POSTGRES_CERTIFICATE_REPAIR_DELAY_SECONDS = 5
+POSTGRES_TLS_PROBE_TIMEOUT_SECONDS = 10
 BUNDLE_VERIFY_RETRIES = 6
 BUNDLE_VERIFY_DELAY_SECONDS = 2
 COMMAND_TIMEOUT_SECONDS = 60
@@ -54,11 +59,16 @@ STALE_INIT_MOUNT_CLEANUP_RETRIES = 5
 STALE_INIT_MOUNT_CLEANUP_DELAY_SECONDS = 1
 
 
-def command(args: list[str], *, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+def command(
+    args: list[str], *, check: bool = True, input_text: str | None = None,
+    timeout_seconds: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     timeout = bounded_timeout_seconds(
         COMMAND_TIMEOUT_SECONDS,
         "PLATFORM_FORGEJO_RUNTIME_COMMAND_TIMEOUT_SECONDS",
     )
+    if timeout_seconds is not None:
+        timeout = min(timeout, timeout_seconds)
     return run_bounded(
         args,
         check=check,
@@ -86,12 +96,18 @@ def write_private_bytes(path: Path, content: bytes) -> None:
         os.close(descriptor)
 
 
-def kube(*args: str, namespace: str | None = None, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+def kube(
+    *args: str, namespace: str | None = None, check: bool = True,
+    input_text: str | None = None, timeout_seconds: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     command_args = [KUBECTL, "--kubeconfig", KUBECONFIG]
     if namespace:
         command_args.extend(["-n", namespace])
     command_args.extend(args)
-    return command(command_args, check=check, input_text=input_text)
+    return command(
+        command_args, check=check, input_text=input_text,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def resource_json(
@@ -99,12 +115,16 @@ def resource_json(
     *,
     namespace: str | None = None,
     selector: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any] | None:
     resource_args = ["get", resource]
     if selector:
         resource_args.extend(["-l", selector])
     resource_args.extend(["-o", "json"])
-    result = kube(*resource_args, namespace=namespace, check=False)
+    result = kube(
+        *resource_args, namespace=namespace, check=False,
+        timeout_seconds=timeout_seconds,
+    )
     if result.returncode != 0:
         return None
     try:
@@ -346,8 +366,11 @@ def unique(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
-def postgres_cluster() -> dict[str, Any]:
-    cluster = resource_json("cluster.postgresql.cnpg.io/platform-postgres", namespace=POSTGRES_NAMESPACE)
+def postgres_cluster(*, timeout_seconds: float | None = None) -> dict[str, Any]:
+    cluster = resource_json(
+        "cluster.postgresql.cnpg.io/platform-postgres",
+        namespace=POSTGRES_NAMESPACE, timeout_seconds=timeout_seconds,
+    )
     if not cluster:
         fail(
             "forgejo-postgres-cluster-missing",
@@ -410,10 +433,11 @@ def validate_postgres_server_certificate_secret(
     return ca_path, leaf_path
 
 
-def postgres_service_cluster_ip() -> str:
+def postgres_service_cluster_ip(*, timeout_seconds: float | None = None) -> str:
     service = resource_json(
         "service/platform-postgres-rw",
         namespace=POSTGRES_NAMESPACE,
+        timeout_seconds=timeout_seconds,
     )
     if not service:
         fail(
@@ -422,33 +446,84 @@ def postgres_service_cluster_ip() -> str:
             f"available in {POSTGRES_NAMESPACE}.",
         )
     cluster_ip = (service.get("spec") or {}).get("clusterIP")
-    if not isinstance(cluster_ip, str) or not cluster_ip.strip() or cluster_ip.lower() == "none":
+    try:
+        # A numeric ClusterIP avoids an unbounded DNS lookup in the TLS probe.
+        return str(ipaddress.ip_address(str(cluster_ip).strip()))
+    except ValueError:
         fail(
             "forgejo-postgres-service-cluster-ip-missing",
             f"PostgreSQL read-write Service platform-postgres-rw in "
             f"{POSTGRES_NAMESPACE} has no usable ClusterIP.",
         )
-    return cluster_ip.strip()
+    return ""
 
 
-def postgres_server_handshake_verifies(ca_path: Path) -> bool:
-    cluster_ip = postgres_service_cluster_ip()
-    result = openssl(
-        "s_client",
-        "-starttls",
-        "postgres",
-        "-connect",
-        f"{cluster_ip}:5432",
-        "-servername",
-        POSTGRES_HOST,
-        "-verify_hostname",
-        POSTGRES_HOST,
-        "-verify_return_error",
-        "-CAfile",
-        str(ca_path),
-        input_text="",
+def postgres_server_handshake_verifies(
+    ca_path: Path, *, deadline: float | None = None,
+) -> bool:
+    attempt_deadline = time.monotonic() + POSTGRES_TLS_PROBE_TIMEOUT_SECONDS
+    if deadline is not None:
+        attempt_deadline = min(attempt_deadline, deadline)
+
+    def remaining() -> float:
+        seconds = attempt_deadline - time.monotonic()
+        if seconds <= 0:
+            raise TimeoutError("PostgreSQL TLS probe deadline reached")
+        return seconds
+
+    phase = "service-discovery"
+    cluster_ip = "unresolved"
+    try:
+        cluster_ip = postgres_service_cluster_ip(timeout_seconds=remaining())
+        phase = "ca-load"
+        context = ssl.create_default_context(cafile=str(ca_path))
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        phase = "tcp-connect"
+        with socket.create_connection((cluster_ip, 5432), timeout=remaining()) as connection:
+            phase = "ssl-request"
+            connection.settimeout(remaining())
+            # PostgreSQL SSLRequest is length=8 followed by code=80877103.
+            connection.sendall(struct.pack("!II", 8, 80877103))
+            connection.settimeout(remaining())
+            response = connection.recv(1)
+            if response != b"S":
+                print(
+                    "forgejo_postgres_tls_probe=retry "
+                    f"address={cluster_ip}:5432 phase={phase} "
+                    "reason=ssl-request-rejected"
+                )
+                return False
+            phase = "tls-handshake"
+            connection.settimeout(remaining())
+            # Close immediately after certificate/hostname verification. Waiting
+            # for PostgreSQL application data or TLS shutdown can stall a probe.
+            with context.wrap_socket(connection, server_hostname=POSTGRES_HOST):
+                return True
+    except ssl.SSLCertVerificationError:
+        reason = "certificate-verification-failed"
+    except (TimeoutError, subprocess.TimeoutExpired):
+        reason = "timeout"
+    except ssl.SSLError:
+        reason = "tls-protocol-error"
+    except OSError:
+        reason = "connection-error"
+    print(
+        "forgejo_postgres_tls_probe=retry "
+        f"address={cluster_ip}:5432 phase={phase} reason={reason}"
     )
-    return result.returncode == 0
+    return False
+
+
+def postgres_runtime_diagnostics() -> str:
+    try:
+        result = kube(
+            "get", "pods,services,endpointslices.discovery.k8s.io", "-o", "wide",
+            namespace=POSTGRES_NAMESPACE, check=False,
+            timeout_seconds=POSTGRES_TLS_PROBE_TIMEOUT_SECONDS,
+        )
+        return diagnostic_tail(result.stdout)
+    except subprocess.TimeoutExpired:
+        return "forgejo_postgres_diagnostics=timeout"
 
 
 def reconcile_postgres_certificate_contract(
@@ -496,27 +571,46 @@ def reconcile_postgres_certificate_contract(
         )
 
     deadline = time.monotonic() + POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS
-    while True:
-        current = postgres_cluster()
-        current_ca, current_tls = postgres_certificate_refs(current)
-        if (
-            (current_ca, current_tls) == (expected, expected)
-            and postgres_server_handshake_verifies(ca_path)
-        ):
-            print(
-                "forgejo_postgres_certificates=verified "
-                f"serverCASecret={expected} serverTLSSecret={expected}"
-            )
-            return current, expected
-        if time.monotonic() >= deadline:
+    current = cluster
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             break
-        time.sleep(POSTGRES_CERTIFICATE_REPAIR_DELAY_SECONDS)
+        try:
+            current = postgres_cluster(
+                timeout_seconds=min(
+                    POSTGRES_TLS_PROBE_TIMEOUT_SECONDS, remaining
+                )
+            )
+            current_ca, current_tls = postgres_certificate_refs(current)
+            if (
+                (current_ca, current_tls) == (expected, expected)
+                and postgres_server_handshake_verifies(ca_path, deadline=deadline)
+            ):
+                print(
+                    "forgejo_postgres_certificates=verified "
+                    f"serverCASecret={expected} serverTLSSecret={expected}"
+                )
+                return current, expected
+        except subprocess.TimeoutExpired:
+            print("forgejo_postgres_tls_probe=retry phase=cluster-discovery reason=timeout")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(POSTGRES_CERTIFICATE_REPAIR_DELAY_SECONDS, remaining))
 
+    status_ca, status_tls = postgres_status_certificate_refs(current)
     fail(
         "forgejo-postgres-certificate-contract-timeout",
         f"CloudNativePG did not serve a PostgreSQL STARTTLS certificate "
         f"verified by {POSTGRES_NAMESPACE}/{expected} within "
-        f"{POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS}s.",
+        f"{POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS}s.\n"
+        f"CNPG status: serverCASecret={status_ca or 'unset'} "
+        f"serverTLSSecret={status_tls or 'unset'}.\n"
+        "The probe lines identify a TCP, SSLRequest, TLS, or API timeout. "
+        "Check the PostgreSQL ready endpoints and node-to-Service path when "
+        "TCP/SSLRequest times out; check certificate reload for verification failures.\n"
+        f"{postgres_runtime_diagnostics()}",
     )
     return cluster, expected
 
