@@ -68,9 +68,25 @@ def repair_minio_inheritance(config: dict, env: list[dict]) -> bool:
     it, [attachment] is self-contained and does not inherit [storage] settings.
     """
     selected = minio_sections(config)
-    if not selected or "storage.minio" in config:
+    if not selected:
         return False
     common = config.get("storage") or {}
+    if "storage.minio" in config:
+        named = config["storage.minio"]
+        # A public-source merge may introduce the template's named block next
+        # to a different private global store. Never silently redirect objects.
+        for key in ("MINIO_ENDPOINT", "MINIO_BUCKET", "MINIO_USE_SSL"):
+            if key in common and key in named and common[key] != named[key]:
+                raise StorageContractError("Global and named MinIO settings differ; reconcile the private storage bindings before applying them.")
+        for key in ("MINIO_ACCESS_KEY_ID", "MINIO_SECRET_ACCESS_KEY"):
+            references = {}
+            for entry in env:
+                identity = config_env_key(str(entry.get("name", "")))
+                if identity and identity[0] in {"storage", "storage.minio"} and identity[1] == key:
+                    references[identity[0]] = {name: value for name, value in entry.items() if name != "name"}
+            if len(references) == 2 and references["storage"] != references["storage.minio"]:
+                raise StorageContractError("Global and named MinIO credential references differ; reconcile the private storage bindings before applying them.")
+        return False
     incomplete = [section for section in selected if section != "storage" and not (
         config.get(section) or {}
     ).get("MINIO_ENDPOINT")]

@@ -846,6 +846,19 @@ def test_forgejo_storage_bindings(renderer) -> None:
                 raise AssertionError("custom subsystem endpoint overwritten")
         assert path.read_bytes() == before
 
+        mixed = copy.deepcopy(config)
+        mixed["storage.minio"] = {"STORAGE_TYPE": "minio", "MINIO_ENDPOINT": "template-store.test", "MINIO_BUCKET": "platform-forgejo"}
+        reset(mixed)
+        before = path.read_bytes()
+        with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": ""}):
+            try:
+                renderer.refresh_forgejo_storage(path)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError("a merged template store displaced the private store")
+        assert path.read_bytes() == before
+
         reset(config)
         with patched_env({"FORGEJO_OBJECT_STORAGE_MODE": "filesystem", "PLATFORM_PRODUCTION_STRICT": "true"}):
             try:
