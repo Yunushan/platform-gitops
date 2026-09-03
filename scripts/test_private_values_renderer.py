@@ -227,6 +227,11 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
             '  additionalConfigFromEnvs:\n'
             '    - name: PRIVATE_FEATURE_FLAG\n'
             '      value: enabled\n'
+            '    - name: GITEA__cache__HOST\n'
+            '      valueFrom:\n'
+            '        secretKeyRef:\n'
+            '          name: private-redis\n'
+            '          key: uri\n'
             '  config:\n'
             '    server:\n'
             '      DOMAIN: code.private.example.test\n'
@@ -270,6 +275,7 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
                 "--refresh-argocd-host",
                 "--skip-argocd",
                 "--skip-forgejo",
+                "--refresh-forgejo-config-env",
                 "--refresh-forgejo-postgres-tls",
                 "--refresh-forgejo-release-pin",
             ]
@@ -287,6 +293,8 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
             "host: code.private.example.test",
             "DOMAIN: code.private.example.test",
             "PRIVATE_FEATURE_FLAG",
+            "FORGEJO__CACHE__HOST",
+            "name: private-redis",
             "HOST: private-postgres.private-databases.svc.cluster.local:5432",
             "NAME: private-forgejo",
             "privateExtension:",
@@ -297,7 +305,7 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
             "name: SSL_CERT_FILE",
             "value: /data/gitea/git/.postgresql/ca-certificates.crt",
         )
-        assert_not_contains(forgejo_path, 'tag: "14.0.0"')
+        assert_not_contains(forgejo_path, 'tag: "14.0.0"', "GITEA__cache__HOST")
         assert_not_contains(
             forgejo_path,
             "GITEA__storage__MINIO_ACCESS_KEY_ID",
@@ -880,8 +888,67 @@ def test_forgejo_storage_bindings(renderer) -> None:
         assert yaml.safe_load(block)["attachment"]["STORAGE_TYPE"] == "local"
 
 
+def test_forgejo_config_env_migration(renderer) -> None:
+    import copy
+    import yaml
+    from forgejo_config_env import ConfigEnvironmentError, normalize_config_env
+
+    legacy = [
+        {"name": "GITEA__cache__HOST", "valueFrom": {"secretKeyRef": {"name": "private-redis", "key": "uri"}}},
+        {"name": "GITEA__queue__CONN_STR", "valueFrom": {"secretKeyRef": {"name": "private-redis", "key": "uri"}}},
+        {"name": "GITEA__database__PASSWD", "valueFrom": {"secretKeyRef": {"name": "private-db", "key": "password"}}},
+        {"name": "GITEA_APP_INI", "value": "/data/gitea/conf/app.ini"},
+        {"name": "SSL_CERT_FILE", "value": "/private/trust.pem"},
+        {"name": "GITEA__database__DB_TYPE", "value": "postgres"},
+    ]
+    before = copy.deepcopy(legacy)
+    normalized = normalize_config_env(legacy)
+    assert legacy == before
+    assert [entry["name"] for entry in normalized[:3]] == ["FORGEJO__CACHE__HOST", "FORGEJO__QUEUE__CONN_STR", "FORGEJO__DATABASE__PASSWD"]
+    assert [entry["valueFrom"] for entry in normalized[:3]] == [entry["valueFrom"] for entry in legacy[:3]]
+    assert normalized[3:] == legacy[3:]
+    assert normalize_config_env(normalized) == normalized
+    assert normalize_config_env([legacy[0], normalized[0]]) == [normalized[0]]
+    for bad in (None, {}, ["invalid"], [legacy[0], {"name": "FORGEJO__CACHE__HOST", "value": "never-log-private-redis"}]):
+        try:
+            normalize_config_env(bad)
+        except ConfigEnvironmentError as exc:
+            assert "never-log-private-redis" not in str(exc)
+        else:
+            raise AssertionError("invalid or conflicting environment accepted")
+    with tempfile.TemporaryDirectory(prefix="forgejo-config-env-") as temporary:
+        path = Path(temporary) / "values.yaml"
+        values = {
+            "gitea": {"additionalConfigFromEnvs": legacy[:3], "config": {"database": {"DB_TYPE": "postgres"}, "storage": {"STORAGE_TYPE": "local"}}},
+            "deployment": {"env": legacy[3:]},
+            "persistence": {"existingClaim": "keep-private-data"},
+        }
+        path.write_text("# private values\n" + yaml.safe_dump(values), encoding="utf-8")
+        assert renderer.refresh_forgejo_config_env(path)
+        result = yaml.safe_load(path.read_text(encoding="utf-8"))
+        expected = copy.deepcopy(values)
+        expected["gitea"]["additionalConfigFromEnvs"] = normalized[:3]
+        assert result == expected
+        assert path.read_text(encoding="utf-8").startswith("# private values\n")
+        assert not renderer.refresh_forgejo_config_env(path)
+        # Cross-list collisions must fail before writing any private file.
+        values["deployment"]["env"].append({"name": "FORGEJO__CACHE__HOST", "value": "never-log-private-redis"})
+        original = yaml.safe_dump(values)
+        path.write_text(original, encoding="utf-8")
+        try:
+            renderer.refresh_forgejo_config_env(path)
+        except SystemExit as exc:
+            assert "Conflicting" in str(exc) and "never-log-private-redis" not in str(exc)
+        else:
+            raise AssertionError("conflicting private values were overwritten")
+        assert path.read_text(encoding="utf-8") == original
+    seed_sync = (ROOT / "scripts/bootstrap/sync-seed-git.sh").read_text(encoding="utf-8")
+    assert "--refresh-forgejo-config-env" in seed_sync
+
+
 def main() -> int:
     renderer = load_renderer()
+    test_forgejo_config_env_migration(renderer)
     test_forgejo_storage_bindings(renderer)
     checker = load_checker()
     contract_validator = load_contract_validator()
@@ -1095,7 +1162,7 @@ def main() -> int:
             "name: platform-postgres-ca",
             "name: platform-internal-roots",
             "mountPath: /data/gitea/git/.postgresql",
-            "GITEA__cache__HOST",
+            "FORGEJO__CACHE__HOST",
             'name: "forgejo-redis"',
             "ADAPTER: redis",
             "TYPE: redis",
@@ -1166,15 +1233,15 @@ def main() -> int:
         assert_contains(
             external_forgejo_path,
             "additionalConfigFromEnvs:",
-            "GITEA__database__PASSWD",
+            "FORGEJO__DATABASE__PASSWD",
             'name: "forgejo-db-test"',
             "key: password",
-            "GITEA__cache__HOST",
-            "GITEA__queue__CONN_STR",
+            "FORGEJO__CACHE__HOST",
+            "FORGEJO__QUEUE__CONN_STR",
             'name: "forgejo-redis-test"',
             "key: uri",
-            "GITEA__storage__MINIO_ACCESS_KEY_ID",
-            "GITEA__storage__MINIO_SECRET_ACCESS_KEY",
+            "FORGEJO__STORAGE__MINIO_ACCESS_KEY_ID",
+            "FORGEJO__STORAGE__MINIO_SECRET_ACCESS_KEY",
             'name: "forgejo-object-test"',
             "key: access-key-id",
             "key: secret-access-key",

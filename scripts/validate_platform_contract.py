@@ -561,8 +561,8 @@ def rendered_optional_postgres_contract(text: str, needle: str) -> bool:
 def rendered_optional_redis_contract(text: str, needle: str) -> bool:
     if not is_private_rendered(text):
         return False
-    if needle in {"GITEA__cache__HOST", "GITEA__queue__CONN_STR", "ADAPTER: redis", "TYPE: redis"}:
-        return "GITEA__cache__HOST" not in text
+    if needle in {"FORGEJO__CACHE__HOST", "FORGEJO__QUEUE__CONN_STR", "ADAPTER: redis", "TYPE: redis"}:
+        return "FORGEJO__CACHE__HOST" not in text
     return False
 
 
@@ -599,7 +599,7 @@ def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
         return True
     if sqlite_mode and needle in {
         "additionalConfigFromEnvs:",
-        "GITEA__database__PASSWD",
+        "FORGEJO__DATABASE__PASSWD",
         "name: forgejo-database",
         "NAME: forgejo",
         "USER: forgejo",
@@ -623,10 +623,10 @@ def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
 def rendered_optional_forgejo_redis_contract(text: str, needle: str) -> bool:
     if not is_private_rendered(text) or "Forgejo" not in text:
         return False
-    redis_mode = "GITEA__cache__HOST" in text
+    redis_mode = "FORGEJO__CACHE__HOST" in text
     if not redis_mode and needle in {
-        "GITEA__cache__HOST",
-        "GITEA__queue__CONN_STR",
+        "FORGEJO__CACHE__HOST",
+        "FORGEJO__QUEUE__CONN_STR",
         "name: forgejo-redis",
         "ADAPTER: redis",
         "TYPE: redis",
@@ -1168,7 +1168,7 @@ def main() -> None:
         "REQUIRE_SIGNIN_VIEW: true",
         "DEFAULT_BRANCH: main",
         "additionalConfigFromEnvs:",
-        "GITEA__database__PASSWD",
+        "FORGEJO__DATABASE__PASSWD",
         "name: forgejo-database",
         "DB_TYPE: postgres",
         "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
@@ -1182,7 +1182,7 @@ def main() -> None:
         "value: /data/gitea/git/.postgresql/ca-certificates.crt",
         "mountPath: /etc/ssl/platform",
         "PROVIDER: db",
-        "GITEA__cache__HOST",
+        "FORGEJO__CACHE__HOST",
         "name: forgejo-redis",
         "ADAPTER: redis",
         "TYPE: redis",
@@ -8384,11 +8384,11 @@ def main() -> None:
         "FORGEJO_S3_ENDPOINT",
         "FORGEJO_S3_BUCKET",
         "FORGEJO_S3_SECRET_NAME",
-        "GITEA__database__PASSWD",
-        "GITEA__cache__HOST",
-        "GITEA__queue__CONN_STR",
-        "GITEA__storage__MINIO_ACCESS_KEY_ID",
-        "GITEA__storage__MINIO_SECRET_ACCESS_KEY",
+        "FORGEJO__DATABASE__PASSWD",
+        "FORGEJO__CACHE__HOST",
+        "FORGEJO__QUEUE__CONN_STR",
+        "FORGEJO__STORAGE__MINIO_ACCESS_KEY_ID",
+        "FORGEJO__STORAGE__MINIO_SECRET_ACCESS_KEY",
         "attachment:\n      STORAGE_TYPE: minio",
         "lfs:\n      STORAGE_TYPE: minio",
         "AVATAR_STORAGE_TYPE: minio",
@@ -8433,10 +8433,10 @@ def main() -> None:
         "FORGEJO_S3_BUCKET",
         "forgejo-object-test",
         "additionalConfigFromEnvs:",
-        "GITEA__database__PASSWD",
-        "GITEA__queue__CONN_STR",
-        "GITEA__storage__MINIO_ACCESS_KEY_ID",
-        "GITEA__storage__MINIO_SECRET_ACCESS_KEY",
+        "FORGEJO__DATABASE__PASSWD",
+        "FORGEJO__QUEUE__CONN_STR",
+        "FORGEJO__STORAGE__MINIO_ACCESS_KEY_ID",
+        "FORGEJO__STORAGE__MINIO_SECRET_ACCESS_KEY",
         "MINIO_ENDPOINT:",
         "MINIO_BUCKET:",
         "MINIO_USE_SSL: true",

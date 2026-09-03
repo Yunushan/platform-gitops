@@ -26,6 +26,7 @@ if str(SCRIPT_DIRECTORY) not in sys.path:
 
 from bounded_file import read_bounded_bytes, read_bounded_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from forgejo_config_env import ConfigEnvironmentError, normalize_config_env
 from forgejo_storage_contract import (
     STORAGE_SECTIONS, StorageContractError, config_env_key,
     minio_sections, validate_minio_config,
@@ -161,6 +162,46 @@ def secret_data(namespace: str, name: str) -> dict[str, bytes]:
         except (ValueError, TypeError):
             continue
     return decoded
+
+
+def repair_config_environment(workload: str, document: dict[str, Any]) -> dict[str, Any]:
+    """Migrate legacy env names atomically, retaining credentials and pod configuration."""
+    pod_spec = (document.get("spec") or {}).get("template", {}).get("spec") or {}
+    operations = []
+    try:
+        for group in ("initContainers", "containers"):
+            for index, container in enumerate(pod_spec.get(group, []) or []):
+                env = container.get("env", [])
+                normalized = normalize_config_env(env)
+                if normalized != env:
+                    operations.append({
+                        "op": "replace", "path": f"/spec/template/spec/{group}/{index}/env",
+                        "value": normalized,
+                    })
+    except ConfigEnvironmentError as exc:
+        fail("forgejo-config-env-ambiguous", str(exc))
+    if not operations:
+        print(f"forgejo_config_env=present workload={workload}")
+        return document
+    version = (document.get("metadata") or {}).get("resourceVersion")
+    if not version:
+        fail("forgejo-config-env-version-missing", "Cannot guard the Forgejo environment patch without resourceVersion.")
+    operations.insert(0, {"op": "test", "path": "/metadata/resourceVersion", "value": version})
+    # stdin keeps any existing literal credentials out of the command line.
+    result = kube(
+        "patch", workload, "--type=json", "--patch-file=/dev/stdin", "-o", "json",
+        input_text=json.dumps(operations), namespace=FORGEJO_NAMESPACE, check=False,
+    )
+    if result.returncode != 0:
+        fail("forgejo-config-env-patch-failed", "Forgejo environment patch was rejected, possibly by a concurrent GitOps update. Reconcile private values and rerun repair; no unguarded retry was attempted.")
+    try:
+        updated = loads_strict_json(result.stdout)
+    except json.JSONDecodeError:
+        updated = None
+    if not isinstance(updated, dict) or not updated.get("spec"):
+        fail("forgejo-config-env-read-failed", "Could not read the updated Forgejo workload.")
+    print(f"forgejo_config_env=patched workload={workload} credential_values=preserved")
+    return updated
 
 
 def storage_configuration(workload: dict[str, Any]) -> dict:
@@ -1435,6 +1476,7 @@ def main() -> int:
                 f"No Forgejo Deployment or StatefulSet exists in {FORGEJO_NAMESPACE}.",
             )
 
+        document = repair_config_environment(workload, document)
         validate_storage_contract(document)
         database_type = database_backend(document)
         print("forgejo_database_backend=detected")

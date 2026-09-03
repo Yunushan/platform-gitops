@@ -650,6 +650,18 @@ strict production object-storage and off-cluster backup requirements.
 Running only `platform-forgejo-runtime-repair` checks the live configuration;
 it does not publish private GitOps settings or switch storage backends.
 
+If Forgejo reports `cache.Init failed` connecting to `127.0.0.1:6379`, check
+the dependency environment bindings before changing Redis. The pinned chart
+restores `FORGEJO__...` overrides after loading its inline defaults; legacy
+`GITEA__cache__HOST` can leave the cache host empty. The private renderer and
+focused Woodpecker seed sync migrate the generated database password, cache,
+queue, and S3 credential bindings to the current names, preserving secret
+references. Runtime repair also applies a resource-version-guarded migration
+to existing Deployment/StatefulSet environment lists. It does not change
+database backends, provision Redis, or disable TLS. Conflicting bindings fail
+without logging credentials. Keep the fix in private GitOps values so Argo CD
+does not restore the old names; a live-only repair is not a substitute for sync.
+
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
 `GRAFANA_DATABASE_MODE=postgres`.
 
