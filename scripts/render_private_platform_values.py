@@ -3193,6 +3193,9 @@ def monitoring_bootstrap_values(
         grafana_availability_block = f"""  replicas: {grafana_replicas}
   deploymentStrategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   podDisruptionBudget:
     minAvailable: 1
   topologySpreadConstraints:
@@ -3585,7 +3588,7 @@ write:
   replicas: 3
   resources:
     requests:
-      cpu: 250m
+      cpu: 150m
       memory: 1Gi
     limits:
       memory: 2Gi
@@ -3598,7 +3601,7 @@ read:
   replicas: 3
   resources:
     requests:
-      cpu: 250m
+      cpu: 100m
       memory: 512Mi
     limits:
       memory: 1Gi
@@ -3607,7 +3610,7 @@ backend:
   replicas: 3
   resources:
     requests:
-      cpu: 250m
+      cpu: 100m
       memory: 1Gi
     limits:
       memory: 2Gi
@@ -3622,11 +3625,16 @@ gateway:
   basicAuth:
     enabled: true
     existingSecret: loki-gateway-basic-auth
+  deploymentStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   nginxConfig:
     locationSnippet: "proxy_set_header X-Scope-OrgID platform;"
   resources:
     requests:
-      cpu: 100m
+      cpu: 50m
       memory: 128Mi
     limits:
       memory: 256Mi
@@ -3642,6 +3650,14 @@ gateway:
       - secretName: loki-tls
         hosts:
           - {yaml_string(host)}
+
+chunksCache:
+  allocatedMemory: 512
+  allocatedCPU: 100m
+
+resultsCache:
+  allocatedMemory: 128
+  allocatedCPU: 100m
 
 monitoring:
   serviceMonitor:
@@ -3767,7 +3783,7 @@ resources:
 nodeAgent:
   resources:
     requests:
-      cpu: 250m
+      cpu: 100m
       memory: 256Mi
     limits:
       memory: 1Gi

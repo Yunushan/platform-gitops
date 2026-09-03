@@ -73,6 +73,9 @@ grafana:
   replicas: 2
   deploymentStrategy:
     type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   podDisruptionBudget:
     minAvailable: 1
   topologySpreadConstraints:

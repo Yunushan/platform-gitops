@@ -1773,7 +1773,9 @@ def main() -> int:
             "retention_period: \"720h\"",
             "retention_enabled: true",
             "locationSnippet: \"proxy_set_header X-Scope-OrgID platform;\"",
-            "      cpu: 250m\n      memory: 1Gi",
+            "      cpu: 150m\n      memory: 1Gi",
+            "chunksCache:\n  allocatedMemory: 512\n  allocatedCPU: 100m",
+            "resultsCache:\n  allocatedMemory: 128\n  allocatedCPU: 100m",
         )
         loki_text = paths["loki"].read_text(encoding="utf-8")
         if loki_text.count("enableStatefulSetAutoDeletePVC: false") != 2:
@@ -1797,7 +1799,7 @@ def main() -> int:
             'existingSecret: "velero-cloud-test"',
             "deployNodeAgent: true\n\nresources:",
             "nodeAgent:\n  resources:",
-            "      cpu: 250m\n      memory: 256Mi",
+            "      cpu: 100m\n      memory: 256Mi",
         )
         default_velero_path = write(
             repo / "gitops/clusters/rke2-main/premium-3node/apps/velero/default-values.yaml"

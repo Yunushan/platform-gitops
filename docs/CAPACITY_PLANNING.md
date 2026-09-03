@@ -185,6 +185,78 @@ filesystem on every node first; do not use a directory on `/` as a substitute.
 
 ## Component Planning
 
+### Compact Three-Node Budget
+
+The premium template uses a compact starting budget for three 8-vCPU,
+32-GiB nodes. This is not a load-tested capacity guarantee: enabled workloads,
+CI concurrency, retention, VM CPU contention, and per-node placement still
+determine whether a deployment fits. Keep the production capacity gate enabled.
+On VMware ESXi, record CPU ready/co-stop and ballooning/swapping as well as
+guest CPU usage; guest-idle CPU does not prove that the hypervisor has headroom.
+
+| Component | CPU request per replica | Replicas retained |
+|---|---|---|
+| Argo CD repo server (including copyutil init) | 200m | 3 |
+| Argo CD application controller | 250m | 1 |
+| Loki write / read / backend | 150m / 100m / 100m | 3 each |
+| Loki gateway | 50m | 3 |
+| Loki chunk / result cache | 100m each | Chart cache defaults |
+| Velero node agent | 100m | One per node |
+
+These components retain CPU burst capacity without CPU limits. Application
+memory limits, HA replica counts, database resources, and Longhorn instance
+manager CPU reservations are not reduced. Grafana and the Loki gateway use
+zero-surge rollouts with one unavailable replica allowed, retaining their
+configured replica counts and disruption budgets.
+
+Loki's disposable chunk and result caches explicitly allocate 512 MiB and
+128 MiB, respectively. The chart adds 20 percent process headroom, yielding
+614 MiB and 154 MiB container memory. This avoids inheriting the chart's
+8-GiB chunk-cache allocation; it does not delete logs, change retention, or
+reduce PVC sizes. Increase cache sizing when measured query load requires it.
+
+For existing private values, adopt the budget deliberately in the **private
+deployment checkout**, without rerendering storage, endpoints, or secrets:
+
+```bash
+python3 scripts/refresh_platform_resource_budget.py \
+  --apps-root gitops/clusters/rke2-main/premium-3node/apps
+# Review the plan and private diff before publishing to the private Git source.
+python3 scripts/refresh_platform_resource_budget.py \
+  --apps-root gitops/clusters/rke2-main/premium-3node/apps --apply
+```
+
+For staged recovery, pass `--app argocd-ha --app monitoring` first and wait for
+the private Git source to reconcile before continuing. Apply the Loki and
+Velero changes only when storage is healthy; a StatefulSet template change can
+restart a pod and detach its volume even if only CPU requests changed.
+
+The helper is read-only unless `--apply` is specified. It changes only the
+listed budget and rollout fields, refuses ambiguous YAML and explicit cache
+resource overrides, and never commits, pushes, changes the cluster, or changes
+PVCs. Preserve a private backup ref before committing these values; do not push
+rendered private values to the public template repository. For an existing
+single-replica or PVC-backed Grafana, review its database/HA migration separately.
+
+During a Longhorn upgrade, budget space for **both** old and new instance
+managers on every storage node. With a 12-percent v1 reservation on 8 vCPU,
+each additional manager needs 960m. Do not lower this reservation, delete
+active managers, or force-salvage replicas to make admission succeed.
+
+When repairing an already saturated cluster, reconcile stateless workloads
+before rolling PVC-backed workloads. Kubernetes 1.35 can resize a running
+container's CPU request through `pods/resize` without a restart when its CPU
+resize policy is `NotRequired`. Check QoS, actual usage, allocated resources,
+pod UID, container IDs, and restart counts before and after. A completed regular
+init container still contributes to the pod's effective request and cannot be
+resized this way; an Argo repo-server main-container resize alone will not
+release its old copyutil reservation. Use its zero-surge, two-available-replica
+rolling update instead. Account for pending pods consuming newly freed CPU,
+and verify admission of the new managers before continuing storage rollouts.
+
+References: [Kubernetes 1.35 in-place resize](https://v1-35.docs.kubernetes.io/docs/tasks/configure-pod-container/resize-container-resources/)
+and [Longhorn instance-manager CPU settings](https://longhorn.io/docs/1.12.1/references/settings/#guaranteed-instance-manager-cpu).
+
 Use these component notes as prompts for private sizing decisions:
 
 | Component | Planning notes |
