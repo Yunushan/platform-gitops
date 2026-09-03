@@ -18,6 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -33,6 +34,7 @@ from forgejo_storage_contract import (
 )
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
+from valkey_runtime_contract import ready_primary_endpoints, storage_policy_patch
 
 
 class RepairError(RuntimeError):
@@ -202,6 +204,174 @@ def repair_config_environment(workload: str, document: dict[str, Any]) -> dict[s
         fail("forgejo-config-env-read-failed", "Could not read the updated Forgejo workload.")
     print(f"forgejo_config_env=patched workload={workload} credential_values=preserved")
     return updated
+
+
+def uses_shared_valkey(workload: dict[str, Any]) -> bool:
+    pod_spec = (workload.get("spec") or {}).get("template", {}).get("spec") or {}
+    config_init = next((item for item in pod_spec.get("initContainers", []) if item.get("name") == "init-app-ini"), {})
+    for entry in config_init.get("env", []) or []:
+        if config_env_key(str(entry.get("name", ""))) not in {("cache", "HOST"), ("queue", "CONN_STR")}:
+            continue
+        value = entry.get("value")
+        if value is None:
+            ref = (entry.get("valueFrom") or {}).get("secretKeyRef") or {}
+            value = secret_data(FORGEJO_NAMESPACE, ref.get("name", "")).get(ref.get("key", "")) if ref.get("name") else None
+            if ref.get("name") and value is None:
+                fail("forgejo-redis-secret-unavailable", "The configured Redis URI secret key could not be read; no credentials were logged.")
+        try:
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+            address = urlsplit(value or "")
+            if address.scheme in {"redis", "rediss"} and (address.hostname or "").rstrip(".") in {
+                "platform-valkey-primary.platform-cache", "platform-valkey-primary.platform-cache.svc",
+                "platform-valkey-primary.platform-cache.svc.cluster.local",
+            } and address.port in {None, 6379}:
+                return True
+        except (ValueError, UnicodeError):
+            fail("forgejo-redis-uri-invalid", "Forgejo Redis configuration could not be parsed; no credentials were logged.")
+    return False
+
+
+def require_valkey_storage_ready() -> None:
+    """Do not start a storage-backed rollout while its Longhorn runtime is broken."""
+    def required(resource: str, namespace: str | None = None) -> dict:
+        value = resource_json(resource, namespace=namespace)
+        if value is None:
+            fail("forgejo-valkey-storage-unavailable", f"Cannot safely inspect {resource} before Valkey reconciliation.")
+        return value
+
+    statefulset = required("statefulset/platform-valkey", "platform-cache")
+    spec = statefulset.get("spec") or {}
+    start = (spec.get("ordinals") or {}).get("start", 0)
+    claim_names = {
+        f"{claim['metadata']['name']}-platform-valkey-{ordinal}"
+        for claim in spec.get("volumeClaimTemplates") or []
+        for ordinal in range(start, start + spec.get("replicas", 1))
+    }
+    if not claim_names:
+        return
+    claims = required("persistentvolumeclaims", "platform-cache")
+    bound_volumes = {
+        item.get("spec", {}).get("volumeName") for item in claims.get("items") or []
+        if item.get("metadata", {}).get("name") in claim_names
+    } - {None, ""}
+    handles = []
+    for name in sorted(bound_volumes):
+        volume = required(f"persistentvolume/{name}")
+        csi = (volume.get("spec") or {}).get("csi") or {}
+        if csi.get("driver") == "driver.longhorn.io":
+            handles.append(csi["volumeHandle"])
+    if not handles:
+        return
+
+    problems = []
+    for handle in handles:
+        volume = required(f"volumes.longhorn.io/{handle}", "longhorn-system")
+        if (volume.get("status") or {}).get("robustness") == "faulted":
+            problems.append(f"longhorn_volume={handle} robustness=faulted")
+    image = required("settings.longhorn.io/default-instance-manager-image", "longhorn-system").get("value")
+    managers = required("instancemanagers.longhorn.io", "longhorn-system")
+    current = [item for item in managers.get("items") or [] if image and item.get("spec", {}).get("image") == image
+               and item.get("spec", {}).get("dataEngine", "v1") == "v1"]
+    if not current:
+        problems.append("longhorn_instance_manager=missing reason=no-current-v1-runtime")
+    failing = set()
+    for manager in current:
+        status = manager.get("status") or {}
+        if status.get("currentState") != "running" or not status.get("ip"):
+            name = manager.get("metadata", {}).get("name", "unknown")
+            failing.add(name)
+            problems.append(f"longhorn_instance_manager={name} node={manager.get('spec', {}).get('nodeID', 'unknown')} state={status.get('currentState', 'unknown')}")
+    if problems:
+        events = resource_json("events", namespace="longhorn-system") or {}
+        latest = {}
+        for event in events.get("items") or []:
+            name = (event.get("involvedObject") or {}).get("name")
+            timestamp = event.get("lastTimestamp") or event.get("eventTime") or ""
+            if name in failing and event.get("type") == "Warning" and timestamp >= latest.get(name, ("", ""))[0]:
+                latest[name] = (timestamp, redact_diagnostic_text(str(event.get("message", "")))[:800])
+        problems.extend(f"longhorn_instance_manager={name} warning={message}" for name, (_, message) in sorted(latest.items()))
+        fail("forgejo-valkey-storage-blocked", "\n".join(problems) + "\nRestore Longhorn runtime/capacity before the Valkey rollout. "
+             "An OutOfcpu warning requires capacity for both old and new instance managers during upgrade. "
+             "Do not delete active instance managers or PVCs, lower storage CPU reservations, or force-salvage replicas to bypass this check.")
+
+
+def repair_shared_valkey(workload: dict[str, Any], timeout: int) -> None:
+    if not uses_shared_valkey(workload):
+        print("forgejo_valkey_dependency=skipped reason=not-managed-shared-service")
+        return
+
+    def endpoints() -> int:
+        slices = resource_json(
+            "endpointslices.discovery.k8s.io", namespace="platform-cache",
+            selector="kubernetes.io/service-name=platform-valkey-primary",
+        )
+        if slices is None:
+            fail("forgejo-valkey-endpoints-unavailable", "Could not inspect Valkey EndpointSlices; no reconciliation was requested.")
+        return ready_primary_endpoints(slices)
+
+    if endpoints():
+        print("forgejo_valkey_dependency=ready service=platform-valkey-primary")
+        return
+    print("forgejo_valkey_dependency=repair-required reason=no-ready-proxy-endpoint")
+    service = resource_json("service/platform-valkey-primary", namespace="platform-cache") or {}
+    service_spec = service.get("spec") or {}
+    if service_spec.get("selector") != {
+        "app.kubernetes.io/instance": "platform-valkey", "app.kubernetes.io/name": "valkey",
+    } or not any(port.get("port") == 6379 and port.get("targetPort") == "primary-proxy"
+                 and port.get("protocol", "TCP") == "TCP" for port in service_spec.get("ports") or []):
+        fail("forgejo-valkey-service-contract", "The Valkey primary Service does not have the managed primary-proxy target; reconcile its GitOps configuration first.")
+    previous_start = None
+    for attempt in range(5):
+        app = resource_json("application/platform-valkey", namespace="argocd")
+        if not app:
+            fail("forgejo-valkey-application-unavailable", "The managed Valkey service has no ready proxy endpoint and its Argo CD Application could not be read.")
+        try:
+            patch = storage_policy_patch(app)
+        except ValueError as exc:
+            fail("forgejo-valkey-policy-unsafe", str(exc))
+        require_valkey_storage_ready()
+        if patch:
+            result = kube("patch", "application/platform-valkey", "--type=merge", "--patch-file=/dev/stdin",
+                          input_text=json.dumps(patch), namespace="argocd", check=False)
+            if result.returncode == 0:
+                print("forgejo_valkey_storage_policy=restored pvc_data=retained")
+            # Always reread after a policy change; Argo CD may have started a sync.
+            time.sleep(1)
+            continue
+        previous_start = ((app.get("status") or {}).get("operationState") or {}).get("startedAt")
+        if app.get("operation"):
+            print("forgejo_valkey_sync=existing-operation-retained")
+            break
+        version = (app.get("metadata") or {}).get("resourceVersion")
+        if not version:
+            fail("forgejo-valkey-version-missing", "Cannot request a guarded Valkey sync without resourceVersion.")
+        patch = {"metadata": {"resourceVersion": version}, "operation": {
+            "initiatedBy": {"username": "platform-forgejo-runtime-repair"},
+            "sync": {"prune": False, "syncOptions": (app["spec"].get("syncPolicy") or {}).get("syncOptions", [])},
+        }}
+        result = kube("patch", "application/platform-valkey", "--type=merge", "--patch-file=/dev/stdin",
+                      input_text=json.dumps(patch), namespace="argocd", check=False)
+        if result.returncode == 0:
+            print("forgejo_valkey_sync=requested prune=false")
+            break
+        time.sleep(1)
+    else:
+        fail("forgejo-valkey-sync-request-failed", "Could not safely reconcile the Valkey Application after guarded retries.")
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if endpoints():
+            print("forgejo_valkey_dependency=ready service=platform-valkey-primary")
+            return
+        app = resource_json("application/platform-valkey", namespace="argocd") or {}
+        state = (app.get("status") or {}).get("operationState") or {}
+        if state.get("phase") in {"Failed", "Error"} and state.get("startedAt") != previous_start and not app.get("operation"):
+            fail("forgejo-valkey-sync-failed", "Valkey reconciliation failed: " + redact_diagnostic_text(str(state.get("message", "inspect application/platform-valkey"))))
+        require_valkey_storage_ready()
+        time.sleep(5)
+    diagnostics = kube("get", "pods,service,endpointslice", "-o", "wide", namespace="platform-cache", check=False)
+    fail("forgejo-valkey-endpoint-timeout", "Valkey still has no ready primary-proxy endpoint. Inspect its pod init/container states and Argo CD sync result.\n" + diagnostic_tail(diagnostics.stdout))
 
 
 def storage_configuration(workload: dict[str, Any]) -> dict:
@@ -1478,6 +1648,7 @@ def main() -> int:
 
         document = repair_config_environment(workload, document)
         validate_storage_contract(document)
+        repair_shared_valkey(document, timeout)
         database_type = database_backend(document)
         print("forgejo_database_backend=detected")
 

@@ -566,6 +566,7 @@ def test_forgejo_runtime_still_requires_application_readiness() -> None:
         for name, value in (
             ("resource_json", {"kind": "Deployment"}),
             ("repair_config_environment", {"kind": "Deployment"}),
+            ("repair_shared_valkey", None),
             ("validate_storage_contract", "filesystem"), ("database_backend", "postgres"),
             ("postgres_cluster", {}), ("reconcile_postgres_certificate_contract", ({}, "tls")),
             ("active_postgres_certificate", ("tls", Path("leaf"))),
@@ -628,6 +629,203 @@ def test_forgejo_config_environment_runtime() -> None:
                 raise AssertionError("unguarded or rejected patch was accepted")
     assert "never-log-private-data" not in output.getvalue()
     require(read(FORGEJO_RUNTIME_REPAIR_PLAYBOOK), "- forgejo_config_env.py", "runtime config env bundle")
+
+
+def test_valkey_runtime_contract() -> None:
+    import copy
+    import json
+    from valkey_runtime_contract import ready_primary_endpoints, storage_policy_patch
+
+    app = {"metadata": {"resourceVersion": "12"}, "spec": {
+        "source": {"path": "gitops/clusters/rke2-main/premium-3node/apps/platform-valkey", "targetRevision": "main"},
+        "destination": {"namespace": "platform-cache"},
+        "ignoreDifferences": [{"group": "", "kind": "Namespace", "jsonPointers": ["/status"]}],
+        "syncPolicy": {"automated": {"prune": False, "selfHeal": True}, "syncOptions": ["CreateNamespace=true"]},
+    }}
+    original = copy.deepcopy(app)
+    patch = storage_policy_patch(app)
+    assert app == original
+    assert patch["metadata"] == {"resourceVersion": "12"}
+    assert set(patch["spec"]) == {"ignoreDifferences", "syncPolicy"}
+    assert set(patch["spec"]["syncPolicy"]) == {"syncOptions"}
+    assert patch["spec"]["ignoreDifferences"][0] == app["spec"]["ignoreDifferences"][0]
+    assert patch["spec"]["ignoreDifferences"][1]["jqPathExpressions"] == [".spec.volumeClaimTemplates[]?.spec.storageClassName"]
+    assert patch["spec"]["ignoreDifferences"][2]["jsonPointers"] == ["/spec/storageClassName"]
+    preserved = copy.deepcopy(app)
+    preserved["metadata"]["resourceVersion"] = "13"
+    preserved["spec"]["ignoreDifferences"] = patch["spec"]["ignoreDifferences"]
+    preserved["spec"]["syncPolicy"].update(patch["spec"]["syncPolicy"])
+    assert storage_policy_patch(preserved) == {}
+    for alteration in ("namespace", "path", "version", "disabled", "replace", "force"):
+        invalid = copy.deepcopy(app)
+        if alteration == "namespace":
+            invalid["spec"]["destination"]["namespace"] = "custom"
+        elif alteration == "path":
+            invalid["spec"]["source"]["path"] = "custom"
+        elif alteration == "version":
+            invalid["metadata"] = {}
+        elif alteration == "disabled":
+            invalid["spec"]["syncPolicy"]["syncOptions"].append("RespectIgnoreDifferences=false")
+        else:
+            invalid["spec"]["syncPolicy"]["syncOptions"].append(alteration.title() + "=true")
+        try:
+            storage_policy_patch(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("custom or unguarded Valkey Application was accepted")
+
+    ready = {"items": [{"metadata": {"labels": {"kubernetes.io/service-name": "platform-valkey-primary"}},
+                        "ports": [{"port": 6380, "protocol": "TCP"}],
+                        "endpoints": [{"addresses": ["192.0.2.10"], "conditions": {"ready": True}}]}]}
+    assert ready_primary_endpoints(ready) == 1
+    for ports in (None, [], [{"port": None}], [{"port": 6379}], [{"port": 6380, "protocol": "UDP"}]):
+        assert ready_primary_endpoints({"items": [{**ready["items"][0], "ports": ports}]}) == 0
+    for conditions in ({}, {"ready": False}, {"ready": True, "terminating": True}):
+        invalid = copy.deepcopy(ready)
+        invalid["items"][0]["endpoints"][0]["conditions"] = conditions
+        assert ready_primary_endpoints(invalid) == 0
+
+    uri = "rediss://:private-test-value@platform-valkey-primary.platform-cache.svc.cluster.local:6379/0"
+    workload = {"spec": {"template": {"spec": {"initContainers": [{"name": "init-app-ini", "env": [
+        {"name": "FORGEJO__cache__HOST", "valueFrom": {"secretKeyRef": {"name": "forgejo-redis", "key": "uri"}}},
+    ]}]}}}}
+    with mock.patch.object(forgejo_runtime, "secret_data", return_value={"uri": uri.encode()}):
+        assert forgejo_runtime.uses_shared_valkey(workload)
+    with mock.patch.object(forgejo_runtime, "secret_data", return_value={"uri": b"rediss://external.test:6379/0"}):
+        assert not forgejo_runtime.uses_shared_valkey(workload)
+    output = io.StringIO()
+    for secret, reason in (({}, "forgejo-redis-secret-unavailable"), ({"uri": b"rediss://[invalid"}, "forgejo-redis-uri-invalid")):
+        with mock.patch.object(forgejo_runtime, "secret_data", return_value=secret), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            try:
+                forgejo_runtime.uses_shared_valkey(workload)
+            except forgejo_runtime.RepairError as exc:
+                assert str(exc) == reason
+            else:
+                raise AssertionError("missing or malformed Redis binding was ignored")
+
+    service = {"spec": {"ports": [{"port": 6379, "targetPort": "primary-proxy"}], "selector": {
+        "app.kubernetes.io/instance": "platform-valkey", "app.kubernetes.io/name": "valkey",
+    }}}
+    for mode in ("repair", "conflict", "active", "storage-blocked", "api-failure", "custom-service", "sync-failed", "timeout", "conflicts-exhausted", "already-ready", "external"):
+        reads, patches = [], []
+        clock = [0]
+        applications = [copy.deepcopy(app)]
+        if mode == "active":
+            applications[0] = copy.deepcopy(preserved)
+            applications[0]["operation"] = {"sync": {"prune": True}}
+
+        def resource(resource, **kwargs):
+            reads.append(resource)
+            if resource == "endpointslices.discovery.k8s.io":
+                if mode == "api-failure":
+                    return None
+                if mode == "already-ready" or (clock[0] >= 5 and mode in {"repair", "conflict", "active"}):
+                    return ready
+                return {"items": []}
+            if resource == "service/platform-valkey-primary":
+                return {} if mode == "custom-service" else service
+            if resource == "application/platform-valkey":
+                if mode == "sync-failed" and clock[0] >= 5:
+                    return {**applications[0], "status": {"operationState": {
+                        "phase": "Failed", "startedAt": "new", "message": "sync failed"}}}
+                return applications[0]
+            raise AssertionError(resource)
+
+        def kube(*args, **kwargs):
+            if args[0] == "get":
+                return subprocess.CompletedProcess([], 0, "Valkey diagnostics", "")
+            assert args[:2] == ("patch", "application/platform-valkey")
+            assert kwargs["namespace"] == "argocd"
+            assert "--patch-file=/dev/stdin" in args
+            patch = json.loads(kwargs["input_text"])
+            patches.append(patch)
+            assert patch["metadata"]["resourceVersion"] == applications[0]["metadata"]["resourceVersion"]
+            if mode == "conflicts-exhausted" or (mode == "conflict" and len(patches) == 1):
+                applications[0]["metadata"]["resourceVersion"] = "18"
+                return subprocess.CompletedProcess([], 1, "", "never-log-private-data")
+            if "spec" in patch:
+                applications[0] = copy.deepcopy(preserved)
+            else:
+                assert patch["operation"]["sync"]["prune"] is False
+                assert "RespectIgnoreDifferences=true" in patch["operation"]["sync"]["syncOptions"]
+            return subprocess.CompletedProcess([], 0, "patched", "")
+
+        def sleep(delay):
+            clock[0] += delay
+
+        expected = {
+            "storage-blocked": "storage-blocked", "api-failure": "forgejo-valkey-endpoints-unavailable",
+            "custom-service": "forgejo-valkey-service-contract", "sync-failed": "forgejo-valkey-sync-failed",
+            "timeout": "forgejo-valkey-endpoint-timeout", "conflicts-exhausted": "forgejo-valkey-sync-request-failed",
+        }.get(mode)
+        with mock.patch.object(forgejo_runtime, "uses_shared_valkey", return_value=mode != "external"), \
+                mock.patch.object(forgejo_runtime, "resource_json", side_effect=resource), \
+                mock.patch.object(forgejo_runtime, "require_valkey_storage_ready", side_effect=forgejo_runtime.RepairError("storage-blocked") if mode == "storage-blocked" else None), \
+                mock.patch.object(forgejo_runtime, "kube", side_effect=kube), \
+                mock.patch.object(forgejo_runtime.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(forgejo_runtime.time, "sleep", side_effect=sleep), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            try:
+                forgejo_runtime.repair_shared_valkey(workload, 12)
+            except forgejo_runtime.RepairError as exc:
+                assert str(exc) == expected, (mode, str(exc))
+            else:
+                assert expected is None, mode
+        if mode in {"active", "storage-blocked", "api-failure", "custom-service", "already-ready", "external"}:
+            assert not patches, mode
+        if mode == "external":
+            assert not reads
+        if mode == "conflicts-exhausted":
+            assert len(patches) == 5
+    assert "private-test-value" not in output.getvalue()
+    assert "never-log-private-data" not in output.getvalue()
+    require(read(FORGEJO_RUNTIME_REPAIR_PLAYBOOK), "- valkey_runtime_contract.py", "runtime Valkey helper bundle")
+
+
+def test_valkey_longhorn_storage_preflight() -> None:
+    import copy
+
+    documents = {
+        "statefulset/platform-valkey": {"spec": {"replicas": 1, "volumeClaimTemplates": [{"metadata": {"name": "valkey-data"}}]}},
+        "persistentvolumeclaims": {"items": [{"metadata": {"name": "valkey-data-platform-valkey-0"}, "spec": {"volumeName": "retained-pv"}}]},
+        "persistentvolume/retained-pv": {"spec": {"csi": {"driver": "driver.longhorn.io", "volumeHandle": "retained-volume"}}},
+        "volumes.longhorn.io/retained-volume": {"status": {"robustness": "healthy"}},
+        "settings.longhorn.io/default-instance-manager-image": {"value": "longhorn-instance-manager:new"},
+        "instancemanagers.longhorn.io": {"items": [
+            {"metadata": {"name": "new-manager"}, "spec": {"image": "longhorn-instance-manager:new", "nodeID": "node-1", "dataEngine": "v1"}, "status": {"currentState": "running", "ip": "192.0.2.11"}},
+            {"metadata": {"name": "old-manager"}, "spec": {"image": "longhorn-instance-manager:old"}, "status": {"currentState": "error"}},
+        ]},
+        "events": {"items": [{"involvedObject": {"name": "new-manager"}, "type": "Warning", "lastTimestamp": "later",
+                              "message": "OutOfcpu requested: 960, used: 7820, capacity: 8000"}]},
+    }
+    for mode in ("healthy", "faulted", "manager-failed", "missing-manager", "api-error", "non-longhorn", "stateless"):
+        data = copy.deepcopy(documents)
+        if mode == "faulted":
+            data["volumes.longhorn.io/retained-volume"]["status"]["robustness"] = "faulted"
+        elif mode == "manager-failed":
+            data["instancemanagers.longhorn.io"]["items"][0]["status"] = {"currentState": "error"}
+        elif mode == "missing-manager":
+            data["instancemanagers.longhorn.io"]["items"] = []
+        elif mode == "api-error":
+            data["persistentvolume/retained-pv"] = None
+        elif mode == "non-longhorn":
+            data["persistentvolume/retained-pv"]["spec"]["csi"]["driver"] = "custom.csi"
+        elif mode == "stateless":
+            data["statefulset/platform-valkey"]["spec"]["volumeClaimTemplates"] = []
+        output = io.StringIO()
+        with mock.patch.object(forgejo_runtime, "resource_json", side_effect=lambda name, **kwargs: data[name]), \
+                mock.patch.object(forgejo_runtime, "kube") as kube, contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            try:
+                forgejo_runtime.require_valkey_storage_ready()
+            except forgejo_runtime.RepairError as exc:
+                assert mode not in {"healthy", "non-longhorn", "stateless"}
+                assert str(exc) == ("forgejo-valkey-storage-unavailable" if mode == "api-error" else "forgejo-valkey-storage-blocked")
+            else:
+                assert mode in {"healthy", "non-longhorn", "stateless"}, mode
+            kube.assert_not_called()
+        if mode == "manager-failed":
+            assert "OutOfcpu requested: 960" in output.getvalue()
 
 
 def test_forgejo_chart_dependency_env_precedence() -> None:
@@ -1469,6 +1667,8 @@ gitea:
     test_forgejo_postgres_probe_retry_deadline()
     test_forgejo_postgres_tunnel_failures()
     test_forgejo_runtime_still_requires_application_readiness()
+    test_valkey_runtime_contract()
+    test_valkey_longhorn_storage_preflight()
     test_forgejo_route_reconciliation()
     test_woodpecker_route_reconciler_bundle()
     test_public_tls_chain_completion()

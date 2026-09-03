@@ -662,6 +662,30 @@ database backends, provision Redis, or disable TLS. Conflicting bindings fail
 without logging credentials. Keep the fix in private GitOps values so Argo CD
 does not restore the old names; a live-only repair is not a substitute for sync.
 
+If the connection instead reaches `platform-valkey-primary` but is refused,
+inspect its EndpointSlice **ports as well as addresses**. The managed Service
+targets the `primary-proxy` sidecar on port 6380. Old Valkey pods without that
+sidecar can produce an EndpointSlice with addresses but no usable port.
+`make platform-forgejo-runtime-repair` now detects this managed dependency,
+restores the repository's narrow Argo CD storage-class preservation rules,
+and requests a non-pruning Valkey sync. Existing sync operations, Application
+sources, automatic-pruning preferences, PVCs and storage classes are retained.
+External Redis services and custom Application policies are not rewritten.
+Preserving an old storage class does not encrypt or migrate its existing data.
+
+Before starting that rollout, repair checks the existing Longhorn volumes and
+current instance managers. A faulted volume or unavailable storage manager
+stops with `forgejo-valkey-storage-blocked`, including recent admission
+warnings. `OutOfcpu` during a Longhorn upgrade means the old and new instance
+managers cannot coexist within the available CPU reservations. Add capacity or
+plan workload reductions before retrying; do not delete active managers or
+PVCs, reduce storage CPU guarantees, or force-salvage replicas to make the check
+pass. Longhorn documents the additional upgrade capacity in its
+[instance-manager CPU settings](https://longhorn.io/docs/1.12.1/references/settings/#guaranteed-instance-manager-cpu).
+After storage is healthy, rerun the focused repair, then
+`make platform-woodpecker-repair`. A successful Argo CD sync alone does not
+prove the Valkey rollout or Forgejo application is ready.
+
 Set `PLATFORM_APP_SECRET_REQUIRE_GRAFANA_DATABASE=true` before enabling
 `GRAFANA_DATABASE_MODE=postgres`.
 
