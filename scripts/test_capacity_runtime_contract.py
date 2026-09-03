@@ -4,6 +4,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+import copy
+import contextlib
+import io
+import shutil
+import subprocess
+import sys
+import tempfile
+from unittest import mock
+
+import yaml
+
+from refresh_platform_resource_budget import BUDGET, refresh, set_leaf, values
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +38,10 @@ def forbid(text: str, needle: str, label: str) -> None:
 
 
 def main() -> int:
+    with mock.patch.object(shutil, 'which', return_value=None), contextlib.redirect_stdout(io.StringIO()) as output:
+        check_compact_budget()
+    assert 'Helm-rendered resource checks skipped' in output.getvalue()
+    check_compact_budget()
     verifier = read(ROOT / "ansible/playbooks/verify-platform-capacity.yml")
     longhorn_bootstrap = read(ROOT / "ansible/playbooks/bootstrap-longhorn.yml")
     forgejo_storage_repair = read(ROOT / "ansible/playbooks/repair-forgejo-storage.yml")
@@ -138,6 +154,112 @@ def main() -> int:
 
     print("Production capacity runtime contract passed.")
     return 0
+
+
+def check_compact_budget() -> None:
+    apps = ROOT / 'gitops/clusters/rke2-main/premium-3node/apps'
+    for app, leaves in BUDGET.items():
+        text = read(apps / app / 'values.yaml')
+        original = values(text)
+        expected = copy.deepcopy(original)
+        for key, value in leaves.items():
+            set_leaf(expected, key.split('.'), value)
+        changed = refresh(text, app)
+        assert values(changed) == expected
+        assert refresh(changed, app) == changed
+        assert original == expected, f'{app} public baseline drifted from the compact budget'
+
+    text = read(apps / 'loki/values.yaml').replace('cpu: 150m', 'cpu: 500m')
+    text = text.replace('chunksCache:\n  allocatedMemory: 512\n  allocatedCPU: 100m\n', '')
+    text = text.replace('resultsCache:\n  allocatedMemory: 128\n  allocatedCPU: 100m\n', '')
+    text += '\nprivateSetting: "https://logs.example.invalid/private" # retained\n'
+    result = refresh(text, 'loki')
+    assert 'privateSetting: "https://logs.example.invalid/private" # retained' in result
+    assert values(result)['chunksCache']['allocatedMemory'] == 512
+    assert values(result)['resultsCache']['allocatedCPU'] == '100m'
+    assert 'chunksCache:\n  allocatedMemory: 512\n  allocatedCPU: 100m' in result
+    assert 'resultsCache:\n  allocatedMemory: 128\n  allocatedCPU: 100m' in result
+    for malformed in (
+        'write: {}\nwrite: {}\n',
+        'write: []\n',
+        read(apps / 'loki/values.yaml') + '\nchunksCache: {resources: {requests: {cpu: 1}}}\n',
+        read(apps / 'loki/values.yaml').replace('chunksCache:\n',
+                                               'chunksCache:\n  resources: {requests: {cpu: 1}}\n'),
+    ):
+        try:
+            refresh(malformed, 'loki')
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('unsafe or ambiguous resource refresh was accepted')
+    grafana = read(apps / 'monitoring/values.yaml').replace('  replicas: 2\n  deploymentStrategy:',
+                                                            '  replicas: 1\n  deploymentStrategy:')
+    try:
+        refresh(grafana, 'monitoring')
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('single-replica Grafana must not get an HA rollout policy')
+
+    with tempfile.TemporaryDirectory(prefix='platform-cpu-budget-test-') as tmp:
+        root = Path(tmp)
+        target = root / 'argocd-ha/values.yaml'
+        target.parent.mkdir()
+        old = read(apps / 'argocd-ha/values.yaml').replace('cpu: 200m', 'cpu: 500m')
+        target.write_text(old, encoding='utf-8')
+        command = [sys.executable, str(ROOT / 'scripts/refresh_platform_resource_budget.py'),
+                   '--apps-root', str(root), '--app', 'argocd-ha']
+        subprocess.run(command, capture_output=True, text=True, check=True, timeout=30)
+        assert target.read_text(encoding='utf-8') == old, 'default must be read-only'
+        subprocess.run(command + ['--apply'], capture_output=True, text=True, check=True, timeout=30)
+        assert values(target.read_text(encoding='utf-8')) == values(read(apps / 'argocd-ha/values.yaml'))
+        target.write_text(old, encoding='utf-8')
+        result = subprocess.run(command[:-2] + ['--apply'], capture_output=True, text=True, timeout=30)
+        assert result.returncode != 0
+        assert target.read_text(encoding='utf-8') == old, 'preflight must validate all selected files'
+
+    helm = shutil.which('helm')
+    if not helm:
+        # Minimal GitLab/Woodpecker images run the Python contracts above.
+        # GitHub CI installs pinned Helm and additionally exercises real charts.
+        print('Helm-rendered resource checks skipped: Helm is not installed; Python budget contracts passed.')
+        return
+    manifests = subprocess.run(
+        [helm, 'template', 'loki', str(apps / 'loki/charts/loki'),
+         '--namespace', 'logging', '--kube-version', '1.35.0',
+         '-f', str(apps / 'loki/values.yaml')],
+        capture_output=True, text=True, check=True, timeout=90,
+    ).stdout
+    rendered = {d['metadata']['name']: d for d in yaml.safe_load_all(manifests)
+                if isinstance(d, dict) and d.get('kind') in {'StatefulSet', 'Deployment'}}
+    for name, cpu, memory, cache in (
+        ('loki-chunks-cache', '100m', '614Mi', '512'),
+        ('loki-results-cache', '100m', '154Mi', '128'),
+    ):
+        spec = rendered[name]['spec']['template']['spec']
+        container = next(c for c in spec['containers'] if c['name'] == 'memcached')
+        assert container['resources']['requests'] == {'cpu': cpu, 'memory': memory}
+        assert container['resources']['limits'] == {'memory': memory}
+        assert '-m ' + cache in container['args']
+        assert not rendered[name]['spec'].get('volumeClaimTemplates')
+    for name in ('loki-write', 'loki-read', 'loki-backend'):
+        assert rendered[name]['spec']['replicas'] == 3
+        assert 'cpu' not in rendered[name]['spec']['template']['spec']['containers'][0]['resources']['limits']
+    assert rendered['loki-gateway']['spec']['strategy']['rollingUpdate'] == {
+        'maxSurge': 0, 'maxUnavailable': 1,
+    }
+    manifests = subprocess.run(
+        [helm, 'template', 'argo-cd', str(apps / 'argocd-ha/charts/argo-cd-10.3.2/argo-cd'),
+         '--namespace', 'argocd', '--kube-version', '1.35.0', '-f', str(apps / 'argocd-ha/values.yaml')],
+        capture_output=True, text=True, check=True, timeout=90,
+    ).stdout
+    repo = next(d for d in yaml.safe_load_all(manifests) if isinstance(d, dict)
+                and d.get('kind') == 'Deployment' and d['metadata']['name'] == 'argo-cd-argocd-repo-server')
+    assert repo['spec']['replicas'] == 3
+    assert repo['spec']['strategy']['rollingUpdate'] == {'maxSurge': 0, 'maxUnavailable': 1}
+    spec = repo['spec']['template']['spec']
+    assert next(c for c in spec['initContainers'] if c['name'] == 'copyutil')['resources']['requests']['cpu'] == '200m'
+    assert next(c for c in spec['containers'] if c['name'] == 'repo-server')['resources']['requests']['cpu'] == '200m'
 
 
 if __name__ == "__main__":
