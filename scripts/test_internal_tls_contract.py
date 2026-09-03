@@ -707,13 +707,14 @@ def test_valkey_runtime_contract() -> None:
     service = {"spec": {"ports": [{"port": 6379, "targetPort": "primary-proxy"}], "selector": {
         "app.kubernetes.io/instance": "platform-valkey", "app.kubernetes.io/name": "valkey",
     }}}
-    for mode in ("repair", "conflict", "active", "storage-blocked", "api-failure", "custom-service", "sync-failed", "timeout", "conflicts-exhausted", "already-ready", "external"):
+    for mode in ("repair", "conflict", "active", "active-failed", "active-error", "storage-blocked", "api-failure", "custom-service", "sync-failed", "timeout", "conflicts-exhausted", "already-ready", "external"):
         reads, patches = [], []
         clock = [0]
         applications = [copy.deepcopy(app)]
-        if mode == "active":
+        if mode.startswith("active"):
             applications[0] = copy.deepcopy(preserved)
             applications[0]["operation"] = {"sync": {"prune": True}}
+            applications[0]["status"] = {"operationState": {"startedAt": "ongoing", "phase": "Running"}}
 
         def resource(resource, **kwargs):
             reads.append(resource)
@@ -726,6 +727,11 @@ def test_valkey_runtime_contract() -> None:
             if resource == "service/platform-valkey-primary":
                 return {} if mode == "custom-service" else service
             if resource == "application/platform-valkey":
+                if mode in {"active-failed", "active-error"} and clock[0] >= 5:
+                    completed = copy.deepcopy(applications[0])
+                    completed.pop("operation")
+                    completed["status"]["operationState"].update({"phase": "Failed" if mode == "active-failed" else "Error", "message": "retained sync failed"})
+                    return completed
                 if mode == "sync-failed" and clock[0] >= 5:
                     return {**applications[0], "status": {"operationState": {
                         "phase": "Failed", "startedAt": "new", "message": "sync failed"}}}
@@ -758,6 +764,7 @@ def test_valkey_runtime_contract() -> None:
             "storage-blocked": "storage-blocked", "api-failure": "forgejo-valkey-endpoints-unavailable",
             "custom-service": "forgejo-valkey-service-contract", "sync-failed": "forgejo-valkey-sync-failed",
             "timeout": "forgejo-valkey-endpoint-timeout", "conflicts-exhausted": "forgejo-valkey-sync-request-failed",
+            "active-failed": "forgejo-valkey-sync-failed", "active-error": "forgejo-valkey-sync-failed",
         }.get(mode)
         with mock.patch.object(forgejo_runtime, "uses_shared_valkey", return_value=mode != "external"), \
                 mock.patch.object(forgejo_runtime, "resource_json", side_effect=resource), \
@@ -772,8 +779,10 @@ def test_valkey_runtime_contract() -> None:
                 assert str(exc) == expected, (mode, str(exc))
             else:
                 assert expected is None, mode
-        if mode in {"active", "storage-blocked", "api-failure", "custom-service", "already-ready", "external"}:
+        if mode in {"active", "active-failed", "active-error", "storage-blocked", "api-failure", "custom-service", "already-ready", "external"}:
             assert not patches, mode
+        if mode in {"active-failed", "active-error"}:
+            assert clock[0] == 5, "retained sync failure waited for the readiness timeout"
         if mode == "external":
             assert not reads
         if mode == "conflicts-exhausted":

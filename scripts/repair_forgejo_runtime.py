@@ -322,6 +322,7 @@ def repair_shared_valkey(workload: dict[str, Any], timeout: int) -> None:
                  and port.get("protocol", "TCP") == "TCP" for port in service_spec.get("ports") or []):
         fail("forgejo-valkey-service-contract", "The Valkey primary Service does not have the managed primary-proxy target; reconcile its GitOps configuration first.")
     previous_start = None
+    retained_operation = False
     for attempt in range(5):
         app = resource_json("application/platform-valkey", namespace="argocd")
         if not app:
@@ -341,6 +342,7 @@ def repair_shared_valkey(workload: dict[str, Any], timeout: int) -> None:
             continue
         previous_start = ((app.get("status") or {}).get("operationState") or {}).get("startedAt")
         if app.get("operation"):
+            retained_operation = True
             print("forgejo_valkey_sync=existing-operation-retained")
             break
         version = (app.get("metadata") or {}).get("resourceVersion")
@@ -366,7 +368,7 @@ def repair_shared_valkey(workload: dict[str, Any], timeout: int) -> None:
             return
         app = resource_json("application/platform-valkey", namespace="argocd") or {}
         state = (app.get("status") or {}).get("operationState") or {}
-        if state.get("phase") in {"Failed", "Error"} and state.get("startedAt") != previous_start and not app.get("operation"):
+        if state.get("phase") in {"Failed", "Error"} and (retained_operation or state.get("startedAt") != previous_start) and not app.get("operation"):
             fail("forgejo-valkey-sync-failed", "Valkey reconciliation failed: " + redact_diagnostic_text(str(state.get("message", "inspect application/platform-valkey"))))
         require_valkey_storage_ready()
         time.sleep(5)
