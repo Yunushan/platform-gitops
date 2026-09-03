@@ -28,6 +28,7 @@
             mode: "0700"
           loop:
             - repair_forgejo_runtime.py
+            - forgejo_config_env.py
             - forgejo_storage_contract.py
             - bounded_file.py
             - bounded_subprocess.py
@@ -47,6 +48,7 @@
             FORGEJO_OBJECT_STORAGE_MODE: "{{ lookup('ansible.builtin.env', 'FORGEJO_OBJECT_STORAGE_MODE') }}"
           register: platform_forgejo_runtime_repair
           changed_when: >-
+            'forgejo_config_env=patched' in platform_forgejo_runtime_repair.stdout or
             'forgejo_postgres_ca_bundle=materialized' in platform_forgejo_runtime_repair.stdout or
             'mount=patched' in platform_forgejo_runtime_repair.stdout or
             'restart-requested' in platform_forgejo_runtime_repair.stdout

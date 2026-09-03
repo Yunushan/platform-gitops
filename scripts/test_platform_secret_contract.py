@@ -279,7 +279,7 @@ CONTRACTS = [
         "custom_secret": "forgejo-db-custom",
         "rendered_needles": [
             "additionalConfigFromEnvs:",
-            "GITEA__database__PASSWD",
+            "FORGEJO__DATABASE__PASSWD",
             'name: "forgejo-db-custom"',
             "key: password",
         ],
@@ -309,8 +309,8 @@ CONTRACTS = [
         "rendered_app": "forgejo",
         "custom_secret": "forgejo-redis-custom",
         "rendered_needles": [
-            "GITEA__cache__HOST",
-            "GITEA__queue__CONN_STR",
+            "FORGEJO__CACHE__HOST",
+            "FORGEJO__QUEUE__CONN_STR",
             'name: "forgejo-redis-custom"',
             "key: uri",
         ],
@@ -323,7 +323,7 @@ CONTRACTS = [
         "keys": ["access-key-id", "secret-access-key"],
         "static_file": PREMIUM_APPS / "forgejo" / "values.yaml",
         "static_needles": [
-            "GITEA__storage__MINIO_ACCESS_KEY_ID",
+            "FORGEJO__STORAGE__MINIO_ACCESS_KEY_ID",
             "name: forgejo-object-storage",
             "MINIO_ENDPOINT:",
             "MINIO_BUCKET: platform-forgejo",
@@ -331,7 +331,7 @@ CONTRACTS = [
         "rendered_app": "forgejo",
         "custom_secret": "forgejo-object-custom",
         "rendered_needles": [
-            "GITEA__storage__MINIO_ACCESS_KEY_ID",
+            "FORGEJO__STORAGE__MINIO_ACCESS_KEY_ID",
             'name: "forgejo-object-custom"',
             "key: access-key-id",
             "key: secret-access-key",

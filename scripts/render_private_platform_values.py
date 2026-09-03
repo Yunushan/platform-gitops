@@ -17,6 +17,7 @@ import yaml
 
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
+from forgejo_config_env import ConfigEnvironmentError, normalize_config_env
 from forgejo_database_contract import FORGEJO_NON_POSTGRES_DATABASE_TYPES
 from forgejo_storage_contract import (
     FILESYSTEM_MODES, OBJECT_MODES, StorageContractError, repair_minio_inheritance,
@@ -165,12 +166,12 @@ def forgejo_object_storage_values() -> tuple[str, str]:
     bucket = require("FORGEJO_S3_BUCKET", bucket)
     secret_name = os.environ.get("FORGEJO_S3_SECRET_NAME", "forgejo-object-storage").strip() or "forgejo-object-storage"
 
-    env_block = f"""    - name: GITEA__storage__MINIO_ACCESS_KEY_ID
+    env_block = f"""    - name: FORGEJO__STORAGE__MINIO_ACCESS_KEY_ID
       valueFrom:
         secretKeyRef:
           name: {yaml_string(secret_name)}
           key: access-key-id
-    - name: GITEA__storage__MINIO_SECRET_ACCESS_KEY
+    - name: FORGEJO__STORAGE__MINIO_SECRET_ACCESS_KEY
       valueFrom:
         secretKeyRef:
           name: {yaml_string(secret_name)}
@@ -1506,6 +1507,43 @@ def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
     return True
 
 
+def refresh_forgejo_config_env(path: Path) -> bool:
+    """Migrate private secret bindings without re-rendering dependency settings."""
+    text = read_bounded_text(path, encoding="utf-8")
+    try:
+        documents = loads_strict_yaml_all(text)
+    except StrictYamlError as exc:
+        raise SystemExit("Cannot migrate Forgejo environment bindings in invalid YAML; private values were not logged.") from exc
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        raise SystemExit(f"expected one Forgejo values mapping in {path}")
+    values = documents[0]
+    before = json.dumps(values, sort_keys=True)
+    try:
+        for parent, field in (("gitea", "additionalConfigFromEnvs"), ("deployment", "env")):
+            mapping = values.get(parent, {})
+            if not isinstance(mapping, dict):
+                raise ConfigEnvironmentError("Expected a Forgejo values mapping.")
+            if field in mapping:
+                mapping[field] = normalize_config_env(mapping[field])
+        # Both lists are injected into init-app-ini. Detect collisions across them too.
+        normalize_config_env(
+            values.get("deployment", {}).get("env", [])
+            + values.get("gitea", {}).get("additionalConfigFromEnvs", [])
+        )
+    except ConfigEnvironmentError as exc:
+        raise SystemExit(str(exc)) from exc
+    if json.dumps(values, sort_keys=True) == before:
+        return False
+    header = []
+    for line in text.splitlines(keepends=True):
+        if line.strip() and not line.lstrip().startswith("#"):
+            break
+        header.append(line)
+    atomic_write_text(path, "".join(header) + yaml.safe_dump(values, sort_keys=False))
+    print("forgejo_config_env=refreshed credential_values=preserved")
+    return True
+
+
 def refresh_forgejo_storage(path: Path) -> bool:
     """Fix generated storage bindings without re-rendering private dependencies."""
     text = read_bounded_text(path, encoding="utf-8")
@@ -1896,12 +1934,12 @@ def forgejo_external_values(
       TYPE: level"""
     if redis_secret_name:
         redis_config_env = f"""
-    - name: GITEA__cache__HOST
+    - name: FORGEJO__CACHE__HOST
       valueFrom:
         secretKeyRef:
           name: {yaml_string(redis_secret_name)}
           key: uri
-    - name: GITEA__queue__CONN_STR
+    - name: FORGEJO__QUEUE__CONN_STR
       valueFrom:
         secretKeyRef:
           name: {yaml_string(redis_secret_name)}
@@ -2002,7 +2040,7 @@ persistence:
 
 gitea:
   additionalConfigFromEnvs:
-    - name: GITEA__database__PASSWD
+    - name: FORGEJO__DATABASE__PASSWD
       valueFrom:
         secretKeyRef:
           name: {yaml_string(database_secret_name)}
@@ -4633,6 +4671,11 @@ def main() -> int:
         help="Repair existing MinIO bindings or apply explicitly requested filesystem storage without migrating data.",
     )
     parser.add_argument(
+        "--refresh-forgejo-config-env",
+        action="store_true",
+        help="Migrate legacy Forgejo configuration environment names, preserving secret bindings.",
+    )
+    parser.add_argument(
         "--refresh-forgejo-postgres-tls",
         action="store_true",
         help=(
@@ -4896,6 +4939,9 @@ def main() -> int:
 
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
         changed.append(str(args.argocd_values))
+
+    if args.refresh_forgejo_config_env and refresh_forgejo_config_env(args.forgejo_values):
+        changed.append(str(args.forgejo_values))
 
     if (
         args.refresh_forgejo_storage

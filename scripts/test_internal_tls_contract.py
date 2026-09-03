@@ -565,6 +565,7 @@ def test_forgejo_runtime_still_requires_application_readiness() -> None:
         stack.enter_context(mock.patch.object(shutil, "which", return_value="openssl"))
         for name, value in (
             ("resource_json", {"kind": "Deployment"}),
+            ("repair_config_environment", {"kind": "Deployment"}),
             ("validate_storage_contract", "filesystem"), ("database_backend", "postgres"),
             ("postgres_cluster", {}), ("reconcile_postgres_certificate_contract", ({}, "tls")),
             ("active_postgres_certificate", ("tls", Path("leaf"))),
@@ -583,6 +584,94 @@ def test_forgejo_runtime_still_requires_application_readiness() -> None:
         readiness.assert_called_once_with("deployment/forgejo", 1)
         if "result=ok" in output.getvalue():
             raise AssertionError("failed application network was reported as repaired")
+
+
+def test_forgejo_config_environment_runtime() -> None:
+    import copy
+    import json
+    from forgejo_config_env import normalize_config_env
+
+    env = [{"name": "GITEA__cache__HOST", "valueFrom": {"secretKeyRef": {"name": "private-redis", "key": "uri"}}},
+           {"name": "GITEA_APP_INI", "value": "/data/gitea/conf/app.ini"}]
+    original = {"metadata": {"resourceVersion": "17"}, "spec": {"template": {"spec": {
+        "initContainers": [{"name": "init-app-ini", "env": env}],
+        "containers": [{"name": "forgejo", "env": env}],
+        "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": "keep-data"}}],
+    }}}}
+    unchanged = copy.deepcopy(original)
+    patched = copy.deepcopy(original)
+    for group in ("initContainers", "containers"):
+        patched["spec"]["template"]["spec"][group][0]["env"] = normalize_config_env(env)
+    output = io.StringIO()
+    with mock.patch.object(forgejo_runtime, "kube", return_value=subprocess.CompletedProcess([], 0, json.dumps(patched), "")) as kube, contextlib.redirect_stdout(output):
+        assert forgejo_runtime.repair_config_environment("deployment/forgejo", original) == patched
+        operations = json.loads(kube.call_args.kwargs["input_text"])
+        assert operations[0] == {"op": "test", "path": "/metadata/resourceVersion", "value": "17"}
+        assert len(operations) == 3
+        assert all(item["path"].endswith("/0/env") for item in operations[1:])
+        assert "--patch-file=/dev/stdin" in kube.call_args.args
+        assert "private-redis" not in str(kube.call_args.args)
+        kube.reset_mock()
+        assert forgejo_runtime.repair_config_environment("deployment/forgejo", patched) == patched
+        kube.assert_not_called()
+    assert original == unchanged
+    for document, reason in (
+        (original, "forgejo-config-env-patch-failed"),
+        ({**original, "metadata": {}}, "forgejo-config-env-version-missing"),
+    ):
+        with mock.patch.object(forgejo_runtime, "kube", return_value=subprocess.CompletedProcess([], 1, "", "never-log-private-data")), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            try:
+                forgejo_runtime.repair_config_environment("deployment/forgejo", document)
+            except forgejo_runtime.RepairError as exc:
+                assert str(exc) == reason
+            else:
+                raise AssertionError("unguarded or rejected patch was accepted")
+    assert "never-log-private-data" not in output.getvalue()
+    require(read(FORGEJO_RUNTIME_REPAIR_PLAYBOOK), "- forgejo_config_env.py", "runtime config env bundle")
+
+
+def test_forgejo_chart_dependency_env_precedence() -> None:
+    """Execute the pinned chart loader against its empty inline Redis defaults."""
+    if os.name == "nt":
+        print("Forgejo chart shell behavior test runs on Linux CI.")
+        return
+    from forgejo_config_env import normalize_config_env
+
+    chart = PREMIUM / "forgejo/charts/forgejo-17.1.4/forgejo"
+    script = read(chart / "scripts/config_environment.sh")
+    with tempfile.TemporaryDirectory(prefix="forgejo-chart-env-") as temporary:
+        root = Path(temporary)
+        inline = root / "inlines"
+        inline.mkdir()
+        for section, line in (("cache", "HOST ="), ("queue", "CONN_STR ="), ("database", "PASSWD =")):
+            source = root / section
+            source.write_text(line + "\n", encoding="utf-8")
+            (inline / section).symlink_to(source)
+        script = script.replace("/tmp/existing-envs", str(root / "existing-envs"))
+        script = script.replace("/env-to-ini-mounts/inlines/", str(inline))
+        script = script.replace("/env-to-ini-mounts/additionals/", str(root / "absent"))
+        path = root / "config_environment.sh"
+        path.write_text(script, encoding="utf-8")
+        harness = r'''
+gitea() { printf 'test-generated-secret'; }
+environment-to-ini() {
+  printf 'effective-cache=%s\neffective-queue=%s\neffective-password=%s\n' "$FORGEJO__CACHE__HOST" "$FORGEJO__QUEUE__CONN_STR" "$FORGEJO__DATABASE__PASSWD"
+}
+source "$1"
+'''
+        legacy = [{"name": name, "value": value} for name, value in (
+            ("GITEA__cache__HOST", "rediss://:test-password@valkey.example.test:6379/0"),
+            ("GITEA__queue__CONN_STR", "rediss://:test-password@valkey.example.test:6379/0"),
+            ("GITEA__database__PASSWD", "test-db-password"),
+        )]
+        base_env = {key: value for key, value in os.environ.items() if not key.startswith(("GITEA__", "FORGEJO__"))}
+        for entries, fixed in ((legacy, False), (normalize_config_env(legacy), True)):
+            env = dict(base_env, GITEA_APP_INI=str(root / "app.ini"))
+            env.update({entry["name"]: entry["value"] for entry in entries})
+            result = subprocess.run(["bash", "-c", harness, "bash", str(path)], env=env, text=True, capture_output=True, timeout=30, check=True)
+            for label, binding in zip(("cache", "queue", "password"), legacy):
+                expected = binding["value"] if fixed else ""
+                assert f"effective-{label}={expected}\n" in result.stdout
 
 
 def test_forgejo_route_reconciliation() -> None:
@@ -1374,6 +1463,8 @@ gitea:
         require(makefile, needle, "Woodpecker classified prerequisite recovery")
     test_forgejo_runtime_mount_contract_scope()
     test_forgejo_runtime_storage_preflight()
+    test_forgejo_config_environment_runtime()
+    test_forgejo_chart_dependency_env_precedence()
     test_forgejo_postgres_tls_probe()
     test_forgejo_postgres_probe_retry_deadline()
     test_forgejo_postgres_tunnel_failures()
