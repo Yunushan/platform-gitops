@@ -1138,6 +1138,10 @@ def main() -> None:
 
     base_forgejo_text = read(base_forgejo_values)
     premium_forgejo_text = read(premium_forgejo_values)
+    forgejo_storage_class = (
+        os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical-encrypted").strip()
+        or "longhorn-critical-encrypted"
+    )
     for needle in (
         "replicaCount: 1",
         "strategy:\n  type: Recreate",
@@ -1159,7 +1163,7 @@ def main() -> None:
         "image:\n  rootless: true",
         "ingress:\n  enabled: true\n  className: traefik",
         "secretName: forgejo-tls",
-        "persistence:\n  enabled: true\n  size: 20Gi\n  storageClass: longhorn-critical-encrypted",
+        f"persistence:\n  enabled: true\n  size: 20Gi\n  storageClass: {forgejo_storage_class}",
         "DOMAIN: forgejo.<PLATFORM_DOMAIN>",
         "ROOT_URL: https://forgejo.<PLATFORM_DOMAIN>/",
         "SSH_DOMAIN: forgejo.<PLATFORM_DOMAIN>",

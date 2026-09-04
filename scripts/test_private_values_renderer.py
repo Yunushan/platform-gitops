@@ -273,6 +273,7 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
                 "--woodpecker-values",
                 str(woodpecker_path),
                 "--refresh-argocd-host",
+                "--refresh-forgejo-host",
                 "--skip-argocd",
                 "--skip-forgejo",
                 "--refresh-forgejo-config-env",
@@ -381,6 +382,51 @@ def test_focused_argocd_host_refresh_preserves_private_hostname(renderer) -> Non
             if renderer.refresh_argocd_host(argocd_path, inventory):
                 raise AssertionError("focused Argo CD refresh rewrote an existing private hostname")
         assert_contains(argocd_path, "argocd.private.example.test", "private.setting: retained")
+
+
+def test_focused_forgejo_host_refresh_preserves_private_values(renderer) -> None:
+    """A focused Forgejo hostname refresh replaces only the public placeholder."""
+    with tempfile.TemporaryDirectory(prefix="platform-forgejo-host-refresh-") as tmp:
+        forgejo_path = write(
+            Path(tmp) / "values.yaml",
+            "ingress:\n"
+            "  hosts:\n"
+            "    - host: forgejo.<PLATFORM_DOMAIN>\n"
+            "  tls:\n"
+            "    - hosts:\n"
+            "        - forgejo.<PLATFORM_DOMAIN>\n"
+            "gitea:\n"
+            "  config:\n"
+            "    server:\n"
+            "      DOMAIN: forgejo.<PLATFORM_DOMAIN>\n"
+            "      ROOT_URL: https://forgejo.<PLATFORM_DOMAIN>/\n"
+            "    privateExtension:\n"
+            "      retained: true\n",
+        )
+        inventory = renderer.read_inventory_vars(write(Path(tmp) / "hosts.ini", TEST_INVENTORY))
+        with patched_env({"PLATFORM_FORGEJO_HOST": "git.private.example.test"}):
+            if not renderer.refresh_forgejo_host(forgejo_path, inventory):
+                raise AssertionError("focused Forgejo hostname refresh reported no change")
+            if renderer.refresh_forgejo_host(forgejo_path, inventory):
+                raise AssertionError("focused Forgejo hostname refresh is not idempotent")
+        assert_contains(
+            forgejo_path,
+            "host: git.private.example.test",
+            "DOMAIN: git.private.example.test",
+            "ROOT_URL: https://git.private.example.test/",
+            "privateExtension:",
+            "retained: true",
+        )
+        assert_not_contains(forgejo_path, "forgejo.<PLATFORM_DOMAIN>")
+
+        private_path = write(
+            Path(tmp) / "private-values.yaml",
+            "ingress:\n  hosts:\n    - host: existing.private.example.test\n",
+        )
+        with patched_env({"PLATFORM_FORGEJO_HOST": "git.private.example.test"}):
+            if renderer.refresh_forgejo_host(private_path, inventory):
+                raise AssertionError("focused Forgejo refresh rewrote an existing private hostname")
+        assert_contains(private_path, "existing.private.example.test")
 
 
 def test_focused_forgejo_tls_preserves_private_object_storage(renderer) -> None:
@@ -887,6 +933,29 @@ def test_forgejo_storage_bindings(renderer) -> None:
         assert local["persistence"] == {"existingClaim": "keep-me"}
         assert yaml.safe_load(block)["attachment"]["STORAGE_TYPE"] == "local"
 
+        reset(config)
+        storage_values = yaml.safe_load(path.read_text(encoding="utf-8"))
+        storage_values["persistence"] = {
+            "enabled": True,
+            "storageClass": "longhorn-critical-encrypted",
+            "privateSetting": "retained",
+        }
+        path.write_text(yaml.safe_dump(storage_values, sort_keys=False), encoding="utf-8")
+        with patched_env(
+            {
+                "FORGEJO_OBJECT_STORAGE_MODE": "",
+                "FORGEJO_STORAGE_CLASS": "longhorn-critical",
+            }
+        ):
+            assert renderer.refresh_forgejo_storage(path)
+            assert not renderer.refresh_forgejo_storage(path)
+        storage_result = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert storage_result["persistence"] == {
+            "enabled": True,
+            "storageClass": "longhorn-critical",
+            "privateSetting": "retained",
+        }
+
 
 def test_forgejo_config_env_migration(renderer) -> None:
     import copy
@@ -956,6 +1025,7 @@ def main() -> int:
     test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer)
     test_focused_woodpecker_rejects_ambiguous_forgejo_host(renderer)
     test_focused_argocd_host_refresh_preserves_private_hostname(renderer)
+    test_focused_forgejo_host_refresh_preserves_private_values(renderer)
     test_focused_forgejo_tls_preserves_private_object_storage(renderer)
     test_focused_forgejo_tls_rejects_ambiguous_legacy_database(renderer)
     test_focused_forgejo_tls_honors_chart_config_precedence(renderer)

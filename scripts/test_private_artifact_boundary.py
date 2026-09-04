@@ -113,6 +113,10 @@ def check_woodpecker_seed_isolation() -> list[str]:
         problems.append(
             "Woodpecker seed reconciliation is missing focused Forgejo PostgreSQL trust reconciliation"
         )
+    if "--refresh-forgejo-host" not in seed_sync_text:
+        problems.append(
+            "Woodpecker seed reconciliation is missing focused Forgejo hostname reconciliation"
+        )
     if "--refresh-forgejo-object-storage-credentials" in seed_sync_text:
         problems.append(
             "Woodpecker seed reconciliation must not mutate unrelated Forgejo S3 configuration"

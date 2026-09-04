@@ -100,6 +100,7 @@ if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
       secret_contract_static_apps=woodpecker
       render_args+=(
         --refresh-argocd-host
+        --refresh-forgejo-host
         --refresh-forgejo-release-pin
         --refresh-forgejo-config-env
         --refresh-forgejo-storage
