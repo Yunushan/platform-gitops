@@ -1623,6 +1623,7 @@ def main() -> None:
         "name: sentinel",
         "name: primary-proxy",
         "image: haproxy:3.4.2-alpine",
+        "tcp-check connect default",
         "tcp-check expect string role:master",
         "check-ssl",
         "verify required",
@@ -1636,6 +1637,11 @@ def main() -> None:
             needle,
             f"premium platform Valkey profile must include {needle.splitlines()[0]}",
         )
+    reject_text(
+        premium_platform_valkey_text,
+        "tcp-check connect\n",
+        "premium platform Valkey health checks must inherit backend TLS settings",
+    )
 
     premium_platform_valkey_primary_service_text = read(premium_platform_valkey_primary_service)
     for needle in (

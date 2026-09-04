@@ -1390,6 +1390,7 @@ def main() -> int:
             'image: "valkey/valkey:9.1.0"',
             "name: primary-proxy",
             'image: "haproxy:3.4.2-alpine"',
+            "tcp-check connect default",
             "tcp-check expect string role:master",
             "check-ssl",
             "verify required",
@@ -1399,6 +1400,7 @@ def main() -> int:
             'REDIS_EXPORTER_SKIP_TLS_VERIFICATION: "false"',
             "serviceMonitor:\n    enabled: true",
         )
+        assert_not_contains(paths["valkey"], "tcp-check connect\n")
         assert_contains(
             paths["keycloak"],
             'registry: "quay.io"',

@@ -1522,6 +1522,7 @@ gitea:
         "port 0",
         "tls-port 26379",
         "tls-replication yes",
+        "tcp-check connect default",
         "check-ssl",
         "verify required",
         "ca-file /trust/ca-certificates.crt",
@@ -1529,6 +1530,7 @@ gitea:
         "REDIS_EXPORTER_SKIP_TLS_VERIFICATION: \"false\"",
     ):
         require(valkey_values, needle, "Valkey TLS values")
+    forbid(valkey_values, "tcp-check connect\n", "Valkey TLS values")
     forbid(valkey_values, "REDIS_EXPORTER_SKIP_TLS_VERIFICATION: \"true\"", "Valkey TLS values")
     for chart_template in (valkey_statefulset, valkey_deployment):
         require(chart_template, "name: REDISCLI_AUTH", "Valkey workload template")
