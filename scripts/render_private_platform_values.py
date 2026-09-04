@@ -1551,6 +1551,14 @@ def refresh_forgejo_storage(path: Path) -> bool:
     if len(documents) != 1 or not isinstance(documents[0], dict):
         raise SystemExit(f"expected one Forgejo values mapping in {path}")
     values = documents[0]
+    before = json.dumps(values, sort_keys=True)
+    storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "").strip()
+    if storage_class:
+        persistence = values.get("persistence")
+        if not isinstance(persistence, dict):
+            raise SystemExit(f"expected Forgejo persistence mapping in {path}")
+        if "storageClass" in persistence or not persistence.get("existingClaim"):
+            persistence["storageClass"] = storage_class
     gitea = values.get("gitea")
     if not isinstance(gitea, dict) or not isinstance(gitea.get("config"), dict):
         raise SystemExit(f"expected Forgejo gitea.config mapping in {path}")
@@ -1560,7 +1568,6 @@ def refresh_forgejo_storage(path: Path) -> bool:
         raise SystemExit(f"expected Forgejo additionalConfigFromEnvs list in {path}")
     if gitea.get("additionalConfigSources"):
         raise SystemExit("Focused Forgejo storage refresh cannot reconcile opaque additionalConfigSources.")
-    before = json.dumps(values, sort_keys=True)
     mode = os.environ.get("FORGEJO_OBJECT_STORAGE_MODE", "").strip().lower()
     if mode and mode not in FILESYSTEM_MODES | OBJECT_MODES:
         raise SystemExit("FORGEJO_OBJECT_STORAGE_MODE must be filesystem or s3")
@@ -2174,6 +2181,25 @@ def refresh_argocd_host(path: Path, inventory: dict[str, str]) -> bool:
     if placeholder in rendered:
         raise SystemExit(
             f"Argo CD values still contain the unresolved hostname placeholder: {path}"
+        )
+    changed = rendered != text
+    if changed:
+        atomic_write_text(path, rendered)
+    return changed
+
+
+def refresh_forgejo_host(path: Path, inventory: dict[str, str]) -> bool:
+    """Replace only the public Forgejo hostname placeholder in a private seed."""
+    text = read_bounded_text(path, encoding="utf-8")
+    placeholder = "forgejo.<PLATFORM_DOMAIN>"
+    if placeholder not in text:
+        return False
+
+    host = forgejo_public_host(inventory)
+    rendered = text.replace(placeholder, host)
+    if placeholder in rendered:
+        raise SystemExit(
+            f"Forgejo values still contain the unresolved hostname placeholder: {path}"
         )
     changed = rendered != text
     if changed:
@@ -4677,6 +4703,14 @@ def main() -> int:
         help="Leave Forgejo values unchanged; useful for focused Woodpecker reconciliation.",
     )
     parser.add_argument(
+        "--refresh-forgejo-host",
+        action="store_true",
+        help=(
+            "Refresh only Forgejo's public hostname placeholder without changing "
+            "private database, storage, or credential settings."
+        ),
+    )
+    parser.add_argument(
         "--refresh-forgejo-release-pin",
         action="store_true",
         help="Refresh only Forgejo's reviewed image pin without rendering private dependencies.",
@@ -4956,8 +4990,16 @@ def main() -> int:
     if not args.skip_argocd and args.argocd_values.exists() and render_argocd(args.argocd_values, inventory):
         changed.append(str(args.argocd_values))
 
-    if args.refresh_forgejo_config_env and refresh_forgejo_config_env(args.forgejo_values):
+    if (
+        args.refresh_forgejo_host
+        and args.forgejo_values.exists()
+        and refresh_forgejo_host(args.forgejo_values, inventory)
+    ):
         changed.append(str(args.forgejo_values))
+
+    if args.refresh_forgejo_config_env and refresh_forgejo_config_env(args.forgejo_values):
+        if str(args.forgejo_values) not in changed:
+            changed.append(str(args.forgejo_values))
 
     if (
         args.refresh_forgejo_storage
