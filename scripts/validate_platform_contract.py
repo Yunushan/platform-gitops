@@ -148,6 +148,7 @@ stale_longhorn_replica_reclaimer = root / "scripts/reclaim_stale_longhorn_replic
 forgejo_storage_repair_playbook = root / "ansible/playbooks/repair-forgejo-storage.yml"
 forgejo_storage_repair_runner = root / "scripts/bootstrap/run-forgejo-storage-repair.sh"
 forgejo_ingress_publish_playbook = root / "ansible/playbooks/publish-forgejo-ingress.yml"
+forgejo_ingress_runner = root / "scripts/bootstrap/run-forgejo-ingress.sh"
 empty_faulted_longhorn_claim_repair = root / "scripts/repair_empty_faulted_longhorn_claims.py"
 stuck_longhorn_attachment_repair = root / "scripts/repair_stuck_longhorn_attachments.py"
 unregistered_longhorn_replica_path_repair = root / "scripts/repair_unregistered_longhorn_replica_paths.py"
@@ -3779,6 +3780,7 @@ def main() -> None:
     forgejo_storage_repair_text = read(forgejo_storage_repair_playbook)
     forgejo_storage_repair_runner_text = read(forgejo_storage_repair_runner)
     forgejo_ingress_publish_text = read(forgejo_ingress_publish_playbook)
+    forgejo_ingress_runner_text = read(forgejo_ingress_runner)
     for needle in (
         "PLATFORM_NODE_STORAGE_PRESSURE_ONLY",
         "PLATFORM_NODE_STORAGE_WAIT_FOR_PRESSURE_CLEAR",
@@ -3950,6 +3952,26 @@ def main() -> None:
         makefile_text,
         "@bash scripts/bootstrap/run-forgejo-storage-repair.sh",
         "platform-forgejo-storage-repair must load private deployment settings",
+    )
+    for needle in (
+        "PLATFORM_FORGEJO_INGRESS_ENV_FILE",
+        "PLATFORM_SEED_DEPLOY_ENV_FILE",
+        "private/seed-git.env",
+        "private/first-deploy.env",
+        'load_env_file "${env_file}" preserve-existing',
+        'forgejo_host_override="${PLATFORM_FORGEJO_HOST:-${PLATFORM_GIT_HOST:-}}"',
+        '--extra-vars "platform_forgejo_host=${forgejo_host_override}"',
+        "ansible/playbooks/publish-forgejo-ingress.yml",
+    ):
+        require_text(
+            forgejo_ingress_runner_text,
+            needle,
+            f"Forgejo ingress environment runner must cover {needle}",
+        )
+    require_text(
+        makefile_text,
+        "@bash scripts/bootstrap/run-forgejo-ingress.sh",
+        "platform-forgejo-ingress must load the canonical private hostname",
     )
     for needle in (
         "platform_forgejo_ingress_endpoint_mode_check.rc is defined",
