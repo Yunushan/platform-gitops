@@ -271,18 +271,11 @@ def normalize_forgejo_public_host(value: object, source: str, *, url: bool = Fal
     return host
 
 
-def existing_forgejo_public_host(path: Path) -> str:
-    """Read the canonical public host from an existing private Forgejo render."""
-    if not path.is_file():
-        return ""
-    try:
-        documents = loads_strict_yaml_all(read_bounded_text(path, encoding="utf-8"))
-    except StrictYamlError as exc:
-        raise SystemExit(f"cannot infer Forgejo hostname from invalid YAML {path}: {exc}") from exc
-    if len(documents) != 1 or not isinstance(documents[0], dict):
-        raise SystemExit(f"expected one Forgejo values mapping in {path}")
-
-    values = documents[0]
+def forgejo_public_host_candidates(
+    values: dict[object, object],
+    path: Path,
+) -> dict[str, set[str]]:
+    """Collect recognized public Forgejo hosts and their configuration paths."""
     candidates: dict[str, set[str]] = {}
 
     def add_candidate(value: object, source: str, *, url: bool = False) -> None:
@@ -316,6 +309,22 @@ def existing_forgejo_public_host(path: Path) -> str:
             url=True,
         )
 
+    return candidates
+
+
+def existing_forgejo_public_host(path: Path) -> str:
+    """Read the canonical public host from an existing private Forgejo render."""
+    if not path.is_file():
+        return ""
+    try:
+        documents = loads_strict_yaml_all(read_bounded_text(path, encoding="utf-8"))
+    except StrictYamlError as exc:
+        raise SystemExit(f"cannot infer Forgejo hostname from invalid YAML {path}: {exc}") from exc
+    if len(documents) != 1 or not isinstance(documents[0], dict):
+        raise SystemExit(f"expected one Forgejo values mapping in {path}")
+
+    candidates = forgejo_public_host_candidates(documents[0], path)
+
     if len(candidates) > 1:
         details = ", ".join(
             f"{host} ({'; '.join(sorted(sources))})"
@@ -327,12 +336,8 @@ def existing_forgejo_public_host(path: Path) -> str:
     return next(iter(candidates), "")
 
 
-def forgejo_public_host(
-    inventory: dict[str, str],
-    *,
-    existing_values_path: Path | None = None,
-) -> str:
-    """Resolve one Forgejo hostname without inventing drift during focused renders."""
+def configured_forgejo_public_host(inventory: dict[str, str]) -> str:
+    """Return an explicitly configured Forgejo hostname, if one is available."""
     host = env_or_inventory(
         "PLATFORM_FORGEJO_HOST",
         inventory,
@@ -341,6 +346,21 @@ def forgejo_public_host(
     )
     if not host:
         host = env_or_inventory("PLATFORM_GIT_HOST", inventory, "platform_git_host")
+    if not host:
+        return ""
+    return normalize_forgejo_public_host(
+        host,
+        "PLATFORM_FORGEJO_HOST or platform_git_host",
+    )
+
+
+def forgejo_public_host(
+    inventory: dict[str, str],
+    *,
+    existing_values_path: Path | None = None,
+) -> str:
+    """Resolve one Forgejo hostname without inventing drift during focused renders."""
+    host = configured_forgejo_public_host(inventory)
     if not host and existing_values_path is not None:
         host = existing_forgejo_public_host(existing_values_path)
     if not host:
@@ -2188,22 +2208,133 @@ def refresh_argocd_host(path: Path, inventory: dict[str, str]) -> bool:
     return changed
 
 
-def refresh_forgejo_host(path: Path, inventory: dict[str, str]) -> bool:
-    """Replace only the public Forgejo hostname placeholder in a private seed."""
+def reconcile_forgejo_public_host_values(
+    values: dict[object, object],
+    path: Path,
+    host: str,
+) -> set[str]:
+    """Set recognized public-host fields without touching dependency endpoints."""
+    previous_hosts = set(forgejo_public_host_candidates(values, path))
+    placeholder = "forgejo.<PLATFORM_DOMAIN>"
+
+    ingress = values.get("ingress")
+    if isinstance(ingress, dict):
+        hosts = ingress.get("hosts")
+        if isinstance(hosts, list):
+            for index, entry in enumerate(hosts):
+                if isinstance(entry, dict) and str(entry.get("host") or "").strip():
+                    entry["host"] = host
+                elif isinstance(entry, str) and entry.strip():
+                    hosts[index] = host
+        tls_entries = ingress.get("tls")
+        if isinstance(tls_entries, list):
+            for entry in tls_entries:
+                if not isinstance(entry, dict) or not isinstance(entry.get("hosts"), list):
+                    continue
+                reconciled_hosts: list[object] = []
+                for tls_host in entry["hosts"]:
+                    raw_host = str(tls_host or "").strip()
+                    normalized_host = raw_host.rstrip(".").lower()
+                    if raw_host and (normalized_host in previous_hosts or raw_host == placeholder):
+                        tls_host = host
+                    if tls_host not in reconciled_hosts:
+                        reconciled_hosts.append(tls_host)
+                entry["hosts"] = reconciled_hosts
+
+    for chart_key in ("gitea", "forgejo"):
+        chart = values.get(chart_key)
+        config = chart.get("config") if isinstance(chart, dict) else None
+        server = config.get("server") if isinstance(config, dict) else None
+        if not isinstance(server, dict):
+            continue
+        if str(server.get("DOMAIN") or "").strip():
+            server["DOMAIN"] = host
+        root_url = str(server.get("ROOT_URL") or "").strip()
+        if root_url:
+            parsed = urlparse(root_url if "://" in root_url else f"https://{root_url}")
+            try:
+                port = parsed.port
+            except ValueError as exc:
+                raise SystemExit(f"invalid Forgejo ROOT_URL in {path}") from exc
+            netloc = host + (f":{port}" if port is not None else "")
+            server["ROOT_URL"] = parsed._replace(netloc=netloc).geturl()
+        ssh_domain = str(server.get("SSH_DOMAIN") or "").strip()
+        if ssh_domain and (
+            ssh_domain.rstrip(".").lower() in previous_hosts or ssh_domain == placeholder
+        ):
+            server["SSH_DOMAIN"] = host
+
+    return previous_hosts
+
+
+def refresh_forgejo_host(
+    path: Path,
+    inventory: dict[str, str],
+    *,
+    reconcile_existing: bool = False,
+) -> bool:
+    """Refresh Forgejo's public host while retaining unrelated private values."""
     text = read_bounded_text(path, encoding="utf-8")
     placeholder = "forgejo.<PLATFORM_DOMAIN>"
-    if placeholder not in text:
+    configured_host = configured_forgejo_public_host(inventory)
+    if reconcile_existing and not configured_host:
+        raise SystemExit(
+            "reconciling an existing Forgejo hostname requires PLATFORM_FORGEJO_HOST, "
+            "PLATFORM_GIT_HOST, platform_forgejo_host, or platform_git_host"
+        )
+    if placeholder not in text and not reconcile_existing:
         return False
 
-    host = forgejo_public_host(inventory)
-    rendered = text.replace(placeholder, host)
+    host = configured_host or forgejo_public_host(
+        inventory,
+        existing_values_path=path,
+    )
+    replaced_hosts: list[str] = []
+    if reconcile_existing:
+        try:
+            documents = loads_strict_yaml_all(text)
+        except StrictYamlError as exc:
+            raise SystemExit(f"cannot refresh Forgejo hostname in invalid YAML {path}: {exc}") from exc
+        if len(documents) != 1 or not isinstance(documents[0], dict):
+            raise SystemExit(f"expected one Forgejo values mapping in {path}")
+        values = documents[0]
+        previous_hosts = reconcile_forgejo_public_host_values(values, path, host)
+        replaced_hosts = sorted(previous_hosts - {host})
+        header = []
+        for line in text.splitlines(keepends=True):
+            if line.strip() and not line.lstrip().startswith("#"):
+                break
+            header.append(line)
+        rendered = "".join(header) + yaml.safe_dump(values, sort_keys=False)
+        rendered = rendered.replace(placeholder, host)
+    else:
+        rendered = text.replace(placeholder, host)
+
     if placeholder in rendered:
         raise SystemExit(
             f"Forgejo values still contain the unresolved hostname placeholder: {path}"
         )
+    try:
+        rendered_documents = loads_strict_yaml_all(rendered)
+    except StrictYamlError as exc:
+        raise SystemExit(f"refreshed Forgejo values are invalid YAML in {path}: {exc}") from exc
+    if len(rendered_documents) != 1 or not isinstance(rendered_documents[0], dict):
+        raise SystemExit(f"expected one Forgejo values mapping in {path}")
+    rendered_hosts = set(forgejo_public_host_candidates(rendered_documents[0], path))
+    if rendered_hosts != {host}:
+        raise SystemExit(
+            f"refreshed Forgejo public hostname did not converge in {path}: "
+            f"{','.join(sorted(rendered_hosts)) or '<missing>'}"
+        )
     changed = rendered != text
     if changed:
         atomic_write_text(path, rendered)
+        if replaced_hosts:
+            print(
+                "forgejo_public_host=refreshed "
+                f"previous={','.join(replaced_hosts)} current={host} "
+                "source=explicit-private-config"
+            )
     return changed
 
 
@@ -4711,6 +4842,14 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--reconcile-existing-forgejo-host",
+        action="store_true",
+        help=(
+            "Allow --refresh-forgejo-host to replace a concrete existing hostname "
+            "with the explicitly configured private Forgejo hostname."
+        ),
+    )
+    parser.add_argument(
         "--refresh-forgejo-release-pin",
         action="store_true",
         help="Refresh only Forgejo's reviewed image pin without rendering private dependencies.",
@@ -4830,6 +4969,8 @@ def main() -> int:
     parser.add_argument("--skip-platform-image-integrity", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.reconcile_existing_forgejo_host and not args.refresh_forgejo_host:
+        parser.error("--reconcile-existing-forgejo-host requires --refresh-forgejo-host")
 
     inventory = read_inventory_vars(args.inventory)
     changed: list[str] = []
@@ -4993,7 +5134,11 @@ def main() -> int:
     if (
         args.refresh_forgejo_host
         and args.forgejo_values.exists()
-        and refresh_forgejo_host(args.forgejo_values, inventory)
+        and refresh_forgejo_host(
+            args.forgejo_values,
+            inventory,
+            reconcile_existing=args.reconcile_existing_forgejo_host,
+        )
     ):
         changed.append(str(args.forgejo_values))
 
