@@ -926,6 +926,12 @@ and verify the explicit Forgejo Traefik route:
 make platform-forgejo-ingress
 ```
 
+The target loads `PLATFORM_FORGEJO_INGRESS_ENV_FILE` when set, then the normal
+seed/first-deploy private env file fallbacks. A `PLATFORM_FORGEJO_HOST` or
+`PLATFORM_GIT_HOST` loaded there is passed to Ansible explicitly, so a focused
+repair cannot recreate a different `forgejo.<PLATFORM_DOMAIN>` fallback route.
+Keep the canonical hostname in `private/seed-git.env` for seed-based installs.
+
 To fail faster or wait longer while debugging VIP convergence:
 
 ```bash
