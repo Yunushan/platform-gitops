@@ -465,7 +465,8 @@ platform-woodpecker-repair:
 		$(MAKE) platform-node-storage-cleanup
 	@bash scripts/bootstrap/run-woodpecker-secret-reconcile.sh
 	@bash scripts/bootstrap/reconcile-woodpecker-gitops-source.sh
-	@$(MAKE) platform-argocd-service-repair
+	@PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS="$${PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS:-argocd-ha traefik forgejo woodpecker}" \
+		$(MAKE) platform-argocd-service-repair
 	@set -o pipefail; \
 		repair_log="$$(mktemp)"; \
 		trap 'rm -f "$$repair_log"' EXIT; \
@@ -519,7 +520,7 @@ platform-woodpecker-repair:
 		if [ "$$woodpecker_forgejo_url_repair" = "true" ]; then \
 			echo "Woodpecker's Forgejo OAuth URL drifted from the GitOps-owned route; re-rendering the private Woodpecker source and waiting for Argo CD reconciliation."; \
 			bash scripts/bootstrap/reconcile-woodpecker-gitops-source.sh; \
-			$(MAKE) platform-argocd-service-repair; \
+			PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS="$${PLATFORM_ARGOCD_SERVICE_REPAIR_RETRY_APPS:-argocd-ha traefik forgejo woodpecker}" $(MAKE) platform-argocd-service-repair; \
 		elif [ "$$application_config_repair" = "true" ]; then \
 			echo "Woodpecker PostgreSQL trust-bundle configuration failed; refreshing the bundle and repairing the server mount before retry."; \
 		fi; \

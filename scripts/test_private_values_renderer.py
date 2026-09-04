@@ -385,7 +385,7 @@ def test_focused_argocd_host_refresh_preserves_private_hostname(renderer) -> Non
 
 
 def test_focused_forgejo_host_refresh_preserves_private_values(renderer) -> None:
-    """A focused Forgejo hostname refresh replaces only the public placeholder."""
+    """A focused refresh rewrites concrete hosts only through the guarded mode."""
     with tempfile.TemporaryDirectory(prefix="platform-forgejo-host-refresh-") as tmp:
         forgejo_path = write(
             Path(tmp) / "values.yaml",
@@ -421,12 +421,52 @@ def test_focused_forgejo_host_refresh_preserves_private_values(renderer) -> None
 
         private_path = write(
             Path(tmp) / "private-values.yaml",
-            "ingress:\n  hosts:\n    - host: existing.private.example.test\n",
+            "ingress:\n"
+            "  hosts:\n"
+            "    - host: existing.private.example.test\n"
+            "  tls:\n"
+            "    - hosts:\n"
+            "        - existing.private.example.test\n"
+            "gitea:\n"
+            "  config:\n"
+            "    server:\n"
+            "      DOMAIN: configured.private.example.test\n"
+            "      ROOT_URL: https://configured.private.example.test/\n"
+            "      SSH_DOMAIN: existing.private.example.test\n"
+            "    database:\n"
+            "      HOST: existing.private.example.test:5432\n"
+            "    storage:\n"
+            "      MINIO_ENDPOINT: s3.existing.private.example.test:9000\n"
+            "    privateExtension:\n"
+            "      retained: true\n",
         )
         with patched_env({"PLATFORM_FORGEJO_HOST": "git.private.example.test"}):
             if renderer.refresh_forgejo_host(private_path, inventory):
                 raise AssertionError("focused Forgejo refresh rewrote an existing private hostname")
-        assert_contains(private_path, "existing.private.example.test")
+            if not renderer.refresh_forgejo_host(
+                private_path,
+                inventory,
+                reconcile_existing=True,
+            ):
+                raise AssertionError("guarded Forgejo refresh did not reconcile the existing hostname")
+            if renderer.refresh_forgejo_host(
+                private_path,
+                inventory,
+                reconcile_existing=True,
+            ):
+                raise AssertionError("guarded Forgejo hostname reconciliation is not idempotent")
+        assert_contains(
+            private_path,
+            "host: git.private.example.test",
+            "DOMAIN: git.private.example.test",
+            "ROOT_URL: https://git.private.example.test/",
+            "SSH_DOMAIN: git.private.example.test",
+            "HOST: existing.private.example.test:5432",
+            "MINIO_ENDPOINT: s3.existing.private.example.test:9000",
+            "privateExtension:",
+            "retained: true",
+        )
+        assert_not_contains(private_path, "configured.private.example.test")
 
 
 def test_focused_forgejo_tls_preserves_private_object_storage(renderer) -> None:

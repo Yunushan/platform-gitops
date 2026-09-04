@@ -101,6 +101,7 @@ if [[ "${PLATFORM_AUTO_RENDER_PRIVATE_VALUES}" == "true" ]]; then
       render_args+=(
         --refresh-argocd-host
         --refresh-forgejo-host
+        --reconcile-existing-forgejo-host
         --refresh-forgejo-release-pin
         --refresh-forgejo-config-env
         --refresh-forgejo-storage

@@ -4369,6 +4369,7 @@ def main() -> None:
         "woodpecker_forgejo_url_repair=true",
         "forgejo_ingress_repair=true",
         "applying the canonical Forgejo ingress contract",
+        "argocd-ha traefik forgejo woodpecker",
     ):
         require_text(makefile_text, needle, f"platform-woodpecker-repair must cover {needle}")
     woodpecker_repair_target = re.search(
@@ -4378,7 +4379,7 @@ def main() -> None:
     if not woodpecker_repair_target:
         fail("could not parse platform-woodpecker-repair target body")
     woodpecker_repair_body = woodpecker_repair_target.group("body")
-    argocd_repair = "@$(MAKE) platform-argocd-service-repair"
+    argocd_repair = "$(MAKE) platform-argocd-service-repair"
     consumer_refresh = "@$(MAKE) platform-service-path-consumers-repair"
     strict_repair = "ansible/playbooks/repair-woodpecker.yml"
     focused_secret_repair = "scripts/bootstrap/run-woodpecker-secret-reconcile.sh"
@@ -5840,6 +5841,8 @@ def main() -> None:
     for needle in (
         "PLATFORM_AUTO_RENDER_SCOPE must be all or woodpecker.",
         "--refresh-argocd-host",
+        "--refresh-forgejo-host",
+        "--reconcile-existing-forgejo-host",
         "--refresh-forgejo-release-pin",
         "--refresh-forgejo-postgres-tls",
         "--skip-forgejo",
