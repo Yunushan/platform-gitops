@@ -141,7 +141,7 @@ extraInitContainers:
 
         backend elected-primary
           option tcp-check
-          tcp-check connect
+          tcp-check connect default
           tcp-check send "AUTH default ${password}\r\n"
           tcp-check expect string +OK
           tcp-check send "INFO replication\r\n"
