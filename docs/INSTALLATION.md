@@ -1139,8 +1139,10 @@ PLATFORM_APP_HEALTH_TRUST_BUNDLES=skip make platform-app-health
 If Argo CD, Woodpecker, or CoreDNS service checks report node-specific
 ClusterIP timeouts, run the service-path repair alias and then rerun the health
 gate. The alias repairs DNS/CNI service routing, refreshes Woodpecker agents,
-and verifies the Woodpecker gRPC ClusterIP from every RKE2 node host and from
-diagnostic pods pinned to every RKE2 node:
+and verifies the Woodpecker gRPC ClusterIP, service DNS, and every ready backend
+from Woodpecker-namespace diagnostic pods pinned to every RKE2 node. Node-host
+probes are advisory because namespace isolation may deny remote-node traffic;
+the required pod-network probes must all pass:
 
 ```bash
 make platform-service-path-repair

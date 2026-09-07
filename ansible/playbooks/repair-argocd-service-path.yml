@@ -620,15 +620,42 @@
           fi
         }
 
-        patch_deployment_strategy() {
+        patch_haproxy_deployment() {
           resource="$1"
           if ! "$K" --kubeconfig "$C" -n argocd get "${resource}" >/dev/null 2>&1; then
             return 0
           fi
           before_generation="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
             -o jsonpath='{.metadata.generation}')"
+          container_name="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
+            -o jsonpath='{.spec.template.spec.containers[0].name}')"
+          patch="$(python3 - "${container_name}" <<'PY'
+        import json
+        import sys
+
+        probe = {
+            "exec": {"command": ["wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8888/healthz"]},
+            "httpGet": None,
+            "tcpSocket": None,
+            "grpc": None,
+            "failureThreshold": 3,
+            "initialDelaySeconds": 5,
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": 10,
+        }
+        print(json.dumps({"spec": {
+            "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1}},
+            "template": {"spec": {"containers": [{
+                "name": sys.argv[1],
+                "livenessProbe": probe,
+                "readinessProbe": probe,
+            }]}},
+        }}))
+        PY
+          )"
           "$K" --kubeconfig "$C" -n argocd patch "${resource}" --type strategic \
-            -p '{"spec":{"strategy":{"type":"RollingUpdate","rollingUpdate":{"maxSurge":0,"maxUnavailable":1}}}}' \
+            -p "${patch}" \
             >/dev/null
           after_generation="$("$K" --kubeconfig "$C" -n argocd get "${resource}" \
             -o jsonpath='{.metadata.generation}')"
@@ -643,7 +670,7 @@
         patch_repo_deployment deployment/argocd-repo-server
         patch_controller_statefulset statefulset/argo-cd-argocd-application-controller
         patch_controller_statefulset statefulset/argocd-application-controller
-        patch_deployment_strategy deployment/argo-cd-redis-ha-haproxy
+        patch_haproxy_deployment deployment/argo-cd-redis-ha-haproxy
 
       args:
         executable: /bin/bash

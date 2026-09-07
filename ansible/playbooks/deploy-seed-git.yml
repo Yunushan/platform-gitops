@@ -153,13 +153,26 @@
       ansible.builtin.shell: |
         set -euo pipefail
         if systemctl is-active --quiet firewalld; then
-          firewall-cmd --add-port={{ platform_seed_git_port_effective }}/tcp --permanent
-          firewall-cmd --reload
+          # A global reload removes live Cilium iptables rules on the seed node.
+          for scope in runtime permanent; do
+            scope_args=()
+            if [ "${scope}" = permanent ]; then scope_args+=(--permanent); fi
+            query_rc=0
+            firewall-cmd "${scope_args[@]}" --query-port={{ platform_seed_git_port_effective }}/tcp >/dev/null || query_rc=$?
+            case "${query_rc}" in
+              0) ;;
+              1)
+                firewall-cmd "${scope_args[@]}" --add-port={{ platform_seed_git_port_effective }}/tcp
+                echo "seed_git_firewall=changed scope=${scope} action=add"
+                ;;
+              *) exit "${query_rc}" ;;
+            esac
+          done
         fi
       args:
         executable: /bin/bash
       register: platform_seed_git_firewalld
-      changed_when: "'success' in platform_seed_git_firewalld.stdout"
+      changed_when: "'seed_git_firewall=changed' in platform_seed_git_firewalld.stdout"
       when:
         - inventory_hostname == rke2_first_server
         - platform_seed_git_state_effective == 'present'
@@ -264,12 +277,25 @@
       ansible.builtin.shell: |
         set -euo pipefail
         if systemctl is-active --quiet firewalld; then
-          firewall-cmd --remove-port={{ platform_seed_git_port_effective }}/tcp --permanent || true
-          firewall-cmd --reload
+          for scope in runtime permanent; do
+            scope_args=()
+            if [ "${scope}" = permanent ]; then scope_args+=(--permanent); fi
+            query_rc=0
+            firewall-cmd "${scope_args[@]}" --query-port={{ platform_seed_git_port_effective }}/tcp >/dev/null || query_rc=$?
+            case "${query_rc}" in
+              0)
+                firewall-cmd "${scope_args[@]}" --remove-port={{ platform_seed_git_port_effective }}/tcp
+                echo "seed_git_firewall=changed scope=${scope} action=remove"
+                ;;
+              1) ;;
+              *) exit "${query_rc}" ;;
+            esac
+          done
         fi
       args:
         executable: /bin/bash
-      changed_when: false
+      register: platform_seed_git_firewalld_close
+      changed_when: "'seed_git_firewall=changed' in platform_seed_git_firewalld_close.stdout"
       when:
         - inventory_hostname == rke2_first_server
         - platform_seed_git_state_effective == 'absent'

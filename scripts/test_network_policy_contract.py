@@ -96,6 +96,9 @@ def require(text: str, needle: str, label: str) -> None:
 
 
 def main() -> int:
+    from test_woodpecker_service_path import main as check_woodpecker_service_path
+
+    check_woodpecker_service_path()
     component = read(COMPONENT / "kustomization.yaml")
     default_deny = read(COMPONENT / "default-deny.yaml")
     platform_traffic = read(COMPONENT / "allow-platform-traffic.yaml")

@@ -263,10 +263,10 @@
 
     - name: Verify Woodpecker gRPC ClusterIP service path from pods pinned to every RKE2 node after agent refresh
       ansible.builtin.shell: |
-        set -u
+        set -euo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
-        NAMESPACE=kube-system
+        NAMESPACE=woodpecker
         CHECK_NAME=platform-woodpecker-grpc-check
         CHECK_ID="$(date +%s)-$$"
         CHECK_IMAGE="{{ platform_service_path_consumer_repair_check_image_effective }}"
@@ -274,10 +274,49 @@
         JOB_TIMEOUT={{ platform_service_path_consumer_repair_timeout_effective }}
         failed=0
 
-        if ! "$K" --kubeconfig "$C" -n woodpecker get service/woodpecker-server >/dev/null 2>&1; then
-          echo "woodpecker_server_service=absent"
-          exit 0
-        fi
+        target_dir="$(mktemp -d)"
+        trap 'rm -rf "${target_dir}"' EXIT
+        "$K" --kubeconfig "$C" --request-timeout=15s -n woodpecker get service/woodpecker-server -o json >"${target_dir}/service.json"
+        "$K" --kubeconfig "$C" --request-timeout=15s -n woodpecker get endpointslice \
+          -l kubernetes.io/service-name=woodpecker-server -o json >"${target_dir}/endpoints.json"
+        probe_urls="$(python3 - "${target_dir}" <<'PY'
+        import ipaddress
+        import json
+        from pathlib import Path
+        import sys
+
+        directory = Path(sys.argv[1])
+        service = json.loads((directory / "service.json").read_text())
+        slices = json.loads((directory / "endpoints.json").read_text())
+        urls = ["http://woodpecker-server.woodpecker.svc.cluster.local:9000/"]
+
+        def url(address, port):
+            ip = ipaddress.ip_address(address)
+            host = f"[{ip}]" if ip.version == 6 else str(ip)
+            return f"http://{host}:{port}/"
+
+        if not any(p.get("port") == 9000 and p.get("protocol", "TCP") == "TCP"
+                   for p in service["spec"].get("ports", [])):
+            raise SystemExit("result=fail reason=woodpecker-service-missing-grpc-port")
+        urls.append(url(service["spec"]["clusterIP"], 9000))
+        backends = set()
+        for item in slices.get("items", []):
+            ports = [p["port"] for p in item.get("ports", [])
+                     if p.get("name") == "grpc" and p.get("protocol", "TCP") == "TCP"
+                     and isinstance(p.get("port"), int) and 0 < p["port"] < 65536]
+            for endpoint in item.get("endpoints", []):
+                conditions = endpoint.get("conditions", {})
+                if conditions.get("ready") is False or conditions.get("terminating") is True:
+                    continue
+                for address in endpoint.get("addresses", []):
+                    for port in ports:
+                        backends.add(url(address, port))
+        if not backends:
+            raise SystemExit("result=fail reason=woodpecker-no-ready-grpc-backends")
+        print(" ".join(urls + sorted(backends)))
+        PY
+        )"
+        echo "woodpecker_grpc_probe_namespace=${NAMESPACE} targets=${probe_urls}"
 
         safe_name() {
           printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9.-]+/-/g; s/^-+//; s/-+$//'
@@ -320,6 +359,7 @@
                 platform.gitops/node: ${node_safe}
             spec:
               restartPolicy: Never
+              automountServiceAccountToken: false
               nodeName: "${node}"
               tolerations:
                 - operator: Exists
@@ -327,53 +367,70 @@
                 - name: check
                   image: "${CHECK_IMAGE}"
                   imagePullPolicy: IfNotPresent
+                  resources:
+                    requests:
+                      cpu: 10m
+                      memory: 16Mi
+                    limits:
+                      cpu: 100m
+                      memory: 64Mi
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    runAsNonRoot: true
+                    runAsUser: 1000
+                    readOnlyRootFilesystem: true
+                    capabilities:
+                      drop: [ALL]
+                    seccompProfile:
+                      type: RuntimeDefault
                   env:
                     - name: CONNECT_TIMEOUT
                       value: "${CONNECT_TIMEOUT}"
+                    - name: PROBE_URLS
+                      value: "${probe_urls}"
                   command:
                     - sh
                     - -c
                   args:
                     - |
                       set -u
-                      echo "target=woodpecker-server.woodpecker.svc.cluster.local:9000"
-                      if command -v curl >/dev/null 2>&1; then
-                        curl --silent --show-error --output /dev/null \
-                          --connect-timeout "\${CONNECT_TIMEOUT}" \
-                          --max-time "\${CONNECT_TIMEOUT}" \
-                          "http://woodpecker-server.woodpecker.svc.cluster.local:9000/" >/tmp/platform-wp-grpc.out 2>/tmp/platform-wp-grpc.err
-                        rc="\$?"
-                        echo "curl_rc=\${rc}"
-                        if [ -s /tmp/platform-wp-grpc.err ]; then
-                          sed 's/^/stderr=/' /tmp/platform-wp-grpc.err
-                        fi
-                        rm -f /tmp/platform-wp-grpc.out /tmp/platform-wp-grpc.err
-                        case "\${rc}" in
-                          0|52|56)
-                            echo "result=ok"
-                            exit 0
-                            ;;
-                        esac
-                        echo "result=fail"
+                      if ! command -v curl >/dev/null 2>&1 && ! command -v nc >/dev/null 2>&1; then
+                        echo "result=fail reason=no-curl-or-nc"
                         exit 1
                       fi
-                      if command -v nc >/dev/null 2>&1; then
-                        nc -z -w "\${CONNECT_TIMEOUT}" woodpecker-server.woodpecker.svc.cluster.local 9000 >/tmp/platform-wp-grpc.out 2>/tmp/platform-wp-grpc.err
-                        rc="\$?"
-                        echo "nc_rc=\${rc}"
-                        if [ -s /tmp/platform-wp-grpc.err ]; then
-                          sed 's/^/stderr=/' /tmp/platform-wp-grpc.err
-                        fi
-                        rm -f /tmp/platform-wp-grpc.out /tmp/platform-wp-grpc.err
-                        if [ "\${rc}" -eq 0 ]; then
-                          echo "result=ok"
-                          exit 0
-                        fi
-                        echo "result=fail"
-                        exit 1
-                      fi
-                      echo "result=fail reason=no-curl-or-nc"
-                      exit 1
+                      failed=0
+                      for attempt in 1 2 3; do
+                        for target in \${PROBE_URLS}; do
+                          # gRPC need not speak HTTP/1.1; require an actual TCP connection,
+                          # not a particular curl response/error code or a proxy connection.
+                          if command -v curl >/dev/null 2>&1; then
+                            connections="\$(curl --disable --noproxy '*' --silent --output /dev/null \
+                              --connect-timeout "\${CONNECT_TIMEOUT}" --max-time "\${CONNECT_TIMEOUT}" \
+                              --write-out '%{num_connects}' "\${target}" 2>/dev/null)"
+                            rc="\$?"
+                            tool=curl
+                          else
+                            authority="\${target#http://}"
+                            authority="\${authority%/}"
+                            host="\${authority%:*}"
+                            host="\${host#\\[}"
+                            host="\${host%\\]}"
+                            port="\${authority##*:}"
+                            connections=0
+                            nc -z -w "\${CONNECT_TIMEOUT}" "\${host}" "\${port}" >/dev/null 2>&1
+                            rc="\$?"
+                            if [ "\${rc}" -eq 0 ]; then connections=1; fi
+                            tool=nc
+                          fi
+                          if [ "\${connections}" = "1" ]; then
+                            echo "result=ok target=\${target} attempt=\${attempt} tool=\${tool} rc=\${rc}"
+                          else
+                            echo "result=fail target=\${target} attempt=\${attempt} tool=\${tool} rc=\${rc}"
+                            failed=1
+                          fi
+                        done
+                      done
+                      exit "\${failed}"
         YAML
         done
 
@@ -428,6 +485,12 @@
         - platform_service_path_consumer_repair_woodpecker_effective | bool
         - platform_woodpecker_consumer_state_before is defined
         - platform_woodpecker_consumer_state_before.stdout is search('WOODPECKER_NAMESPACE=true')
+
+    - name: Print required Woodpecker pod service-path matrix
+      ansible.builtin.debug:
+        var: platform_woodpecker_grpc_pod_probe.stdout_lines
+      run_once: true
+      when: platform_woodpecker_grpc_pod_probe.stdout_lines is defined
 
     - name: Reconcile Woodpecker Argo CD application after consumer refresh
       ansible.builtin.shell: |
@@ -555,29 +618,31 @@
         - platform_service_path_consumer_repair_woodpecker_effective | bool
         - platform_woodpecker_consumer_state_after is defined
 
-    - name: Stop after Woodpecker gRPC node service-path failure
-      ansible.builtin.fail:
+    - name: Report Woodpecker node-host probe limitations
+      ansible.builtin.debug:
         msg: |
-          Woodpecker gRPC ClusterIP service path is still failing from one or
-          more RKE2 nodes after consumer refresh.
+          Woodpecker node-host gRPC probe failed on {{ inventory_hostname }}.
+          This is diagnostic-only: node hosts and application pods have different
+          network-policy identities. Default-deny may allow a local host while
+          denying remote-node traffic, so a load-balanced host probe can alternate
+          between success and failure without an application routing fault.
 
-          This usually means CNI, kube-proxy, firewalld, reverse-path filtering,
-          or node-to-pod routing still blocks the Woodpecker server service on
-          port 9000. Review the diagnostics above before rerunning:
-
-          make platform-service-path-repair
+          The required check tests DNS, ClusterIP, and every ready gRPC backend
+          from Woodpecker-namespace pods pinned to every node. Its failure still
+          stops this repair. Do not open remote-node ingress or restart CNI merely
+          to make this host probe pass.
 
           Node probe before agent refresh stdout:
-          {{ (platform_woodpecker_grpc_node_probe_before | default({})).stdout | default('not run', true) }}
+          {{ (platform_woodpecker_grpc_node_probe_before | default({})).stdout | default('not run') }}
 
           Node probe before agent refresh stderr:
-          {{ (platform_woodpecker_grpc_node_probe_before | default({})).stderr | default('not run', true) }}
+          {{ (platform_woodpecker_grpc_node_probe_before | default({})).stderr | default('not run') }}
 
           Node probe stdout:
-          {{ (platform_woodpecker_grpc_node_probe | default({})).stdout | default('not run', true) }}
+          {{ (platform_woodpecker_grpc_node_probe | default({})).stdout | default('not run') }}
 
           Node probe stderr:
-          {{ (platform_woodpecker_grpc_node_probe | default({})).stderr | default('not run', true) }}
+          {{ (platform_woodpecker_grpc_node_probe | default({})).stderr | default('not run') }}
       when:
         - platform_service_path_consumer_repair_woodpecker_effective | bool
         - platform_woodpecker_consumer_state_before is defined
