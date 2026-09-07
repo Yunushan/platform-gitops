@@ -171,6 +171,10 @@ def check_woodpecker_seed_behavior() -> list[str]:
         fake_bin.mkdir()
         (repo / "inventory").mkdir()
         (repo / "private").mkdir()
+        (repo / "docs").mkdir()
+        (repo / "docs" / "TROUBLESHOOTING.md").write_text(
+            "public baseline documentation\n", encoding="utf-8", newline="\n"
+        )
         rendered_conflict = repo / KNOWN_RENDERED_CONFLICT_PATH
         rendered_conflict.parent.mkdir(parents=True)
         script.write_text(WOODPECKER_RECONCILER.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
@@ -252,6 +256,7 @@ git push --quiet \
             repo,
             "add",
             ".gitignore",
+            "docs",
             "scripts",
             "tracked.txt",
             KNOWN_RENDERED_CONFLICT_PATH,
@@ -271,6 +276,8 @@ git push --quiet \
             return [f"could not clone private seed fixture: {cloned.stderr.strip()}"]
         run_git(seed_repo, "config", "user.name", "Test")
         run_git(seed_repo, "config", "user.email", "test@example.test")
+        # Exercise committed file modes independently of the host filesystem.
+        run_git(seed_repo, "config", "core.fileMode", "false")
         run_git(seed_repo, "config", "receive.denyCurrentBranch", "updateInstead")
         run_git(seed_repo, "branch", "-M", "main")
         (seed_repo / "private-state.txt").write_text(
@@ -436,6 +443,97 @@ git push --quiet \
         ):
             problems.append("converged Woodpecker seed reconciliation replayed handled conflicts")
         converged_seed_head = run_git(seed_repo, "rev-parse", "refs/heads/main").stdout.strip()
+
+        # Import a topic snapshot into the seed, then squash its later edits into
+        # public main. The modify/modify and add/add conflicts contain no private edits.
+        public_branch = run_git(repo, "branch", "--show-current").stdout.strip()
+        source_paths = ("docs/TROUBLESHOOTING.md", "scripts/test_woodpecker_service_path.py")
+
+        def checked_git(directory: Path, *args: str) -> str:
+            result = run_git(directory, *args)
+            if result.returncode:
+                raise AssertionError(f"fixture git {args} failed: {result.stderr}")
+            return result.stdout.strip()
+
+        checked_git(repo, "checkout", "--quiet", "-b", "public-topic")
+        for path in source_paths:
+            target = repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("public intermediate snapshot\n", encoding="utf-8")
+        checked_git(repo, "add", *source_paths)
+        checked_git(repo, "commit", "--quiet", "-m", "public-topic-intermediate")
+        imported_public_head = checked_git(repo, "rev-parse", "HEAD")
+        checked_git(seed_repo, "fetch", "--quiet", str(repo), "public-topic")
+        checked_git(seed_repo, "merge", "--quiet", "--no-edit", "--no-ff", "FETCH_HEAD")
+        imported_seed_head = checked_git(seed_repo, "rev-parse", "HEAD")
+        for path in source_paths:
+            (repo / path).write_text("public final snapshot\n", encoding="utf-8")
+        checked_git(repo, "add", *source_paths)
+        checked_git(repo, "commit", "--quiet", "-m", "public-topic-final")
+        topic_head = checked_git(repo, "rev-parse", "HEAD")
+        checked_git(repo, "checkout", "--quiet", public_branch)
+        checked_git(repo, "merge", "--quiet", "--squash", "public-topic")
+        checked_git(repo, "commit", "--quiet", "-m", "squashed-public-repair")
+        squash_head = checked_git(repo, "rev-parse", "HEAD")
+        checked_git(repo, "update-ref", "refs/remotes/origin/public-topic", topic_head)
+        direct_command = command.replace("refs/heads/recovery-private", "refs/heads/main")
+
+        def require_conflict_stop(run_command: str, label: str, expected_head: str) -> None:
+            marker.unlink(missing_ok=True)
+            stopped = run_bash(run_command)
+            if stopped.returncode == 0 or "outside-rendered-private-boundary" not in stopped.stderr:
+                problems.append(f"{label} did not fail closed: {stopped.stdout}\n{stopped.stderr}")
+            if marker.exists():
+                problems.append(f"{label} reached the renderer")
+            if checked_git(seed_repo, "rev-parse", "main") != expected_head:
+                problems.append(f"{label} changed the private seed destination")
+            if checked_git(repo, "rev-parse", "HEAD") != squash_head or checked_git(repo, "status", "--porcelain"):
+                problems.append(f"{label} changed the public checkout")
+
+        # A local topic branch alone is not independent published-source evidence.
+        checked_git(repo, "update-ref", "-d", "refs/remotes/origin/public-topic")
+        require_conflict_stop(direct_command, "unverified squash import", imported_seed_head)
+        checked_git(repo, "update-ref", "refs/remotes/origin/public-topic", topic_head)
+
+        # A genuine private edit after a verified import must not get overwritten.
+        checked_git(seed_repo, "checkout", "--quiet", "-b", "private-edited-import")
+        (seed_repo / source_paths[0]).write_text("private source edit\n", encoding="utf-8")
+        checked_git(seed_repo, "add", source_paths[0])
+        checked_git(seed_repo, "commit", "--quiet", "-m", "private-source-edit")
+        edited_command = direct_command.replace("SEED_BASE_REF=refs/heads/main", "SEED_BASE_REF=refs/heads/private-edited-import")
+        require_conflict_stop(edited_command, "private edit after public import", imported_seed_head)
+        checked_git(seed_repo, "checkout", "--quiet", "main")
+
+        checked_git(seed_repo, "checkout", "--quiet", "-b", "private-mode-change")
+        checked_git(seed_repo, "update-index", "--chmod=+x", source_paths[0])
+        checked_git(seed_repo, "commit", "--quiet", "-m", "private-source-mode-change")
+        mode_command = direct_command.replace("SEED_BASE_REF=refs/heads/main", "SEED_BASE_REF=refs/heads/private-mode-change")
+        require_conflict_stop(mode_command, "private file mode change", imported_seed_head)
+        checked_git(seed_repo, "checkout", "--quiet", "main")
+
+        marker.unlink(missing_ok=True)
+        squash_result = run_bash(direct_command)
+        if squash_result.returncode:
+            problems.append(f"verified squash reconciliation failed: {squash_result.stdout}\n{squash_result.stderr}")
+            return problems
+        for path in source_paths:
+            expected_log = f"private_seed_conflict=accept-verified-public-update base={imported_public_head} path={path}"
+            if expected_log not in squash_result.stdout:
+                problems.append(f"squash reconciliation did not verify {path}")
+            if checked_git(seed_repo, "show", f"main:{path}") != "public final snapshot":
+                problems.append(f"squash reconciliation did not adopt the final public source for {path}")
+        if checked_git(seed_repo, "show", f"main:{KNOWN_RENDERED_CONFLICT_PATH}") != checked_git(
+            seed_repo, "show", f"{imported_seed_head}:{KNOWN_RENDERED_CONFLICT_PATH}"
+        ):
+            problems.append("squash reconciliation changed private rendered values")
+        if checked_git(repo, "rev-parse", "HEAD") != squash_head or checked_git(repo, "status", "--porcelain"):
+            problems.append("squash reconciliation changed the public checkout")
+        repeated_squash = run_bash(direct_command)
+        if repeated_squash.returncode or "private_seed_merge=clean" not in repeated_squash.stdout:
+            problems.append(f"repeated squash reconciliation did not converge: {repeated_squash.stderr}")
+        if "accept-verified-public-update" in repeated_squash.stdout:
+            problems.append("repeated squash reconciliation replayed handled source conflicts")
+        converged_seed_head = checked_git(seed_repo, "rev-parse", "main")
 
         unsafe_branch = run_git(seed_repo, "checkout", "--quiet", "-b", "unsafe-recovery", source_base)
         if unsafe_branch.returncode != 0:
