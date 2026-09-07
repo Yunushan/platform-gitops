@@ -403,9 +403,16 @@ Argo CD Applications do not block the focused repair check.
 For Argo CD repo-server/Redis timeouts, Woodpecker agent gRPC timeouts, or
 node-specific ClusterIP service failures, run the explicit service-path repair
 alias before rechecking health. The alias repairs CoreDNS/CNI service routing,
-then refreshes Woodpecker agents and verifies the Woodpecker gRPC ClusterIP
-from every RKE2 node host and from diagnostic pods pinned to every RKE2 node so
-CrashLoopBackOff agents do not wait on exponential backoff. If the refreshed
+then refreshes Woodpecker agents and verifies the Woodpecker gRPC ClusterIP,
+service DNS, and every ready backend from Woodpecker-namespace diagnostic pods
+pinned to every RKE2 node. Each destination must pass three TCP checks.
+Node-host probes are diagnostic-only: namespace isolation can deny Cilium's
+`remote-node` identity while allowing agents. A host probe can therefore pass
+when it selects a local backend and fail when it selects a remote backend.
+Do not open node ingress or restart CNI solely to satisfy that diagnostic.
+The final health gate uses the same distinction. Only installations explicitly
+requiring node-host access should set `PLATFORM_APP_HEALTH_NODE_SERVICE_STRICT=true`.
+CrashLoopBackOff agents are refreshed without waiting on exponential backoff. If the refreshed
 agents still do not become Ready, the repair prints the final Woodpecker
 pods/services plus node and pod-pinned gRPC probe output before failing:
 

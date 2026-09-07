@@ -685,8 +685,10 @@ PLATFORM_APP_HEALTH_TRUST_BUNDLES=skip make platform-app-health
 If a node-specific ClusterIP path fails, such as Woodpecker agents timing out on
 the server gRPC port, repair the shared service path and rerun the health gate.
 The repair also refreshes Woodpecker agents and verifies the Woodpecker gRPC
-ClusterIP from every RKE2 node host and from diagnostic pods pinned to every
-RKE2 node:
+ClusterIP, service DNS, and every ready backend from Woodpecker-namespace
+diagnostic pods pinned to every RKE2 node. Node-host probes are advisory:
+namespace isolation may deny remote-node traffic even when agent traffic
+works. Every required pod-network probe must pass:
 
 ```bash
 make platform-service-path-repair

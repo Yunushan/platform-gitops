@@ -41,6 +41,7 @@
     platform_app_health_forgejo_singleton_safety_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_FORGEJO_SINGLETON_SAFETY') }}"
     platform_app_health_http_redirect_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_HTTP_REDIRECT') }}"
     platform_app_health_node_ingress_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT') }}"
+    platform_app_health_node_service_strict_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_NODE_SERVICE_STRICT') }}"
     platform_app_health_service_check_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_IMAGE') }}"
     platform_app_health_service_check_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_TIMEOUT') }}"
     platform_app_health_service_check_create_attempts_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_SERVICE_CHECK_CREATE_ATTEMPTS') }}"
@@ -107,6 +108,7 @@
     platform_app_health_forgejo_singleton_safety_effective: "{{ platform_app_health_forgejo_singleton_safety | default(platform_app_health_forgejo_singleton_safety_from_env, true) | default(true, true) | bool }}"
     platform_app_health_http_redirect_effective: "{{ platform_app_health_http_redirect | default(platform_app_health_http_redirect_from_env, true) | default(true, true) | bool }}"
     platform_app_health_node_ingress_strict_effective: "{{ platform_app_health_node_ingress_strict | default(platform_app_health_node_ingress_strict_from_env, true) | default(false, true) | bool }}"
+    platform_app_health_node_service_strict_effective: "{{ platform_app_health_node_service_strict | default(platform_app_health_node_service_strict_from_env, true) | default(false, true) | bool }}"
     platform_app_health_service_check_image_effective: "{{ platform_app_health_service_check_image | default(platform_app_health_service_check_image_from_env, true) | default('rancher/klipper-helm:v0.10.0-build20260513', true) }}"
     platform_app_health_service_check_timeout_effective: "{{ platform_app_health_service_check_timeout | default(platform_app_health_service_check_timeout_from_env, true) | default(120, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_service_check_create_attempts_effective: "{{ platform_app_health_service_check_create_attempts | default(platform_app_health_service_check_create_attempts_from_env, true) | default(3, true) | int }}"
@@ -3139,6 +3141,15 @@
       ansible.builtin.debug:
         var: platform_app_health_service_probe.stdout_lines
 
+    - name: Explain node-host service probe policy scope
+      ansible.builtin.debug:
+        msg: >-
+          Node-host service probes are diagnostic unless
+          PLATFORM_APP_HEALTH_NODE_SERVICE_STRICT=true. Namespace isolation can
+          deny remote-node traffic while allowing application pods. Required
+          pod-pinned service probes remain enforced on every node.
+      run_once: true
+
     - name: Probe Argo CD and Woodpecker ClusterIP service paths from pods pinned to every RKE2 node
       ansible.builtin.shell: |
         set -uo pipefail
@@ -3437,7 +3448,7 @@
             or (((hostvars[rke2_first_server].platform_app_health_monitoring_api_probe | default({'rc': 1})).rc | int) != 0)
             or (((hostvars[rke2_first_server].platform_app_health_http_redirect_probe | default({'rc': 1})).rc | int) != 0)
             or ((platform_app_health_node_ingress_strict_effective | bool) and (((platform_app_health_ingress_probe | default({'rc': 1})).rc | int) != 0))
-            or (((platform_app_health_service_probe | default({'rc': 1})).rc | int) != 0)
+            or ((platform_app_health_node_service_strict_effective | bool) and (((platform_app_health_service_probe | default({'rc': 1})).rc | int) != 0))
             or (((hostvars[rke2_first_server].platform_app_health_pod_service_probe | default({'rc': 1})).rc | int) != 0)
           }}
 
@@ -3546,7 +3557,6 @@
             ('Harbor registry API', hostvars[rke2_first_server].platform_app_health_registry_api_probe | default(none)),
             ('Grafana/Prometheus API', hostvars[rke2_first_server].platform_app_health_monitoring_api_probe | default(none)),
             ('HTTP to HTTPS redirect', hostvars[rke2_first_server].platform_app_health_http_redirect_probe | default(none)),
-            ('host ClusterIP service paths', platform_app_health_service_probe | default(none)),
             ('pod-pinned ClusterIP service paths', hostvars[rke2_first_server].platform_app_health_pod_service_probe | default(none))
           ] %}
           {% for label, probe in probes %}
@@ -3556,6 +3566,11 @@
           {{ probe.stdout | default('not collected') }}
           {% endif %}
           {% endfor %}
+          {% if (platform_app_health_node_service_strict_effective | bool) and (platform_app_health_service_probe is defined) and (platform_app_health_service_probe.rc is defined) and (platform_app_health_service_probe.rc | int) != 0 %}
+          ===== strict node-host ClusterIP service paths =====
+          rc={{ platform_app_health_service_probe.rc }}
+          {{ platform_app_health_service_probe.stdout | default('not collected') }}
+          {% endif %}
           {% if (platform_app_health_node_ingress_strict_effective | bool) and (platform_app_health_ingress_probe is defined) and (platform_app_health_ingress_probe.rc is defined) and (platform_app_health_ingress_probe.rc | int) != 0 %}
           ===== strict node-originated app VIP ingress =====
           rc={{ platform_app_health_ingress_probe.rc | default('not run') }}
@@ -3581,7 +3596,7 @@
           runtime storage, app ingress backend, controller/client app VIP ingress
           path, Harbor registry API path, Grafana/Prometheus monitoring API path,
           HTTP-to-HTTPS redirect, strict node-originated app VIP ingress path,
-          Kubernetes host ClusterIP service path, or Kubernetes pod-to-ClusterIP
+          strict Kubernetes host ClusterIP service path, or Kubernetes pod-to-ClusterIP
           service path failed.
 
           Common causes are Traefik backend routing, kube-proxy/Cilium service
@@ -3727,5 +3742,5 @@
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:
-        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); live Argo CD Applications enable self-healing and approval-gated foreground pruning in the final sync wave with empty-target protection; when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; singleton Forgejo uses a Recreate rollout and a minAvailable=1 PodDisruptionBudget; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey and SSO secrets exist with required keys; Harbor production dependency secrets, Forgejo SQL/Redis/object-storage production secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana and Prometheus deny or redirect unauthenticated public access when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from every RKE2 node and from pods pinned to every RKE2 node."
+        msg: "Required Argo CD Applications are Synced/Healthy with no active or failed operations, or OpenBao is explicitly uninitialized and sealed during bootstrap when that state is permitted (historical failed operations are ignored after a clean reconciliation); live Argo CD Applications enable self-healing and approval-gated foreground pruning in the final sync wave with empty-target protection; when production source enforcement is enabled, Argo CD Applications use production-safe repository sources instead of temporary seed Git or insecure git:// URLs and match the expected production repo URL when one is set; platform pods are Ready except for the verified OpenBao bootstrap state; Argo CD runtime components and configured repo-server/Redis service endpoints are present; shared platform Valkey is present with its auth secret when required; critical HA workloads meet minimum desired and ready replica coverage; singleton Forgejo uses a Recreate rollout and a minAvailable=1 PodDisruptionBudget; Woodpecker server and agent pods run the expected pinned image tag; cert-manager Certificates are Ready when present or explicitly required; trust-manager Bundles are synced when present or explicitly required; step-ca answers /health on its ClusterIP service when required; CloudNativePG clusters are Ready when present or explicitly required; CloudNativePG object-storage credentials are present when enforced; Loki answers a known /ready endpoint when required; Velero BackupStorageLocations are Available and an enabled Velero backup schedule exists when Velero is required; generated Harbor/Forgejo/Woodpecker/Keycloak/Grafana/Loki/Velero/CloudNativePG/Valkey and SSO secrets exist with required keys; Harbor production dependency secrets, Forgejo SQL/Redis/object-storage production secrets, and the Grafana external database secret are present when enforced; required StorageClasses exist; platform PVCs are Bound; Longhorn nodes are Ready/schedulable and Longhorn volumes backing Bound PVCs are healthy; configured GUI hosts have ready backend endpoints and answer through the app VIP from the controller/client path; Harbor registry API answers on /v2/ with the Docker Distribution header when Harbor is required; Grafana and Prometheus deny or redirect unauthenticated public access when monitoring is required; and Argo CD/Woodpecker ClusterIP service paths are reachable from pods pinned to every RKE2 node; node-host service probes are advisory unless PLATFORM_APP_HEALTH_NODE_SERVICE_STRICT=true."
       run_once: true
