@@ -6,13 +6,10 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-import re
 import shlex
 import subprocess
 import sys
 import tempfile
-
-from jinja2 import Environment, StrictUndefined
 
 from strict_yaml import loads_strict_yaml_all
 from test_bash_support import bash_executable, bash_path, run_bash
@@ -107,32 +104,28 @@ def check_verdicts(repair_tasks: list[dict]) -> None:
     assert "ansible.builtin.debug" in host and "ansible.builtin.fail" not in host
     final = next(t for t in repair_tasks if t["name"] == "Stop after Woodpecker consumer refresh failure")
     assert "platform_woodpecker_grpc_pod_probe" in final["when"][-1]
-    environment = Environment(undefined=StrictUndefined)
-    environment.filters["bool"] = bool
-    refresh_context = {name: {"rc": 0} for name in (
+    # Require all three failures to remain unconditional repair gates. Keep the
+    # CI test runnable with the repository's pinned PyYAML-only dependencies.
+    gates = (
         "platform_woodpecker_agent_rollout", "platform_woodpecker_grpc_pod_probe",
         "platform_woodpecker_argocd_reconcile_after_consumer_refresh",
-    )}
-    predicate = environment.from_string("{{ " + final["when"][-1] + " }}")
-    assert predicate.render(refresh_context) == "False"
-    refresh_context["platform_woodpecker_grpc_pod_probe"]["rc"] = 1
-    assert predicate.render(refresh_context) == "True"
+    )
+    assert " ".join(final["when"][-1].split()) == " or ".join(
+        f"(({name} | default({{}})).rc | default(0) | int != 0)" for name in gates
+    )
 
     health = tasks(ROOT / "ansible/playbooks/verify-platform-app-health.yml")
     expression = next(t for t in health if t["name"] == "Record per-node app health verdict")["ansible.builtin.set_fact"]["platform_app_health_failed"]
-    names = set(re.findall(r"platform_app_health_\w+probe", expression))
-    context = {name: {"rc": 0} for name in names}
-    context.update(rke2_first_server="node-1", platform_app_health_node_ingress_strict_effective=False,
-                   platform_app_health_node_service_strict_effective=False)
-    context["hostvars"] = {"node-1": {name: {"rc": 0} for name in names}}
-    context["platform_app_health_service_probe"]["rc"] = 1
-    predicate = environment.from_string(expression)
-    assert predicate.render(context).strip() == "False"
-    context["platform_app_health_node_service_strict_effective"] = True
-    assert predicate.render(context).strip() == "True"
-    context["platform_app_health_node_service_strict_effective"] = False
-    context["hostvars"]["node-1"]["platform_app_health_pod_service_probe"]["rc"] = 1
-    assert predicate.render(context).strip() == "True"
+    host_gate = next(line.strip() for line in expression.splitlines()
+                     if "platform_app_health_service_probe" in line)
+    assert host_gate == (
+        "or ((platform_app_health_node_service_strict_effective | bool) and "
+        "(((platform_app_health_service_probe | default({'rc': 1})).rc | int) != 0))"
+    )
+    assert (
+        "or (((hostvars[rke2_first_server].platform_app_health_pod_service_probe "
+        "| default({'rc': 1})).rc | int) != 0)"
+    ) in expression
 
 
 def main() -> int:
