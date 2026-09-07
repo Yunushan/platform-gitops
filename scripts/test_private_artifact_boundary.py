@@ -276,6 +276,8 @@ git push --quiet \
             return [f"could not clone private seed fixture: {cloned.stderr.strip()}"]
         run_git(seed_repo, "config", "user.name", "Test")
         run_git(seed_repo, "config", "user.email", "test@example.test")
+        # Exercise committed file modes independently of the host filesystem.
+        run_git(seed_repo, "config", "core.fileMode", "false")
         run_git(seed_repo, "config", "receive.denyCurrentBranch", "updateInstead")
         run_git(seed_repo, "branch", "-M", "main")
         (seed_repo / "private-state.txt").write_text(
