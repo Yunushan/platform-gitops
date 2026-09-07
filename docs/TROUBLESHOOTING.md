@@ -412,6 +412,10 @@ when it selects a local backend and fail when it selects a remote backend.
 Do not open node ingress or restart CNI solely to satisfy that diagnostic.
 The final health gate uses the same distinction. Only installations explicitly
 requiring node-host access should set `PLATFORM_APP_HEALTH_NODE_SERVICE_STRICT=true`.
+Argo CD repo-server, controller, and Redis HAProxy health checks run inside their
+containers against loopback. HAProxy still requires HTTP success from `/healthz`;
+the repair and GitOps overlays both preserve this check without opening ingress
+from node identities. Its rolling update allows at most one unavailable replica.
 CrashLoopBackOff agents are refreshed without waiting on exponential backoff. If the refreshed
 agents still do not become Ready, the repair prints the final Woodpecker
 pods/services plus node and pod-pinned gRPC probe output before failing:

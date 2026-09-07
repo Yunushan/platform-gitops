@@ -128,6 +128,39 @@ def check_verdicts(repair_tasks: list[dict]) -> None:
     ) in expression
 
 
+def check_argocd_proxy_probes() -> None:
+    repair = tasks(ROOT / "ansible/playbooks/repair-argocd-service-path.yml")
+    shell = next(t["ansible.builtin.shell"] for t in repair
+                 if t.get("register") == "platform_argocd_workload_stabilization")
+    function = shell.split("patch_haproxy_deployment() {", 1)[1]
+    code = function.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    result = subprocess.run([sys.executable, "-c", code, "haproxy"],
+                            capture_output=True, text=True, timeout=10, check=True)
+    patch = json.loads(result.stdout)["spec"]
+    assert patch["strategy"] == {
+        "type": "RollingUpdate", "rollingUpdate": {"maxSurge": 0, "maxUnavailable": 1},
+    }
+    container = patch["template"]["spec"]["containers"][0]
+    assert container["name"] == "haproxy"
+    for profile in ("", "premium-3node/"):
+        path = ROOT / f"gitops/clusters/rke2-main/{profile}apps/argocd-ha/kustomization.yaml"
+        document = loads_strict_yaml_all(path.read_text(encoding="utf-8"))[0]
+        desired = next(p for p in document["patches"] if p["target"]["kind"] == "Deployment"
+                       and p["target"]["name"] == "argo-cd-redis-ha-haproxy")
+        operations = loads_strict_yaml_all(desired["patch"])[0]
+        assert len(operations) == 2
+        for operation in operations:
+            name = operation["path"].rsplit("/", 1)[1]
+            assert name in ("livenessProbe", "readinessProbe")
+            live = container[name]
+            assert all(live[handler] is None for handler in ("httpGet", "tcpSocket", "grpc"))
+            assert {k: v for k, v in live.items() if v is not None} == operation["value"]
+            assert live["exec"]["command"] == [
+                "wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8888/healthz",
+            ]
+            assert live["timeoutSeconds"] > 5
+
+
 def main() -> int:
     repair_tasks = tasks(PLAYBOOK)
     shell = next(t["ansible.builtin.shell"] for t in repair_tasks
@@ -135,6 +168,7 @@ def main() -> int:
     check_targets(shell)
     check_pod_script(shell)
     check_verdicts(repair_tasks)
+    check_argocd_proxy_probes()
     print("Policy-aware Woodpecker service-path regression tests passed.")
     return 0
 

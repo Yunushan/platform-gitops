@@ -1092,6 +1092,8 @@ def main() -> None:
         for needle in (
             "kind: Deployment\n      name: argo-cd-argocd-repo-server",
             "kind: StatefulSet\n      name: argo-cd-argocd-application-controller",
+            "kind: Deployment\n      name: argo-cd-redis-ha-haproxy",
+            'command: ["wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8888/healthz"]',
             "/usr/bin/timeout",
             "/usr/bin/bash",
             "/dev/tcp/127.0.0.1/8084",

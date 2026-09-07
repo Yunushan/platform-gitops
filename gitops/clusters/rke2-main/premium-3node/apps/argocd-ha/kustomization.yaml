@@ -17,6 +17,32 @@ helmCharts:
     valuesFile: values.yaml
 patches:
   - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: argo-cd-redis-ha-haproxy
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/livenessProbe
+        value:
+          exec:
+            command: ["wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8888/healthz"]
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
+      - op: replace
+        path: /spec/template/spec/containers/0/readinessProbe
+        value:
+          exec:
+            command: ["wget", "-q", "-T", "5", "-O", "/dev/null", "http://127.0.0.1:8888/healthz"]
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 10
+  - target:
       version: v1
       kind: Service
       name: argo-cd-argocd-repo-server
