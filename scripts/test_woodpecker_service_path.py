@@ -27,13 +27,13 @@ def tasks(path: Path) -> list[dict]:
 
 def check_targets(shell: str) -> None:
     code = shell.split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
-    service = {"spec": {"clusterIP": "10.43.0.1", "ports": [{"port": 9000}]}}
+    service = {"spec": {"clusterIP": "192.0.2.1", "ports": [{"port": 9000}]}}
     endpoints = {"items": [{"ports": [{"name": "grpc", "port": 9000}], "endpoints": [
-        {"addresses": ["10.42.1.1"], "conditions": {"ready": True}},
-        {"addresses": ["10.42.2.1"]},
-        {"addresses": ["10.42.3.1"], "conditions": {"ready": False}},
-        {"addresses": ["10.42.4.1"], "conditions": {"terminating": True}},
-        {"addresses": ["fd00::1"]},
+        {"addresses": ["198.51.100.1"], "conditions": {"ready": True}},
+        {"addresses": ["203.0.113.1"]},
+        {"addresses": ["203.0.113.2"], "conditions": {"ready": False}},
+        {"addresses": ["203.0.113.3"], "conditions": {"terminating": True}},
+        {"addresses": ["2001:db8::1"]},
     ]}]}
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -46,8 +46,8 @@ def check_targets(shell: str) -> None:
         assert result.returncode == 0, result.stderr
         assert result.stdout.split() == [
             "http://woodpecker-server.woodpecker.svc.cluster.local:9000/",
-            "http://10.43.0.1:9000/", "http://10.42.1.1:9000/",
-            "http://10.42.2.1:9000/", "http://[fd00::1]:9000/",
+            "http://192.0.2.1:9000/", "http://198.51.100.1:9000/",
+            "http://203.0.113.1:9000/", "http://[2001:db8::1]:9000/",
         ], result.stdout
         assert run({"items": []}).returncode != 0
         invalid = copy.deepcopy(endpoints)
@@ -79,13 +79,13 @@ def check_pod_script(shell: str) -> None:
         }
         export -f curl
         export CONNECT_TIMEOUT=1
-        export PROBE_URLS='http://service:9000/ http://10.42.1.1:9000/ http://10.42.2.1:9000/'
+        export PROBE_URLS='http://service:9000/ http://198.51.100.1:9000/ http://203.0.113.1:9000/'
         """
         command = "bash " + shlex.quote(bash_path(path, flavor))
         result = run_bash(fake + "\nunset FAIL_TARGET\n" + command)
         assert result.returncode == 0, result.stdout + result.stderr
         assert result.stdout.count("result=ok ") == 9, result.stdout
-        for target in ("http://service:9000/", "http://10.42.2.1:9000/"):
+        for target in ("http://service:9000/", "http://203.0.113.1:9000/"):
             result = run_bash(fake + f"\nexport FAIL_TARGET={shlex.quote(target)}\n" + command)
             assert result.returncode != 0, result.stdout
             assert result.stdout.count("result=fail ") == 3, result.stdout
@@ -97,7 +97,7 @@ def check_pod_script(shell: str) -> None:
         result = run_bash(fake + fallback + "\nunset FAIL_TARGET\n" + command)
         assert result.returncode == 0, result.stdout + result.stderr
         assert result.stdout.count("tool=nc") == 9, result.stdout
-        result = run_bash(fake + fallback + "\nexport FAIL_TARGET=http://10.42.2.1:9000/\n" + command)
+        result = run_bash(fake + fallback + "\nexport FAIL_TARGET=http://203.0.113.1:9000/\n" + command)
         assert result.returncode != 0, result.stdout
         assert result.stdout.count("result=fail ") == 3, result.stdout
 
