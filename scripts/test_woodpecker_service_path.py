@@ -161,6 +161,53 @@ def check_argocd_proxy_probes() -> None:
             assert live["timeoutSeconds"] > 5
 
 
+def check_seed_firewall_preserves_cilium() -> None:
+    seed_tasks = tasks(ROOT / "ansible/playbooks/deploy-seed-git.yml")
+    scripts = {}
+    for action, register in (("add", "platform_seed_git_firewalld"),
+                             ("remove", "platform_seed_git_firewalld_close")):
+        task = next(t for t in seed_tasks if t.get("register") == register)
+        script = task["ansible.builtin.shell"].replace("{{ platform_seed_git_port_effective }}", "9418")
+        assert "--reload" not in script and "--runtime-to-permanent" not in script
+        assert "seed_git_firewall=changed" in task["changed_when"]
+        scripts[action] = script
+    mock = r'''systemctl() { [ "${FIREWALL_ACTIVE:-true}" = true ]; }
+firewall-cmd() {
+    local scope=runtime arg
+    for arg in "$@"; do [ "$arg" != --permanent ] || scope=permanent; done
+    for arg in "$@"; do
+        case "$arg" in
+            --query-port=9418/tcp)
+                if [ "${QUERY_ERROR:-0}" != 0 ]; then return "$QUERY_ERROR"; fi
+                [ "${RULES[$scope]}" = true ]; return $? ;;
+            --add-port=9418/tcp) RULES[$scope]=true; mutations=$((mutations + 1)); return 0 ;;
+            --remove-port=9418/tcp) RULES[$scope]=false; mutations=$((mutations + 1)); return 0 ;;
+            --reload|--runtime-to-permanent) echo unexpected-global-firewall-change >&2; return 90 ;;
+        esac
+    done
+    return 91
+}
+declare -A RULES
+mutations=0
+'''
+    for action, expected in (("add", "true"), ("remove", "false")):
+        for runtime, permanent in (("true", "true"), ("false", "false"),
+                                   ("true", "false"), ("false", "true")):
+            changes = int(runtime != expected) + int(permanent != expected)
+            prefix = mock + f"\nRULES[runtime]={runtime}\nRULES[permanent]={permanent}\n"
+            result = run_bash(prefix + scripts[action] + scripts[action] +
+                              f'\n[ "$mutations" -eq {changes} ]\n'
+                              f'[ "${{RULES[runtime]}}" = {expected} ]\n'
+                              f'[ "${{RULES[permanent]}}" = {expected} ]\n')
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert result.stdout.count("seed_git_firewall=changed") == changes
+        result = run_bash(mock + "\nQUERY_ERROR=2\n" + scripts[action])
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "seed_git_firewall=changed" not in result.stdout
+        result = run_bash(mock + "\nFIREWALL_ACTIVE=false\n" + scripts[action])
+        assert result.returncode == 0 and not result.stdout, result.stdout + result.stderr
+
+
 def main() -> int:
     repair_tasks = tasks(PLAYBOOK)
     shell = next(t["ansible.builtin.shell"] for t in repair_tasks
@@ -169,6 +216,7 @@ def main() -> int:
     check_pod_script(shell)
     check_verdicts(repair_tasks)
     check_argocd_proxy_probes()
+    check_seed_firewall_preserves_cilium()
     print("Policy-aware Woodpecker service-path regression tests passed.")
     return 0
 
