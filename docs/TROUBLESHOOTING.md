@@ -166,9 +166,20 @@ prevents public placeholders from replacing private hostnames or storage
 settings without freezing unrelated production updates. Required shared
 database roles and server TLS references are then reconciled structurally, so an
 older private PostgreSQL block cannot omit a newly enabled Harbor or Grafana role
-or lose its existing server Certificate binding. A conflict in any file
-outside the renderer's exact output allowlist still stops before the seed remote
-is changed and must be reconciled manually.
+or lose its existing server Certificate binding.
+
+Squash-merging a public repair PR can conflict with intermediate public commits
+already imported by the private seed. For source files outside the rendered
+output allowlist, the reconciler accepts the current public version only when
+the seed copy (including its file mode) still exactly matches the latest verified
+public merge parent, both at import time and now. That parent must independently
+exist in the original source checkout's `origin` history or current source
+ancestry; seed-only history and commit messages are not proof. These cases report
+`private_seed_conflict=accept-verified-public-update`. Private source edits,
+unverified imports, deletion conflicts, and non-regular files still stop before
+rendering or changing the seed remote. If a deleted topic branch is no longer
+available as public evidence, inspect the conflicting files manually rather than
+adding source paths to the rendered-output allowlist or choosing a whole merge side.
 
 An explicitly selected recovery branch is a bootstrap base, not a permanent
 fork point. After a successful seed push, later repairs detect that private

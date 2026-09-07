@@ -138,6 +138,43 @@ is_known_private_render_output() {
   esac
 }
 
+find_verified_public_import() {
+  local merge_head first_parent public_parent extra_parent public_refs
+  imported_public_head=""
+  imported_public_merge=""
+  while read -r merge_head first_parent public_parent extra_parent; do
+    [[ -n "${public_parent}" && -z "${extra_parent}" ]] || continue
+    # Inspect the original source repository, never refs fetched from the seed.
+    # A deleted topic branch without independent public evidence stays fail-closed.
+    git -C "${source_root}" cat-file -e "${public_parent}^{commit}" 2>/dev/null || continue
+    public_refs="$(git -C "${source_root}" for-each-ref --format='%(refname)' \
+      --contains="${public_parent}" refs/remotes/origin/)"
+    if [[ -z "${public_refs}" ]] && ! git -C "${source_root}" merge-base \
+      --is-ancestor "${public_parent}" "${source_head}"; then
+      continue
+    fi
+    imported_public_head="${public_parent}"
+    imported_public_merge="${merge_head}"
+    return 0
+  done < <(git -C "${seed_checkout}" log --first-parent --merges --format='%H %P' \
+    "${seed_base_head}" --not "${source_head}")
+}
+
+is_unchanged_public_import() {
+  local path="$1" imported_entry seed_entry source_entry
+  [[ -n "${imported_public_head}" ]] || return 1
+  imported_entry="$(git -C "${seed_checkout}" ls-tree "${imported_public_head}" -- "${path}")"
+  seed_entry="$(git -C "${seed_checkout}" ls-tree "${seed_base_head}" -- "${path}")"
+  source_entry="$(git -C "${seed_checkout}" ls-tree "${source_head}" -- "${path}")"
+  # Include the mode and object ID; do not auto-resolve renames, deletions,
+  # symlinks, submodules, or a private edit retained during the original import.
+  [[ "${imported_entry}" == "${seed_entry}" &&
+    "${imported_entry}" =~ ^100(644|755)' blob ' &&
+    "${source_entry}" =~ ^100(644|755)' blob ' ]] || return 1
+  git -C "${seed_checkout}" diff --quiet "${imported_public_head}" \
+    "${imported_public_merge}" -- "${path}"
+}
+
 umask 077
 temporary_root="$(mktemp -d "${TMPDIR:-/tmp}/platform-woodpecker-seed.XXXXXX")"
 seed_checkout="${temporary_root}/repo"
@@ -230,9 +267,16 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
       exit 2
     fi
 
+    find_verified_public_import
     unsafe_conflicts=()
+    public_conflicts=()
+    rendered_conflicts=()
     for conflict_path in "${conflict_paths[@]}"; do
-      if ! is_known_private_render_output "${conflict_path}"; then
+      if is_known_private_render_output "${conflict_path}"; then
+        rendered_conflicts+=("${conflict_path}")
+      elif is_unchanged_public_import "${conflict_path}"; then
+        public_conflicts+=("${conflict_path}")
+      else
         unsafe_conflicts+=("${conflict_path}")
       fi
     done
@@ -243,16 +287,23 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
       done
       git -C "${seed_checkout}" merge --abort >/dev/null 2>&1 || true
       echo "The private seed conflicts with public source outside known rendered outputs." >&2
+      echo "Automatic source recovery requires an unchanged, independently verified public import." >&2
       echo "No source or seed remote was changed; reconcile those files manually, then rerun." >&2
       exit 2
     fi
+
+    for conflict_path in "${public_conflicts[@]}"; do
+      git -C "${seed_checkout}" restore --source="${source_head}" --staged --worktree -- "${conflict_path}"
+      printf 'private_seed_conflict=accept-verified-public-update base=%s path=%s\n' \
+        "${imported_public_head}" "${conflict_path}"
+    done
 
     merge_input_root="${temporary_root}/merge-inputs"
     mkdir -p "${merge_input_root}"
     conflict_index=0
     preserved_deletions=0
     preserved_hunks=0
-    for conflict_path in "${conflict_paths[@]}"; do
+    for conflict_path in "${rendered_conflicts[@]}"; do
       conflict_index=$((conflict_index + 1))
       base_file="${merge_input_root}/${conflict_index}.base"
       ours_file="${merge_input_root}/${conflict_index}.ours"
@@ -311,8 +362,8 @@ if GIT_TERMINAL_PROMPT=0 git -C "${seed_checkout}" fetch --quiet --no-tags \
       exit 2
     fi
     git -C "${seed_checkout}" commit --no-edit --quiet
-    printf 'private_seed_merge=resolved-known-rendered-conflicts count=%s preserved_hunks=%s preserved_deletions=%s\n' \
-      "${#conflict_paths[@]}" "${preserved_hunks}" "${preserved_deletions}"
+    printf 'private_seed_merge=resolved-known-rendered-conflicts count=%s preserved_hunks=%s preserved_deletions=%s public_updates=%s\n' \
+      "${#rendered_conflicts[@]}" "${preserved_hunks}" "${preserved_deletions}" "${#public_conflicts[@]}"
   else
     echo "private_seed_merge=clean"
   fi
