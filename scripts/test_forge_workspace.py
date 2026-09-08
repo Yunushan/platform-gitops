@@ -89,6 +89,20 @@ def test_selective_plan_contract() -> None:
     unsafe_rules["surfaces"]["rules"].update({"accepted": True, "reason": "approved"})  # type: ignore[index]
     workspace.validate_plan(unsafe_rules)
 
+    all_scope = copy.deepcopy(plan)
+    all_scope["source"].update({  # type: ignore[index]
+        "project_paths": [],
+        "group_paths": [],
+        "usernames": [],
+        "all_available_groups": True,
+    })
+    all_scope["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "all_available": True,
+        "default_password_env": "IMPORT_PASSWORD",
+    }
+    workspace.validate_plan(all_scope)
+
     unsafe_schedule_activation = copy.deepcopy(plan)
     unsafe_schedule_activation["surfaces"]["pipelines"]["schedule_mappings"] = {  # type: ignore[index]
         "4": {"name": "nightly", "enabled": True}
@@ -152,6 +166,23 @@ def test_project_rules_discovery_is_redacted_and_scoped() -> None:
         raise AssertionError(f"protected-branch inventory was not safely redacted: {result!r}")
     if list_pages.call_args.args[1] != "projects/7/protected_branches":
         raise AssertionError(f"protected-branch API was not scoped to the selected project: {list_pages.call_args!r}")
+
+
+def test_all_available_group_discovery_includes_top_level_groups() -> None:
+    plan = base_plan()
+    plan["source"]["group_paths"] = []  # type: ignore[index]
+    plan["source"]["all_available_groups"] = True  # type: ignore[index]
+    group = {"id": 9, "full_path": "platform", "path": "platform", "name": "Platform"}
+    with mock.patch.object(
+        workspace,
+        "list_pages",
+        side_effect=[[group], [{"username": "alice", "access_level": 40}], [{"username": "alice", "access_level": 40}]],
+    ):
+        result = workspace.discover_groups(workspace.Endpoint("gitlab", "https://gitlab.example.test/api/v4", "TOKEN"), plan)
+    if [item.get("full_path") for item in result] != ["platform"]:
+        raise AssertionError(f"all-available group discovery omitted a top-level group: {result!r}")
+    if result[0].get("direct_members") != [{"username": "alice", "access_level": 40}]:
+        raise AssertionError("all-available group discovery did not retain direct memberships")
 
 
 def test_ci_checkout_is_retryable() -> None:
@@ -798,6 +829,7 @@ def main() -> int:
     test_redaction_and_destination_url()
     test_selected_nested_group_is_a_root()
     test_project_rules_discovery_is_redacted_and_scoped()
+    test_all_available_group_discovery_includes_top_level_groups()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
     test_user_mapping_collision_fails_before_mutation()

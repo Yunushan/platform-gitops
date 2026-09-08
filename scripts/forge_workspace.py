@@ -225,9 +225,14 @@ def require_selector(plan: dict[str, Any]) -> None:
     selectors = source.get("project_paths") or source.get("group_paths")
     users = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users") if isinstance(plan.get("surfaces"), dict) else {"mode": "skip"}
     user_selector = source.get("usernames") or bool_value(users.get("all_available"))
-    if not selectors and not bool_value(source.get("all_available_projects")) and not user_selector:
+    if (
+        not selectors
+        and not bool_value(source.get("all_available_projects"))
+        and not bool_value(source.get("all_available_groups"))
+        and not user_selector
+    ):
         raise WorkspaceError(
-            "source.project_paths, source.group_paths, source.usernames, or an explicit all_available selector is required"
+            "source.project_paths, source.group_paths, source.usernames, or an explicit all_available_projects/all_available_groups selector is required"
         )
     if selectors is not None and (not isinstance(selectors, list) or not all(string(item) for item in selectors)):
         raise WorkspaceError("source.project_paths and source.group_paths must contain non-empty strings")
@@ -337,13 +342,19 @@ def validate_plan(plan: dict[str, Any]) -> None:
         source_project_paths(plan)
         or source_group_paths(plan)
         or bool_value(plan["source"].get("all_available_projects"))
+        or bool_value(plan["source"].get("all_available_groups"))
     ):
         raise WorkspaceError(
-            "project, repository, permission, rule, runner, variable, CI, or pipeline surfaces require source.project_paths, source.group_paths, or all_available_projects=true"
+            "project, repository, permission, rule, runner, variable, CI, or pipeline surfaces require source.project_paths, source.group_paths, all_available_projects=true, or all_available_groups=true"
         )
     for name, config in normalized.items():
-        if name in {"groups", "subgroups", "memberships"} and config["mode"] != "skip" and not source_group_paths(plan):
-            raise WorkspaceError(f"surfaces.{name} requires source.group_paths")
+        if (
+            name in {"groups", "subgroups", "memberships"}
+            and config["mode"] != "skip"
+            and not source_group_paths(plan)
+            and not bool_value(plan["source"].get("all_available_groups"))
+        ):
+            raise WorkspaceError(f"surfaces.{name} requires source.group_paths or source.all_available_groups=true")
         if name == "users" and config["mode"] != "skip":
             usernames = plan["source"].get("usernames") or []
             authorization_selected = (
@@ -537,7 +548,11 @@ def source_group_paths(plan: dict[str, Any]) -> list[str]:
 
 def group_is_subgroup(plan: dict[str, Any], path: str) -> bool:
     """Classify groups relative to the explicitly selected migration roots."""
-    return string(path).strip("/") not in set(source_group_paths(plan))
+    normalized_path = string(path).strip("/")
+    roots = set(source_group_paths(plan))
+    if roots:
+        return normalized_path not in roots
+    return "/" in normalized_path
 
 
 def source_project_paths(plan: dict[str, Any]) -> list[str]:
@@ -552,6 +567,14 @@ def discover_groups(source: Endpoint, plan: dict[str, Any]) -> list[dict[str, An
     subgroup_config = surface_config((plan.get("surfaces") or {}).get("subgroups"), "surfaces.subgroups")
     include_subgroups = bool_value(subgroup_config.get("include_subgroups"), subgroup_config["mode"] != "skip")
     pending: list[dict[str, Any]] = []
+    if bool_value(plan["source"].get("all_available_groups")):
+        for group in list_pages(source, "groups", query={"all_available": True}):
+            group_path = string(group.get("full_path")) or string(group.get("path"))
+            if group_path:
+                if not group.get("full_path"):
+                    group["full_path"] = group_path
+                groups[group_path] = group
+                pending.append(group)
     for path in paths:
         group = get_endpoint_value(source, f"groups/{quote(path, safe='')}")
         if not isinstance(group, dict):
@@ -618,7 +641,24 @@ def discover_projects(source: Endpoint, plan: dict[str, Any], groups: list[dict[
         if not isinstance(project, dict):
             raise WorkspaceError(f"GitLab project {path!r} returned an invalid object")
         projects[string(project.get("path_with_namespace") or path)] = project
-    for group_path in source_group_paths(plan):
+    group_paths = source_group_paths(plan)
+    if bool_value(plan["source"].get("all_available_groups")):
+        available_group_paths = sorted(
+            {
+                string(item.get("full_path"))
+                for item in groups
+                if string(item.get("full_path"))
+            },
+            key=str.casefold,
+        )
+        group_paths = [path for path in available_group_paths if "/" not in path] or available_group_paths
+        if not group_paths:
+            group_paths = [
+                string(item.get("full_path") or item.get("path"))
+                for item in list_pages(source, "groups", query={"all_available": True})
+                if string(item.get("full_path") or item.get("path"))
+            ]
+    for group_path in group_paths:
         group = next((item for item in groups if item.get("full_path") == group_path), None)
         group_id = string((group or {}).get("id") or group_path)
         for project in list_pages(

@@ -14,7 +14,8 @@
       "alice",
       "bob"
     ],
-    "all_available_projects": false
+    "all_available_projects": false,
+    "all_available_groups": false
   },
   "destination": {
     "api_url": "https://forgejo.example.test/api/v1",

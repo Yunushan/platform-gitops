@@ -34,9 +34,11 @@ The supported surfaces are `users`, `groups`, `subgroups`, `memberships`,
 
 The source must explicitly select projects, groups, or users. Users require
 either `source.usernames` or `surfaces.users.all_available=true`; projects
-require `source.project_paths`, `source.group_paths`, or the explicit
-`source.all_available_projects=true`. This prevents a typo from becoming an
-instance-wide import.
+require `source.project_paths`, `source.group_paths`,
+`source.all_available_projects=true`, or `source.all_available_groups=true`;
+groups and memberships require `source.group_paths` or
+`source.all_available_groups=true`. These explicit selectors prevent a typo
+from becoming an instance-wide import.
 
 ## What is imported
 
@@ -165,7 +167,7 @@ For a complete users/groups/permissions/rules transfer, enable the
 `memberships`, `permissions`, and `rules` surfaces in the plan and set
 `surfaces.users.include_members=true` so users referenced only through
 inherited project or group access are also created or checked. Configure
-`rules.gitlab_maintainer_team` when a GitLab protected branch grants access to
+`surfaces.rules.gitlab_maintainer_team` when a GitLab protected branch grants access to
 Maintainers; that Forgejo team must exist in the mapped repository
 organization. Review the redacted snapshot before import. GitLab
 passwords, personal access tokens, runner registration tokens, 2FA state, SSO
