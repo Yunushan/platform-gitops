@@ -700,7 +700,11 @@ def discover_projects(source: Endpoint, plan: dict[str, Any], groups: list[dict[
             if path:
                 projects[path] = get_endpoint_value(source, f"projects/{quote(path, safe='')}" )
     if bool_value(plan["source"].get("all_available_projects")):
-        for project in list_pages(source, "projects", query={"membership": True, "archived": False}):
+        # GitLab's unfiltered project listing is the token-visible scope.
+        # `membership=true` omits projects reachable through inherited or
+        # administrator access, and `archived=false` silently drops repos
+        # that an all-repository migration must preserve.
+        for project in list_pages(source, "projects"):
             path = string(project.get("path_with_namespace"))
             if path:
                 projects[path] = get_endpoint_value(source, f"projects/{quote(path, safe='')}" )

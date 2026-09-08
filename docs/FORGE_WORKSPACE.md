@@ -216,9 +216,11 @@ start from
 `examples/migrations/gitlab-to-forgejo-all-users-access.example.json`. It sets
 `source.all_available_groups=true`, `source.all_available_projects=true`, and
 `surfaces.users.all_available=true`; GitLab's API only exposes objects visible
-to the migration token. The example deliberately keeps exact reconciliation
-off and leaves bots included so the export is truly broad; review the redacted
-snapshot and change `skip_bots` only when that is your intended account policy.
+to the migration token, and the all-project listing includes archived projects
+so repository scope is not silently narrowed. The example deliberately keeps
+exact reconciliation off and leaves bots included so the export is truly broad;
+review the redacted snapshot and change `skip_bots` only when that is your
+intended account policy.
 The GitLab token must be permitted to enumerate users, groups, group members,
 project members, invited groups, and protected branches. A Forgejo
 administrator token is required for user creation and organization/team

@@ -253,6 +253,36 @@ def test_all_available_group_discovery_includes_top_level_groups() -> None:
         raise AssertionError("all-available group discovery did not retain direct memberships")
 
 
+def test_all_available_project_discovery_keeps_archived_and_inherited_projects() -> None:
+    plan = base_plan()
+    plan["source"]["project_paths"] = []  # type: ignore[index]
+    plan["source"]["group_paths"] = []  # type: ignore[index]
+    plan["source"]["all_available_projects"] = True  # type: ignore[index]
+    captured: list[object] = []
+    project = {
+        "id": 11,
+        "path_with_namespace": "platform/archived-repo",
+        "namespace": {"full_path": "platform", "kind": "group"},
+        "archived": True,
+    }
+
+    def pages(_source: object, path: str, **kwargs: object) -> list[dict[str, object]]:
+        if path != "projects":
+            raise AssertionError(f"unexpected project discovery path: {path}")
+        captured.append(kwargs.get("query"))
+        return [project]
+
+    with (
+        mock.patch.object(workspace, "list_pages", side_effect=pages),
+        mock.patch.object(workspace, "get_endpoint_value", return_value=project),
+    ):
+        projects = workspace.discover_projects(object(), plan, [])  # type: ignore[arg-type]
+    if [item["path_with_namespace"] for item in projects] != ["platform/archived-repo"]:
+        raise AssertionError("all-available project discovery dropped an archived project")
+    if captured != [None]:
+        raise AssertionError(f"all-available projects were narrowed to membership-only scope: {captured!r}")
+
+
 def test_ci_checkout_is_retryable() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         repo_root = Path(temp_dir) / "ci" / "platform-control"
@@ -940,6 +970,7 @@ def main() -> int:
     test_project_permission_discovery_materializes_invited_group_members()
     test_managed_import_rejects_missing_snapshot_surface_before_mutation()
     test_all_available_group_discovery_includes_top_level_groups()
+    test_all_available_project_discovery_keeps_archived_and_inherited_projects()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
     test_user_mapping_collision_fails_before_mutation()
