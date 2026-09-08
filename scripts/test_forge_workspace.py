@@ -83,6 +83,12 @@ def test_selective_plan_contract() -> None:
     unsafe_history["surfaces"]["pipelines"]["import_history"] = True  # type: ignore[index]
     expect_error(unsafe_history, "historical GitLab runs are export-only")
 
+    unsafe_rules = copy.deepcopy(plan)
+    unsafe_rules["surfaces"]["rules"] = {"mode": "managed", "reconcile": "exact"}  # type: ignore[index]
+    expect_error(unsafe_rules, "surfaces.rules.reconcile=exact requires accepted=true")
+    unsafe_rules["surfaces"]["rules"].update({"accepted": True, "reason": "approved"})  # type: ignore[index]
+    workspace.validate_plan(unsafe_rules)
+
     unsafe_schedule_activation = copy.deepcopy(plan)
     unsafe_schedule_activation["surfaces"]["pipelines"]["schedule_mappings"] = {  # type: ignore[index]
         "4": {"name": "nightly", "enabled": True}
@@ -127,6 +133,25 @@ def test_selected_nested_group_is_a_root() -> None:
         raise AssertionError("selected nested group was incorrectly classified as a subgroup")
     if not workspace.group_is_subgroup(plan, "engineering/platform/api"):
         raise AssertionError("child of selected nested group was not classified as a subgroup")
+
+
+def test_project_rules_discovery_is_redacted_and_scoped() -> None:
+    source = workspace.Endpoint("gitlab", "https://gitlab.example.test/api/v4", "GITLAB_TOKEN")
+    project = {"id": 7, "path_with_namespace": "platform/control-plane"}
+    protected = {
+        "name": "main",
+        "push_access_levels": [{"access_level": 40}],
+        "merge_access_levels": [{"access_level": 40}],
+        "secret": "must-not-be-exported",
+    }
+    with mock.patch.object(workspace, "list_pages", return_value=[protected]) as list_pages:
+        result = workspace.discover_project_rules(source, project)
+    if result.get("project") != "platform/control-plane" or result.get("project_id") != 7:
+        raise AssertionError(f"protected-branch inventory lost project identity: {result!r}")
+    if result.get("rules") != [{"name": "main", "push_access_levels": [{"access_level": 40}], "merge_access_levels": [{"access_level": 40}]}]:
+        raise AssertionError(f"protected-branch inventory was not safely redacted: {result!r}")
+    if list_pages.call_args.args[1] != "projects/7/protected_branches":
+        raise AssertionError(f"protected-branch API was not scoped to the selected project: {list_pages.call_args!r}")
 
 
 def test_ci_checkout_is_retryable() -> None:
@@ -582,6 +607,66 @@ def test_permission_readback_fails_closed() -> None:
             raise AssertionError("permission import accepted a weaker read-back permission")
 
 
+def test_rule_import_runs_after_repository_exists_and_passes_policy() -> None:
+    plan = base_plan()
+    plan["surfaces"]["rules"] = {  # type: ignore[index]
+        "mode": "managed",
+        "reconcile": "additive",
+        "gitlab_maintainer_team": "gitlab-maintainers",
+    }
+    snapshot = {
+        "surfaces": {
+            "rules": {
+                "items": [
+                    {
+                        "project": "platform/control-plane",
+                        "rules": [{"name": "main"}],
+                    }
+                ]
+            }
+        },
+        "indexes": {
+            "projects": [
+                {
+                    "project": {
+                        "id": 7,
+                        "path_with_namespace": "platform/control-plane",
+                        "http_url_to_repo": "https://gitlab.example.test/platform/control-plane.git",
+                        "visibility": "private",
+                    },
+                    "destination": {
+                        "owner": "platform",
+                        "repo": "control-plane",
+                        "owner_kind": "organization",
+                        "git_url": "ssh://git@forgejo.example.test/platform/control-plane.git",
+                    },
+                }
+            ]
+        },
+    }
+    with (
+        mock.patch.object(workspace, "request", return_value=(200, {})) as request,
+        mock.patch.object(workspace, "list_pages", return_value=[{"name": "gitlab-maintainers"}]),
+        mock.patch.object(
+            workspace.migration,
+            "migrate_branch_protections",
+            return_value={"verified": True, "created": 1, "reconcile": "additive"},
+        ) as migrate,
+    ):
+        result = workspace.import_rules(plan, snapshot, object())  # type: ignore[arg-type]
+    if result.get("verified") is not True or len(result.get("items") or []) != 1:
+        raise AssertionError(f"protected-branch import was not verified: {result!r}")
+    if request.call_args.args[1:3] != ("GET", "repos/platform/control-plane"):
+        raise AssertionError("protected-branch import did not verify the destination repository first")
+    repo = migrate.call_args.args[0]
+    if repo.metadata.get("branch_protection") != {
+        "mode": "required",
+        "reconcile": "additive",
+        "gitlab_maintainer_team": "gitlab-maintainers",
+    }:
+        raise AssertionError(f"workspace rule policy was not passed to repository migration: {repo.metadata!r}")
+
+
 def test_ci_destination_and_remote_proof() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         repo_root = Path(temp_dir) / "checkout"
@@ -712,6 +797,7 @@ def main() -> int:
     test_selective_plan_contract()
     test_redaction_and_destination_url()
     test_selected_nested_group_is_a_root()
+    test_project_rules_discovery_is_redacted_and_scoped()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
     test_user_mapping_collision_fails_before_mutation()
@@ -726,6 +812,7 @@ def main() -> int:
     test_permission_import_merges_effective_access_and_verifies_repo_teams()
     test_exact_permission_reconciliation_does_not_remove_unmanaged_collaborators()
     test_permission_readback_fails_closed()
+    test_rule_import_runs_after_repository_exists_and_passes_policy()
     test_ci_destination_and_remote_proof()
     test_ci_commit_is_idempotent()
     test_pipeline_schedule_import_is_not_history_import()

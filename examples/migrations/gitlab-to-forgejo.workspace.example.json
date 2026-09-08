@@ -93,6 +93,11 @@
         "custom:12345": {"permission": "write", "team": "gitlab-custom-release"}
       }
     },
+    "rules": {
+      "mode": "managed",
+      "reconcile": "additive",
+      "gitlab_maintainer_team": "gitlab-maintainers"
+    },
     "runners": {
       "mode": "mapped",
       "target": "woodpecker",

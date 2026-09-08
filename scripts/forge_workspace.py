@@ -3,8 +3,9 @@
 
 The workspace command is deliberately separate from the repository migrator.
 It inventories users, groups, direct/effective memberships, projects,
-repository authorization, CI/CD metadata, variables, runners, and pipeline
-history, then applies only surfaces whose plan mode is ``managed``.
+repository authorization and protected-branch rules, CI/CD metadata,
+variables, runners, and pipeline history, then applies only surfaces whose
+plan mode is ``managed``.
 ``skip``, ``export``, ``mapped``, and ``manual`` are explicit non-mutating
 choices. Secret values never appear in a plan, snapshot proof, or stdout.
 """
@@ -44,6 +45,7 @@ SURFACES = (
     "projects",
     "repositories",
     "permissions",
+    "rules",
     "runners",
     "variables",
     "ci",
@@ -271,7 +273,7 @@ def validate_permission_surface(config: dict[str, Any], label: str) -> None:
     if reconcile not in {"additive", "exact"}:
         raise WorkspaceError(f"{label}.reconcile must be additive or exact")
     if reconcile == "exact" and (
-        not bool_value(config.get("accepted")) or not string(config.get("reason"))
+        config.get("accepted") is not True or not string(config.get("reason"))
     ):
         raise WorkspaceError(f"{label}.reconcile=exact requires accepted=true and a reason")
     if not bool_value(config.get("include_direct"), True) and not bool_value(config.get("include_inherited"), True):
@@ -279,6 +281,19 @@ def validate_permission_surface(config: dict[str, Any], label: str) -> None:
     group_strategy = string(config.get("group_strategy") or "both").lower()
     if group_strategy not in {"teams", "users", "both"}:
         raise WorkspaceError(f"{label}.group_strategy must be teams, users, or both")
+
+
+def validate_rules_surface(config: dict[str, Any], label: str) -> None:
+    """Validate the portable GitLab protected-branch policy options."""
+    reconcile = string(config.get("reconcile") or "additive").lower()
+    if reconcile not in {"additive", "exact"}:
+        raise WorkspaceError(f"{label}.reconcile must be additive or exact")
+    if reconcile == "exact" and (
+        not bool_value(config.get("accepted")) or not string(config.get("reason"))
+    ):
+        raise WorkspaceError(f"{label}.reconcile=exact requires accepted=true and a reason")
+    if "gitlab_maintainer_team" in config and not string(config.get("gitlab_maintainer_team")):
+        raise WorkspaceError(f"{label}.gitlab_maintainer_team must not be empty")
 
 
 def membership_surface_config(plan: dict[str, Any]) -> dict[str, Any]:
@@ -316,7 +331,7 @@ def validate_plan(plan: dict[str, Any]) -> None:
         raise WorkspaceError("at least one workspace surface must be selected")
     project_surfaces_selected = any(
         normalized[name]["mode"] != "skip"
-        for name in ("projects", "repositories", "permissions", "runners", "variables", "ci", "pipelines")
+        for name in ("projects", "repositories", "permissions", "rules", "runners", "variables", "ci", "pipelines")
     )
     if project_surfaces_selected and not (
         source_project_paths(plan)
@@ -324,7 +339,7 @@ def validate_plan(plan: dict[str, Any]) -> None:
         or bool_value(plan["source"].get("all_available_projects"))
     ):
         raise WorkspaceError(
-            "project, repository, runner, variable, CI, or pipeline surfaces require source.project_paths, source.group_paths, or all_available_projects=true"
+            "project, repository, permission, rule, runner, variable, CI, or pipeline surfaces require source.project_paths, source.group_paths, or all_available_projects=true"
         )
     for name, config in normalized.items():
         if name in {"groups", "subgroups", "memberships"} and config["mode"] != "skip" and not source_group_paths(plan):
@@ -394,6 +409,8 @@ def validate_plan(plan: dict[str, Any]) -> None:
             if normalized["projects"]["mode"] == "skip" and normalized["repositories"]["mode"] == "skip":
                 raise WorkspaceError("surfaces.permissions.managed requires projects or repositories to be selected")
             validate_permission_surface(config, "surfaces.permissions")
+        if name == "rules" and config["mode"] == "managed":
+            validate_rules_surface(config, "surfaces.rules")
     services = plan.get("services") or {}
     if not isinstance(services, dict):
         raise WorkspaceError("services must be an object")
@@ -407,10 +424,21 @@ def validate_plan(plan: dict[str, Any]) -> None:
     mappings = plan.get("mappings") or {}
     if not isinstance(mappings, dict):
         raise WorkspaceError("mappings must be an object")
-    for name in ("users", "groups", "projects", "permissions", "runners", "variables"):
+    for name in ("users", "groups", "projects", "permissions", "rules", "runners", "variables"):
         value = mappings.get(name)
         if value is not None and not isinstance(value, dict):
             raise WorkspaceError(f"mappings.{name} must be an object")
+    rule_mappings = mappings.get("rules") or {}
+    for project_path, mapping in rule_mappings.items():
+        if not string(project_path):
+            raise WorkspaceError("mappings.rules keys must be non-empty project paths")
+        if not isinstance(mapping, (str, dict)):
+            raise WorkspaceError(f"mappings.rules[{project_path!r}] must be a team name or object")
+        if isinstance(mapping, str):
+            merged = {**normalized["rules"], "gitlab_maintainer_team": mapping}
+        else:
+            merged = {**normalized["rules"], **mapping}
+        validate_rules_surface(merged, f"mappings.rules[{project_path!r}]")
 
 
 def get_endpoint_value(endpoint_obj: Endpoint, path: str, *, query: dict[str, Any] | None = None, expected: tuple[int, ...] = (200,)) -> Any:
@@ -628,6 +656,18 @@ def discover_project_permissions(source: Endpoint, project: dict[str, Any]) -> d
     }
 
 
+def discover_project_rules(source: Endpoint, project: dict[str, Any]) -> dict[str, Any]:
+    """Capture GitLab protected-branch rules without any secret-bearing fields."""
+    project_id = string(project.get("id") or project.get("path_with_namespace"))
+    project_path = string(project.get("path_with_namespace"))
+    rules = list_pages(source, f"projects/{quote(project_id, safe='')}/protected_branches")
+    return {
+        "project": project_path,
+        "project_id": project.get("id"),
+        "rules": [safe_record(rule) for rule in rules],
+    }
+
+
 def destination_name(plan: dict[str, Any], project: dict[str, Any]) -> tuple[str, str]:
     path = string(project.get("path_with_namespace"))
     mappings = (plan.get("mappings") or {}).get("projects") or {}
@@ -837,8 +877,8 @@ def discover_users(
 def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
     source = endpoint(plan, "source", "gitlab")
     surfaces = plan.get("surfaces") or {}
-    groups = discover_groups(source, plan) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("groups", "subgroups", "memberships", "projects", "repositories", "variables", "runners")) else []
-    projects = discover_projects(source, plan, groups) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("projects", "repositories", "permissions", "variables", "runners", "ci", "pipelines")) else []
+    groups = discover_groups(source, plan) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("groups", "subgroups", "memberships", "projects", "repositories", "permissions", "rules", "variables", "runners")) else []
+    projects = discover_projects(source, plan, groups) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("projects", "repositories", "permissions", "rules", "variables", "runners", "ci", "pipelines")) else []
     project_permissions = [discover_project_permissions(source, project) for project in projects] if source_mode(plan, "permissions") != "skip" else []
     discovered_users = discover_users(source, plan, groups, project_permissions) if source_mode(plan, "users") != "skip" else []
     project_index: list[dict[str, Any]] = []
@@ -891,6 +931,11 @@ def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
             snapshot["surfaces"][name] = {"mode": config["mode"], "items": items}
         elif name == "permissions":
             snapshot["surfaces"][name] = {"mode": config["mode"], "items": project_permissions}
+        elif name == "rules":
+            snapshot["surfaces"][name] = {
+                "mode": config["mode"],
+                "items": [discover_project_rules(source, project) for project in projects],
+            }
         elif name == "ci":
             items = []
             for project in projects:
@@ -2054,7 +2099,39 @@ def import_permissions(
     }
 
 
-def repo_plan_from_item(plan: dict[str, Any], item: dict[str, Any]) -> migration.RepoPlan:
+def rules_config_for_project(plan: dict[str, Any], project_path: str) -> dict[str, Any]:
+    """Merge global and per-project protected-branch policy settings."""
+    config = surface_config((plan.get("surfaces") or {}).get("rules"), "surfaces.rules")
+    mapping = mappings_for(plan, "rules").get(project_path)
+    if mapping is None:
+        return config
+    if isinstance(mapping, str):
+        return {**config, "gitlab_maintainer_team": mapping}
+    if not isinstance(mapping, dict):
+        raise WorkspaceError(f"mappings.rules[{project_path!r}] must be a team name or object")
+    merged = {**config, **mapping}
+    validate_rules_surface(merged, f"mappings.rules[{project_path!r}]")
+    return merged
+
+
+def rule_metadata_for_project(plan: dict[str, Any], project_path: str) -> dict[str, Any]:
+    """Translate workspace rule policy into the repository migrator contract."""
+    config = rules_config_for_project(plan, project_path)
+    metadata: dict[str, Any] = {
+        "mode": "required",
+        "reconcile": string(config.get("reconcile") or "additive").lower(),
+    }
+    for key in ("gitlab_maintainer_team", "accepted", "reason"):
+        if key in config:
+            metadata[key] = config[key]
+    return {"branch_protection": metadata}
+
+
+def repo_plan_from_item(
+    plan: dict[str, Any],
+    item: dict[str, Any],
+    metadata_overrides: dict[str, Any] | None = None,
+) -> migration.RepoPlan:
     project = item["project"]
     source_url = string(project.get("http_url_to_repo"))
     destination = item["destination"]
@@ -2062,6 +2139,9 @@ def repo_plan_from_item(plan: dict[str, Any], item: dict[str, Any]) -> migration
         raise WorkspaceError("repository snapshot item is missing source or destination Git URL")
     source_api = endpoint(plan, "source", "gitlab")
     destination_api = endpoint(plan, "destination", "forgejo")
+    metadata = {surface: "skip" for surface in migration.SUPPORTED_METADATA_SURFACES}
+    if metadata_overrides:
+        metadata.update(metadata_overrides)
     return migration.RepoPlan(
         name=string(project.get("path_with_namespace") or project.get("name")),
         source_url=source_url,
@@ -2082,7 +2162,7 @@ def repo_plan_from_item(plan: dict[str, Any], item: dict[str, Any]) -> migration
         destination_namespace_id=None,
         wiki="false",
         lfs="auto" if bool_value(project.get("lfs_enabled")) else "false",
-        metadata={surface: "skip" for surface in migration.SUPPORTED_METADATA_SURFACES},
+        metadata=metadata,
     )
 
 
@@ -2105,6 +2185,81 @@ def import_repositories(plan: dict[str, Any], snapshot: dict[str, Any], destinat
             results[-1]["git"] = result
     mode = "managed" if project_mode == "managed" or repository_mode == "managed" else repository_mode
     return {"mode": mode, "items": results, "verified": all(item.get("verified") and item.get("git", {}).get("verified", True) for item in results)}
+
+
+def require_rule_repository(destination: Endpoint, owner: str, repo: str, project_path: str) -> None:
+    status, current = request(
+        destination,
+        "GET",
+        repository_api_path(owner, repo),
+        expected=(200, 404),
+        return_status=True,
+    )
+    if status != 200 or not isinstance(current, dict):
+        raise WorkspaceError(
+            f"Forgejo repository {owner}/{repo} for GitLab project {project_path!r} is not present; "
+            "import repositories before protected-branch rules"
+        )
+
+
+def require_rule_team(destination: Endpoint, owner: str, team_name: str, project_path: str) -> None:
+    teams = list_pages(destination, f"orgs/{quote(owner, safe='')}/teams")
+    if not any(string(team.get("name")) == team_name for team in teams):
+        raise WorkspaceError(
+            f"Forgejo team {owner}/{team_name} required by protected-branch rules for "
+            f"GitLab project {project_path!r} is missing; import memberships or map an existing team"
+        )
+
+
+def import_rules(plan: dict[str, Any], snapshot: dict[str, Any], destination: Endpoint) -> dict[str, Any]:
+    """Apply GitLab protected branches after destination repositories exist."""
+    config = surface_config((plan.get("surfaces") or {}).get("rules"), "surfaces.rules")
+    if config["mode"] != "managed":
+        return {"mode": config["mode"], "items": [], "verified": True}
+    surface = snapshot.get("surfaces", {}).get("rules")
+    if not isinstance(surface, dict) or "items" not in surface:
+        raise WorkspaceError("rules snapshot surface is missing; export rules before importing them")
+    items = surface.get("items")
+    if not isinstance(items, list):
+        raise WorkspaceError("rules snapshot items must be a list")
+    validate_unique_repository_targets(snapshot)
+    results: list[dict[str, Any]] = []
+    for rule_item in items:
+        if not isinstance(rule_item, dict):
+            raise WorkspaceError("rules snapshot item must be an object")
+        project_path = string(rule_item.get("project"))
+        project_item = project_snapshot_for(snapshot, project_path)
+        if not project_item:
+            raise WorkspaceError(f"rules project {project_path!r} is missing a repository destination mapping")
+        destination_item = project_item.get("destination") or {}
+        owner = string(destination_item.get("owner"))
+        repo = string(destination_item.get("repo"))
+        if not owner or not repo:
+            raise WorkspaceError(f"rules project {project_path!r} has an incomplete destination mapping")
+        require_rule_repository(destination, owner, repo, project_path)
+        metadata = rule_metadata_for_project(plan, project_path)
+        team_name = string((metadata["branch_protection"] or {}).get("gitlab_maintainer_team"))
+        if team_name:
+            require_rule_team(destination, owner, team_name, project_path)
+        try:
+            rule_result = migration.migrate_branch_protections(
+                repo_plan_from_item(plan, project_item, metadata)
+            )
+        except migration.MigrationError as exc:
+            raise WorkspaceError(f"protected-branch rules for {project_path!r} failed: {exc}") from exc
+        if not isinstance(rule_result, dict):
+            raise WorkspaceError(f"protected-branch rules for {project_path!r} returned an invalid result")
+        results.append(
+            {
+                "project": project_path,
+                "repository": f"{owner}/{repo}",
+                "source_rule_count": len(rule_item.get("rules") or []) if isinstance(rule_item.get("rules"), list) else 0,
+                "reconcile": metadata["branch_protection"].get("reconcile", "additive"),
+                "rules": rule_result,
+                "verified": rule_result.get("verified") is True,
+            }
+        )
+    return {"mode": "managed", "items": results, "verified": all(item.get("verified") is True for item in results)}
 
 
 def variable_identity(item: dict[str, Any]) -> str:
@@ -2528,6 +2683,8 @@ def import_workspace(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: P
             group_result,
             set((user_result or {}).get("targets") or []),
         )
+    if source_mode(plan, "rules") != "skip":
+        results["rules"] = import_rules(plan, snapshot, destination)
     if source_mode(plan, "variables") == "managed":
         results["variables"] = import_variables(plan, snapshot)
     if source_mode(plan, "runners") == "managed":

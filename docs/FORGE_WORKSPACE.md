@@ -29,8 +29,8 @@ Every surface is independently selectable:
 | `manual` | Inventory | No mutation; requires `accepted: true` and a reason |
 
 The supported surfaces are `users`, `groups`, `subgroups`, `memberships`,
-`projects`, `repositories`, `permissions`, `runners`, `variables`, `ci`, and
-`pipelines`.
+`projects`, `repositories`, `permissions`, `rules`, `runners`, `variables`,
+`ci`, and `pipelines`.
 
 The source must explicitly select projects, groups, or users. Users require
 either `source.usernames` or `surfaces.users.all_available=true`; projects
@@ -88,6 +88,15 @@ instance-wide import.
   Planner, Security Manager, and some custom-role capabilities are represented
   by the configured coarse permission or stop with an unmapped-role error;
   they are never silently over-granted.
+- **Rules:** GitLab protected-branch rules are inventoried and applied after
+  destination repositories and access teams exist. The portable subset maps
+  push and merge access levels to Forgejo branch protections and preserves
+  administrator enforcement. GitLab rules using identity-specific access,
+  code-owner approval, force pushes, or non-Maintainer unprotect access fail
+  closed because Forgejo cannot represent them with equivalent guarantees.
+  `reconcile: additive` preserves unrelated destination rules; the explicitly
+  destructive `reconcile: exact` mode requires `accepted: true` and a reason
+  and removes destination-only rules for the selected repositories.
 - **Variables:** project, group, and optional instance variables are read from
   GitLab at import time and stored as Woodpecker repository secrets. By default,
   project names are preserved; group and instance names receive `GL_GROUP_` or
@@ -114,6 +123,9 @@ instance-wide import.
   cutover controller may enable them after source-CI freeze and verification.
   GitLab trigger tokens and historical run state require an explicit manual
   design.
+- **Argo CD:** Argo CD is not a GitLab CI pipeline importer. It remains the
+  deployment authority and is checked by the cutover controller; this command
+  does not invent Argo `Application` manifests from arbitrary CI jobs.
 
 These boundaries reflect the different provider models: GitLab exposes users,
 groups, projects, runners, variables, schedules, and pipelines through separate
@@ -149,10 +161,13 @@ make forge-workspace-import \
   PROOF=private/migrations/proof/workspace-import.json
 ```
 
-For a complete users/groups/permissions transfer, enable the `memberships` and
-`permissions` surfaces in the plan and set `surfaces.users.include_members=true`
-so users referenced only through inherited project or group access are also
-created or checked. Review the redacted snapshot before import. GitLab
+For a complete users/groups/permissions/rules transfer, enable the
+`memberships`, `permissions`, and `rules` surfaces in the plan and set
+`surfaces.users.include_members=true` so users referenced only through
+inherited project or group access are also created or checked. Configure
+`rules.gitlab_maintainer_team` when a GitLab protected branch grants access to
+Maintainers; that Forgejo team must exist in the mapped repository
+organization. Review the redacted snapshot before import. GitLab
 passwords, personal access tokens, runner registration tokens, 2FA state, SSO
 bindings, and webhook secrets are not transferable and must be provisioned
 through their destination-specific controls.
@@ -168,10 +183,13 @@ of truth. Run the existing `forge-cutover` or `forge-transition` workflow after
 the workspace import:
 
 1. Export and review the workspace snapshot.
-2. Import users/groups/projects/repositories and verify counts and refs.
-3. Import variables and convert CI in a shadow destination.
-4. Run `forge-cutover-verify` or `forge-transition-verify-shadow`.
-5. Activate Forgejo/Woodpecker only through the cutover controller, which owns
+2. Import users, organizations, and direct memberships so destination teams
+   exist.
+3. Import repositories and verify counts and refs.
+4. Import project permissions and protected-branch rules.
+5. Import variables and convert CI in a shadow destination.
+6. Run `forge-cutover-verify` or `forge-transition-verify-shadow`.
+7. Activate Forgejo/Woodpecker only through the cutover controller, which owns
    the source-CI freeze, checkpoint, rollback, and failback evidence.
 
 If any workspace surface fails, the command stops and writes no claim of
