@@ -356,6 +356,11 @@ CONTRACTS = [
             'index .data "WOODPECKER_FORGEJO_SECRET"',
             '[ -n "${client_id}" ]',
             '[ -n "${client_secret}" ]',
+            "existing_oauth_app_matches",
+            "/api/v1/user/applications/oauth2",
+            "oauth=registered",
+            "oauth=recreating",
+            "expected_redirect_uri",
         ],
     },
     {
