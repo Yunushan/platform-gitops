@@ -28,7 +28,8 @@
       "mode": "managed",
       "default_password_env": "FORGEJO_IMPORTED_USER_PASSWORD",
       "placeholder_email_domain": "migration.invalid",
-      "skip_bots": true
+      "skip_bots": true,
+      "include_members": true
     },
     "groups": {
       "mode": "managed",
@@ -39,11 +40,58 @@
       "include_subgroups": true,
       "members_mode": "import"
     },
+    "memberships": {
+      "mode": "managed",
+      "include_inherited": false,
+      "include_expired": false,
+      "pending_memberships": "skip",
+      "unmapped_role": "fail",
+      "role_mappings": {
+        "0": "none",
+        "5": "none",
+        "10": {"permission": "read", "team": "gitlab-guests"},
+        "15": {"permission": "read", "team": "gitlab-reporters"},
+        "20": {"permission": "read", "team": "gitlab-reporters"},
+        "25": {"permission": "read", "team": "gitlab-reporters"},
+        "30": {"permission": "write", "team": "gitlab-developers"},
+        "40": {"permission": "write", "team": "gitlab-maintainers"},
+        "50": {"permission": "admin", "team": "gitlab-owners"},
+        "60": {"permission": "admin", "team": "gitlab-owners"}
+      },
+      "custom_role_mappings": {
+        "custom:12345": {"permission": "write", "team": "gitlab-custom-release"}
+      }
+    },
     "projects": {
       "mode": "managed"
     },
     "repositories": {
       "mode": "managed"
+    },
+    "permissions": {
+      "mode": "managed",
+      "include_direct": true,
+      "include_inherited": true,
+      "include_expired": false,
+      "pending_memberships": "skip",
+      "group_strategy": "both",
+      "reconcile": "additive",
+      "unmapped_role": "fail",
+      "role_mappings": {
+        "0": "none",
+        "5": "none",
+        "10": "read",
+        "15": "read",
+        "20": "read",
+        "25": "read",
+        "30": "write",
+        "40": "write",
+        "50": "admin",
+        "60": "admin"
+      },
+      "custom_role_mappings": {
+        "custom:12345": {"permission": "write", "team": "gitlab-custom-release"}
+      }
     },
     "runners": {
       "mode": "mapped",
