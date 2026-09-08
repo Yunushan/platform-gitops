@@ -334,11 +334,14 @@ def validate_rules_surface(config: dict[str, Any], label: str) -> None:
         raise WorkspaceError(f"{label}.gitlab_maintainer_team must not be empty")
 
 
-def membership_surface_config(plan: dict[str, Any]) -> dict[str, Any]:
-    """Return the explicit membership policy or the legacy groups policy."""
+def membership_surface_config(plan: dict[str, Any], source_path: str | None = None) -> dict[str, Any]:
+    """Return the membership policy for an explicit group context."""
     surfaces = plan.get("surfaces") or {}
     if "memberships" in surfaces:
         return surface_config(surfaces.get("memberships"), "surfaces.memberships")
+    if source_path:
+        group_surface = "subgroups" if group_is_subgroup(plan, source_path) else "groups"
+        return surface_config(surfaces.get(group_surface), f"surfaces.{group_surface}")
     groups = surface_config(surfaces.get("groups"), "surfaces.groups")
     subgroups = surface_config(surfaces.get("subgroups"), "surfaces.subgroups")
     if groups["mode"] == "managed" or subgroups["mode"] == "managed":
@@ -1372,12 +1375,16 @@ def role_mapping_value(value: Any) -> tuple[str, str]:
     return "", ""
 
 
-def role_mapping_config(plan: dict[str, Any], surface: str) -> dict[str, Any]:
+def role_mapping_config(
+    plan: dict[str, Any],
+    surface: str,
+    source_path: str | None = None,
+) -> dict[str, Any]:
     surfaces = plan.get("surfaces") or {}
     if surface == "memberships" and surface not in surfaces:
-        # Preserve the original groups.members_mode plan shape while allowing
-        # newer plans to put role mappings under surfaces.memberships.
-        config = surface_config(surfaces.get("groups"), "surfaces.groups")
+        # Preserve the legacy groups/subgroups plan shape, but keep each
+        # subgroup's role policy scoped to that subgroup context.
+        config = membership_surface_config(plan, source_path)
     else:
         config = surface_config(surfaces.get(surface), f"surfaces.{surface}")
     mappings: dict[str, Any] = {}
@@ -1388,6 +1395,22 @@ def role_mapping_config(plan: dict[str, Any], surface: str) -> dict[str, Any]:
     if isinstance(custom, dict):
         mappings.update({string(key).lower(): value for key, value in custom.items()})
     return {"config": config, "mappings": mappings}
+
+
+def role_mapping_configs(
+    plan: dict[str, Any],
+    surface: str,
+    source_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return all applicable role policies, or one policy for a group."""
+    surfaces = plan.get("surfaces") or {}
+    if surface == "memberships" and surface not in surfaces and source_path is None:
+        return [
+            surface_config(surfaces.get(name), f"surfaces.{name}")
+            for name in ("groups", "subgroups")
+            if surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip"
+        ]
+    return [role_mapping_config(plan, surface, source_path)["config"]]
 
 
 def normalized_access_level(member: dict[str, Any]) -> int | None:
@@ -1507,25 +1530,45 @@ def generated_team_name(role_key: str, permission: str) -> str:
     return f"gitlab-{(suffix or permission)[:90]}"
 
 
-def managed_team_definitions(plan: dict[str, Any], surface: str) -> dict[str, str]:
+def managed_team_definitions(
+    plan: dict[str, Any],
+    surface: str,
+    source_path: str | None = None,
+) -> dict[str, str]:
     """Return every deterministic role team, including currently empty teams."""
     definitions = {
         team: permission for _minimum, _key, team, permission in role_buckets(surface)
     }
-    config = role_mapping_config(plan, surface)
-    for role_key, mapping in config["mappings"].items():
-        permission, team = role_mapping_value(mapping)
-        if permission == "none":
-            continue
-        team = team or default_team_for_role_key(role_key, surface)
-        if not team:
-            team = generated_team_name(role_key, permission)
-        definitions[team] = permission
+    for config in role_mapping_configs(plan, surface, source_path):
+        mappings: dict[str, Any] = {}
+        for raw_key in ("role_mappings", "custom_role_mappings"):
+            raw = config.get(raw_key) or {}
+            if isinstance(raw, dict):
+                mappings.update({string(key).lower(): value for key, value in raw.items()})
+        for role_key, mapping in mappings.items():
+            permission, team = role_mapping_value(mapping)
+            if permission == "none":
+                continue
+            team = team or default_team_for_role_key(role_key, surface)
+            if not team:
+                team = generated_team_name(role_key, permission)
+            existing = definitions.get(team)
+            if existing and existing != permission:
+                raise WorkspaceError(
+                    f"managed role team {team!r} has conflicting permissions "
+                    f"{existing!r} and {permission!r}"
+                )
+            definitions[team] = permission
     return definitions
 
 
-def resolve_member_role(plan: dict[str, Any], member: dict[str, Any], surface: str) -> dict[str, Any]:
-    role_config = role_mapping_config(plan, surface)
+def resolve_member_role(
+    plan: dict[str, Any],
+    member: dict[str, Any],
+    surface: str,
+    source_path: str | None = None,
+) -> dict[str, Any]:
+    role_config = role_mapping_config(plan, surface, source_path)
     config = role_config["config"]
     mappings = role_config["mappings"]
     custom = custom_role_id(member)
@@ -1761,10 +1804,11 @@ def import_memberships(
             continue
         if policy != "managed":
             raise WorkspaceError(f"unsupported membership policy {policy!r} for {source_path}")
-        members = group_members_for_import(item, config)
+        group_config = membership_surface_config(plan, source_path)
+        members = group_members_for_import(item, group_config)
         resolved_members: list[dict[str, Any]] = []
         for member in members:
-            if not membership_allowed(config, member):
+            if not membership_allowed(group_config, member):
                 continue
             source_username = member_username(member)
             if not source_username:
@@ -1778,7 +1822,7 @@ def import_memberships(
                     f"GitLab users {previous!r} and {source_username!r} map to the same Forgejo username {target_username!r}"
                 )
             target_sources[target_username.casefold()] = source_username
-            role = resolve_member_role(plan, member, "memberships")
+            role = resolve_member_role(plan, member, "memberships", source_path)
             if role.get("unmapped"):
                 # An explicit skip/manual policy must not turn into an exact
                 # deletion of an access grant we could not classify.
@@ -1808,8 +1852,8 @@ def import_memberships(
 
     # Keep empty deterministic teams in the reconciliation set so role
     # downgrades remove stale memberships from a previously populated team.
-    definitions = managed_team_definitions(plan, "memberships")
     for item in plans:
+        definitions = managed_team_definitions(plan, "memberships", item["source_path"])
         for team_name, permission in definitions.items():
             team_key = (item["target_org"], team_name)
             existing_permission = team_permissions.get(team_key)
@@ -2553,9 +2597,15 @@ def import_rules(plan: dict[str, Any], snapshot: dict[str, Any], destination: En
         team_name = string((metadata["branch_protection"] or {}).get("gitlab_maintainer_team"))
         if team_name:
             require_rule_team(destination, owner, team_name, project_path)
+        source_rules = rule_item.get("rules")
+        if not isinstance(source_rules, list):
+            raise WorkspaceError(
+                f"rules snapshot for {project_path!r} must contain a list of GitLab rule records"
+            )
         try:
             rule_result = migration.migrate_branch_protections(
-                repo_plan_from_item(plan, project_item, metadata)
+                repo_plan_from_item(plan, project_item, metadata),
+                reviewed_source_protections=source_rules,
             )
         except migration.MigrationError as exc:
             raise WorkspaceError(f"protected-branch rules for {project_path!r} failed: {exc}") from exc

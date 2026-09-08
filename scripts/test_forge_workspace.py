@@ -598,6 +598,50 @@ def test_role_mapping_supports_custom_roles_and_fails_closed() -> None:
         raise AssertionError("unmapped custom GitLab role was collapsed into a base role")
 
 
+def test_legacy_subgroup_membership_policy_is_scoped_to_the_subgroup() -> None:
+    plan = base_plan()
+    plan["surfaces"]["subgroups"] = {  # type: ignore[index]
+        "mode": "managed",
+        "members_mode": "import",
+        "unmapped_role": "skip",
+        "role_mappings": {
+            "30": {"permission": "read", "team": "subgroup-reviewers"}
+        },
+    }
+    workspace.validate_plan(plan)
+
+    subgroup_role = workspace.resolve_member_role(
+        plan,
+        {"username": "alice", "access_level": 30},
+        "memberships",
+        "platform/child",
+    )
+    if subgroup_role["permission"] != "read" or subgroup_role["team"] != "subgroup-reviewers":
+        raise AssertionError(f"subgroup role mapping was ignored: {subgroup_role!r}")
+
+    subgroup_custom_role = workspace.resolve_member_role(
+        plan,
+        {"username": "bob", "access_level": 0, "member_role_id": 9002},
+        "memberships",
+        "platform/child",
+    )
+    if not subgroup_custom_role.get("unmapped") or subgroup_custom_role["unmapped_behavior"] != "skip":
+        raise AssertionError(f"subgroup unmapped-role policy was ignored: {subgroup_custom_role!r}")
+
+    try:
+        workspace.resolve_member_role(
+            plan,
+            {"username": "carol", "access_level": 0, "member_role_id": 9002},
+            "memberships",
+            "platform",
+        )
+    except workspace.WorkspaceError as exc:
+        if "not mapped" not in str(exc):
+            raise AssertionError(f"unexpected root-group unmapped-role diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("root-group membership unexpectedly used subgroup unmapped-role policy")
+
+
 def test_permission_surface_validation_requires_safe_exact_confirmation() -> None:
     plan = base_plan()
     plan["surfaces"]["permissions"] = {"mode": "managed", "reconcile": "exact"}  # type: ignore[index]
@@ -866,6 +910,8 @@ def test_rule_import_runs_after_repository_exists_and_passes_policy() -> None:
         "gitlab_maintainer_team": "gitlab-maintainers",
     }:
         raise AssertionError(f"workspace rule policy was not passed to repository migration: {repo.metadata!r}")
+    if migrate.call_args.kwargs.get("reviewed_source_protections") != [{"name": "main"}]:
+        raise AssertionError("protected-branch import did not pass the reviewed snapshot records")
 
 
 def test_ci_destination_and_remote_proof() -> None:
@@ -1013,6 +1059,7 @@ def main() -> int:
     test_gitlab_owner_maps_to_builtin_owners_team()
     test_recursive_group_discovery_keeps_direct_and_effective_members()
     test_role_mapping_supports_custom_roles_and_fails_closed()
+    test_legacy_subgroup_membership_policy_is_scoped_to_the_subgroup()
     test_permission_surface_validation_requires_safe_exact_confirmation()
     test_membership_import_uses_direct_members_by_default()
     test_permission_import_merges_effective_access_and_verifies_repo_teams()

@@ -99,11 +99,14 @@ from becoming an instance-wide import.
   by the configured coarse permission or stop with an unmapped-role error;
   they are never silently over-granted.
 - **Rules:** GitLab protected-branch rules are inventoried and applied after
-  destination repositories and access teams exist. The portable subset maps
-  push and merge access levels to Forgejo branch protections and preserves
-  administrator enforcement. GitLab rules using identity-specific access,
-  code-owner approval, force pushes, or non-Maintainer unprotect access fail
-  closed because Forgejo cannot represent them with equivalent guarantees.
+  destination repositories and access teams exist. Import normalizes the
+  reviewed rule records from the workspace snapshot; it does not re-read
+  GitLab during reconciliation, so a later source edit cannot silently change
+  the approved migration. The portable subset maps push and merge access
+  levels to Forgejo branch protections and preserves administrator
+  enforcement. GitLab rules using identity-specific access, code-owner
+  approval, force pushes, or non-Maintainer unprotect access fail closed
+  because Forgejo cannot represent them with equivalent guarantees.
   `reconcile: additive` preserves unrelated destination rules; the explicitly
   destructive `reconcile: exact` mode requires `accepted: true` and a reason
   and removes destination-only rules for the selected repositories.

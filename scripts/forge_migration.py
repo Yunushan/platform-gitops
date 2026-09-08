@@ -1693,7 +1693,11 @@ def branch_protection_skip(mode: str, exc: MigrationError) -> dict[str, Any]:
     }
 
 
-def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
+def migrate_branch_protections(
+    repo: RepoPlan,
+    reviewed_source_protections: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Reconcile branch protections, optionally from a reviewed source snapshot."""
     mode = metadata_mode(repo, "branch_protection")
     if mode == "skip":
         return {"mode": mode, "status": "skipped", "verified": True}
@@ -1701,7 +1705,12 @@ def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
         source = api_target(repo, "source")
         destination = api_target(repo, "destination")
         validate_branch_protection_contract(repo, source, destination)
-        source_protections = list_source_branch_protections(repo, source)
+        if reviewed_source_protections is None:
+            source_protections = list_source_branch_protections(repo, source)
+        else:
+            source_protections = normalized_branch_protections(
+                repo, source, reviewed_source_protections
+            )
     except MigrationError as exc:
         if mode == "auto":
             return branch_protection_skip(mode, exc)
@@ -1759,7 +1768,11 @@ def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
     }
 
 
-def verify_branch_protections(repo: RepoPlan) -> dict[str, Any]:
+def verify_branch_protections(
+    repo: RepoPlan,
+    reviewed_source_protections: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Verify branch protections, optionally against a reviewed source snapshot."""
     mode = metadata_mode(repo, "branch_protection")
     if mode == "skip":
         return {"mode": mode, "status": "skipped", "verified": True}
@@ -1767,7 +1780,12 @@ def verify_branch_protections(repo: RepoPlan) -> dict[str, Any]:
         source = api_target(repo, "source")
         destination = api_target(repo, "destination")
         validate_branch_protection_contract(repo, source, destination)
-        source_protections = list_source_branch_protections(repo, source)
+        if reviewed_source_protections is None:
+            source_protections = list_source_branch_protections(repo, source)
+        else:
+            source_protections = normalized_branch_protections(
+                repo, source, reviewed_source_protections
+            )
     except MigrationError as exc:
         if mode == "auto":
             return branch_protection_skip(mode, exc)
