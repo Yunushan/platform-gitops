@@ -456,6 +456,34 @@ def test_team_permission_fails_closed() -> None:
             raise AssertionError("team permission mismatch was accepted")
 
 
+def test_gitlab_owner_maps_to_builtin_owners_team() -> None:
+    plan = base_plan()
+    plan["surfaces"]["memberships"] = {"mode": "managed"}  # type: ignore[index]
+    resolved = workspace.resolve_member_role(
+        plan,
+        {"username": "alice", "access_level": 50},
+        "memberships",
+    )
+    if resolved["permission"] != "owner" or resolved["team"] != "Owners":
+        raise AssertionError(f"GitLab Owner was not mapped to Forgejo ownership: {resolved!r}")
+    workspace.validate_plan(plan)
+
+    invalid = copy.deepcopy(plan)
+    invalid["surfaces"]["memberships"]["role_mappings"] = {  # type: ignore[index]
+        "50": {"permission": "admin", "team": "gitlab-owners"}
+    }
+    expect_error(invalid, "built-in Forgejo Owners")
+
+    with mock.patch.object(workspace, "list_pages", return_value=[]):
+        try:
+            workspace.ensure_team(object(), "platform", "Owners", "owner")  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "no built-in Owners team" not in str(exc):
+                raise AssertionError(f"unexpected missing Owners-team diagnostic: {exc}") from exc
+        else:
+            raise AssertionError("missing built-in Owners team was silently replaced")
+
+
 def test_recursive_group_discovery_keeps_direct_and_effective_members() -> None:
     plan = base_plan()
     plan["surfaces"]["subgroups"] = {"mode": "managed", "include_subgroups": True}  # type: ignore[index]
@@ -572,7 +600,7 @@ def test_membership_import_uses_direct_members_by_default() -> None:
     if call.args[2:] != ("gitlab-developers", "alice"):
         raise AssertionError(f"inherited membership was incorrectly materialized: {call!r}")
     if set(call.args[1]) != {
-        "gitlab-owners",
+        "Owners",
         "gitlab-maintainers",
         "gitlab-developers",
         "gitlab-reporters",
@@ -919,6 +947,7 @@ def main() -> int:
     test_mapped_variable_is_non_mutating()
     test_team_membership_is_reconciled_and_verified()
     test_team_permission_fails_closed()
+    test_gitlab_owner_maps_to_builtin_owners_team()
     test_recursive_group_discovery_keeps_direct_and_effective_members()
     test_role_mapping_supports_custom_roles_and_fails_closed()
     test_permission_surface_validation_requires_safe_exact_confirmation()

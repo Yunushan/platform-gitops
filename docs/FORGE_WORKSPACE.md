@@ -56,14 +56,20 @@ from becoming an instance-wide import.
   organization.
 - **Memberships:** The managed surface reconciles GitLab direct group
   memberships into deterministic Forgejo teams. The default mapping is
-  Owner -> `admin`, Maintainer/Developer -> `write`, Reporter/Planner/Security
-  Manager -> `read`, Guest -> `read`, and No/Minimal Access -> no team.
+  Owner -> Forgejo's built-in `Owners` team, Maintainer/Developer -> `write`,
+  Reporter/Planner/Security Manager -> `read`, Guest -> `read`, and
+  No/Minimal Access -> no team. GitLab Owner mappings must use
+  `{ "permission": "owner", "team": "Owners" }`; the importer verifies that
+  Forgejo's special organization team exists and refuses to create a normal
+  team as an ownership substitute. The `Owners` team is organization-wide and
+  is not attached as an ordinary repository team; project-level Owner access
+  is represented by a verified Forgejo repository `admin` collaborator grant.
   `role_mappings` can map numeric access levels, role names, or custom roles to
-  `{ "permission": "read|write|admin|none", "team": "..." }`. Custom GitLab
-  roles must have an explicit mapping; the default is fail-closed. Expired
-  memberships are skipped and pending memberships are skipped unless the plan
-  explicitly chooses a different policy. Role downgrades remove stale managed
-  team memberships and every membership is read back.
+  `{ "permission": "read|write|admin|owner|none", "team": "..." }`. Custom
+  GitLab roles must have an explicit mapping; the default is fail-closed.
+  Expired memberships are skipped and pending memberships are skipped unless
+  the plan explicitly chooses a different policy. Role downgrades remove stale
+  managed team memberships and every membership is read back.
 - **Projects:** project metadata that Forgejo can represent is reconciled on
   the destination repository. The source project is not deleted or disabled.
 - **Repositories:** Git refs, tags, LFS data when selected, and the supported

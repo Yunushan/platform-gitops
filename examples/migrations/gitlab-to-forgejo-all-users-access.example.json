@@ -48,8 +48,8 @@
         "25": {"permission": "read", "team": "gitlab-reporters"},
         "30": {"permission": "write", "team": "gitlab-developers"},
         "40": {"permission": "write", "team": "gitlab-maintainers"},
-        "50": {"permission": "admin", "team": "gitlab-owners"},
-        "60": {"permission": "admin", "team": "gitlab-owners"}
+        "50": {"permission": "owner", "team": "Owners"},
+        "60": {"permission": "owner", "team": "Owners"}
       },
       "custom_role_mappings": {}
     },

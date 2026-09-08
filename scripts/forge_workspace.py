@@ -54,7 +54,8 @@ SURFACES = (
 MODES = {"skip", "export", "managed", "mapped", "manual"}
 ACCOUNTED_MODES = {"managed", "mapped", "manual", "skipped"}
 FORGEJO_PERMISSIONS = {"none", "read", "write", "admin"}
-PERMISSION_RANK = {"none": 0, "read": 1, "write": 2, "admin": 3}
+FORGEJO_TEAM_PERMISSIONS = FORGEJO_PERMISSIONS | {"owner"}
+PERMISSION_RANK = {"none": 0, "read": 1, "write": 2, "admin": 3, "owner": 4}
 DEFAULT_ROLE_BUCKETS = (
     (50, "owner", "gitlab-owners", "admin"),
     (40, "maintainer", "gitlab-maintainers", "write"),
@@ -62,6 +63,20 @@ DEFAULT_ROLE_BUCKETS = (
     (20, "reporter", "gitlab-reporters", "read"),
     (10, "guest", "gitlab-guests", "read"),
 )
+# Forgejo organization ownership is represented by membership in its built-in
+# Owners team, not by a normal repository-admin team.
+MEMBERSHIP_ROLE_BUCKETS = (
+    (50, "owner", "Owners", "owner"),
+    (40, "maintainer", "gitlab-maintainers", "write"),
+    (30, "developer", "gitlab-developers", "write"),
+    (20, "reporter", "gitlab-reporters", "read"),
+    (10, "guest", "gitlab-guests", "read"),
+)
+
+
+def role_buckets(surface: str) -> tuple[tuple[int, str, str, str], ...]:
+    """Return destination role buckets appropriate for the selected surface."""
+    return MEMBERSHIP_ROLE_BUCKETS if surface == "memberships" else DEFAULT_ROLE_BUCKETS
 ROLE_NAME_ALIASES = {
     "no_access": "none",
     "none": "none",
@@ -241,6 +256,8 @@ def require_selector(plan: dict[str, Any]) -> None:
 def validate_role_mapping_config(config: dict[str, Any], label: str) -> None:
     mappings = config.get("role_mappings") or {}
     custom_mappings = config.get("custom_role_mappings") or {}
+    allow_owner = "membership" in label or label.endswith(".groups") or label.endswith(".subgroups")
+    allowed_permissions = FORGEJO_TEAM_PERMISSIONS if allow_owner else FORGEJO_PERMISSIONS
     if not isinstance(mappings, dict):
         raise WorkspaceError(f"{label}.role_mappings must be an object")
     if not isinstance(custom_mappings, dict):
@@ -250,15 +267,23 @@ def validate_role_mapping_config(config: dict[str, Any], label: str) -> None:
             if not isinstance(value, (str, dict)):
                 raise WorkspaceError(f"{label}.{mapping_label}[{role!r}] must be a permission string or object")
             permission = string(value if isinstance(value, str) else value.get("permission")).lower()
-            if permission not in FORGEJO_PERMISSIONS:
+            if permission not in allowed_permissions:
                 raise WorkspaceError(
-                    f"{label}.{mapping_label}[{role!r}].permission must be one of {sorted(FORGEJO_PERMISSIONS)}"
+                    f"{label}.{mapping_label}[{role!r}].permission must be one of {sorted(allowed_permissions)}"
                 )
             if isinstance(value, dict):
                 team = string(value.get("team") or value.get("team_name"))
                 if team and (len(team) > 100 or not re.fullmatch(r"[A-Za-z0-9_.-]+", team)):
                     raise WorkspaceError(
                         f"{label}.{mapping_label}[{role!r}] team names must contain only letters, numbers, '.', '_' or '-'"
+                    )
+            else:
+                team = ""
+            normalized_role = string(role).lower().replace(" ", "_").replace("-", "_")
+            if allow_owner and normalized_role in {"50", "60", "owner", "admin"}:
+                if permission != "owner" or (team and team.casefold() != "owners"):
+                    raise WorkspaceError(
+                        f"{label}.{mapping_label}[{role!r}] must map GitLab Owner access to the built-in Forgejo Owners team"
                     )
     unmapped = string(config.get("unmapped_role") or "fail").lower()
     if unmapped not in {"fail", "skip", "manual"}:
@@ -375,6 +400,11 @@ def validate_plan(plan: dict[str, Any]) -> None:
         if name in {"groups", "subgroups"} and config["mode"] == "managed":
             if string(config.get("target_kind") or "organization") != "organization":
                 raise WorkspaceError(f"surfaces.{name}.target_kind must be organization")
+            if "memberships" not in surfaces:
+                # Older plans put membership role mappings under groups or
+                # subgroups. Validate that compatibility path with the same
+                # ownership contract as the explicit memberships surface.
+                validate_role_mapping_config(config, f"surfaces.{name}")
         if name == "memberships" and config["mode"] == "managed":
             if normalized["groups"]["mode"] != "managed" and normalized["subgroups"]["mode"] != "managed":
                 raise WorkspaceError("surfaces.memberships.managed requires managed groups or subgroups")
@@ -1382,10 +1412,11 @@ def role_name(member: dict[str, Any]) -> str:
     return ""
 
 
-def default_role_mapping(member: dict[str, Any]) -> tuple[str, str, str]:
+def default_role_mapping(member: dict[str, Any], surface: str = "permissions") -> tuple[str, str, str]:
+    buckets = role_buckets(surface)
     level = normalized_access_level(member)
     if level is not None:
-        for minimum, key, team, permission in DEFAULT_ROLE_BUCKETS:
+        for minimum, key, team, permission in buckets:
             if level >= minimum:
                 return key, team, permission
         return "none", "", "none"
@@ -1393,18 +1424,24 @@ def default_role_mapping(member: dict[str, Any]) -> tuple[str, str, str]:
     if name == "none":
         return "none", "", "none"
     if name:
-        for _minimum, key, team, permission in DEFAULT_ROLE_BUCKETS:
+        for _minimum, key, team, permission in buckets:
             if key == name:
                 return key, team, permission
     return "", "", ""
 
 
-def cap_invited_group_role(member: dict[str, Any], role: dict[str, Any]) -> dict[str, Any]:
+def cap_invited_group_role(
+    member: dict[str, Any],
+    role: dict[str, Any],
+    surface: str = "permissions",
+) -> dict[str, Any]:
     """Never let a custom member mapping exceed a project's group invitation."""
     invitation_level = member.get("invited_group_access_level")
     if invitation_level in (None, ""):
         return role
-    cap_key, cap_team, cap_permission = default_role_mapping({"access_level": invitation_level})
+    cap_key, cap_team, cap_permission = default_role_mapping(
+        {"access_level": invitation_level}, surface
+    )
     if not cap_key or PERMISSION_RANK[cap_permission] >= PERMISSION_RANK[string(role.get("permission"))]:
         return role
     capped = dict(role)
@@ -1435,11 +1472,11 @@ def role_mapping_candidates(member: dict[str, Any]) -> list[str]:
     return candidates
 
 
-def default_team_for_role_key(role_key: str) -> str:
+def default_team_for_role_key(role_key: str, surface: str = "permissions") -> str:
     normalized = string(role_key).lower().replace(" ", "_").replace("-", "_")
     aliases = {
         string(alias).lower().replace(" ", "_").replace("-", "_"): team
-        for _minimum, key, team, _permission in DEFAULT_ROLE_BUCKETS
+        for _minimum, key, team, _permission in role_buckets(surface)
         for alias in (key, team)
     }
     try:
@@ -1447,7 +1484,7 @@ def default_team_for_role_key(role_key: str) -> str:
     except ValueError:
         numeric = None
     if numeric is not None:
-        for minimum, _key, team, _permission in DEFAULT_ROLE_BUCKETS:
+        for minimum, _key, team, _permission in role_buckets(surface):
             if numeric >= minimum:
                 return team
     return aliases.get(normalized, "")
@@ -1461,14 +1498,14 @@ def generated_team_name(role_key: str, permission: str) -> str:
 def managed_team_definitions(plan: dict[str, Any], surface: str) -> dict[str, str]:
     """Return every deterministic role team, including currently empty teams."""
     definitions = {
-        team: permission for _minimum, _key, team, permission in DEFAULT_ROLE_BUCKETS
+        team: permission for _minimum, _key, team, permission in role_buckets(surface)
     }
     config = role_mapping_config(plan, surface)
     for role_key, mapping in config["mappings"].items():
         permission, team = role_mapping_value(mapping)
         if permission == "none":
             continue
-        team = team or default_team_for_role_key(role_key)
+        team = team or default_team_for_role_key(role_key, surface)
         if not team:
             team = generated_team_name(role_key, permission)
         definitions[team] = permission
@@ -1492,9 +1529,9 @@ def resolve_member_role(plan: dict[str, Any], member: dict[str, Any], surface: s
         if not permission:
             raise WorkspaceError(f"role mapping {matched_key!r} has no Forgejo permission")
         if not team and permission != "none":
-            team = default_team_for_role_key(matched_key)
+            team = default_team_for_role_key(matched_key, surface)
             if not team and not custom:
-                default_key, default_team, _default_permission = default_role_mapping(member)
+                default_key, default_team, _default_permission = default_role_mapping(member, surface)
                 team = default_team
             team = team or generated_team_name(matched_key, permission)
         return cap_invited_group_role(member, {
@@ -1503,7 +1540,7 @@ def resolve_member_role(plan: dict[str, Any], member: dict[str, Any], surface: s
             "team": team,
             "access_level": normalized_access_level(member),
             "custom_role_id": custom,
-        })
+        }, surface)
     if custom:
         # A GitLab custom role can share a base access level with a different
         # role. Never silently collapse that custom role into the base role.
@@ -1511,7 +1548,7 @@ def resolve_member_role(plan: dict[str, Any], member: dict[str, Any], surface: s
         default_team = ""
         default_permission = ""
     else:
-        default_key, default_team, default_permission = default_role_mapping(member)
+        default_key, default_team, default_permission = default_role_mapping(member, surface)
     if default_key:
         return cap_invited_group_role(member, {
             "key": default_key,
@@ -1519,7 +1556,7 @@ def resolve_member_role(plan: dict[str, Any], member: dict[str, Any], surface: s
             "team": default_team,
             "access_level": normalized_access_level(member),
             "custom_role_id": custom,
-        })
+        }, surface)
     behavior = string(config.get("unmapped_role") or "fail").lower()
     if behavior == "fail":
         identity = role_name(member) or custom or string(normalized_access_level(member), "unknown")
@@ -1783,11 +1820,13 @@ def import_memberships(
     }
     context_teams: dict[str, dict[str, dict[str, Any]]] = {}
     context_members: dict[str, list[str]] = {}
+    context_owners: dict[str, list[str]] = {}
     results: list[dict[str, Any]] = []
     for item in plans:
         source_path = item["source_path"]
         target_org = item["target_org"]
         group_teams: dict[str, dict[str, Any]] = {}
+        organization_owners: set[str] = set()
         for member in item["members"]:
             role = member["role"]
             if role.get("unmapped"):
@@ -1797,11 +1836,14 @@ def import_memberships(
                 selected_team: str | None = None
             else:
                 selected_team = team_name
-                group_teams[team_name] = {
-                    "id": team_ids[(target_org, team_name)],
-                    "name": team_name,
-                    "permission": role["permission"],
-                }
+                if team_name.casefold() == "owners":
+                    organization_owners.add(member["username"])
+                else:
+                    group_teams[team_name] = {
+                        "id": team_ids[(target_org, team_name)],
+                        "name": team_name,
+                        "permission": role["permission"],
+                    }
             available = {
                 name: team_id
                 for (org, name), team_id in team_ids.items()
@@ -1813,12 +1855,14 @@ def import_memberships(
             {member["username"] for member in item["members"] if not member["role"].get("unmapped")},
             key=str.casefold,
         )
+        context_owners[source_path] = sorted(organization_owners, key=str.casefold)
         results.append(
             {
                 "group": source_path,
                 "organization": target_org,
                 "members": len(item["members"]),
                 "teams": sorted(group_teams),
+                "owners": sorted(organization_owners, key=str.casefold),
                 "verified": True,
             }
         )
@@ -1828,11 +1872,23 @@ def import_memberships(
         "organizations": organizations,
         "teams": context_teams,
         "members": context_members,
+        "owners": context_owners,
         "verified": all(item.get("verified") is True for item in results),
     }
 
 
 def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> int:
+    permission = string(permission).lower()
+    if permission not in FORGEJO_TEAM_PERMISSIONS:
+        raise WorkspaceError(f"unsupported Forgejo team permission {permission!r} for {org}/{name}")
+    if permission == "owner" and name.casefold() != "owners":
+        raise WorkspaceError(
+            f"Forgejo organization ownership must use the built-in Owners team; {org}/{name} cannot grant owner permission"
+        )
+    if name.casefold() == "owners" and permission != "owner":
+        raise WorkspaceError(
+            f"Forgejo built-in Owners team {org}/{name} must retain owner permission"
+        )
     teams = list_pages(destination, f"orgs/{quote(org, safe='')}/teams")
     existing = next((item for item in teams if string(item.get("name")) == name), None)
     if existing and existing.get("id") is not None:
@@ -1841,8 +1897,12 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
             raise WorkspaceError(
                 f"Forgejo team {org}/{name} permission mismatch: "
                 f"expected {permission!r}, got {actual_permission or '<missing>'!r}"
-            )
+        )
         return int(existing["id"])
+    if name.casefold() == "owners":
+        raise WorkspaceError(
+            f"Forgejo organization {org!r} has no built-in Owners team; refuse to create a substitute"
+        )
     body = {
         "name": name,
         "description": "Imported GitLab access mapping",
@@ -2051,17 +2111,33 @@ def source_project_group_path(project: dict[str, Any], project_path: str) -> str
 
 
 def managed_team_names(plan: dict[str, Any], group_result: dict[str, Any] | None) -> set[str]:
+    # The built-in Owners team grants organization-wide ownership and is not a
+    # repository attachment that permission exact-reconciliation should remove.
+    def repository_team(name: str) -> bool:
+        return name.casefold() != "owners"
+
     names: set[str] = set()
     for group_teams in ((group_result or {}).get("teams") or {}).values():
         if not isinstance(group_teams, dict):
             continue
         for team_name, team in group_teams.items():
             if isinstance(team, dict) and string(team.get("name") or team_name):
-                names.add(string(team.get("name") or team_name))
+                team_name_value = string(team.get("name") or team_name)
+                if repository_team(team_name_value):
+                    names.add(team_name_value)
     for _minimum, _key, team_name, _permission in DEFAULT_ROLE_BUCKETS:
-        names.add(team_name)
-    names.update(managed_team_definitions(plan, "memberships"))
-    names.update(managed_team_definitions(plan, "permissions"))
+        if repository_team(team_name):
+            names.add(team_name)
+    names.update(
+        team_name
+        for team_name in managed_team_definitions(plan, "memberships")
+        if repository_team(team_name)
+    )
+    names.update(
+        team_name
+        for team_name in managed_team_definitions(plan, "permissions")
+        if repository_team(team_name)
+    )
     return names
 
 
