@@ -70,7 +70,9 @@ from becoming an instance-wide import.
   repository metadata are delegated to `forge_migration.py`.
 - **Permissions:** The managed surface inventories GitLab direct and effective
   project members, including inherited access and available invited-group
-  metadata. It reconciles Forgejo repository collaborators with verified
+  metadata. Invited groups are expanded to their current member set and each
+  member is capped at the access level granted by the project invitation before
+  the role mapping is applied. It reconciles Forgejo repository collaborators with verified
   `read`, `write`, or `admin` permissions and attaches the corresponding
   organization teams to group-owned repositories when the destination mapping
   permits it. Duplicate grants use the strongest effective permission.
@@ -202,3 +204,21 @@ destination verification and recovery drill pass.
 
 The complete selectable example is
 `examples/migrations/gitlab-to-forgejo.workspace.example.json`.
+
+For an instance-wide, token-visible users/groups/projects authorization pass,
+start from
+`examples/migrations/gitlab-to-forgejo-all-users-access.example.json`. It sets
+`source.all_available_groups=true`, `source.all_available_projects=true`, and
+`surfaces.users.all_available=true`; GitLab's API only exposes objects visible
+to the migration token. The example deliberately keeps exact reconciliation
+off and leaves bots included so the export is truly broad; review the redacted
+snapshot and change `skip_bots` only when that is your intended account policy.
+The GitLab token must be permitted to enumerate users, groups, group members,
+project members, invited groups, and protected branches. A Forgejo
+administrator token is required for user creation and organization/team
+reconciliation.
+
+Before destination changes begin, import validates that every selected managed
+surface is present in the snapshot and that users, groups, projects, and
+permissions are non-empty. A truncated or hand-edited export therefore stops
+before creating partial users, teams, or repository grants.

@@ -138,6 +138,15 @@ def test_redaction_and_destination_url() -> None:
     mapped["mappings"] = {"groups": {"platform": {"target_name": "platform-team"}}}
     if workspace.mapped_name(mapped, "groups", "platform", "fallback") != "platform-team":
         raise AssertionError("target_name group mapping was ignored")
+    grouped_project = {
+        "path_with_namespace": "engineering/platform/control-plane",
+        "path": "control-plane",
+        "namespace": {"kind": "group", "full_path": "engineering/platform"},
+    }
+    mapped["surfaces"]["subgroups"] = {"mode": "managed"}  # type: ignore[index]
+    owner, repo = workspace.destination_name(mapped, grouped_project)
+    if owner != "engineering-platform" or repo != "control-plane":
+        raise AssertionError("managed group projects were not assigned to their deterministic Forgejo organization")
 
 
 def test_selected_nested_group_is_a_root() -> None:
@@ -166,6 +175,65 @@ def test_project_rules_discovery_is_redacted_and_scoped() -> None:
         raise AssertionError(f"protected-branch inventory was not safely redacted: {result!r}")
     if list_pages.call_args.args[1] != "projects/7/protected_branches":
         raise AssertionError(f"protected-branch API was not scoped to the selected project: {list_pages.call_args!r}")
+
+
+def test_project_permission_discovery_materializes_invited_group_members() -> None:
+    source = workspace.Endpoint("gitlab", "https://gitlab.example.test/api/v4", "GITLAB_TOKEN")
+    project = {"id": 7, "path_with_namespace": "platform/control-plane"}
+    invited = {
+        "id": 42,
+        "full_path": "shared/release",
+        "group_access_level": 20,
+    }
+    with (
+        mock.patch.object(
+            workspace,
+            "list_pages",
+            side_effect=[
+                [{"username": "direct", "access_level": 30}],
+                [{"username": "inherited", "access_level": 40}],
+                [
+                    {"username": "release-owner", "access_level": 40},
+                    {"username": "release-reporter", "access_level": 20},
+                ],
+            ],
+        ) as list_pages,
+        mock.patch.object(workspace, "list_pages_optional", return_value=[invited]),
+    ):
+        result = workspace.discover_project_permissions(source, project)
+    invited_members = result.get("invited_group_members")
+    if invited_members != [
+        {
+            "username": "release-owner",
+            "access_level": 20,
+            "invited_group_access_level": 20,
+            "invited_group": "shared/release",
+        },
+        {
+            "username": "release-reporter",
+            "access_level": 20,
+            "invited_group_access_level": 20,
+            "invited_group": "shared/release",
+        },
+    ]:
+        raise AssertionError(f"invited group access was not materialized at the invitation cap: {invited_members!r}")
+    if list_pages.call_args_list[-1].args[1] != "groups/42/members/all":
+        raise AssertionError("invited group members were not queried through the scoped group API")
+
+
+def test_managed_import_rejects_missing_snapshot_surface_before_mutation() -> None:
+    plan = copy.deepcopy(base_plan())
+    plan["surfaces"] = {  # type: ignore[index]
+        "users": {"mode": "managed", "default_password_env": "IMPORT_PASSWORD"},
+    }
+    snapshot = {"surfaces": {}}
+    try:
+        workspace.validate_import_snapshot_contract(plan, snapshot)  # type: ignore[arg-type]
+    except workspace.WorkspaceError as exc:
+        if "users snapshot surface is missing" not in str(exc):
+            raise AssertionError(f"unexpected missing-surface diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("managed import accepted a missing users snapshot surface")
 
 
 def test_all_available_group_discovery_includes_top_level_groups() -> None:
@@ -439,6 +507,18 @@ def test_role_mapping_supports_custom_roles_and_fails_closed() -> None:
     resolved = workspace.resolve_member_role(plan, custom, "memberships")
     if resolved["permission"] != "write" or resolved["team"] != "release-reviewers":
         raise AssertionError(f"custom GitLab role mapping was not honored: {resolved!r}")
+    capped = workspace.resolve_member_role(
+        plan,
+        {
+            "username": "alice",
+            "access_level": 40,
+            "member_role_id": 9001,
+            "invited_group_access_level": 20,
+        },
+        "memberships",
+    )
+    if capped["permission"] != "read" or capped["team"] != "gitlab-reporters" or not capped.get("invitation_capped"):
+        raise AssertionError(f"invited-group access cap was bypassed by custom role mapping: {capped!r}")
     try:
         workspace.resolve_member_role(plan, {"username": "bob", "access_level": 30, "member_role_id": 9002}, "memberships")
     except workspace.WorkspaceError as exc:
@@ -829,6 +909,8 @@ def main() -> int:
     test_redaction_and_destination_url()
     test_selected_nested_group_is_a_root()
     test_project_rules_discovery_is_redacted_and_scoped()
+    test_project_permission_discovery_materializes_invited_group_members()
+    test_managed_import_rejects_missing_snapshot_surface_before_mutation()
     test_all_available_group_discovery_includes_top_level_groups()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
