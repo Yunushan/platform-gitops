@@ -594,6 +594,23 @@ values, let approved users sign in, then set it back to `false` and sync again.
 Do not patch only the live Deployment because Argo CD will reconcile it back to
 the GitOps value.
 
+If Forgejo instead shows `Client ID not registered` on
+`/login/oauth/authorize`, the Woodpecker OAuth Secret can exist while its
+corresponding Forgejo OAuth application was removed by a database restore,
+application deletion, or account migration. The application-secret
+reconciliation validates both the client ID and the canonical Woodpecker
+redirect URI now; when the existing pair is stale, it creates a replacement
+application and refreshes only the Woodpecker OAuth Secret. Run the normal
+focused repair after deploying the updated workspace:
+
+```bash
+make platform-woodpecker-repair
+```
+
+The general `PLATFORM_APP_SECRET_ROTATE=true` switch is not required for this
+case and should not be used just to repair Woodpecker OAuth, because it can
+rotate unrelated platform credentials.
+
 The `platform-tls-verify` gate uses each live Ingress TLS Secret binding as the
 authoritative hostname when one exists. This keeps verification aligned with
 custom hostnames even when optional hostname variables are absent from the local
