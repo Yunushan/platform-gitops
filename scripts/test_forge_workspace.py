@@ -332,6 +332,256 @@ def test_team_permission_fails_closed() -> None:
             raise AssertionError("team permission mismatch was accepted")
 
 
+def test_recursive_group_discovery_keeps_direct_and_effective_members() -> None:
+    plan = base_plan()
+    plan["surfaces"]["subgroups"] = {"mode": "managed", "include_subgroups": True}  # type: ignore[index]
+    endpoint = object()
+
+    def get_group(_source: object, path: str, **_kwargs: object) -> dict[str, object]:
+        if path == "groups/platform":
+            return {"id": 1, "full_path": "platform", "name": "Platform"}
+        raise AssertionError(f"unexpected group lookup: {path}")
+
+    def pages(_source: object, path: str, **_kwargs: object) -> list[dict[str, object]]:
+        groups = {
+            "groups/1/subgroups": [{"id": 2, "full_path": "platform/child", "name": "Child"}],
+            "groups/2/subgroups": [{"id": 3, "full_path": "platform/child/grand", "name": "Grand"}],
+            "groups/3/subgroups": [],
+        }
+        if path in groups:
+            return groups[path]
+        if path.endswith("/members"):
+            return [{"username": "direct", "access_level": 30}]
+        if path.endswith("/members/all"):
+            return [
+                {"username": "direct", "access_level": 30},
+                {"username": "inherited", "access_level": 20},
+            ]
+        raise AssertionError(f"unexpected group page: {path}")
+
+    with (
+        mock.patch.object(workspace, "get_endpoint_value", side_effect=get_group),
+        mock.patch.object(workspace, "list_pages", side_effect=pages),
+    ):
+        groups = workspace.discover_groups(endpoint, plan)  # type: ignore[arg-type]
+    paths = [item["full_path"] for item in groups]
+    if paths != ["platform", "platform/child", "platform/child/grand"]:
+        raise AssertionError(f"nested groups were not discovered recursively: {paths!r}")
+    if groups[1]["direct_members"] != [{"username": "direct", "access_level": 30}]:
+        raise AssertionError("direct group membership was not retained")
+    if len(groups[1]["effective_members"]) != 2:
+        raise AssertionError("effective group membership was not retained")
+
+
+def test_role_mapping_supports_custom_roles_and_fails_closed() -> None:
+    plan = base_plan()
+    plan["surfaces"]["memberships"] = {  # type: ignore[index]
+        "mode": "managed",
+        "role_mappings": {"custom:9001": {"permission": "write", "team": "release-reviewers"}},
+    }
+    custom = {"username": "alice", "access_level": 20, "member_role_id": 9001}
+    resolved = workspace.resolve_member_role(plan, custom, "memberships")
+    if resolved["permission"] != "write" or resolved["team"] != "release-reviewers":
+        raise AssertionError(f"custom GitLab role mapping was not honored: {resolved!r}")
+    try:
+        workspace.resolve_member_role(plan, {"username": "bob", "access_level": 30, "member_role_id": 9002}, "memberships")
+    except workspace.WorkspaceError as exc:
+        if "not mapped" not in str(exc):
+            raise AssertionError(f"unexpected custom-role diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("unmapped custom GitLab role was collapsed into a base role")
+
+
+def test_permission_surface_validation_requires_safe_exact_confirmation() -> None:
+    plan = base_plan()
+    plan["surfaces"]["permissions"] = {"mode": "managed", "reconcile": "exact"}  # type: ignore[index]
+    expect_error(plan, "accepted=true and a reason")
+    plan["surfaces"]["permissions"]["accepted"] = True  # type: ignore[index]
+    plan["surfaces"]["permissions"]["reason"] = "verified migration scope"  # type: ignore[index]
+    workspace.validate_plan(plan)
+    invalid = copy.deepcopy(plan)
+    invalid["surfaces"]["permissions"]["role_mappings"] = {"30": "execute"}  # type: ignore[index]
+    expect_error(invalid, "must be one of")
+
+
+def test_membership_import_uses_direct_members_by_default() -> None:
+    plan = base_plan()
+    plan["surfaces"]["memberships"] = {"mode": "managed"}  # type: ignore[index]
+    snapshot = {
+        "surfaces": {
+            "memberships": {
+                "items": [
+                    {
+                        "group": "platform",
+                        "direct_members": [{"username": "alice", "access_level": 30}],
+                        "effective_members": [
+                            {"username": "alice", "access_level": 30},
+                            {"username": "bob", "access_level": 40},
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+    group_result = {"organizations": {"platform": "platform"}}
+    with (
+        mock.patch.object(workspace, "ensure_team", return_value=7),
+        mock.patch.object(workspace, "reconcile_team_membership") as reconcile,
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+    ):
+        result = workspace.import_memberships(plan, object(), snapshot, group_result, {"alice"})  # type: ignore[arg-type]
+    if result.get("verified") is not True or reconcile.call_count != 1:
+        raise AssertionError(f"direct membership import was not verified: {result!r}")
+    call = reconcile.call_args
+    if call.args[2:] != ("gitlab-developers", "alice"):
+        raise AssertionError(f"inherited membership was incorrectly materialized: {call!r}")
+    if set(call.args[1]) != {
+        "gitlab-owners",
+        "gitlab-maintainers",
+        "gitlab-developers",
+        "gitlab-reporters",
+        "gitlab-guests",
+    }:
+        raise AssertionError("empty managed role teams were omitted from downgrade reconciliation")
+    if user_probe.called:
+        raise AssertionError("known imported user was probed unnecessarily")
+
+
+def _permission_plan() -> dict[str, object]:
+    plan = base_plan()
+    plan["surfaces"]["permissions"] = {  # type: ignore[index]
+        "mode": "managed",
+        "include_direct": True,
+        "include_inherited": True,
+        "group_strategy": "both",
+    }
+    return plan
+
+
+def _permission_snapshot() -> dict[str, object]:
+    return {
+        "surfaces": {
+            "permissions": {
+                "items": [
+                    {
+                        "project": "platform/control-plane",
+                        "direct_members": [
+                            {"username": "alice", "access_level": 20},
+                            {"username": "alice", "access_level": 40},
+                        ],
+                        "effective_members": [{"username": "bob", "access_level": 30}],
+                    }
+                ]
+            }
+        },
+        "indexes": {
+            "projects": [
+                {
+                    "project": {
+                        "path_with_namespace": "platform/control-plane",
+                        "namespace": {"full_path": "platform", "kind": "group"},
+                    },
+                    "destination": {
+                        "owner": "platform",
+                        "repo": "control-plane",
+                        "owner_kind": "organization",
+                    },
+                }
+            ]
+        },
+    }
+
+
+def test_permission_import_merges_effective_access_and_verifies_repo_teams() -> None:
+    plan = _permission_plan()
+    snapshot = _permission_snapshot()
+    group_result = {
+        "organizations": {"platform": "platform"},
+        "teams": {
+            "platform": {
+                "gitlab-reporters": {"id": 7, "name": "gitlab-reporters", "permission": "read"},
+                "gitlab-developers": {"id": 8, "name": "gitlab-developers", "permission": "write"},
+            }
+        },
+    }
+    calls: list[tuple[str, str, object]] = []
+
+    def api(_destination: object, method: str, path: str, **kwargs: object) -> object:
+        calls.append((method, path, kwargs.get("body")))
+        if method == "GET" and path.endswith("/permission"):
+            return 200, {"permission": "write"}
+        return {}
+
+    with (
+        mock.patch.object(workspace, "request", side_effect=api),
+        mock.patch.object(workspace, "repository_teams", return_value=[{"name": "gitlab-reporters"}, {"name": "gitlab-developers"}]),
+    ):
+        result = workspace.import_permissions(plan, snapshot, object(), group_result, {"alice", "bob"})  # type: ignore[arg-type]
+    if result.get("verified") is not True:
+        raise AssertionError(f"permission import was not verified: {result!r}")
+    collaborator_puts = [call for call in calls if call[0] == "PUT" and "/collaborators/" in call[1]]
+    if {call[1].rsplit("/", 1)[-1] for call in collaborator_puts} != {"alice", "bob"}:
+        raise AssertionError(f"effective project collaborators were not reconciled: {collaborator_puts!r}")
+    alice_body = next(call[2] for call in collaborator_puts if call[1].endswith("/alice"))
+    if alice_body != {"permission": "write"}:
+        raise AssertionError("strongest duplicate project permission did not win")
+    team_puts = [call for call in calls if call[0] == "PUT" and "/teams/" in call[1]]
+    if len(team_puts) != 2:
+        raise AssertionError(f"group teams were not attached to the repository: {team_puts!r}")
+
+
+def test_exact_permission_reconciliation_does_not_remove_unmanaged_collaborators() -> None:
+    plan = _permission_plan()
+    plan["surfaces"]["permissions"].update({"reconcile": "exact", "accepted": True, "reason": "approved"})  # type: ignore[index]
+    snapshot = _permission_snapshot()
+    snapshot["surfaces"]["permissions"]["items"][0]["effective_members"].append({"username": "stale", "access_level": 0})  # type: ignore[index]
+    calls: list[tuple[str, str, object]] = []
+
+    def api(_destination: object, method: str, path: str, **kwargs: object) -> object:
+        calls.append((method, path, kwargs.get("body")))
+        if method == "GET" and path.endswith("/permission"):
+            return (200, {"permission": "write"}) if any(path.endswith(f"/{name}/permission") for name in ("alice", "bob")) else (404, {})
+        if method == "GET" and path.endswith("/collaborators"):
+            return [{"login": "alice"}, {"login": "unmanaged"}, {"login": "stale"}]
+        return {}
+
+    with (
+        mock.patch.object(workspace, "request", side_effect=api),
+        mock.patch.object(workspace, "repository_teams", return_value=[]),
+        mock.patch.object(workspace, "list_pages", return_value=[{"login": "alice"}, {"login": "unmanaged"}, {"login": "stale"}]),
+    ):
+        result = workspace.import_permissions(plan, snapshot, object(), None, {"alice", "bob", "stale"})  # type: ignore[arg-type]
+    if result.get("verified") is not True:
+        raise AssertionError("exact permission reconciliation was not verified")
+    deletes = [call[1] for call in calls if call[0] == "DELETE"]
+    if not any(path.endswith("/stale") for path in deletes):
+        raise AssertionError("managed stale collaborator was not removed in exact mode")
+    if any(path.endswith("/unmanaged") for path in deletes):
+        raise AssertionError("unmanaged collaborator was removed in exact mode")
+
+
+def test_permission_readback_fails_closed() -> None:
+    plan = _permission_plan()
+    snapshot = _permission_snapshot()
+
+    def api(_destination: object, method: str, path: str, **_kwargs: object) -> object:
+        if method == "GET" and path.endswith("/permission"):
+            return 200, {"permission": "read"}
+        return {}
+
+    with (
+        mock.patch.object(workspace, "request", side_effect=api),
+        mock.patch.object(workspace, "repository_teams", return_value=[]),
+    ):
+        try:
+            workspace.import_permissions(plan, snapshot, object(), None, {"alice", "bob"})  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "permission mismatch" not in str(exc):
+                raise AssertionError(f"unexpected collaborator read-back error: {exc}") from exc
+        else:
+            raise AssertionError("permission import accepted a weaker read-back permission")
+
+
 def test_ci_destination_and_remote_proof() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         repo_root = Path(temp_dir) / "checkout"
@@ -469,6 +719,13 @@ def main() -> int:
     test_mapped_variable_is_non_mutating()
     test_team_membership_is_reconciled_and_verified()
     test_team_permission_fails_closed()
+    test_recursive_group_discovery_keeps_direct_and_effective_members()
+    test_role_mapping_supports_custom_roles_and_fails_closed()
+    test_permission_surface_validation_requires_safe_exact_confirmation()
+    test_membership_import_uses_direct_members_by_default()
+    test_permission_import_merges_effective_access_and_verifies_repo_teams()
+    test_exact_permission_reconciliation_does_not_remove_unmanaged_collaborators()
+    test_permission_readback_fails_closed()
     test_ci_destination_and_remote_proof()
     test_ci_commit_is_idempotent()
     test_pipeline_schedule_import_is_not_history_import()
