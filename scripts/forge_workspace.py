@@ -279,6 +279,14 @@ def validate_role_mapping_config(config: dict[str, Any], label: str) -> None:
                     )
             else:
                 team = ""
+            if permission == "owner" and team.casefold() != "owners":
+                raise WorkspaceError(
+                    f"{label}.{mapping_label}[{role!r}] must map owner access to the built-in Forgejo Owners team"
+                )
+            if team.casefold() == "owners" and permission != "owner":
+                raise WorkspaceError(
+                    f"{label}.{mapping_label}[{role!r}] cannot assign non-owner access to the built-in Forgejo Owners team"
+                )
             normalized_role = string(role).lower().replace(" ", "_").replace("-", "_")
             if allow_owner and normalized_role in {"50", "60", "owner", "admin"}:
                 if permission != "owner" or (team and team.casefold() != "owners"):
@@ -1697,10 +1705,14 @@ def membership_items(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def group_members_for_import(item: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
-    if bool_value(config.get("include_inherited")):
-        members = item.get("effective_members") or item.get("members") or []
+    selected_key = "effective_members" if bool_value(config.get("include_inherited")) else "direct_members"
+    if selected_key in item:
+        members = item[selected_key]
     else:
-        members = item.get("direct_members") or item.get("members") or []
+        # Snapshots from the initial implementation only had `members`.
+        members = item.get("members", [])
+    if not isinstance(members, list):
+        raise WorkspaceError(f"membership snapshot field {selected_key!r} must be a list")
     return [member for member in members if isinstance(member, dict)]
 
 
@@ -2147,13 +2159,27 @@ def managed_team_names(plan: dict[str, Any], group_result: dict[str, Any] | None
 
 def permission_member_records(item: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
     members: list[dict[str, Any]] = []
+    selected_view_present = False
+
+    def extend_view(key: str) -> None:
+        nonlocal selected_view_present
+        if key not in item:
+            return
+        selected_view_present = True
+        values = item[key]
+        if not isinstance(values, list):
+            raise WorkspaceError(f"permission snapshot field {key!r} must be a list")
+        members.extend(member for member in values if isinstance(member, dict))
+
     if bool_value(config.get("include_direct"), True):
-        members.extend(member for member in item.get("direct_members", []) if isinstance(member, dict))
-        members.extend(member for member in item.get("invited_group_members", []) if isinstance(member, dict))
+        extend_view("direct_members")
+        extend_view("invited_group_members")
     if bool_value(config.get("include_inherited"), True):
-        members.extend(member for member in item.get("effective_members", []) if isinstance(member, dict))
-    if not members:
-        fallback = item.get("members") or []
+        extend_view("effective_members")
+    if not selected_view_present:
+        fallback = item.get("members", [])
+        if not isinstance(fallback, list):
+            raise WorkspaceError("permission snapshot field 'members' must be a list")
         members.extend(member for member in fallback if isinstance(member, dict))
     return members
 

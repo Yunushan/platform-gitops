@@ -504,6 +504,18 @@ def test_gitlab_owner_maps_to_builtin_owners_team() -> None:
     }
     expect_error(invalid, "built-in Forgejo Owners")
 
+    invalid_custom = copy.deepcopy(plan)
+    invalid_custom["surfaces"]["memberships"]["role_mappings"] = {  # type: ignore[index]
+        "custom:9001": {"permission": "owner", "team": "gitlab-custom-owner"}
+    }
+    expect_error(invalid_custom, "map owner access to the built-in Forgejo Owners team")
+
+    invalid_owners_team = copy.deepcopy(plan)
+    invalid_owners_team["surfaces"]["memberships"]["role_mappings"] = {  # type: ignore[index]
+        "40": {"permission": "write", "team": "Owners"}
+    }
+    expect_error(invalid_owners_team, "cannot assign non-owner access")
+
     with mock.patch.object(workspace, "list_pages", return_value=[]):
         try:
             workspace.ensure_team(object(), "platform", "Owners", "owner")  # type: ignore[arg-type]
@@ -639,6 +651,26 @@ def test_membership_import_uses_direct_members_by_default() -> None:
         raise AssertionError("empty managed role teams were omitted from downgrade reconciliation")
     if user_probe.called:
         raise AssertionError("known imported user was probed unnecessarily")
+
+
+def test_membership_selection_does_not_fallback_from_empty_direct_view() -> None:
+    item = {
+        "direct_members": [],
+        "effective_members": [{"username": "inherited", "access_level": 40}],
+        "members": [{"username": "inherited", "access_level": 40}],
+    }
+    direct = workspace.group_members_for_import(item, {"include_inherited": False})
+    if direct:
+        raise AssertionError(f"empty direct membership view unexpectedly used effective members: {direct!r}")
+
+    permission_direct = workspace.permission_member_records(
+        item,
+        {"include_direct": True, "include_inherited": False},
+    )
+    if permission_direct:
+        raise AssertionError(
+            "permission selection unexpectedly fell back to effective members when direct access was empty"
+        )
 
 
 def _permission_plan() -> dict[str, object]:
