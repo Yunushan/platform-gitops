@@ -3,8 +3,9 @@
 
 The workspace command is deliberately separate from the repository migrator.
 It inventories users, groups, direct/effective memberships, projects,
-repository authorization, CI/CD metadata, variables, runners, and pipeline
-history, then applies only surfaces whose plan mode is ``managed``.
+repository authorization and protected-branch rules, CI/CD metadata,
+variables, runners, and pipeline history, then applies only surfaces whose
+plan mode is ``managed``.
 ``skip``, ``export``, ``mapped``, and ``manual`` are explicit non-mutating
 choices. Secret values never appear in a plan, snapshot proof, or stdout.
 """
@@ -44,6 +45,7 @@ SURFACES = (
     "projects",
     "repositories",
     "permissions",
+    "rules",
     "runners",
     "variables",
     "ci",
@@ -52,7 +54,8 @@ SURFACES = (
 MODES = {"skip", "export", "managed", "mapped", "manual"}
 ACCOUNTED_MODES = {"managed", "mapped", "manual", "skipped"}
 FORGEJO_PERMISSIONS = {"none", "read", "write", "admin"}
-PERMISSION_RANK = {"none": 0, "read": 1, "write": 2, "admin": 3}
+FORGEJO_TEAM_PERMISSIONS = FORGEJO_PERMISSIONS | {"owner"}
+PERMISSION_RANK = {"none": 0, "read": 1, "write": 2, "admin": 3, "owner": 4}
 DEFAULT_ROLE_BUCKETS = (
     (50, "owner", "gitlab-owners", "admin"),
     (40, "maintainer", "gitlab-maintainers", "write"),
@@ -60,6 +63,20 @@ DEFAULT_ROLE_BUCKETS = (
     (20, "reporter", "gitlab-reporters", "read"),
     (10, "guest", "gitlab-guests", "read"),
 )
+# Forgejo organization ownership is represented by membership in its built-in
+# Owners team, not by a normal repository-admin team.
+MEMBERSHIP_ROLE_BUCKETS = (
+    (50, "owner", "Owners", "owner"),
+    (40, "maintainer", "gitlab-maintainers", "write"),
+    (30, "developer", "gitlab-developers", "write"),
+    (20, "reporter", "gitlab-reporters", "read"),
+    (10, "guest", "gitlab-guests", "read"),
+)
+
+
+def role_buckets(surface: str) -> tuple[tuple[int, str, str, str], ...]:
+    """Return destination role buckets appropriate for the selected surface."""
+    return MEMBERSHIP_ROLE_BUCKETS if surface == "memberships" else DEFAULT_ROLE_BUCKETS
 ROLE_NAME_ALIASES = {
     "no_access": "none",
     "none": "none",
@@ -223,9 +240,14 @@ def require_selector(plan: dict[str, Any]) -> None:
     selectors = source.get("project_paths") or source.get("group_paths")
     users = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users") if isinstance(plan.get("surfaces"), dict) else {"mode": "skip"}
     user_selector = source.get("usernames") or bool_value(users.get("all_available"))
-    if not selectors and not bool_value(source.get("all_available_projects")) and not user_selector:
+    if (
+        not selectors
+        and not bool_value(source.get("all_available_projects"))
+        and not bool_value(source.get("all_available_groups"))
+        and not user_selector
+    ):
         raise WorkspaceError(
-            "source.project_paths, source.group_paths, source.usernames, or an explicit all_available selector is required"
+            "source.project_paths, source.group_paths, source.usernames, or an explicit all_available_projects/all_available_groups selector is required"
         )
     if selectors is not None and (not isinstance(selectors, list) or not all(string(item) for item in selectors)):
         raise WorkspaceError("source.project_paths and source.group_paths must contain non-empty strings")
@@ -234,6 +256,8 @@ def require_selector(plan: dict[str, Any]) -> None:
 def validate_role_mapping_config(config: dict[str, Any], label: str) -> None:
     mappings = config.get("role_mappings") or {}
     custom_mappings = config.get("custom_role_mappings") or {}
+    allow_owner = "membership" in label or label.endswith(".groups") or label.endswith(".subgroups")
+    allowed_permissions = FORGEJO_TEAM_PERMISSIONS if allow_owner else FORGEJO_PERMISSIONS
     if not isinstance(mappings, dict):
         raise WorkspaceError(f"{label}.role_mappings must be an object")
     if not isinstance(custom_mappings, dict):
@@ -243,15 +267,31 @@ def validate_role_mapping_config(config: dict[str, Any], label: str) -> None:
             if not isinstance(value, (str, dict)):
                 raise WorkspaceError(f"{label}.{mapping_label}[{role!r}] must be a permission string or object")
             permission = string(value if isinstance(value, str) else value.get("permission")).lower()
-            if permission not in FORGEJO_PERMISSIONS:
+            if permission not in allowed_permissions:
                 raise WorkspaceError(
-                    f"{label}.{mapping_label}[{role!r}].permission must be one of {sorted(FORGEJO_PERMISSIONS)}"
+                    f"{label}.{mapping_label}[{role!r}].permission must be one of {sorted(allowed_permissions)}"
                 )
             if isinstance(value, dict):
                 team = string(value.get("team") or value.get("team_name"))
                 if team and (len(team) > 100 or not re.fullmatch(r"[A-Za-z0-9_.-]+", team)):
                     raise WorkspaceError(
                         f"{label}.{mapping_label}[{role!r}] team names must contain only letters, numbers, '.', '_' or '-'"
+                    )
+            else:
+                team = ""
+            if permission == "owner" and team.casefold() != "owners":
+                raise WorkspaceError(
+                    f"{label}.{mapping_label}[{role!r}] must map owner access to the built-in Forgejo Owners team"
+                )
+            if team.casefold() == "owners" and permission != "owner":
+                raise WorkspaceError(
+                    f"{label}.{mapping_label}[{role!r}] cannot assign non-owner access to the built-in Forgejo Owners team"
+                )
+            normalized_role = string(role).lower().replace(" ", "_").replace("-", "_")
+            if allow_owner and normalized_role in {"50", "60", "owner", "admin"}:
+                if permission != "owner" or (team and team.casefold() != "owners"):
+                    raise WorkspaceError(
+                        f"{label}.{mapping_label}[{role!r}] must map GitLab Owner access to the built-in Forgejo Owners team"
                     )
     unmapped = string(config.get("unmapped_role") or "fail").lower()
     if unmapped not in {"fail", "skip", "manual"}:
@@ -271,7 +311,7 @@ def validate_permission_surface(config: dict[str, Any], label: str) -> None:
     if reconcile not in {"additive", "exact"}:
         raise WorkspaceError(f"{label}.reconcile must be additive or exact")
     if reconcile == "exact" and (
-        not bool_value(config.get("accepted")) or not string(config.get("reason"))
+        config.get("accepted") is not True or not string(config.get("reason"))
     ):
         raise WorkspaceError(f"{label}.reconcile=exact requires accepted=true and a reason")
     if not bool_value(config.get("include_direct"), True) and not bool_value(config.get("include_inherited"), True):
@@ -281,11 +321,27 @@ def validate_permission_surface(config: dict[str, Any], label: str) -> None:
         raise WorkspaceError(f"{label}.group_strategy must be teams, users, or both")
 
 
-def membership_surface_config(plan: dict[str, Any]) -> dict[str, Any]:
-    """Return the explicit membership policy or the legacy groups policy."""
+def validate_rules_surface(config: dict[str, Any], label: str) -> None:
+    """Validate the portable GitLab protected-branch policy options."""
+    reconcile = string(config.get("reconcile") or "additive").lower()
+    if reconcile not in {"additive", "exact"}:
+        raise WorkspaceError(f"{label}.reconcile must be additive or exact")
+    if reconcile == "exact" and (
+        not bool_value(config.get("accepted")) or not string(config.get("reason"))
+    ):
+        raise WorkspaceError(f"{label}.reconcile=exact requires accepted=true and a reason")
+    if "gitlab_maintainer_team" in config and not string(config.get("gitlab_maintainer_team")):
+        raise WorkspaceError(f"{label}.gitlab_maintainer_team must not be empty")
+
+
+def membership_surface_config(plan: dict[str, Any], source_path: str | None = None) -> dict[str, Any]:
+    """Return the membership policy for an explicit group context."""
     surfaces = plan.get("surfaces") or {}
     if "memberships" in surfaces:
         return surface_config(surfaces.get("memberships"), "surfaces.memberships")
+    if source_path:
+        group_surface = "subgroups" if group_is_subgroup(plan, source_path) else "groups"
+        return surface_config(surfaces.get(group_surface), f"surfaces.{group_surface}")
     groups = surface_config(surfaces.get("groups"), "surfaces.groups")
     subgroups = surface_config(surfaces.get("subgroups"), "surfaces.subgroups")
     if groups["mode"] == "managed" or subgroups["mode"] == "managed":
@@ -316,19 +372,25 @@ def validate_plan(plan: dict[str, Any]) -> None:
         raise WorkspaceError("at least one workspace surface must be selected")
     project_surfaces_selected = any(
         normalized[name]["mode"] != "skip"
-        for name in ("projects", "repositories", "permissions", "runners", "variables", "ci", "pipelines")
+        for name in ("projects", "repositories", "permissions", "rules", "runners", "variables", "ci", "pipelines")
     )
     if project_surfaces_selected and not (
         source_project_paths(plan)
         or source_group_paths(plan)
         or bool_value(plan["source"].get("all_available_projects"))
+        or bool_value(plan["source"].get("all_available_groups"))
     ):
         raise WorkspaceError(
-            "project, repository, runner, variable, CI, or pipeline surfaces require source.project_paths, source.group_paths, or all_available_projects=true"
+            "project, repository, permission, rule, runner, variable, CI, or pipeline surfaces require source.project_paths, source.group_paths, all_available_projects=true, or all_available_groups=true"
         )
     for name, config in normalized.items():
-        if name in {"groups", "subgroups", "memberships"} and config["mode"] != "skip" and not source_group_paths(plan):
-            raise WorkspaceError(f"surfaces.{name} requires source.group_paths")
+        if (
+            name in {"groups", "subgroups", "memberships"}
+            and config["mode"] != "skip"
+            and not source_group_paths(plan)
+            and not bool_value(plan["source"].get("all_available_groups"))
+        ):
+            raise WorkspaceError(f"surfaces.{name} requires source.group_paths or source.all_available_groups=true")
         if name == "users" and config["mode"] != "skip":
             usernames = plan["source"].get("usernames") or []
             authorization_selected = (
@@ -349,6 +411,11 @@ def validate_plan(plan: dict[str, Any]) -> None:
         if name in {"groups", "subgroups"} and config["mode"] == "managed":
             if string(config.get("target_kind") or "organization") != "organization":
                 raise WorkspaceError(f"surfaces.{name}.target_kind must be organization")
+            if "memberships" not in surfaces:
+                # Older plans put membership role mappings under groups or
+                # subgroups. Validate that compatibility path with the same
+                # ownership contract as the explicit memberships surface.
+                validate_role_mapping_config(config, f"surfaces.{name}")
         if name == "memberships" and config["mode"] == "managed":
             if normalized["groups"]["mode"] != "managed" and normalized["subgroups"]["mode"] != "managed":
                 raise WorkspaceError("surfaces.memberships.managed requires managed groups or subgroups")
@@ -394,6 +461,8 @@ def validate_plan(plan: dict[str, Any]) -> None:
             if normalized["projects"]["mode"] == "skip" and normalized["repositories"]["mode"] == "skip":
                 raise WorkspaceError("surfaces.permissions.managed requires projects or repositories to be selected")
             validate_permission_surface(config, "surfaces.permissions")
+        if name == "rules" and config["mode"] == "managed":
+            validate_rules_surface(config, "surfaces.rules")
     services = plan.get("services") or {}
     if not isinstance(services, dict):
         raise WorkspaceError("services must be an object")
@@ -407,10 +476,21 @@ def validate_plan(plan: dict[str, Any]) -> None:
     mappings = plan.get("mappings") or {}
     if not isinstance(mappings, dict):
         raise WorkspaceError("mappings must be an object")
-    for name in ("users", "groups", "projects", "permissions", "runners", "variables"):
+    for name in ("users", "groups", "projects", "permissions", "rules", "runners", "variables"):
         value = mappings.get(name)
         if value is not None and not isinstance(value, dict):
             raise WorkspaceError(f"mappings.{name} must be an object")
+    rule_mappings = mappings.get("rules") or {}
+    for project_path, mapping in rule_mappings.items():
+        if not string(project_path):
+            raise WorkspaceError("mappings.rules keys must be non-empty project paths")
+        if not isinstance(mapping, (str, dict)):
+            raise WorkspaceError(f"mappings.rules[{project_path!r}] must be a team name or object")
+        if isinstance(mapping, str):
+            merged = {**normalized["rules"], "gitlab_maintainer_team": mapping}
+        else:
+            merged = {**normalized["rules"], **mapping}
+        validate_rules_surface(merged, f"mappings.rules[{project_path!r}]")
 
 
 def get_endpoint_value(endpoint_obj: Endpoint, path: str, *, query: dict[str, Any] | None = None, expected: tuple[int, ...] = (200,)) -> Any:
@@ -509,7 +589,11 @@ def source_group_paths(plan: dict[str, Any]) -> list[str]:
 
 def group_is_subgroup(plan: dict[str, Any], path: str) -> bool:
     """Classify groups relative to the explicitly selected migration roots."""
-    return string(path).strip("/") not in set(source_group_paths(plan))
+    normalized_path = string(path).strip("/")
+    roots = set(source_group_paths(plan))
+    if roots:
+        return normalized_path not in roots
+    return "/" in normalized_path
 
 
 def source_project_paths(plan: dict[str, Any]) -> list[str]:
@@ -524,6 +608,14 @@ def discover_groups(source: Endpoint, plan: dict[str, Any]) -> list[dict[str, An
     subgroup_config = surface_config((plan.get("surfaces") or {}).get("subgroups"), "surfaces.subgroups")
     include_subgroups = bool_value(subgroup_config.get("include_subgroups"), subgroup_config["mode"] != "skip")
     pending: list[dict[str, Any]] = []
+    if bool_value(plan["source"].get("all_available_groups")):
+        for group in list_pages(source, "groups", query={"all_available": True}):
+            group_path = string(group.get("full_path")) or string(group.get("path"))
+            if group_path:
+                if not group.get("full_path"):
+                    group["full_path"] = group_path
+                groups[group_path] = group
+                pending.append(group)
     for path in paths:
         group = get_endpoint_value(source, f"groups/{quote(path, safe='')}")
         if not isinstance(group, dict):
@@ -590,7 +682,24 @@ def discover_projects(source: Endpoint, plan: dict[str, Any], groups: list[dict[
         if not isinstance(project, dict):
             raise WorkspaceError(f"GitLab project {path!r} returned an invalid object")
         projects[string(project.get("path_with_namespace") or path)] = project
-    for group_path in source_group_paths(plan):
+    group_paths = source_group_paths(plan)
+    if bool_value(plan["source"].get("all_available_groups")):
+        available_group_paths = sorted(
+            {
+                string(item.get("full_path"))
+                for item in groups
+                if string(item.get("full_path"))
+            },
+            key=str.casefold,
+        )
+        group_paths = [path for path in available_group_paths if "/" not in path] or available_group_paths
+        if not group_paths:
+            group_paths = [
+                string(item.get("full_path") or item.get("path"))
+                for item in list_pages(source, "groups", query={"all_available": True})
+                if string(item.get("full_path") or item.get("path"))
+            ]
+    for group_path in group_paths:
         group = next((item for item in groups if item.get("full_path") == group_path), None)
         group_id = string((group or {}).get("id") or group_path)
         for project in list_pages(
@@ -602,7 +711,11 @@ def discover_projects(source: Endpoint, plan: dict[str, Any], groups: list[dict[
             if path:
                 projects[path] = get_endpoint_value(source, f"projects/{quote(path, safe='')}" )
     if bool_value(plan["source"].get("all_available_projects")):
-        for project in list_pages(source, "projects", query={"membership": True, "archived": False}):
+        # GitLab's unfiltered project listing is the token-visible scope.
+        # `membership=true` omits projects reachable through inherited or
+        # administrator access, and `archived=false` silently drops repos
+        # that an all-repository migration must preserve.
+        for project in list_pages(source, "projects"):
             path = string(project.get("path_with_namespace"))
             if path:
                 projects[path] = get_endpoint_value(source, f"projects/{quote(path, safe='')}" )
@@ -616,6 +729,41 @@ def discover_project_permissions(source: Endpoint, project: dict[str, Any]) -> d
     direct = list_pages(source, f"projects/{quote(project_id, safe='')}/members")
     effective = list_pages(source, f"projects/{quote(project_id, safe='')}/members/all")
     invited_groups = list_pages_optional(source, f"projects/{quote(project_id, safe='')}/invited_groups")
+    invited_group_members: list[dict[str, Any]] = []
+    for invited_group in invited_groups:
+        group_ref = string(
+            invited_group.get("id")
+            or invited_group.get("group_id")
+            or invited_group.get("full_path")
+            or invited_group.get("group_full_path")
+            or invited_group.get("path")
+        )
+        if not group_ref:
+            raise WorkspaceError(
+                f"GitLab project {project_path!r} has an invited group without a stable group id or path"
+            )
+        invitation_level = normalized_access_level(invited_group)
+        members = list_pages(source, f"groups/{quote(group_ref, safe='')}/members/all")
+        for member in members:
+            record = safe_record(member)
+            if not isinstance(record, dict):
+                continue
+            member_level = normalized_access_level(record)
+            if invitation_level is not None:
+                # A project invitation caps the member's group access. Keep
+                # the effective level explicit so a later role mapping cannot
+                # accidentally over-grant the invited group.
+                record["access_level"] = (
+                    invitation_level
+                    if member_level is None
+                    else min(invitation_level, member_level)
+                )
+                record["invited_group_access_level"] = invitation_level
+            record["invited_group"] = (
+                string(invited_group.get("full_path") or invited_group.get("group_full_path"))
+                or group_ref
+            )
+            invited_group_members.append(record)
     namespace = project.get("namespace") or {}
     group_path = string(namespace.get("full_path"))
     return {
@@ -625,7 +773,24 @@ def discover_project_permissions(source: Endpoint, project: dict[str, Any]) -> d
         "direct_members": [safe_record(member) for member in direct],
         "effective_members": [safe_record(member) for member in effective],
         "invited_groups": [safe_record(group) for group in invited_groups],
+        "invited_group_members": invited_group_members,
     }
+
+
+def discover_project_rules(source: Endpoint, project: dict[str, Any]) -> dict[str, Any]:
+    """Capture GitLab protected-branch rules without any secret-bearing fields."""
+    project_id = string(project.get("id") or project.get("path_with_namespace"))
+    project_path = string(project.get("path_with_namespace"))
+    rules = list_pages(source, f"projects/{quote(project_id, safe='')}/protected_branches")
+    return {
+        "project": project_path,
+        "project_id": project.get("id"),
+        "rules": [safe_record(rule) for rule in rules],
+    }
+
+
+def default_group_target_name(source_path: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", string(source_path).strip("/").replace("/", "-"))[:100] or "migrated"
 
 
 def destination_name(plan: dict[str, Any], project: dict[str, Any]) -> tuple[str, str]:
@@ -643,7 +808,11 @@ def destination_name(plan: dict[str, Any], project: dict[str, Any]) -> tuple[str
             return owner, repo
     namespace = project.get("namespace") or {}
     full_path = string(namespace.get("full_path") or "").strip("/")
-    owner = string((plan.get("destination") or {}).get("default_owner"))
+    group_surfaces_managed = source_mode(plan, "groups") == "managed" or source_mode(plan, "subgroups") == "managed"
+    if full_path and string(namespace.get("kind")).lower() == "group" and group_surfaces_managed:
+        owner = mapped_name(plan, "groups", full_path, default_group_target_name(full_path))
+    else:
+        owner = string((plan.get("destination") or {}).get("default_owner"))
     if not owner:
         owner = re.sub(r"[^A-Za-z0-9_.-]+", "-", full_path.split("/")[-1] if full_path else "migrated") or "migrated"
     return owner, string(project.get("path") or path.rsplit("/", 1)[-1])
@@ -822,7 +991,11 @@ def discover_users(
                 if username and username.casefold() not in {key.casefold() for key in users_by_username}:
                     users_by_username[username] = {"username": username}
         for project_item in project_permissions or []:
-            members = project_item.get("effective_members") or project_item.get("direct_members") or []
+            members = [
+                member
+                for key in ("direct_members", "effective_members", "invited_group_members")
+                for member in (project_item.get(key) or [])
+            ]
             for member in members:
                 if not isinstance(member, dict):
                     continue
@@ -837,8 +1010,8 @@ def discover_users(
 def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
     source = endpoint(plan, "source", "gitlab")
     surfaces = plan.get("surfaces") or {}
-    groups = discover_groups(source, plan) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("groups", "subgroups", "memberships", "projects", "repositories", "variables", "runners")) else []
-    projects = discover_projects(source, plan, groups) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("projects", "repositories", "permissions", "variables", "runners", "ci", "pipelines")) else []
+    groups = discover_groups(source, plan) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("groups", "subgroups", "memberships", "projects", "repositories", "permissions", "rules", "variables", "runners")) else []
+    projects = discover_projects(source, plan, groups) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("projects", "repositories", "permissions", "rules", "variables", "runners", "ci", "pipelines")) else []
     project_permissions = [discover_project_permissions(source, project) for project in projects] if source_mode(plan, "permissions") != "skip" else []
     discovered_users = discover_users(source, plan, groups, project_permissions) if source_mode(plan, "users") != "skip" else []
     project_index: list[dict[str, Any]] = []
@@ -891,6 +1064,11 @@ def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
             snapshot["surfaces"][name] = {"mode": config["mode"], "items": items}
         elif name == "permissions":
             snapshot["surfaces"][name] = {"mode": config["mode"], "items": project_permissions}
+        elif name == "rules":
+            snapshot["surfaces"][name] = {
+                "mode": config["mode"],
+                "items": [discover_project_rules(source, project) for project in projects],
+            }
         elif name == "ci":
             items = []
             for project in projects:
@@ -937,7 +1115,99 @@ def require_snapshot(plan: dict[str, Any], path: Path) -> dict[str, Any]:
         raise WorkspaceError(f"{path}: snapshot was produced from a different plan")
     if not isinstance(snapshot.get("surfaces"), dict):
         raise WorkspaceError(f"{path}: snapshot.surfaces must be an object")
+    validate_import_snapshot_contract(plan, snapshot)
     return snapshot
+
+
+def snapshot_surface_items(
+    snapshot: dict[str, Any],
+    surface: str,
+    *,
+    require_nonempty: bool = False,
+) -> list[Any]:
+    """Read a typed snapshot surface without silently treating it as empty."""
+    surfaces = snapshot.get("surfaces")
+    value = surfaces.get(surface) if isinstance(surfaces, dict) else None
+    if not isinstance(value, dict) or "items" not in value:
+        raise WorkspaceError(
+            f"{surface} snapshot surface is missing; export {surface} before importing it"
+        )
+    items = value.get("items")
+    if not isinstance(items, list):
+        raise WorkspaceError(f"{surface} snapshot items must be a list")
+    if require_nonempty and not items:
+        raise WorkspaceError(
+            f"{surface} snapshot is empty; refuse to claim a managed {surface} import"
+        )
+    return items
+
+
+def has_snapshot_surface(snapshot: dict[str, Any], surface: str) -> bool:
+    surfaces = snapshot.get("surfaces")
+    value = surfaces.get(surface) if isinstance(surfaces, dict) else None
+    return isinstance(value, dict) and isinstance(value.get("items"), list)
+
+
+def validate_import_snapshot_contract(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    """Validate all mutation inputs before the first destination API call."""
+    required: list[tuple[str, bool]] = []
+    if source_mode(plan, "users") == "managed":
+        required.append(("users", True))
+    if source_mode(plan, "groups") == "managed":
+        required.append(("groups", True))
+    if source_mode(plan, "subgroups") == "managed":
+        required.append(("subgroups", True))
+    if source_mode(plan, "projects") == "managed":
+        required.append(("projects", True))
+    if source_mode(plan, "repositories") == "managed":
+        required.append(("repositories", True))
+    if source_mode(plan, "permissions") == "managed":
+        required.append(("permissions", True))
+    if source_mode(plan, "rules") == "managed":
+        # A selected project is allowed to have no protected branches, so an
+        # empty rules item list is valid; the project surface is still checked
+        # separately above when it is managed.
+        required.append(("rules", False))
+    if source_mode(plan, "variables") == "managed":
+        required.append(("variables", False))
+    if source_mode(plan, "runners") == "managed":
+        required.append(("runners", False))
+    if source_mode(plan, "ci") == "managed":
+        required.append(("ci", False))
+    if source_mode(plan, "pipelines") == "managed":
+        required.append(("pipelines", False))
+
+    for surface, nonempty in required:
+        snapshot_surface_items(snapshot, surface, require_nonempty=nonempty)
+
+    if membership_surface_config(plan)["mode"] == "managed":
+        # Plans written before the explicit memberships surface existed derive
+        # memberships from groups/subgroups. Keep that compatibility path, but
+        # never accept a snapshot with neither representation.
+        if not has_snapshot_surface(snapshot, "memberships"):
+            group_surfaces = (
+                source_mode(plan, "groups") == "managed",
+                source_mode(plan, "subgroups") == "managed",
+            )
+            if not any(group_surfaces):
+                raise WorkspaceError(
+                    "memberships import requires a memberships snapshot surface or managed groups/subgroups"
+                )
+            for surface, selected in zip(("groups", "subgroups"), group_surfaces):
+                if selected:
+                    snapshot_surface_items(snapshot, surface, require_nonempty=True)
+        elif not snapshot_surface_items(snapshot, "memberships"):
+            # The exporter always emits group surfaces too. An empty explicit
+            # membership surface is only acceptable when the compatibility
+            # source contains the actual group membership records.
+            available = []
+            for surface in ("groups", "subgroups"):
+                if has_snapshot_surface(snapshot, surface):
+                    available.extend(snapshot_surface_items(snapshot, surface))
+            if not available:
+                raise WorkspaceError(
+                    "memberships snapshot is empty and contains no group membership records"
+                )
 
 
 def mappings_for(plan: dict[str, Any], surface: str) -> dict[str, Any]:
@@ -1011,7 +1281,7 @@ def validate_unique_group_targets(plan: dict[str, Any], items: list[dict[str, An
         source_path = string(item.get("full_path"))
         if not source_path:
             raise WorkspaceError("group snapshot item is missing full_path")
-        default_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_path.replace("/", "-"))[:100] or "migrated"
+        default_name = default_group_target_name(source_path)
         target_name = mapped_name(plan, "groups", source_path, default_name)
         if not target_name:
             raise WorkspaceError(f"GitLab group {source_path!r} maps to an empty Forgejo organization")
@@ -1050,7 +1320,9 @@ def import_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str
     created = 0
     existing = 0
     targets: list[str] = []
-    items = snapshot["surfaces"].get("users", {}).get("items", [])
+    items = snapshot_surface_items(snapshot, "users", require_nonempty=True)
+    if not all(isinstance(item, dict) for item in items):
+        raise WorkspaceError("users snapshot items must be objects")
     validate_unique_user_targets(plan, config, items)
     for item in items:
         source_username = string(item.get("username"))
@@ -1103,12 +1375,16 @@ def role_mapping_value(value: Any) -> tuple[str, str]:
     return "", ""
 
 
-def role_mapping_config(plan: dict[str, Any], surface: str) -> dict[str, Any]:
+def role_mapping_config(
+    plan: dict[str, Any],
+    surface: str,
+    source_path: str | None = None,
+) -> dict[str, Any]:
     surfaces = plan.get("surfaces") or {}
     if surface == "memberships" and surface not in surfaces:
-        # Preserve the original groups.members_mode plan shape while allowing
-        # newer plans to put role mappings under surfaces.memberships.
-        config = surface_config(surfaces.get("groups"), "surfaces.groups")
+        # Preserve the legacy groups/subgroups plan shape, but keep each
+        # subgroup's role policy scoped to that subgroup context.
+        config = membership_surface_config(plan, source_path)
     else:
         config = surface_config(surfaces.get(surface), f"surfaces.{surface}")
     mappings: dict[str, Any] = {}
@@ -1119,6 +1395,22 @@ def role_mapping_config(plan: dict[str, Any], surface: str) -> dict[str, Any]:
     if isinstance(custom, dict):
         mappings.update({string(key).lower(): value for key, value in custom.items()})
     return {"config": config, "mappings": mappings}
+
+
+def role_mapping_configs(
+    plan: dict[str, Any],
+    surface: str,
+    source_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return all applicable role policies, or one policy for a group."""
+    surfaces = plan.get("surfaces") or {}
+    if surface == "memberships" and surface not in surfaces and source_path is None:
+        return [
+            surface_config(surfaces.get(name), f"surfaces.{name}")
+            for name in ("groups", "subgroups")
+            if surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip"
+        ]
+    return [role_mapping_config(plan, surface, source_path)["config"]]
 
 
 def normalized_access_level(member: dict[str, Any]) -> int | None:
@@ -1155,10 +1447,11 @@ def role_name(member: dict[str, Any]) -> str:
     return ""
 
 
-def default_role_mapping(member: dict[str, Any]) -> tuple[str, str, str]:
+def default_role_mapping(member: dict[str, Any], surface: str = "permissions") -> tuple[str, str, str]:
+    buckets = role_buckets(surface)
     level = normalized_access_level(member)
     if level is not None:
-        for minimum, key, team, permission in DEFAULT_ROLE_BUCKETS:
+        for minimum, key, team, permission in buckets:
             if level >= minimum:
                 return key, team, permission
         return "none", "", "none"
@@ -1166,10 +1459,35 @@ def default_role_mapping(member: dict[str, Any]) -> tuple[str, str, str]:
     if name == "none":
         return "none", "", "none"
     if name:
-        for _minimum, key, team, permission in DEFAULT_ROLE_BUCKETS:
+        for _minimum, key, team, permission in buckets:
             if key == name:
                 return key, team, permission
     return "", "", ""
+
+
+def cap_invited_group_role(
+    member: dict[str, Any],
+    role: dict[str, Any],
+    surface: str = "permissions",
+) -> dict[str, Any]:
+    """Never let a custom member mapping exceed a project's group invitation."""
+    invitation_level = member.get("invited_group_access_level")
+    if invitation_level in (None, ""):
+        return role
+    cap_key, cap_team, cap_permission = default_role_mapping(
+        {"access_level": invitation_level}, surface
+    )
+    if not cap_key or PERMISSION_RANK[cap_permission] >= PERMISSION_RANK[string(role.get("permission"))]:
+        return role
+    capped = dict(role)
+    capped.update(
+        {
+            "permission": cap_permission,
+            "team": cap_team,
+            "invitation_capped": True,
+        }
+    )
+    return capped
 
 
 def role_mapping_candidates(member: dict[str, Any]) -> list[str]:
@@ -1189,11 +1507,11 @@ def role_mapping_candidates(member: dict[str, Any]) -> list[str]:
     return candidates
 
 
-def default_team_for_role_key(role_key: str) -> str:
+def default_team_for_role_key(role_key: str, surface: str = "permissions") -> str:
     normalized = string(role_key).lower().replace(" ", "_").replace("-", "_")
     aliases = {
         string(alias).lower().replace(" ", "_").replace("-", "_"): team
-        for _minimum, key, team, _permission in DEFAULT_ROLE_BUCKETS
+        for _minimum, key, team, _permission in role_buckets(surface)
         for alias in (key, team)
     }
     try:
@@ -1201,7 +1519,7 @@ def default_team_for_role_key(role_key: str) -> str:
     except ValueError:
         numeric = None
     if numeric is not None:
-        for minimum, _key, team, _permission in DEFAULT_ROLE_BUCKETS:
+        for minimum, _key, team, _permission in role_buckets(surface):
             if numeric >= minimum:
                 return team
     return aliases.get(normalized, "")
@@ -1212,25 +1530,45 @@ def generated_team_name(role_key: str, permission: str) -> str:
     return f"gitlab-{(suffix or permission)[:90]}"
 
 
-def managed_team_definitions(plan: dict[str, Any], surface: str) -> dict[str, str]:
+def managed_team_definitions(
+    plan: dict[str, Any],
+    surface: str,
+    source_path: str | None = None,
+) -> dict[str, str]:
     """Return every deterministic role team, including currently empty teams."""
     definitions = {
-        team: permission for _minimum, _key, team, permission in DEFAULT_ROLE_BUCKETS
+        team: permission for _minimum, _key, team, permission in role_buckets(surface)
     }
-    config = role_mapping_config(plan, surface)
-    for role_key, mapping in config["mappings"].items():
-        permission, team = role_mapping_value(mapping)
-        if permission == "none":
-            continue
-        team = team or default_team_for_role_key(role_key)
-        if not team:
-            team = generated_team_name(role_key, permission)
-        definitions[team] = permission
+    for config in role_mapping_configs(plan, surface, source_path):
+        mappings: dict[str, Any] = {}
+        for raw_key in ("role_mappings", "custom_role_mappings"):
+            raw = config.get(raw_key) or {}
+            if isinstance(raw, dict):
+                mappings.update({string(key).lower(): value for key, value in raw.items()})
+        for role_key, mapping in mappings.items():
+            permission, team = role_mapping_value(mapping)
+            if permission == "none":
+                continue
+            team = team or default_team_for_role_key(role_key, surface)
+            if not team:
+                team = generated_team_name(role_key, permission)
+            existing = definitions.get(team)
+            if existing and existing != permission:
+                raise WorkspaceError(
+                    f"managed role team {team!r} has conflicting permissions "
+                    f"{existing!r} and {permission!r}"
+                )
+            definitions[team] = permission
     return definitions
 
 
-def resolve_member_role(plan: dict[str, Any], member: dict[str, Any], surface: str) -> dict[str, Any]:
-    role_config = role_mapping_config(plan, surface)
+def resolve_member_role(
+    plan: dict[str, Any],
+    member: dict[str, Any],
+    surface: str,
+    source_path: str | None = None,
+) -> dict[str, Any]:
+    role_config = role_mapping_config(plan, surface, source_path)
     config = role_config["config"]
     mappings = role_config["mappings"]
     custom = custom_role_id(member)
@@ -1246,18 +1584,18 @@ def resolve_member_role(plan: dict[str, Any], member: dict[str, Any], surface: s
         if not permission:
             raise WorkspaceError(f"role mapping {matched_key!r} has no Forgejo permission")
         if not team and permission != "none":
-            team = default_team_for_role_key(matched_key)
+            team = default_team_for_role_key(matched_key, surface)
             if not team and not custom:
-                default_key, default_team, _default_permission = default_role_mapping(member)
+                default_key, default_team, _default_permission = default_role_mapping(member, surface)
                 team = default_team
             team = team or generated_team_name(matched_key, permission)
-        return {
+        return cap_invited_group_role(member, {
             "key": matched_key,
             "permission": permission,
             "team": team,
             "access_level": normalized_access_level(member),
             "custom_role_id": custom,
-        }
+        }, surface)
     if custom:
         # A GitLab custom role can share a base access level with a different
         # role. Never silently collapse that custom role into the base role.
@@ -1265,15 +1603,15 @@ def resolve_member_role(plan: dict[str, Any], member: dict[str, Any], surface: s
         default_team = ""
         default_permission = ""
     else:
-        default_key, default_team, default_permission = default_role_mapping(member)
+        default_key, default_team, default_permission = default_role_mapping(member, surface)
     if default_key:
-        return {
+        return cap_invited_group_role(member, {
             "key": default_key,
             "permission": default_permission,
             "team": default_team,
             "access_level": normalized_access_level(member),
             "custom_role_id": custom,
-        }
+        }, surface)
     behavior = string(config.get("unmapped_role") or "fail").lower()
     if behavior == "fail":
         identity = role_name(member) or custom or string(normalized_access_level(member), "unknown")
@@ -1352,7 +1690,10 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
     group_items = []
     for surface in ("groups", "subgroups"):
         if source_mode(plan, surface) == "managed":
-            group_items.extend(snapshot["surfaces"].get(surface, {}).get("items", []))
+            items = snapshot_surface_items(snapshot, surface, require_nonempty=True)
+            if not all(isinstance(item, dict) for item in items):
+                raise WorkspaceError(f"{surface} snapshot items must be objects")
+            group_items.extend(items)
     if not group_items:
         return {"mode": "skip", "created": 0, "existing": 0, "verified": True}
     validate_unique_group_targets(plan, group_items)
@@ -1361,7 +1702,7 @@ def import_groups(plan: dict[str, Any], destination: Endpoint, snapshot: dict[st
     org_by_path: dict[str, str] = {}
     for item in sorted(group_items, key=lambda entry: string(entry.get("full_path")).count("/")):
         source_path = string(item.get("full_path"))
-        default_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", source_path.replace("/", "-"))[:100] or "migrated"
+        default_name = default_group_target_name(source_path)
         target_name = mapped_name(plan, "groups", source_path, default_name)
         status, current = forgejo_org(destination, target_name)
         if status == 404:
@@ -1407,10 +1748,14 @@ def membership_items(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def group_members_for_import(item: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
-    if bool_value(config.get("include_inherited")):
-        members = item.get("effective_members") or item.get("members") or []
+    selected_key = "effective_members" if bool_value(config.get("include_inherited")) else "direct_members"
+    if selected_key in item:
+        members = item[selected_key]
     else:
-        members = item.get("direct_members") or item.get("members") or []
+        # Snapshots from the initial implementation only had `members`.
+        members = item.get("members", [])
+    if not isinstance(members, list):
+        raise WorkspaceError(f"membership snapshot field {selected_key!r} must be a list")
     return [member for member in members if isinstance(member, dict)]
 
 
@@ -1459,10 +1804,11 @@ def import_memberships(
             continue
         if policy != "managed":
             raise WorkspaceError(f"unsupported membership policy {policy!r} for {source_path}")
-        members = group_members_for_import(item, config)
+        group_config = membership_surface_config(plan, source_path)
+        members = group_members_for_import(item, group_config)
         resolved_members: list[dict[str, Any]] = []
         for member in members:
-            if not membership_allowed(config, member):
+            if not membership_allowed(group_config, member):
                 continue
             source_username = member_username(member)
             if not source_username:
@@ -1476,7 +1822,7 @@ def import_memberships(
                     f"GitLab users {previous!r} and {source_username!r} map to the same Forgejo username {target_username!r}"
                 )
             target_sources[target_username.casefold()] = source_username
-            role = resolve_member_role(plan, member, "memberships")
+            role = resolve_member_role(plan, member, "memberships", source_path)
             if role.get("unmapped"):
                 # An explicit skip/manual policy must not turn into an exact
                 # deletion of an access grant we could not classify.
@@ -1506,8 +1852,8 @@ def import_memberships(
 
     # Keep empty deterministic teams in the reconciliation set so role
     # downgrades remove stale memberships from a previously populated team.
-    definitions = managed_team_definitions(plan, "memberships")
     for item in plans:
+        definitions = managed_team_definitions(plan, "memberships", item["source_path"])
         for team_name, permission in definitions.items():
             team_key = (item["target_org"], team_name)
             existing_permission = team_permissions.get(team_key)
@@ -1534,11 +1880,13 @@ def import_memberships(
     }
     context_teams: dict[str, dict[str, dict[str, Any]]] = {}
     context_members: dict[str, list[str]] = {}
+    context_owners: dict[str, list[str]] = {}
     results: list[dict[str, Any]] = []
     for item in plans:
         source_path = item["source_path"]
         target_org = item["target_org"]
         group_teams: dict[str, dict[str, Any]] = {}
+        organization_owners: set[str] = set()
         for member in item["members"]:
             role = member["role"]
             if role.get("unmapped"):
@@ -1548,11 +1896,14 @@ def import_memberships(
                 selected_team: str | None = None
             else:
                 selected_team = team_name
-                group_teams[team_name] = {
-                    "id": team_ids[(target_org, team_name)],
-                    "name": team_name,
-                    "permission": role["permission"],
-                }
+                if team_name.casefold() == "owners":
+                    organization_owners.add(member["username"])
+                else:
+                    group_teams[team_name] = {
+                        "id": team_ids[(target_org, team_name)],
+                        "name": team_name,
+                        "permission": role["permission"],
+                    }
             available = {
                 name: team_id
                 for (org, name), team_id in team_ids.items()
@@ -1564,12 +1915,14 @@ def import_memberships(
             {member["username"] for member in item["members"] if not member["role"].get("unmapped")},
             key=str.casefold,
         )
+        context_owners[source_path] = sorted(organization_owners, key=str.casefold)
         results.append(
             {
                 "group": source_path,
                 "organization": target_org,
                 "members": len(item["members"]),
                 "teams": sorted(group_teams),
+                "owners": sorted(organization_owners, key=str.casefold),
                 "verified": True,
             }
         )
@@ -1579,11 +1932,23 @@ def import_memberships(
         "organizations": organizations,
         "teams": context_teams,
         "members": context_members,
+        "owners": context_owners,
         "verified": all(item.get("verified") is True for item in results),
     }
 
 
 def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> int:
+    permission = string(permission).lower()
+    if permission not in FORGEJO_TEAM_PERMISSIONS:
+        raise WorkspaceError(f"unsupported Forgejo team permission {permission!r} for {org}/{name}")
+    if permission == "owner" and name.casefold() != "owners":
+        raise WorkspaceError(
+            f"Forgejo organization ownership must use the built-in Owners team; {org}/{name} cannot grant owner permission"
+        )
+    if name.casefold() == "owners" and permission != "owner":
+        raise WorkspaceError(
+            f"Forgejo built-in Owners team {org}/{name} must retain owner permission"
+        )
     teams = list_pages(destination, f"orgs/{quote(org, safe='')}/teams")
     existing = next((item for item in teams if string(item.get("name")) == name), None)
     if existing and existing.get("id") is not None:
@@ -1592,8 +1957,12 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
             raise WorkspaceError(
                 f"Forgejo team {org}/{name} permission mismatch: "
                 f"expected {permission!r}, got {actual_permission or '<missing>'!r}"
-            )
+        )
         return int(existing["id"])
+    if name.casefold() == "owners":
+        raise WorkspaceError(
+            f"Forgejo organization {org!r} has no built-in Owners team; refuse to create a substitute"
+        )
     body = {
         "name": name,
         "description": "Imported GitLab access mapping",
@@ -1802,28 +2171,59 @@ def source_project_group_path(project: dict[str, Any], project_path: str) -> str
 
 
 def managed_team_names(plan: dict[str, Any], group_result: dict[str, Any] | None) -> set[str]:
+    # The built-in Owners team grants organization-wide ownership and is not a
+    # repository attachment that permission exact-reconciliation should remove.
+    def repository_team(name: str) -> bool:
+        return name.casefold() != "owners"
+
     names: set[str] = set()
     for group_teams in ((group_result or {}).get("teams") or {}).values():
         if not isinstance(group_teams, dict):
             continue
         for team_name, team in group_teams.items():
             if isinstance(team, dict) and string(team.get("name") or team_name):
-                names.add(string(team.get("name") or team_name))
+                team_name_value = string(team.get("name") or team_name)
+                if repository_team(team_name_value):
+                    names.add(team_name_value)
     for _minimum, _key, team_name, _permission in DEFAULT_ROLE_BUCKETS:
-        names.add(team_name)
-    names.update(managed_team_definitions(plan, "memberships"))
-    names.update(managed_team_definitions(plan, "permissions"))
+        if repository_team(team_name):
+            names.add(team_name)
+    names.update(
+        team_name
+        for team_name in managed_team_definitions(plan, "memberships")
+        if repository_team(team_name)
+    )
+    names.update(
+        team_name
+        for team_name in managed_team_definitions(plan, "permissions")
+        if repository_team(team_name)
+    )
     return names
 
 
 def permission_member_records(item: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
     members: list[dict[str, Any]] = []
+    selected_view_present = False
+
+    def extend_view(key: str) -> None:
+        nonlocal selected_view_present
+        if key not in item:
+            return
+        selected_view_present = True
+        values = item[key]
+        if not isinstance(values, list):
+            raise WorkspaceError(f"permission snapshot field {key!r} must be a list")
+        members.extend(member for member in values if isinstance(member, dict))
+
     if bool_value(config.get("include_direct"), True):
-        members.extend(member for member in item.get("direct_members", []) if isinstance(member, dict))
+        extend_view("direct_members")
+        extend_view("invited_group_members")
     if bool_value(config.get("include_inherited"), True):
-        members.extend(member for member in item.get("effective_members", []) if isinstance(member, dict))
-    if not members:
-        fallback = item.get("members") or []
+        extend_view("effective_members")
+    if not selected_view_present:
+        fallback = item.get("members", [])
+        if not isinstance(fallback, list):
+            raise WorkspaceError("permission snapshot field 'members' must be a list")
         members.extend(member for member in fallback if isinstance(member, dict))
     return members
 
@@ -1839,9 +2239,9 @@ def import_permissions(
     if config["mode"] != "managed":
         return {"mode": config["mode"], "items": [], "verified": True}
     reconcile = string(config.get("reconcile") or "additive").lower()
-    items = snapshot.get("surfaces", {}).get("permissions", {}).get("items", [])
-    if not isinstance(items, list):
-        raise WorkspaceError("permissions snapshot items must be a list")
+    items = snapshot_surface_items(snapshot, "permissions", require_nonempty=True)
+    if not all(isinstance(item, dict) for item in items):
+        raise WorkspaceError("permissions snapshot items must be objects")
     validate_unique_repository_targets(snapshot)
     known = {string(value).casefold() for value in (known_users or set())}
     planned: list[dict[str, Any]] = []
@@ -2041,7 +2441,8 @@ def import_permissions(
                 "repository": f"{owner}/{repo}",
                 "collaborators": collaborators,
                 "teams": attached_teams,
-                "invited_groups_materialized": len(item.get("invited_groups") or []),
+                "invited_groups_materialized": len(item.get("invited_group_members") or []),
+                "invited_groups": len(item.get("invited_groups") or []),
                 "removed": sorted(removed),
                 "verified": True,
             }
@@ -2054,7 +2455,39 @@ def import_permissions(
     }
 
 
-def repo_plan_from_item(plan: dict[str, Any], item: dict[str, Any]) -> migration.RepoPlan:
+def rules_config_for_project(plan: dict[str, Any], project_path: str) -> dict[str, Any]:
+    """Merge global and per-project protected-branch policy settings."""
+    config = surface_config((plan.get("surfaces") or {}).get("rules"), "surfaces.rules")
+    mapping = mappings_for(plan, "rules").get(project_path)
+    if mapping is None:
+        return config
+    if isinstance(mapping, str):
+        return {**config, "gitlab_maintainer_team": mapping}
+    if not isinstance(mapping, dict):
+        raise WorkspaceError(f"mappings.rules[{project_path!r}] must be a team name or object")
+    merged = {**config, **mapping}
+    validate_rules_surface(merged, f"mappings.rules[{project_path!r}]")
+    return merged
+
+
+def rule_metadata_for_project(plan: dict[str, Any], project_path: str) -> dict[str, Any]:
+    """Translate workspace rule policy into the repository migrator contract."""
+    config = rules_config_for_project(plan, project_path)
+    metadata: dict[str, Any] = {
+        "mode": "required",
+        "reconcile": string(config.get("reconcile") or "additive").lower(),
+    }
+    for key in ("gitlab_maintainer_team", "accepted", "reason"):
+        if key in config:
+            metadata[key] = config[key]
+    return {"branch_protection": metadata}
+
+
+def repo_plan_from_item(
+    plan: dict[str, Any],
+    item: dict[str, Any],
+    metadata_overrides: dict[str, Any] | None = None,
+) -> migration.RepoPlan:
     project = item["project"]
     source_url = string(project.get("http_url_to_repo"))
     destination = item["destination"]
@@ -2062,6 +2495,9 @@ def repo_plan_from_item(plan: dict[str, Any], item: dict[str, Any]) -> migration
         raise WorkspaceError("repository snapshot item is missing source or destination Git URL")
     source_api = endpoint(plan, "source", "gitlab")
     destination_api = endpoint(plan, "destination", "forgejo")
+    metadata = {surface: "skip" for surface in migration.SUPPORTED_METADATA_SURFACES}
+    if metadata_overrides:
+        metadata.update(metadata_overrides)
     return migration.RepoPlan(
         name=string(project.get("path_with_namespace") or project.get("name")),
         source_url=source_url,
@@ -2082,7 +2518,7 @@ def repo_plan_from_item(plan: dict[str, Any], item: dict[str, Any]) -> migration
         destination_namespace_id=None,
         wiki="false",
         lfs="auto" if bool_value(project.get("lfs_enabled")) else "false",
-        metadata={surface: "skip" for surface in migration.SUPPORTED_METADATA_SURFACES},
+        metadata=metadata,
     )
 
 
@@ -2105,6 +2541,87 @@ def import_repositories(plan: dict[str, Any], snapshot: dict[str, Any], destinat
             results[-1]["git"] = result
     mode = "managed" if project_mode == "managed" or repository_mode == "managed" else repository_mode
     return {"mode": mode, "items": results, "verified": all(item.get("verified") and item.get("git", {}).get("verified", True) for item in results)}
+
+
+def require_rule_repository(destination: Endpoint, owner: str, repo: str, project_path: str) -> None:
+    status, current = request(
+        destination,
+        "GET",
+        repository_api_path(owner, repo),
+        expected=(200, 404),
+        return_status=True,
+    )
+    if status != 200 or not isinstance(current, dict):
+        raise WorkspaceError(
+            f"Forgejo repository {owner}/{repo} for GitLab project {project_path!r} is not present; "
+            "import repositories before protected-branch rules"
+        )
+
+
+def require_rule_team(destination: Endpoint, owner: str, team_name: str, project_path: str) -> None:
+    teams = list_pages(destination, f"orgs/{quote(owner, safe='')}/teams")
+    if not any(string(team.get("name")) == team_name for team in teams):
+        raise WorkspaceError(
+            f"Forgejo team {owner}/{team_name} required by protected-branch rules for "
+            f"GitLab project {project_path!r} is missing; import memberships or map an existing team"
+        )
+
+
+def import_rules(plan: dict[str, Any], snapshot: dict[str, Any], destination: Endpoint) -> dict[str, Any]:
+    """Apply GitLab protected branches after destination repositories exist."""
+    config = surface_config((plan.get("surfaces") or {}).get("rules"), "surfaces.rules")
+    if config["mode"] != "managed":
+        return {"mode": config["mode"], "items": [], "verified": True}
+    surface = snapshot.get("surfaces", {}).get("rules")
+    if not isinstance(surface, dict) or "items" not in surface:
+        raise WorkspaceError("rules snapshot surface is missing; export rules before importing them")
+    items = surface.get("items")
+    if not isinstance(items, list):
+        raise WorkspaceError("rules snapshot items must be a list")
+    validate_unique_repository_targets(snapshot)
+    results: list[dict[str, Any]] = []
+    for rule_item in items:
+        if not isinstance(rule_item, dict):
+            raise WorkspaceError("rules snapshot item must be an object")
+        project_path = string(rule_item.get("project"))
+        project_item = project_snapshot_for(snapshot, project_path)
+        if not project_item:
+            raise WorkspaceError(f"rules project {project_path!r} is missing a repository destination mapping")
+        destination_item = project_item.get("destination") or {}
+        owner = string(destination_item.get("owner"))
+        repo = string(destination_item.get("repo"))
+        if not owner or not repo:
+            raise WorkspaceError(f"rules project {project_path!r} has an incomplete destination mapping")
+        require_rule_repository(destination, owner, repo, project_path)
+        metadata = rule_metadata_for_project(plan, project_path)
+        team_name = string((metadata["branch_protection"] or {}).get("gitlab_maintainer_team"))
+        if team_name:
+            require_rule_team(destination, owner, team_name, project_path)
+        source_rules = rule_item.get("rules")
+        if not isinstance(source_rules, list):
+            raise WorkspaceError(
+                f"rules snapshot for {project_path!r} must contain a list of GitLab rule records"
+            )
+        try:
+            rule_result = migration.migrate_branch_protections(
+                repo_plan_from_item(plan, project_item, metadata),
+                reviewed_source_protections=source_rules,
+            )
+        except migration.MigrationError as exc:
+            raise WorkspaceError(f"protected-branch rules for {project_path!r} failed: {exc}") from exc
+        if not isinstance(rule_result, dict):
+            raise WorkspaceError(f"protected-branch rules for {project_path!r} returned an invalid result")
+        results.append(
+            {
+                "project": project_path,
+                "repository": f"{owner}/{repo}",
+                "source_rule_count": len(rule_item.get("rules") or []) if isinstance(rule_item.get("rules"), list) else 0,
+                "reconcile": metadata["branch_protection"].get("reconcile", "additive"),
+                "rules": rule_result,
+                "verified": rule_result.get("verified") is True,
+            }
+        )
+    return {"mode": "managed", "items": results, "verified": all(item.get("verified") is True for item in results)}
 
 
 def variable_identity(item: dict[str, Any]) -> str:
@@ -2500,6 +3017,7 @@ def import_pipelines(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
 
 def import_workspace(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) -> dict[str, Any]:
     destination = endpoint(plan, "destination", "forgejo")
+    validate_import_snapshot_contract(plan, snapshot)
     work_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {}
     user_result: dict[str, Any] | None = None
@@ -2528,6 +3046,8 @@ def import_workspace(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: P
             group_result,
             set((user_result or {}).get("targets") or []),
         )
+    if source_mode(plan, "rules") != "skip":
+        results["rules"] = import_rules(plan, snapshot, destination)
     if source_mode(plan, "variables") == "managed":
         results["variables"] = import_variables(plan, snapshot)
     if source_mode(plan, "runners") == "managed":

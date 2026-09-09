@@ -29,14 +29,16 @@ Every surface is independently selectable:
 | `manual` | Inventory | No mutation; requires `accepted: true` and a reason |
 
 The supported surfaces are `users`, `groups`, `subgroups`, `memberships`,
-`projects`, `repositories`, `permissions`, `runners`, `variables`, `ci`, and
-`pipelines`.
+`projects`, `repositories`, `permissions`, `rules`, `runners`, `variables`,
+`ci`, and `pipelines`.
 
 The source must explicitly select projects, groups, or users. Users require
 either `source.usernames` or `surfaces.users.all_available=true`; projects
-require `source.project_paths`, `source.group_paths`, or the explicit
-`source.all_available_projects=true`. This prevents a typo from becoming an
-instance-wide import.
+require `source.project_paths`, `source.group_paths`,
+`source.all_available_projects=true`, or `source.all_available_groups=true`;
+groups and memberships require `source.group_paths` or
+`source.all_available_groups=true`. These explicit selectors prevent a typo
+from becoming an instance-wide import.
 
 ## What is imported
 
@@ -54,21 +56,29 @@ instance-wide import.
   organization.
 - **Memberships:** The managed surface reconciles GitLab direct group
   memberships into deterministic Forgejo teams. The default mapping is
-  Owner -> `admin`, Maintainer/Developer -> `write`, Reporter/Planner/Security
-  Manager -> `read`, Guest -> `read`, and No/Minimal Access -> no team.
+  Owner -> Forgejo's built-in `Owners` team, Maintainer/Developer -> `write`,
+  Reporter/Planner/Security Manager -> `read`, Guest -> `read`, and
+  No/Minimal Access -> no team. GitLab Owner mappings must use
+  `{ "permission": "owner", "team": "Owners" }`; the importer verifies that
+  Forgejo's special organization team exists and refuses to create a normal
+  team as an ownership substitute. The `Owners` team is organization-wide and
+  is not attached as an ordinary repository team; project-level Owner access
+  is represented by a verified Forgejo repository `admin` collaborator grant.
   `role_mappings` can map numeric access levels, role names, or custom roles to
-  `{ "permission": "read|write|admin|none", "team": "..." }`. Custom GitLab
-  roles must have an explicit mapping; the default is fail-closed. Expired
-  memberships are skipped and pending memberships are skipped unless the plan
-  explicitly chooses a different policy. Role downgrades remove stale managed
-  team memberships and every membership is read back.
+  `{ "permission": "read|write|admin|owner|none", "team": "..." }`. Custom
+  GitLab roles must have an explicit mapping; the default is fail-closed.
+  Expired memberships are skipped and pending memberships are skipped unless
+  the plan explicitly chooses a different policy. Role downgrades remove stale
+  managed team memberships and every membership is read back.
 - **Projects:** project metadata that Forgejo can represent is reconciled on
   the destination repository. The source project is not deleted or disabled.
 - **Repositories:** Git refs, tags, LFS data when selected, and the supported
   repository metadata are delegated to `forge_migration.py`.
 - **Permissions:** The managed surface inventories GitLab direct and effective
   project members, including inherited access and available invited-group
-  metadata. It reconciles Forgejo repository collaborators with verified
+  metadata. Invited groups are expanded to their current member set and each
+  member is capped at the access level granted by the project invitation before
+  the role mapping is applied. It reconciles Forgejo repository collaborators with verified
   `read`, `write`, or `admin` permissions and attaches the corresponding
   organization teams to group-owned repositories when the destination mapping
   permits it. Duplicate grants use the strongest effective permission.
@@ -88,6 +98,18 @@ instance-wide import.
   Planner, Security Manager, and some custom-role capabilities are represented
   by the configured coarse permission or stop with an unmapped-role error;
   they are never silently over-granted.
+- **Rules:** GitLab protected-branch rules are inventoried and applied after
+  destination repositories and access teams exist. Import normalizes the
+  reviewed rule records from the workspace snapshot; it does not re-read
+  GitLab during reconciliation, so a later source edit cannot silently change
+  the approved migration. The portable subset maps push and merge access
+  levels to Forgejo branch protections and preserves administrator
+  enforcement. GitLab rules using identity-specific access, code-owner
+  approval, force pushes, or non-Maintainer unprotect access fail closed
+  because Forgejo cannot represent them with equivalent guarantees.
+  `reconcile: additive` preserves unrelated destination rules; the explicitly
+  destructive `reconcile: exact` mode requires `accepted: true` and a reason
+  and removes destination-only rules for the selected repositories.
 - **Variables:** project, group, and optional instance variables are read from
   GitLab at import time and stored as Woodpecker repository secrets. By default,
   project names are preserved; group and instance names receive `GL_GROUP_` or
@@ -114,6 +136,9 @@ instance-wide import.
   cutover controller may enable them after source-CI freeze and verification.
   GitLab trigger tokens and historical run state require an explicit manual
   design.
+- **Argo CD:** Argo CD is not a GitLab CI pipeline importer. It remains the
+  deployment authority and is checked by the cutover controller; this command
+  does not invent Argo `Application` manifests from arbitrary CI jobs.
 
 These boundaries reflect the different provider models: GitLab exposes users,
 groups, projects, runners, variables, schedules, and pipelines through separate
@@ -149,10 +174,13 @@ make forge-workspace-import \
   PROOF=private/migrations/proof/workspace-import.json
 ```
 
-For a complete users/groups/permissions transfer, enable the `memberships` and
-`permissions` surfaces in the plan and set `surfaces.users.include_members=true`
-so users referenced only through inherited project or group access are also
-created or checked. Review the redacted snapshot before import. GitLab
+For a complete users/groups/permissions/rules transfer, enable the
+`memberships`, `permissions`, and `rules` surfaces in the plan and set
+`surfaces.users.include_members=true` so users referenced only through
+inherited project or group access are also created or checked. Configure
+`surfaces.rules.gitlab_maintainer_team` when a GitLab protected branch grants access to
+Maintainers; that Forgejo team must exist in the mapped repository
+organization. Review the redacted snapshot before import. GitLab
 passwords, personal access tokens, runner registration tokens, 2FA state, SSO
 bindings, and webhook secrets are not transferable and must be provisioned
 through their destination-specific controls.
@@ -168,10 +196,13 @@ of truth. Run the existing `forge-cutover` or `forge-transition` workflow after
 the workspace import:
 
 1. Export and review the workspace snapshot.
-2. Import users/groups/projects/repositories and verify counts and refs.
-3. Import variables and convert CI in a shadow destination.
-4. Run `forge-cutover-verify` or `forge-transition-verify-shadow`.
-5. Activate Forgejo/Woodpecker only through the cutover controller, which owns
+2. Import users, organizations, and direct memberships so destination teams
+   exist.
+3. Import repositories and verify counts and refs.
+4. Import project permissions and protected-branch rules.
+5. Import variables and convert CI in a shadow destination.
+6. Run `forge-cutover-verify` or `forge-transition-verify-shadow`.
+7. Activate Forgejo/Woodpecker only through the cutover controller, which owns
    the source-CI freeze, checkpoint, rollback, and failback evidence.
 
 If any workspace surface fails, the command stops and writes no claim of
@@ -182,3 +213,23 @@ destination verification and recovery drill pass.
 
 The complete selectable example is
 `examples/migrations/gitlab-to-forgejo.workspace.example.json`.
+
+For an instance-wide, token-visible users/groups/projects authorization pass,
+start from
+`examples/migrations/gitlab-to-forgejo-all-users-access.example.json`. It sets
+`source.all_available_groups=true`, `source.all_available_projects=true`, and
+`surfaces.users.all_available=true`; GitLab's API only exposes objects visible
+to the migration token, and the all-project listing includes archived projects
+so repository scope is not silently narrowed. The example deliberately keeps
+exact reconciliation off and leaves bots included so the export is truly broad;
+review the redacted snapshot and change `skip_bots` only when that is your
+intended account policy.
+The GitLab token must be permitted to enumerate users, groups, group members,
+project members, invited groups, and protected branches. A Forgejo
+administrator token is required for user creation and organization/team
+reconciliation.
+
+Before destination changes begin, import validates that every selected managed
+surface is present in the snapshot and that users, groups, projects, and
+permissions are non-empty. A truncated or hand-edited export therefore stops
+before creating partial users, teams, or repository grants.

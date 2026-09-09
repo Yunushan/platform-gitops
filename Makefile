@@ -30,7 +30,7 @@ help:
 	@echo "  forge-migration-proof-verify  Verify stored PROOF integrity and acceptance"
 	@echo "  forge-migration-live-plan  Print the redacted four-direction live acceptance manifest"
 	@echo "  forge-migration-live-run  Run opt-in GitHub/GitLab/Forgejo live migration acceptance and write LIVE_DIR proof"
-	@echo "  forge-workspace-validate  Validate selective GitLab users/groups/projects/CI workspace PLAN"
+	@echo "  forge-workspace-validate  Validate selective GitLab users/groups/projects/permissions/rules/CI workspace PLAN"
 	@echo "  forge-workspace-export  Export selected GitLab workspace surfaces to redacted SNAPSHOT"
 	@echo "  forge-workspace-import  Import only PLAN surfaces marked managed into Forgejo/Woodpecker"
 	@echo "  forge-pipeline-convert  Convert a supported GitLab/GitHub pipeline to Woodpecker or fail with a compatibility report"

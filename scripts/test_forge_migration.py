@@ -311,6 +311,136 @@ def test_gitlab_branch_protection_migration() -> None:
         raise AssertionError("GitLab branch policy was weakened by a Forgejo administrator bypass")
 
 
+def test_gitlab_branch_protection_migration_uses_reviewed_snapshot() -> None:
+    repo = branch_protection_repo(
+        "gitlab",
+        {
+            "mode": "required",
+            "gitlab_maintainer_team": "Owners",
+        },
+    )
+    reviewed_rules = [
+        {
+            "name": "main",
+            "push_access_levels": [{"access_level": 0}],
+            "merge_access_levels": [{"access_level": 40}],
+            "unprotect_access_levels": [{"access_level": 40}],
+            "allow_force_push": False,
+            "code_owner_approval_required": False,
+        }
+    ]
+    destination_rules: list[dict[str, object]] = []
+
+    def fake_request(
+        target: migration.ApiTarget,
+        method: str,
+        path: str,
+        body: dict[str, object] | None = None,
+        **_kwargs: object,
+    ) -> object:
+        if target.provider == "gitlab":
+            raise AssertionError("reviewed branch-protection import re-read GitLab")
+        if method == "GET" and path.endswith("/branch_protections"):
+            return deepcopy(destination_rules)
+        if method == "POST" and path.endswith("/branch_protections"):
+            if body is None:
+                raise AssertionError("reviewed branch-protection create omitted its body")
+            destination_rules.append({"branch_name": body["branch_name"], "rule_name": body["rule_name"], **deepcopy(body)})
+            return deepcopy(body)
+        raise AssertionError(f"unexpected reviewed branch-protection API call: {method} {path}")
+
+    with (
+        mock.patch.object(migration, "api_request", side_effect=fake_request),
+        mock.patch.object(
+            migration,
+            "list_source_branch_protections",
+            side_effect=AssertionError("reviewed branch-protection import called the live source helper"),
+        ),
+    ):
+        result = migration.migrate_branch_protections(
+            repo,
+            reviewed_source_protections=reviewed_rules,
+        )
+        verified = migration.verify_branch_protections(
+            repo,
+            reviewed_source_protections=reviewed_rules,
+        )
+
+    if result.get("verified") is not True or verified.get("verified") is not True:
+        raise AssertionError(f"reviewed branch-protection migration was not verified: {result}, {verified}")
+    if result.get("source_digest") != migration.branch_protection_digest(
+        migration.normalized_branch_protections(
+            repo,
+            migration.api_target(repo, "source"),
+            reviewed_rules,
+        )
+    ):
+        raise AssertionError("reviewed branch-protection digest did not represent the snapshot")
+
+
+def test_exact_branch_protection_reconciliation_removes_destination_only_rules() -> None:
+    repo = branch_protection_repo(
+        "gitlab",
+        {
+            "mode": "required",
+            "reconcile": "exact",
+            "accepted": True,
+            "reason": "approved protected-branch ownership transfer",
+            "gitlab_maintainer_team": "Owners",
+        },
+    )
+    source_rules = [
+        {
+            "name": "main",
+            "push_access_levels": [{"access_level": 0}],
+            "merge_access_levels": [{"access_level": 40}],
+            "unprotect_access_levels": [{"access_level": 40}],
+            "allow_force_push": False,
+            "code_owner_approval_required": False,
+        }
+    ]
+    expected = migration.normalize_gitlab_branch_protection(repo, source_rules[0])
+    destination_rules: list[dict[str, object]] = [
+        {**expected, "rule_name": "main"},
+        {
+            **migration.empty_forgejo_branch_protection("destination-only"),
+            "rule_name": "destination-only",
+        },
+    ]
+    deletes: list[str] = []
+
+    def fake_request(
+        target: migration.ApiTarget,
+        method: str,
+        path: str,
+        **_kwargs: object,
+    ) -> object:
+        if target.provider == "gitlab" and method == "GET" and path.endswith("/protected_branches"):
+            return deepcopy(source_rules)
+        if target.provider == "forgejo" and method == "GET" and path.endswith("/branch_protections"):
+            return deepcopy(destination_rules)
+        if target.provider == "forgejo" and method == "DELETE" and "/branch_protections/" in path:
+            name = unquote(path.rsplit("/", 1)[1])
+            deletes.append(name)
+            destination_rules[:] = [
+                rule for rule in destination_rules
+                if str(rule.get("rule_name") or rule.get("branch_name")) != name
+            ]
+            return {}
+        raise AssertionError(f"unexpected exact branch-protection API call: {method} {path}")
+
+    with mock.patch.object(migration, "api_request", side_effect=fake_request):
+        result = migration.migrate_branch_protections(repo)
+        verified = migration.verify_branch_protections(repo)
+
+    if result.get("verified") is not True or result.get("removed") != 1:
+        raise AssertionError(f"exact branch-protection reconciliation did not remove stale rules: {result}")
+    if deletes != ["destination-only"]:
+        raise AssertionError(f"exact branch-protection reconciliation deleted the wrong rules: {deletes}")
+    if verified.get("verified") is not True or verified.get("extra"):
+        raise AssertionError(f"exact branch-protection read-only verification failed: {verified}")
+
+
 def test_branch_protection_fails_closed() -> None:
     github_repo = branch_protection_repo(
         "github", {"mode": "required", "branches": ["main"]}
@@ -2059,6 +2189,8 @@ def main() -> int:
     test_command_timeout_redacts_credentials()
     test_github_branch_protection_migration()
     test_gitlab_branch_protection_migration()
+    test_gitlab_branch_protection_migration_uses_reviewed_snapshot()
+    test_exact_branch_protection_reconciliation_removes_destination_only_rules()
     test_branch_protection_fails_closed()
     test_metadata_migration_for_supported_directions()
     test_destination_repository_creation_for_supported_directions()

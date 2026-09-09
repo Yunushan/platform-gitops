@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "direction": "gitlab-to-forgejo",
+  "source": {
+    "api_url": "https://gitlab.example.test/api/v4",
+    "token_env": "GITLAB_MIGRATION_TOKEN",
+    "project_paths": [],
+    "group_paths": [],
+    "usernames": [],
+    "all_available_projects": true,
+    "all_available_groups": true
+  },
+  "destination": {
+    "api_url": "https://forgejo.example.test/api/v1",
+    "token_env": "FORGEJO_ADMIN_TOKEN",
+    "owner_kind": "organization",
+    "git_url_template": "ssh://git@forgejo.example.test/{owner}/{repo}.git"
+  },
+  "surfaces": {
+    "users": {
+      "mode": "managed",
+      "all_available": true,
+      "skip_bots": false,
+      "include_members": true,
+      "default_password_env": "FORGEJO_IMPORTED_USER_PASSWORD"
+    },
+    "groups": {
+      "mode": "managed",
+      "members_mode": "import"
+    },
+    "subgroups": {
+      "mode": "managed",
+      "include_subgroups": true,
+      "members_mode": "import"
+    },
+    "memberships": {
+      "mode": "managed",
+      "include_inherited": false,
+      "include_expired": false,
+      "pending_memberships": "skip",
+      "unmapped_role": "fail",
+      "role_mappings": {
+        "0": "none",
+        "5": "none",
+        "10": {"permission": "read", "team": "gitlab-guests"},
+        "15": {"permission": "read", "team": "gitlab-reporters"},
+        "20": {"permission": "read", "team": "gitlab-reporters"},
+        "25": {"permission": "read", "team": "gitlab-reporters"},
+        "30": {"permission": "write", "team": "gitlab-developers"},
+        "40": {"permission": "write", "team": "gitlab-maintainers"},
+        "50": {"permission": "owner", "team": "Owners"},
+        "60": {"permission": "owner", "team": "Owners"}
+      },
+      "custom_role_mappings": {}
+    },
+    "projects": {"mode": "managed"},
+    "repositories": {"mode": "managed"},
+    "permissions": {
+      "mode": "managed",
+      "include_direct": true,
+      "include_inherited": true,
+      "include_expired": false,
+      "pending_memberships": "skip",
+      "group_strategy": "both",
+      "reconcile": "additive",
+      "unmapped_role": "fail",
+      "role_mappings": {
+        "0": "none",
+        "5": "none",
+        "10": "read",
+        "15": "read",
+        "20": "read",
+        "25": "read",
+        "30": "write",
+        "40": "write",
+        "50": "admin",
+        "60": "admin"
+      },
+      "custom_role_mappings": {}
+    },
+    "rules": {
+      "mode": "managed",
+      "reconcile": "additive",
+      "gitlab_maintainer_team": "gitlab-maintainers"
+    },
+    "runners": {"mode": "skip"},
+    "variables": {"mode": "skip"},
+    "ci": {"mode": "skip"},
+    "pipelines": {"mode": "skip"}
+  },
+  "mappings": {
+    "users": {},
+    "groups": {},
+    "projects": {},
+    "rules": {}
+  }
+}

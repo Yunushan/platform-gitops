@@ -83,6 +83,26 @@ def test_selective_plan_contract() -> None:
     unsafe_history["surfaces"]["pipelines"]["import_history"] = True  # type: ignore[index]
     expect_error(unsafe_history, "historical GitLab runs are export-only")
 
+    unsafe_rules = copy.deepcopy(plan)
+    unsafe_rules["surfaces"]["rules"] = {"mode": "managed", "reconcile": "exact"}  # type: ignore[index]
+    expect_error(unsafe_rules, "surfaces.rules.reconcile=exact requires accepted=true")
+    unsafe_rules["surfaces"]["rules"].update({"accepted": True, "reason": "approved"})  # type: ignore[index]
+    workspace.validate_plan(unsafe_rules)
+
+    all_scope = copy.deepcopy(plan)
+    all_scope["source"].update({  # type: ignore[index]
+        "project_paths": [],
+        "group_paths": [],
+        "usernames": [],
+        "all_available_groups": True,
+    })
+    all_scope["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "all_available": True,
+        "default_password_env": "IMPORT_PASSWORD",
+    }
+    workspace.validate_plan(all_scope)
+
     unsafe_schedule_activation = copy.deepcopy(plan)
     unsafe_schedule_activation["surfaces"]["pipelines"]["schedule_mappings"] = {  # type: ignore[index]
         "4": {"name": "nightly", "enabled": True}
@@ -118,6 +138,15 @@ def test_redaction_and_destination_url() -> None:
     mapped["mappings"] = {"groups": {"platform": {"target_name": "platform-team"}}}
     if workspace.mapped_name(mapped, "groups", "platform", "fallback") != "platform-team":
         raise AssertionError("target_name group mapping was ignored")
+    grouped_project = {
+        "path_with_namespace": "engineering/platform/control-plane",
+        "path": "control-plane",
+        "namespace": {"kind": "group", "full_path": "engineering/platform"},
+    }
+    mapped["surfaces"]["subgroups"] = {"mode": "managed"}  # type: ignore[index]
+    owner, repo = workspace.destination_name(mapped, grouped_project)
+    if owner != "engineering-platform" or repo != "control-plane":
+        raise AssertionError("managed group projects were not assigned to their deterministic Forgejo organization")
 
 
 def test_selected_nested_group_is_a_root() -> None:
@@ -127,6 +156,131 @@ def test_selected_nested_group_is_a_root() -> None:
         raise AssertionError("selected nested group was incorrectly classified as a subgroup")
     if not workspace.group_is_subgroup(plan, "engineering/platform/api"):
         raise AssertionError("child of selected nested group was not classified as a subgroup")
+
+
+def test_project_rules_discovery_is_redacted_and_scoped() -> None:
+    source = workspace.Endpoint("gitlab", "https://gitlab.example.test/api/v4", "GITLAB_TOKEN")
+    project = {"id": 7, "path_with_namespace": "platform/control-plane"}
+    protected = {
+        "name": "main",
+        "push_access_levels": [{"access_level": 40}],
+        "merge_access_levels": [{"access_level": 40}],
+        "secret": "must-not-be-exported",
+    }
+    with mock.patch.object(workspace, "list_pages", return_value=[protected]) as list_pages:
+        result = workspace.discover_project_rules(source, project)
+    if result.get("project") != "platform/control-plane" or result.get("project_id") != 7:
+        raise AssertionError(f"protected-branch inventory lost project identity: {result!r}")
+    if result.get("rules") != [{"name": "main", "push_access_levels": [{"access_level": 40}], "merge_access_levels": [{"access_level": 40}]}]:
+        raise AssertionError(f"protected-branch inventory was not safely redacted: {result!r}")
+    if list_pages.call_args.args[1] != "projects/7/protected_branches":
+        raise AssertionError(f"protected-branch API was not scoped to the selected project: {list_pages.call_args!r}")
+
+
+def test_project_permission_discovery_materializes_invited_group_members() -> None:
+    source = workspace.Endpoint("gitlab", "https://gitlab.example.test/api/v4", "GITLAB_TOKEN")
+    project = {"id": 7, "path_with_namespace": "platform/control-plane"}
+    invited = {
+        "id": 42,
+        "full_path": "shared/release",
+        "group_access_level": 20,
+    }
+    with (
+        mock.patch.object(
+            workspace,
+            "list_pages",
+            side_effect=[
+                [{"username": "direct", "access_level": 30}],
+                [{"username": "inherited", "access_level": 40}],
+                [
+                    {"username": "release-owner", "access_level": 40},
+                    {"username": "release-reporter", "access_level": 20},
+                ],
+            ],
+        ) as list_pages,
+        mock.patch.object(workspace, "list_pages_optional", return_value=[invited]),
+    ):
+        result = workspace.discover_project_permissions(source, project)
+    invited_members = result.get("invited_group_members")
+    if invited_members != [
+        {
+            "username": "release-owner",
+            "access_level": 20,
+            "invited_group_access_level": 20,
+            "invited_group": "shared/release",
+        },
+        {
+            "username": "release-reporter",
+            "access_level": 20,
+            "invited_group_access_level": 20,
+            "invited_group": "shared/release",
+        },
+    ]:
+        raise AssertionError(f"invited group access was not materialized at the invitation cap: {invited_members!r}")
+    if list_pages.call_args_list[-1].args[1] != "groups/42/members/all":
+        raise AssertionError("invited group members were not queried through the scoped group API")
+
+
+def test_managed_import_rejects_missing_snapshot_surface_before_mutation() -> None:
+    plan = copy.deepcopy(base_plan())
+    plan["surfaces"] = {  # type: ignore[index]
+        "users": {"mode": "managed", "default_password_env": "IMPORT_PASSWORD"},
+    }
+    snapshot = {"surfaces": {}}
+    try:
+        workspace.validate_import_snapshot_contract(plan, snapshot)  # type: ignore[arg-type]
+    except workspace.WorkspaceError as exc:
+        if "users snapshot surface is missing" not in str(exc):
+            raise AssertionError(f"unexpected missing-surface diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("managed import accepted a missing users snapshot surface")
+
+
+def test_all_available_group_discovery_includes_top_level_groups() -> None:
+    plan = base_plan()
+    plan["source"]["group_paths"] = []  # type: ignore[index]
+    plan["source"]["all_available_groups"] = True  # type: ignore[index]
+    group = {"id": 9, "full_path": "platform", "path": "platform", "name": "Platform"}
+    with mock.patch.object(
+        workspace,
+        "list_pages",
+        side_effect=[[group], [{"username": "alice", "access_level": 40}], [{"username": "alice", "access_level": 40}]],
+    ):
+        result = workspace.discover_groups(workspace.Endpoint("gitlab", "https://gitlab.example.test/api/v4", "TOKEN"), plan)
+    if [item.get("full_path") for item in result] != ["platform"]:
+        raise AssertionError(f"all-available group discovery omitted a top-level group: {result!r}")
+    if result[0].get("direct_members") != [{"username": "alice", "access_level": 40}]:
+        raise AssertionError("all-available group discovery did not retain direct memberships")
+
+
+def test_all_available_project_discovery_keeps_archived_and_inherited_projects() -> None:
+    plan = base_plan()
+    plan["source"]["project_paths"] = []  # type: ignore[index]
+    plan["source"]["group_paths"] = []  # type: ignore[index]
+    plan["source"]["all_available_projects"] = True  # type: ignore[index]
+    captured: list[object] = []
+    project = {
+        "id": 11,
+        "path_with_namespace": "platform/archived-repo",
+        "namespace": {"full_path": "platform", "kind": "group"},
+        "archived": True,
+    }
+
+    def pages(_source: object, path: str, **kwargs: object) -> list[dict[str, object]]:
+        if path != "projects":
+            raise AssertionError(f"unexpected project discovery path: {path}")
+        captured.append(kwargs.get("query"))
+        return [project]
+
+    with (
+        mock.patch.object(workspace, "list_pages", side_effect=pages),
+        mock.patch.object(workspace, "get_endpoint_value", return_value=project),
+    ):
+        projects = workspace.discover_projects(object(), plan, [])  # type: ignore[arg-type]
+    if [item["path_with_namespace"] for item in projects] != ["platform/archived-repo"]:
+        raise AssertionError("all-available project discovery dropped an archived project")
+    if captured != [None]:
+        raise AssertionError(f"all-available projects were narrowed to membership-only scope: {captured!r}")
 
 
 def test_ci_checkout_is_retryable() -> None:
@@ -332,6 +486,46 @@ def test_team_permission_fails_closed() -> None:
             raise AssertionError("team permission mismatch was accepted")
 
 
+def test_gitlab_owner_maps_to_builtin_owners_team() -> None:
+    plan = base_plan()
+    plan["surfaces"]["memberships"] = {"mode": "managed"}  # type: ignore[index]
+    resolved = workspace.resolve_member_role(
+        plan,
+        {"username": "alice", "access_level": 50},
+        "memberships",
+    )
+    if resolved["permission"] != "owner" or resolved["team"] != "Owners":
+        raise AssertionError(f"GitLab Owner was not mapped to Forgejo ownership: {resolved!r}")
+    workspace.validate_plan(plan)
+
+    invalid = copy.deepcopy(plan)
+    invalid["surfaces"]["memberships"]["role_mappings"] = {  # type: ignore[index]
+        "50": {"permission": "admin", "team": "gitlab-owners"}
+    }
+    expect_error(invalid, "built-in Forgejo Owners")
+
+    invalid_custom = copy.deepcopy(plan)
+    invalid_custom["surfaces"]["memberships"]["role_mappings"] = {  # type: ignore[index]
+        "custom:9001": {"permission": "owner", "team": "gitlab-custom-owner"}
+    }
+    expect_error(invalid_custom, "map owner access to the built-in Forgejo Owners team")
+
+    invalid_owners_team = copy.deepcopy(plan)
+    invalid_owners_team["surfaces"]["memberships"]["role_mappings"] = {  # type: ignore[index]
+        "40": {"permission": "write", "team": "Owners"}
+    }
+    expect_error(invalid_owners_team, "cannot assign non-owner access")
+
+    with mock.patch.object(workspace, "list_pages", return_value=[]):
+        try:
+            workspace.ensure_team(object(), "platform", "Owners", "owner")  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "no built-in Owners team" not in str(exc):
+                raise AssertionError(f"unexpected missing Owners-team diagnostic: {exc}") from exc
+        else:
+            raise AssertionError("missing built-in Owners team was silently replaced")
+
+
 def test_recursive_group_discovery_keeps_direct_and_effective_members() -> None:
     plan = base_plan()
     plan["surfaces"]["subgroups"] = {"mode": "managed", "include_subgroups": True}  # type: ignore[index]
@@ -383,6 +577,18 @@ def test_role_mapping_supports_custom_roles_and_fails_closed() -> None:
     resolved = workspace.resolve_member_role(plan, custom, "memberships")
     if resolved["permission"] != "write" or resolved["team"] != "release-reviewers":
         raise AssertionError(f"custom GitLab role mapping was not honored: {resolved!r}")
+    capped = workspace.resolve_member_role(
+        plan,
+        {
+            "username": "alice",
+            "access_level": 40,
+            "member_role_id": 9001,
+            "invited_group_access_level": 20,
+        },
+        "memberships",
+    )
+    if capped["permission"] != "read" or capped["team"] != "gitlab-reporters" or not capped.get("invitation_capped"):
+        raise AssertionError(f"invited-group access cap was bypassed by custom role mapping: {capped!r}")
     try:
         workspace.resolve_member_role(plan, {"username": "bob", "access_level": 30, "member_role_id": 9002}, "memberships")
     except workspace.WorkspaceError as exc:
@@ -390,6 +596,50 @@ def test_role_mapping_supports_custom_roles_and_fails_closed() -> None:
             raise AssertionError(f"unexpected custom-role diagnostic: {exc}") from exc
     else:
         raise AssertionError("unmapped custom GitLab role was collapsed into a base role")
+
+
+def test_legacy_subgroup_membership_policy_is_scoped_to_the_subgroup() -> None:
+    plan = base_plan()
+    plan["surfaces"]["subgroups"] = {  # type: ignore[index]
+        "mode": "managed",
+        "members_mode": "import",
+        "unmapped_role": "skip",
+        "role_mappings": {
+            "30": {"permission": "read", "team": "subgroup-reviewers"}
+        },
+    }
+    workspace.validate_plan(plan)
+
+    subgroup_role = workspace.resolve_member_role(
+        plan,
+        {"username": "alice", "access_level": 30},
+        "memberships",
+        "platform/child",
+    )
+    if subgroup_role["permission"] != "read" or subgroup_role["team"] != "subgroup-reviewers":
+        raise AssertionError(f"subgroup role mapping was ignored: {subgroup_role!r}")
+
+    subgroup_custom_role = workspace.resolve_member_role(
+        plan,
+        {"username": "bob", "access_level": 0, "member_role_id": 9002},
+        "memberships",
+        "platform/child",
+    )
+    if not subgroup_custom_role.get("unmapped") or subgroup_custom_role["unmapped_behavior"] != "skip":
+        raise AssertionError(f"subgroup unmapped-role policy was ignored: {subgroup_custom_role!r}")
+
+    try:
+        workspace.resolve_member_role(
+            plan,
+            {"username": "carol", "access_level": 0, "member_role_id": 9002},
+            "memberships",
+            "platform",
+        )
+    except workspace.WorkspaceError as exc:
+        if "not mapped" not in str(exc):
+            raise AssertionError(f"unexpected root-group unmapped-role diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("root-group membership unexpectedly used subgroup unmapped-role policy")
 
 
 def test_permission_surface_validation_requires_safe_exact_confirmation() -> None:
@@ -436,7 +686,7 @@ def test_membership_import_uses_direct_members_by_default() -> None:
     if call.args[2:] != ("gitlab-developers", "alice"):
         raise AssertionError(f"inherited membership was incorrectly materialized: {call!r}")
     if set(call.args[1]) != {
-        "gitlab-owners",
+        "Owners",
         "gitlab-maintainers",
         "gitlab-developers",
         "gitlab-reporters",
@@ -445,6 +695,26 @@ def test_membership_import_uses_direct_members_by_default() -> None:
         raise AssertionError("empty managed role teams were omitted from downgrade reconciliation")
     if user_probe.called:
         raise AssertionError("known imported user was probed unnecessarily")
+
+
+def test_membership_selection_does_not_fallback_from_empty_direct_view() -> None:
+    item = {
+        "direct_members": [],
+        "effective_members": [{"username": "inherited", "access_level": 40}],
+        "members": [{"username": "inherited", "access_level": 40}],
+    }
+    direct = workspace.group_members_for_import(item, {"include_inherited": False})
+    if direct:
+        raise AssertionError(f"empty direct membership view unexpectedly used effective members: {direct!r}")
+
+    permission_direct = workspace.permission_member_records(
+        item,
+        {"include_direct": True, "include_inherited": False},
+    )
+    if permission_direct:
+        raise AssertionError(
+            "permission selection unexpectedly fell back to effective members when direct access was empty"
+        )
 
 
 def _permission_plan() -> dict[str, object]:
@@ -582,6 +852,68 @@ def test_permission_readback_fails_closed() -> None:
             raise AssertionError("permission import accepted a weaker read-back permission")
 
 
+def test_rule_import_runs_after_repository_exists_and_passes_policy() -> None:
+    plan = base_plan()
+    plan["surfaces"]["rules"] = {  # type: ignore[index]
+        "mode": "managed",
+        "reconcile": "additive",
+        "gitlab_maintainer_team": "gitlab-maintainers",
+    }
+    snapshot = {
+        "surfaces": {
+            "rules": {
+                "items": [
+                    {
+                        "project": "platform/control-plane",
+                        "rules": [{"name": "main"}],
+                    }
+                ]
+            }
+        },
+        "indexes": {
+            "projects": [
+                {
+                    "project": {
+                        "id": 7,
+                        "path_with_namespace": "platform/control-plane",
+                        "http_url_to_repo": "https://gitlab.example.test/platform/control-plane.git",
+                        "visibility": "private",
+                    },
+                    "destination": {
+                        "owner": "platform",
+                        "repo": "control-plane",
+                        "owner_kind": "organization",
+                        "git_url": "ssh://git@forgejo.example.test/platform/control-plane.git",
+                    },
+                }
+            ]
+        },
+    }
+    with (
+        mock.patch.object(workspace, "request", return_value=(200, {})) as request,
+        mock.patch.object(workspace, "list_pages", return_value=[{"name": "gitlab-maintainers"}]),
+        mock.patch.object(
+            workspace.migration,
+            "migrate_branch_protections",
+            return_value={"verified": True, "created": 1, "reconcile": "additive"},
+        ) as migrate,
+    ):
+        result = workspace.import_rules(plan, snapshot, object())  # type: ignore[arg-type]
+    if result.get("verified") is not True or len(result.get("items") or []) != 1:
+        raise AssertionError(f"protected-branch import was not verified: {result!r}")
+    if request.call_args.args[1:3] != ("GET", "repos/platform/control-plane"):
+        raise AssertionError("protected-branch import did not verify the destination repository first")
+    repo = migrate.call_args.args[0]
+    if repo.metadata.get("branch_protection") != {
+        "mode": "required",
+        "reconcile": "additive",
+        "gitlab_maintainer_team": "gitlab-maintainers",
+    }:
+        raise AssertionError(f"workspace rule policy was not passed to repository migration: {repo.metadata!r}")
+    if migrate.call_args.kwargs.get("reviewed_source_protections") != [{"name": "main"}]:
+        raise AssertionError("protected-branch import did not pass the reviewed snapshot records")
+
+
 def test_ci_destination_and_remote_proof() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         repo_root = Path(temp_dir) / "checkout"
@@ -712,6 +1044,11 @@ def main() -> int:
     test_selective_plan_contract()
     test_redaction_and_destination_url()
     test_selected_nested_group_is_a_root()
+    test_project_rules_discovery_is_redacted_and_scoped()
+    test_project_permission_discovery_materializes_invited_group_members()
+    test_managed_import_rejects_missing_snapshot_surface_before_mutation()
+    test_all_available_group_discovery_includes_top_level_groups()
+    test_all_available_project_discovery_keeps_archived_and_inherited_projects()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
     test_user_mapping_collision_fails_before_mutation()
@@ -719,13 +1056,16 @@ def main() -> int:
     test_mapped_variable_is_non_mutating()
     test_team_membership_is_reconciled_and_verified()
     test_team_permission_fails_closed()
+    test_gitlab_owner_maps_to_builtin_owners_team()
     test_recursive_group_discovery_keeps_direct_and_effective_members()
     test_role_mapping_supports_custom_roles_and_fails_closed()
+    test_legacy_subgroup_membership_policy_is_scoped_to_the_subgroup()
     test_permission_surface_validation_requires_safe_exact_confirmation()
     test_membership_import_uses_direct_members_by_default()
     test_permission_import_merges_effective_access_and_verifies_repo_teams()
     test_exact_permission_reconciliation_does_not_remove_unmanaged_collaborators()
     test_permission_readback_fails_closed()
+    test_rule_import_runs_after_repository_exists_and_passes_policy()
     test_ci_destination_and_remote_proof()
     test_ci_commit_is_idempotent()
     test_pipeline_schedule_import_is_not_history_import()

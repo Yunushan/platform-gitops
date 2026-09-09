@@ -91,6 +91,9 @@ BRANCH_PROTECTION_OPTION_KEYS = {
     "mode",
     "branches",
     "gitlab_maintainer_team",
+    "reconcile",
+    "accepted",
+    "reason",
 }
 BRANCH_PROTECTION_LIST_FIELDS = {
     "approvals_whitelist_teams",
@@ -590,11 +593,28 @@ def gitlab_maintainer_team(repo: RepoPlan) -> str | None:
     return team
 
 
+def branch_protection_reconcile(repo: RepoPlan) -> str:
+    """Return the protected-branch reconciliation policy after validation."""
+    reconcile = str(branch_protection_options(repo).get("reconcile") or "additive").strip().lower()
+    if reconcile not in {"additive", "exact"}:
+        raise MigrationError(
+            f"{repo.name}: branch_protection.reconcile must be additive or exact"
+        )
+    if reconcile == "exact":
+        options = branch_protection_options(repo)
+        if options.get("accepted") is not True or not str(options.get("reason") or "").strip():
+            raise MigrationError(
+                f"{repo.name}: branch_protection.reconcile=exact requires accepted=true and a reason"
+            )
+    return reconcile
+
+
 def validate_branch_protection_contract(
     repo: RepoPlan,
     source: ApiTarget,
     destination: ApiTarget,
 ) -> None:
+    branch_protection_reconcile(repo)
     options = branch_protection_options(repo)
     if destination.provider != "forgejo" or source.provider not in {"github", "gitlab"}:
         raise MigrationError(
@@ -632,6 +652,7 @@ def branch_protection_plan(repo: RepoPlan) -> dict[str, Any]:
         raise
     plan = {
         "mode": mode,
+        "reconcile": branch_protection_reconcile(repo),
         "status": "planned",
         "source_provider": source.provider,
         "destination_provider": destination.provider,
@@ -1648,6 +1669,21 @@ def update_forgejo_branch_protection(
     )
 
 
+def delete_forgejo_branch_protection(
+    target: ApiTarget,
+    existing: dict[str, Any],
+) -> None:
+    rule_name = str(existing.get("rule_name") or existing.get("branch_name") or "").strip()
+    if not rule_name:
+        raise MigrationError("Forgejo branch-protection deletion is missing its rule name")
+    api_request(
+        target,
+        "DELETE",
+        f"{repo_api_base(target)}/branch_protections/{quote(rule_name, safe='')}",
+        expected=(204, 200, 404),
+    )
+
+
 def branch_protection_skip(mode: str, exc: MigrationError) -> dict[str, Any]:
     return {
         "mode": mode,
@@ -1657,7 +1693,11 @@ def branch_protection_skip(mode: str, exc: MigrationError) -> dict[str, Any]:
     }
 
 
-def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
+def migrate_branch_protections(
+    repo: RepoPlan,
+    reviewed_source_protections: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Reconcile branch protections, optionally from a reviewed source snapshot."""
     mode = metadata_mode(repo, "branch_protection")
     if mode == "skip":
         return {"mode": mode, "status": "skipped", "verified": True}
@@ -1665,7 +1705,12 @@ def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
         source = api_target(repo, "source")
         destination = api_target(repo, "destination")
         validate_branch_protection_contract(repo, source, destination)
-        source_protections = list_source_branch_protections(repo, source)
+        if reviewed_source_protections is None:
+            source_protections = list_source_branch_protections(repo, source)
+        else:
+            source_protections = normalized_branch_protections(
+                repo, source, reviewed_source_protections
+            )
     except MigrationError as exc:
         if mode == "auto":
             return branch_protection_skip(mode, exc)
@@ -1682,8 +1727,10 @@ def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
     destination_by_name = {
         protection["branch_name"]: protection for protection in destination_before
     }
+    reconcile = branch_protection_reconcile(repo)
     created = 0
     updated = 0
+    removed = 0
     for protection in source_protections:
         name = protection["branch_name"]
         existing = destination_by_name.get(name)
@@ -1693,6 +1740,11 @@ def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
         elif existing != protection:
             update_forgejo_branch_protection(destination, raw_by_name[name], protection)
             updated += 1
+    if reconcile == "exact":
+        source_names = {protection["branch_name"] for protection in source_protections}
+        for name in sorted(set(destination_by_name) - source_names, key=str.casefold):
+            delete_forgejo_branch_protection(destination, raw_by_name[name])
+            removed += 1
     comparison = poll_verified_comparison(
         lambda: compare_branch_protection_sets(
             source_protections,
@@ -1701,18 +1753,26 @@ def migrate_branch_protections(repo: RepoPlan) -> dict[str, Any]:
             ),
         )
     )
+    if reconcile == "exact":
+        comparison["verified"] = comparison.get("verified") is True and not comparison.get("extra")
     return {
         "mode": mode,
+        "reconcile": reconcile,
         "status": "verified" if comparison["verified"] else "failed",
         "source_provider": source.provider,
         "destination_provider": destination.provider,
         "created": created,
         "updated": updated,
+        "removed": removed,
         **comparison,
     }
 
 
-def verify_branch_protections(repo: RepoPlan) -> dict[str, Any]:
+def verify_branch_protections(
+    repo: RepoPlan,
+    reviewed_source_protections: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Verify branch protections, optionally against a reviewed source snapshot."""
     mode = metadata_mode(repo, "branch_protection")
     if mode == "skip":
         return {"mode": mode, "status": "skipped", "verified": True}
@@ -1720,7 +1780,12 @@ def verify_branch_protections(repo: RepoPlan) -> dict[str, Any]:
         source = api_target(repo, "source")
         destination = api_target(repo, "destination")
         validate_branch_protection_contract(repo, source, destination)
-        source_protections = list_source_branch_protections(repo, source)
+        if reviewed_source_protections is None:
+            source_protections = list_source_branch_protections(repo, source)
+        else:
+            source_protections = normalized_branch_protections(
+                repo, source, reviewed_source_protections
+            )
     except MigrationError as exc:
         if mode == "auto":
             return branch_protection_skip(mode, exc)
@@ -1731,8 +1796,12 @@ def verify_branch_protections(repo: RepoPlan) -> dict[str, Any]:
             repo, destination, list_forgejo_branch_protections(destination)
         ),
     )
+    reconcile = branch_protection_reconcile(repo)
+    if reconcile == "exact":
+        comparison["verified"] = comparison.get("verified") is True and not comparison.get("extra")
     return {
         "mode": mode,
+        "reconcile": reconcile,
         "status": "verified" if comparison["verified"] else "failed",
         "source_provider": source.provider,
         "destination_provider": destination.provider,
