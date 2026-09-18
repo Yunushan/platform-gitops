@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import fnmatch
@@ -22,12 +23,12 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import shutil
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import forge_migration as migration
-import forge_pipeline as pipeline
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
 from strict_json import loads_strict_json
@@ -55,6 +56,16 @@ MODES = {"skip", "export", "managed", "mapped", "manual"}
 ACCOUNTED_MODES = {"managed", "mapped", "manual", "skipped"}
 FORGEJO_PERMISSIONS = {"none", "read", "write", "admin"}
 FORGEJO_TEAM_PERMISSIONS = FORGEJO_PERMISSIONS | {"owner"}
+# Forgejo uses the same username validator for organization usernames. Keep
+# flattened GitLab group paths within that limit while retaining a stable,
+# collision-resistant reference to the original path.
+FORGEJO_ORGANIZATION_USERNAME_MAX_LENGTH = 40
+FORGEJO_GROUP_NAME_HASH_LENGTH = 8
+PASSWORD_STRATEGIES = {
+    "environment",
+    "generated_per_user",
+    "existing_hash_compatibility_required",
+}
 PERMISSION_RANK = {"none": 0, "read": 1, "write": 2, "admin": 3, "owner": 4}
 DEFAULT_ROLE_BUCKETS = (
     (50, "owner", "gitlab-owners", "admin"),
@@ -140,11 +151,15 @@ class WorkspaceError(migration.MigrationError):
     """Raised when a workspace operation cannot be proven safe."""
 
 
+DEFAULT_PAGE_SIZE = 25
+
+
 @dataclass(frozen=True)
 class Endpoint:
     provider: str
     api_url: str
     token_env: str
+    allow_insecure_http: bool = False
 
     def target(self) -> migration.ApiTarget:
         return migration.ApiTarget(
@@ -152,6 +167,7 @@ class Endpoint:
             api_url=self.api_url.rstrip("/"),
             repository="workspace",
             token_env=self.token_env,
+            allow_insecure_http=self.allow_insecure_http,
         )
 
 
@@ -228,9 +244,16 @@ def endpoint(plan: dict[str, Any], name: str, provider: str) -> Endpoint:
     token_env = string(raw.get("token_env"))
     if not api_url or not token_env:
         raise WorkspaceError(f"{name}.api_url and {name}.token_env are required")
-    if not api_url.startswith("https://"):
+    if not api_url.startswith("https://") and not (
+        api_url.startswith("http://") and bool_value(raw.get("allow_insecure_http"))
+    ):
         raise WorkspaceError(f"{name}.api_url must use HTTPS")
-    return Endpoint(provider, api_url, token_env)
+    return Endpoint(
+        provider,
+        api_url,
+        token_env,
+        allow_insecure_http=bool_value(raw.get("allow_insecure_http")),
+    )
 
 
 def require_selector(plan: dict[str, Any]) -> None:
@@ -393,6 +416,7 @@ def validate_plan(plan: dict[str, Any]) -> None:
             raise WorkspaceError(f"surfaces.{name} requires source.group_paths or source.all_available_groups=true")
         if name == "users" and config["mode"] != "skip":
             usernames = plan["source"].get("usernames") or []
+            excluded_usernames(config)
             authorization_selected = (
                 normalized["memberships"]["mode"] != "skip"
                 or normalized["permissions"]["mode"] != "skip"
@@ -422,9 +446,25 @@ def validate_plan(plan: dict[str, Any]) -> None:
             validate_role_mapping_config(config, "surfaces.memberships")
         if name == "users" and config["mode"] == "managed":
             if not string(config.get("default_password_env")) and not isinstance(config.get("password_env_by_username"), dict):
+                strategy = string(config.get("password_strategy") or "environment").lower()
+                if strategy != "generated_per_user":
+                    raise WorkspaceError(
+                        "surfaces.users.managed requires default_password_env or password_env_by_username"
+                    )
+            strategy = string(config.get("password_strategy") or "environment").lower()
+            if strategy not in PASSWORD_STRATEGIES:
                 raise WorkspaceError(
-                    "surfaces.users.managed requires default_password_env or password_env_by_username"
+                    f"surfaces.users.password_strategy must be one of {sorted(PASSWORD_STRATEGIES)}"
                 )
+            if strategy == "generated_per_user":
+                if not bool_value(config.get("include_email_for_account_creation")):
+                    raise WorkspaceError(
+                        "surfaces.users.generated_per_user requires include_email_for_account_creation=true"
+                    )
+                if not bool_value(config.get("send_notify")):
+                    raise WorkspaceError(
+                        "surfaces.users.generated_per_user requires send_notify=true so credentials are delivered by Forgejo mail"
+                    )
         if name in {"groups", "subgroups"} and config["mode"] == "managed":
             if source_mode(plan, "users") != "managed" and string(config.get("members_mode") or "import") not in {
                 "skip",
@@ -515,26 +555,42 @@ def request(endpoint_obj: Endpoint, method: str, path: str, *, body: dict[str, A
         raise WorkspaceError(str(exc)) from exc
 
 
-def list_pages(endpoint_obj: Endpoint, path: str, *, query: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def list_pages(
+    endpoint_obj: Endpoint,
+    path: str,
+    *,
+    query: dict[str, Any] | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> list[dict[str, Any]]:
+    if page_size < 1 or page_size > 100:
+        raise WorkspaceError("page_size must be between 1 and 100")
     result: list[dict[str, Any]] = []
     for page in range(1, 101):
         current = dict(query or {})
-        current.update({"page": page, "per_page": 100})
+        current.update({"page": page, "per_page": page_size})
         payload = get_endpoint_value(endpoint_obj, path, query=current)
         if not isinstance(payload, list):
             raise WorkspaceError(f"{endpoint_obj.provider} {path} returned a non-list response")
         result.extend(item for item in payload if isinstance(item, dict))
-        if len(payload) < 100:
+        if len(payload) < page_size:
             return result
     raise WorkspaceError(f"{endpoint_obj.provider} {path} exceeded the 100-page safety bound")
 
 
-def list_pages_optional(endpoint_obj: Endpoint, path: str, *, query: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def list_pages_optional(
+    endpoint_obj: Endpoint,
+    path: str,
+    *,
+    query: dict[str, Any] | None = None,
+    page_size: int = DEFAULT_PAGE_SIZE,
+) -> list[dict[str, Any]]:
     """List an endpoint whose absence is a provider/version capability, not an import failure."""
+    if page_size < 1 or page_size > 100:
+        raise WorkspaceError("page_size must be between 1 and 100")
     result: list[dict[str, Any]] = []
     for page in range(1, 101):
         current = dict(query or {})
-        current.update({"page": page, "per_page": 100})
+        current.update({"page": page, "per_page": page_size})
         status, payload = request(
             endpoint_obj,
             "GET",
@@ -548,7 +604,7 @@ def list_pages_optional(endpoint_obj: Endpoint, path: str, *, query: dict[str, A
         if not isinstance(payload, list):
             raise WorkspaceError(f"{endpoint_obj.provider} {path} returned a non-list response")
         result.extend(item for item in payload if isinstance(item, dict))
-        if len(payload) < 100:
+        if len(payload) < page_size:
             return result
     raise WorkspaceError(f"{endpoint_obj.provider} {path} exceeded the 100-page safety bound")
 
@@ -705,7 +761,20 @@ def discover_projects(source: Endpoint, plan: dict[str, Any], groups: list[dict[
         for project in list_pages(
             source,
             f"groups/{quote(group_id, safe='')}/projects",
-            query={"include_subgroups": bool_value(surface_config((plan.get("surfaces") or {}).get("subgroups"), "surfaces.subgroups").get("include_subgroups"), True)},
+            query={
+                "include_subgroups": bool_value(
+                    surface_config(
+                        (plan.get("surfaces") or {}).get("subgroups"),
+                        "surfaces.subgroups",
+                    ).get("include_subgroups"),
+                    True,
+                ),
+                # The group listing only supplies project references. Ask
+                # GitLab for its compact representation and fetch each full
+                # project record below; this avoids proxy/API truncation on
+                # large group responses.
+                "simple": True,
+            },
         ):
             path = string(project.get("path_with_namespace"))
             if path:
@@ -790,7 +859,19 @@ def discover_project_rules(source: Endpoint, project: dict[str, Any]) -> dict[st
 
 
 def default_group_target_name(source_path: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "-", string(source_path).strip("/").replace("/", "-"))[:100] or "migrated"
+    normalized = re.sub(
+        r"[^A-Za-z0-9_.-]+",
+        "-",
+        string(source_path).strip("/").replace("/", "-"),
+    )
+    if not normalized:
+        return "migrated"
+    if len(normalized) <= FORGEJO_ORGANIZATION_USERNAME_MAX_LENGTH:
+        return normalized
+    digest = hashlib.sha256(string(source_path).strip("/").encode("utf-8")).hexdigest()[:FORGEJO_GROUP_NAME_HASH_LENGTH]
+    prefix_length = FORGEJO_ORGANIZATION_USERNAME_MAX_LENGTH - FORGEJO_GROUP_NAME_HASH_LENGTH - 1
+    prefix = normalized[:prefix_length].rstrip("-_.")
+    return f"{prefix}-{digest}" if prefix else digest
 
 
 def destination_name(plan: dict[str, Any], project: dict[str, Any]) -> tuple[str, str]:
@@ -1004,7 +1085,11 @@ def discover_users(
                     users_by_username[username] = {"username": username}
     if not users_by_username and source_mode(plan, "users") != "skip":
         raise WorkspaceError("GitLab user discovery returned no users for the selected scope")
-    return [safe_record(item) for _, item in sorted(users_by_username.items(), key=lambda entry: entry[0].casefold())]
+    include_email = bool_value(config.get("include_email_for_account_creation"))
+    return [
+        safe_record(item, include_email=include_email)
+        for _, item in sorted(users_by_username.items(), key=lambda entry: entry[0].casefold())
+    ]
 
 
 def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
@@ -1228,8 +1313,59 @@ def source_mode(plan: dict[str, Any], surface: str) -> str:
     return surface_config((plan.get("surfaces") or {}).get(surface), f"surfaces.{surface}")["mode"]
 
 
+def excluded_usernames(config: dict[str, Any]) -> set[str]:
+    raw = config.get("excluded_usernames") or []
+    if not isinstance(raw, list) or not all(string(item) for item in raw):
+        raise WorkspaceError("surfaces.users.excluded_usernames must contain non-empty strings")
+    return {string(item).casefold() for item in raw}
+
+
+def user_is_excluded(plan: dict[str, Any], username: str) -> bool:
+    config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
+    return string(username).casefold() in excluded_usernames(config)
+
+
 def forgejo_user(destination: Endpoint, username: str) -> tuple[int, dict[str, Any]]:
     return request(destination, "GET", f"users/{quote(username, safe='')}", expected=(200, 404), return_status=True)
+
+
+def source_account_flags(item: dict[str, Any]) -> dict[str, bool]:
+    """Translate explicit GitLab account flags to Forgejo user fields."""
+    flags: dict[str, bool] = {}
+    state = string(item.get("state")).lower()
+    if state in {"active", "blocked"}:
+        flags["prohibit_login"] = state == "blocked"
+    if "is_admin" in item:
+        flags["admin"] = bool_value(item.get("is_admin"))
+    return flags
+
+
+def account_flag_updates(
+    username: str,
+    current: dict[str, Any],
+    desired: dict[str, bool],
+) -> dict[str, bool]:
+    """Return only safe account-flag changes, failing closed on incomplete read-back."""
+    response_fields = {"admin": "is_admin", "prohibit_login": "prohibit_login"}
+    updates: dict[str, bool] = {}
+    for field, value in desired.items():
+        response_field = response_fields[field]
+        if response_field not in current:
+            raise WorkspaceError(
+                f"Forgejo user {username!r} read-back omitted account field {response_field!r}"
+            )
+        if bool_value(current.get(response_field)) != value:
+            updates[field] = value
+    return updates
+
+
+def verify_account_flags(
+    username: str,
+    current: dict[str, Any],
+    desired: dict[str, bool],
+) -> None:
+    if account_flag_updates(username, current, desired):
+        raise WorkspaceError(f"Forgejo user {username!r} account flags were not reconciled")
 
 
 def require_named_api_record(
@@ -1254,9 +1390,10 @@ def validate_unique_user_targets(
     items: list[dict[str, Any]],
 ) -> None:
     targets: dict[str, str] = {}
+    excluded = excluded_usernames(config)
     for item in items:
         source_username = string(item.get("username"))
-        if not source_username or (
+        if not source_username or source_username.casefold() in excluded or (
             bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
         ):
             continue
@@ -1285,6 +1422,12 @@ def validate_unique_group_targets(plan: dict[str, Any], items: list[dict[str, An
         target_name = mapped_name(plan, "groups", source_path, default_name)
         if not target_name:
             raise WorkspaceError(f"GitLab group {source_path!r} maps to an empty Forgejo organization")
+        if len(target_name) > FORGEJO_ORGANIZATION_USERNAME_MAX_LENGTH:
+            raise WorkspaceError(
+                f"GitLab group {source_path!r} maps to Forgejo organization {target_name!r}, "
+                f"which exceeds the {FORGEJO_ORGANIZATION_USERNAME_MAX_LENGTH}-character username limit; "
+                "provide a shorter mappings.groups target"
+            )
         key = target_name.casefold()
         previous = targets.get(key)
         if previous and previous.casefold() != source_path.casefold():
@@ -1313,53 +1456,236 @@ def validate_unique_repository_targets(snapshot: dict[str, Any]) -> None:
         targets[target] = source_path
 
 
-def import_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str, Any]) -> dict[str, Any]:
+def generated_user_password() -> str:
+    """Return a per-user password that is never persisted in migration evidence."""
+    return secrets.token_urlsafe(24)
+
+
+def private_password_output_path(path: Path) -> Path:
+    """Resolve a credential handoff path and keep it inside ignored private/."""
+    private_root = (Path(__file__).resolve().parents[1] / "private").resolve()
+    candidate = path.expanduser().resolve()
+    try:
+        candidate.relative_to(private_root)
+    except ValueError as exc:
+        raise WorkspaceError("generated credentials must be written under private/") from exc
+    return candidate
+
+
+def write_password_handoff(path: Path, entries: list[dict[str, str]]) -> None:
+    """Atomically write the local-only initial credential handoff."""
+    payload = {
+        "format_version": 1,
+        "warning": "Sensitive local handoff; deliver securely and remove after use.",
+        "generated_at": utc_now(),
+        "entries": entries,
+    }
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def import_users(
+    plan: dict[str, Any],
+    destination: Endpoint,
+    snapshot: dict[str, Any],
+    *,
+    password_output: Path | None = None,
+) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
     if config["mode"] != "managed":
         return {"mode": config["mode"], "verified": config["mode"] in {"skip", "export", "mapped", "manual"}, "created": 0, "existing": 0, "targets": []}
+    password_strategy = string(config.get("password_strategy") or "environment").lower()
+    if password_strategy == "existing_hash_compatibility_required":
+        raise WorkspaceError(
+            "surfaces.users requires a private existing-password-hash compatibility migration; "
+            "the API importer will not create or update users with a reset/shared password"
+        )
     created = 0
     existing = 0
+    updated = 0
     targets: list[str] = []
+    notify_users = bool_value(config.get("send_notify"), False)
+    credential_entries: list[dict[str, str]] = []
     items = snapshot_surface_items(snapshot, "users", require_nonempty=True)
     if not all(isinstance(item, dict) for item in items):
         raise WorkspaceError("users snapshot items must be objects")
     validate_unique_user_targets(plan, config, items)
+    excluded = excluded_usernames(config)
+    if password_strategy == "generated_per_user":
+        if not notify_users:
+            if password_output is None:
+                raise WorkspaceError(
+                    "generated_per_user with send_notify=false requires --password-file under private/"
+                )
+            password_output = private_password_output_path(password_output)
+            if password_output.exists():
+                raise WorkspaceError(
+                    f"credential handoff already exists at {password_output}; choose a new private path"
+                )
+        # Validate the complete delivery surface before the first destination
+        # call, so one incomplete source record cannot cause a partial import.
+        for item in items:
+            source_username = string(item.get("username"))
+            if (
+                not source_username
+                or source_username.casefold() in excluded
+                or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
+            ):
+                continue
+            if not string(item.get("email") or item.get("public_email")):
+                raise WorkspaceError(
+                    f"user {source_username!r} has no private email in the snapshot; "
+                    "generated_per_user requires a real delivery address"
+                )
     for item in items:
         source_username = string(item.get("username"))
-        if not source_username or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True):
+        if (
+            not source_username
+            or source_username.casefold() in excluded
+            or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
+        ):
             continue
         target_username = mapped_name(plan, "users", source_username, source_username)
         targets.append(target_username)
         status, current = forgejo_user(destination, target_username)
+        desired_flags = source_account_flags(item) if bool_value(config.get("preserve_account_flags")) else {}
         if status == 200:
-            require_named_api_record(status, current, target_username, "Forgejo user")
+            current = require_named_api_record(status, current, target_username, "Forgejo user")
+            updates = account_flag_updates(target_username, current, desired_flags)
+            if updates:
+                request(
+                    destination,
+                    "PATCH",
+                    f"admin/users/{quote(target_username, safe='')}",
+                    body=updates,
+                    expected=(200, 204),
+                )
+                verified_status, verified_user = forgejo_user(destination, target_username)
+                verified_user = require_named_api_record(
+                    verified_status,
+                    verified_user,
+                    target_username,
+                    "Forgejo user",
+                )
+                verify_account_flags(target_username, verified_user, desired_flags)
+                updated += 1
             existing += 1
             continue
-        env_map = config.get("password_env_by_username") or {}
-        password_env = string(env_map.get(source_username) if isinstance(env_map, dict) else "") or string(config.get("default_password_env"))
-        password = os.environ.get(password_env, "") if password_env else ""
-        if not password:
-            raise WorkspaceError(f"user {source_username!r} requires password environment variable {password_env or '<missing>'}")
-        email = string(item.get("public_email")) or f"{target_username}@{string(config.get('placeholder_email_domain'), 'migration.invalid')}"
+        email = string(item.get("email") or item.get("public_email"))
+        if password_strategy == "generated_per_user":
+            if not email:
+                raise WorkspaceError(
+                    f"user {source_username!r} has no private email in the snapshot; "
+                    "generated_per_user requires a real delivery address"
+                )
+            password = generated_user_password()
+            if not notify_users:
+                credential_entries.append(
+                    {
+                        "username": target_username,
+                        "email": email,
+                        "password": password,
+                    }
+                )
+                # Record before the API call so an interrupted request cannot
+                # leave a newly created account without a recoverable handoff.
+                assert password_output is not None
+                write_password_handoff(password_output, credential_entries)
+        else:
+            env_map = config.get("password_env_by_username") or {}
+            password_env = string(env_map.get(source_username) if isinstance(env_map, dict) else "") or string(config.get("default_password_env"))
+            password = os.environ.get(password_env, "") if password_env else ""
+            if not password:
+                raise WorkspaceError(f"user {source_username!r} requires password environment variable {password_env or '<missing>'}")
+            email = email or f"{target_username}@{string(config.get('placeholder_email_domain'), 'migration.invalid')}"
         body = {
             "username": target_username,
             "login_name": target_username,
             "email": email,
             "password": password,
             "must_change_password": True,
-            "send_notify": False,
+            "send_notify": bool_value(config.get("send_notify"), False),
         }
+        body.update(desired_flags)
         request(destination, "POST", "admin/users", body=body, expected=(201, 200))
         verified_status, verified_user = forgejo_user(destination, target_username)
-        require_named_api_record(verified_status, verified_user, target_username, "Forgejo user")
+        verified_user = require_named_api_record(verified_status, verified_user, target_username, "Forgejo user")
+        verify_account_flags(target_username, verified_user, desired_flags)
         created += 1
     return {
         "mode": config["mode"],
         "created": created,
         "existing": existing,
+        "updated": updated,
         "verified_count": created + existing,
         "targets": sorted(set(targets), key=str.casefold),
+        "credential_delivery": "forgejo_mail" if notify_users else "private_file",
+        "initial_credentials_created": len(credential_entries),
         "verified": True,
+    }
+
+
+def audit_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Read-only user reconciliation; password compatibility is never inferred."""
+    config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
+    if config["mode"] == "skip":
+        return {
+            "mode": config["mode"],
+            "expected": 0,
+            "matched": 0,
+            "missing": 0,
+            "account_flag_mismatches": 0,
+            "identity_verified": True,
+            "account_flags_verified": True,
+            "passwords_verified": False,
+            "verified": False,
+        }
+    items = snapshot_surface_items(snapshot, "users", require_nonempty=True)
+    if not all(isinstance(item, dict) for item in items):
+        raise WorkspaceError("users snapshot items must be objects")
+    validate_unique_user_targets(plan, config, items)
+    excluded = excluded_usernames(config)
+    expected = 0
+    matched = 0
+    missing = 0
+    account_flag_mismatches = 0
+    source_states: dict[str, int] = {}
+    for item in items:
+        source_username = string(item.get("username"))
+        if (
+            not source_username
+            or source_username.casefold() in excluded
+            or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
+        ):
+            continue
+        expected += 1
+        state = string(item.get("state")).lower()
+        if state:
+            source_states[state] = source_states.get(state, 0) + 1
+        target_username = mapped_name(plan, "users", source_username, source_username)
+        status, current = forgejo_user(destination, target_username)
+        if status != 200:
+            missing += 1
+            continue
+        current = require_named_api_record(status, current, target_username, "Forgejo user")
+        matched += 1
+        if bool_value(config.get("preserve_account_flags")):
+            account_flag_mismatches += len(
+                account_flag_updates(target_username, current, source_account_flags(item))
+            )
+    identity_verified = missing == 0
+    account_flags_verified = account_flag_mismatches == 0
+    passwords_verified = False
+    return {
+        "mode": config["mode"],
+        "expected": expected,
+        "matched": matched,
+        "missing": missing,
+        "source_states": source_states,
+        "account_flag_mismatches": account_flag_mismatches,
+        "identity_verified": identity_verified,
+        "account_flags_verified": account_flags_verified,
+        "passwords_verified": passwords_verified,
+        "verified": identity_verified and account_flags_verified and passwords_verified,
     }
 
 
@@ -1813,6 +2139,8 @@ def import_memberships(
             source_username = member_username(member)
             if not source_username:
                 raise WorkspaceError(f"GitLab group {source_path!r} contains a member without a username")
+            if user_is_excluded(plan, source_username):
+                continue
             target_username = mapped_name(plan, "users", source_username, source_username)
             if not target_username:
                 raise WorkspaceError(f"GitLab user {source_username!r} maps to an empty Forgejo username")
@@ -2278,6 +2606,8 @@ def import_permissions(
             source_username = member_username(member)
             if not source_username:
                 raise WorkspaceError(f"GitLab project {project_path!r} contains a member without a username")
+            if user_is_excluded(plan, source_username):
+                continue
             target_username = mapped_name(plan, "users", source_username, source_username)
             if not target_username:
                 raise WorkspaceError(f"GitLab user {source_username!r} maps to an empty Forgejo username")
@@ -2888,6 +3218,11 @@ def commit_ci_changes(repo_root: Path, paths: list[str]) -> str:
 
 
 def import_ci(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) -> dict[str, Any]:
+    # Keep read-only validation, export, and user-audit commands independent of
+    # the optional pipeline conversion dependency.  That dependency imports
+    # PyYAML in some environments, while these commands do not need it.
+    import forge_pipeline as pipeline
+
     config = surface_config((plan.get("surfaces") or {}).get("ci"), "surfaces.ci")
     if config["mode"] != "managed":
         return {"mode": config["mode"], "items": [], "verified": True}
@@ -3015,14 +3350,20 @@ def import_pipelines(plan: dict[str, Any], snapshot: dict[str, Any]) -> dict[str
     return {"mode": config["mode"], "items": results, "history_imported": False, "verified": all(item.get("verified") is True for item in results)}
 
 
-def import_workspace(plan: dict[str, Any], snapshot: dict[str, Any], work_dir: Path) -> dict[str, Any]:
+def import_workspace(
+    plan: dict[str, Any],
+    snapshot: dict[str, Any],
+    work_dir: Path,
+    *,
+    password_output: Path | None = None,
+) -> dict[str, Any]:
     destination = endpoint(plan, "destination", "forgejo")
     validate_import_snapshot_contract(plan, snapshot)
     work_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {}
     user_result: dict[str, Any] | None = None
     if source_mode(plan, "users") == "managed":
-        user_result = import_users(plan, destination, snapshot)
+        user_result = import_users(plan, destination, snapshot, password_output=password_output)
         results["users"] = user_result
     group_result: dict[str, Any] | None = None
     if source_mode(plan, "groups") == "managed" or source_mode(plan, "subgroups") == "managed":
@@ -3104,8 +3445,32 @@ def command_export(args: argparse.Namespace) -> int:
 def command_import(args: argparse.Namespace) -> int:
     plan = load_plan(args.plan)
     snapshot = require_snapshot(plan, args.snapshot)
-    result = import_workspace(plan, snapshot, args.work_dir)
+    runtime_plan = plan
+    password_output: Path | None = None
+    if args.no_send_notify:
+        user_config = ((plan.get("surfaces") or {}).get("users") or {})
+        if not isinstance(user_config, dict) or string(user_config.get("password_strategy")).lower() != "generated_per_user":
+            raise WorkspaceError("--no-send-notify currently requires surfaces.users.password_strategy=generated_per_user")
+        if args.password_file is None:
+            raise WorkspaceError("--no-send-notify requires --password-file under private/")
+        runtime_plan = copy.deepcopy(plan)
+        runtime_plan["surfaces"]["users"]["send_notify"] = False
+        password_output = args.password_file
+    elif args.password_file is not None:
+        raise WorkspaceError("--password-file is only valid together with --no-send-notify")
+    result = import_workspace(runtime_plan, snapshot, args.work_dir, password_output=password_output)
     evidence = proof("import", plan, result)
+    if args.proof:
+        write_json(args.proof, evidence)
+    print(json.dumps(sanitize_proof(evidence), indent=2, sort_keys=True))
+    return 0 if result.get("verified") else 1
+
+
+def command_audit_users(args: argparse.Namespace) -> int:
+    plan = load_plan(args.plan)
+    snapshot = require_snapshot(plan, args.snapshot)
+    result = audit_users(plan, endpoint(plan, "destination", "forgejo"), snapshot)
+    evidence = proof("audit-users", plan, result)
     if args.proof:
         write_json(args.proof, evidence)
     print(json.dumps(sanitize_proof(evidence), indent=2, sort_keys=True))
@@ -3129,7 +3494,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     import_command.add_argument("--snapshot", type=Path, required=True)
     import_command.add_argument("--work-dir", type=Path, required=True)
     import_command.add_argument("--proof", type=Path)
+    import_command.add_argument(
+        "--no-send-notify",
+        action="store_true",
+        help="Do not email newly generated passwords; requires --password-file under private/",
+    )
+    import_command.add_argument(
+        "--password-file",
+        type=Path,
+        help="Ignored private local handoff for newly generated passwords",
+    )
     import_command.set_defaults(handler=command_import)
+    audit = subparsers.add_parser("audit-users")
+    audit.add_argument("plan", type=Path)
+    audit.add_argument("--snapshot", type=Path, required=True)
+    audit.add_argument("--proof", type=Path)
+    audit.set_defaults(handler=command_audit_users)
     return parser.parse_args(argv)
 
 

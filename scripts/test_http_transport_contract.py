@@ -364,6 +364,13 @@ def test_shared_opener_policy() -> None:
     else:
         raise AssertionError("non-boolean proxy policy was accepted")
 
+    try:
+        open_http_request(request, timeout=10, allow_insecure_http="true")  # type: ignore[arg-type]
+    except HttpTransportPolicyError:
+        pass
+    else:
+        raise AssertionError("non-boolean insecure HTTP policy was accepted")
+
 
 def test_request_safety_policy() -> None:
     def expect_rejected(request: Request, message: str) -> None:
@@ -385,6 +392,19 @@ def test_request_safety_policy() -> None:
             ),
             "require HTTPS",
         )
+
+    opener = mock.Mock()
+    opener.open.return_value = object()
+    with mock.patch.object(http_transport, "build_opener", return_value=opener):
+        open_http_request(
+            Request(
+                "http://private.example.test/resource",
+                headers={"PRIVATE-TOKEN": "do-not-leak"},
+            ),
+            timeout=10,
+            allow_insecure_http=True,
+        )
+    opener.open.assert_called_once()
 
     expect_rejected(
         Request("https://user:do-not-leak@api.example.test/resource"),

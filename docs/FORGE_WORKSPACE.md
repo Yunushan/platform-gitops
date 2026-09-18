@@ -44,16 +44,45 @@ from becoming an instance-wide import.
 
 - **Users:** selected GitLab users are created through Forgejo's administrative
   user API. The plan references one or more password environment variables;
-  passwords are never put in JSON. New users are marked to change the password.
+  passwords are never put in the plan, snapshot, or proof JSON. New users are
+  marked to change the password.
   Every managed user is read back by its mapped login before the import can
   report success.
+  For migrations that intentionally issue new credentials, set
+  `password_strategy` to `generated_per_user`, enable
+  `include_email_for_account_creation`, and set `send_notify: true`. The
+  importer generates a different random password for each newly created user,
+  sends it through Forgejo's configured mail delivery, and never writes the
+  password to stdout, JSON, or proof. Existing Forgejo users are not silently
+  password-reset by this mode; handle those accounts through a separately
+  confirmed password-reset procedure if required.
+  If mail delivery is intentionally unavailable, run the import with
+  `--no-send-notify --password-file private/...`. This writes only the newly
+  generated credentials to an atomically replaced, private-permission file
+  under the ignored `private/` directory; deliver that file through a secure
+  channel and remove it after the handoff.
+  When the requirement is to preserve each user's existing GitLab password,
+  set `password_strategy` to
+  `existing_hash_compatibility_required`. The API importer then fails closed
+  before any destination user call; GitLab's user API does not provide a
+  supported password-hash export/import field. Complete that requirement only
+  through a separately reviewed private compatibility procedure. Never replace
+  it with a reset password or a shared password, and never commit password
+  hashes or related secrets.
+  Set `preserve_account_flags: true` only when the approved snapshot should also
+  reconcile explicit GitLab `active`/`blocked` state and administrator status;
+  this maps to Forgejo `prohibit_login` and `admin` and verifies the result by
+  reading the user back. External/LDAP/SSO identities are not synthesized.
+  Provider-owned system records can be listed in `excluded_usernames`; those
+  records are not created as Forgejo logins or granted repository access.
 - **Groups and subgroups:** GitLab groups are represented as Forgejo
   organizations. Nested groups are walked recursively and flattened into
-  deterministic organization names; use `mappings` when a different name is
-  required. The snapshot retains both direct and effective GitLab membership
-  views. Direct memberships become organization-team memberships by default;
-  inherited memberships are not incorrectly copied into every child
-  organization.
+  deterministic organization names that fit Forgejo's organization-username
+  limit; long names receive a stable hash suffix. Use `mappings` when a
+  different name is required. The snapshot retains both direct and effective
+  GitLab membership views. Direct memberships become organization-team
+  memberships by default; inherited memberships are not incorrectly copied
+  into every child organization.
 - **Memberships:** The managed surface reconciles GitLab direct group
   memberships into deterministic Forgejo teams. The default mapping is
   Owner -> Forgejo's built-in `Owners` team, Maintainer/Developer -> `write`,
@@ -73,7 +102,9 @@ from becoming an instance-wide import.
 - **Projects:** project metadata that Forgejo can represent is reconciled on
   the destination repository. The source project is not deleted or disabled.
 - **Repositories:** Git refs, tags, LFS data when selected, and the supported
-  repository metadata are delegated to `forge_migration.py`.
+  repository metadata are delegated to `forge_migration.py`. For private
+  GitLab remotes, the source token is supplied to Git through an inherited
+  credential helper; it is never embedded in a clone URL or command argument.
 - **Permissions:** The managed surface inventories GitLab direct and effective
   project members, including inherited access and available invited-group
   metadata. Invited groups are expanded to their current member set and each
@@ -153,6 +184,11 @@ operations. See the [GitLab Groups API](https://docs.gitlab.com/api/groups/),
 Copy the example into an ignored private directory and edit selectors and
 modes. Do not put tokens or passwords in the file.
 
+The source and destination API URLs must use HTTPS by default. A private,
+isolated GitLab endpoint that genuinely has no TLS may set
+`source.allow_insecure_http: true` in the ignored private plan; never use that
+opt-in in a public plan or for an internet-facing endpoint.
+
 ```bash
 make forge-workspace-validate \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json
@@ -172,7 +208,26 @@ make forge-workspace-import \
   SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
   WORK_DIR=private/migrations/workspace \
   PROOF=private/migrations/proof/workspace-import.json
+
+# If Forgejo mail is intentionally unavailable, use a private local handoff:
+make forge-workspace-import \
+  PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
+  SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
+  WORK_DIR=private/migrations/workspace \
+  PROOF=private/migrations/proof/workspace-import.json \
+  NO_SEND_NOTIFY=1 \
+  PASSWORD_FILE=private/migrations/proof/initial-user-passwords.json
+
+make forge-workspace-audit-users \
+  PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
+  SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
+  PROOF=private/migrations/proof/user-audit.json
 ```
+
+`audit-users` is read-only. It verifies target account presence and, when
+enabled, active/blocked and administrator flags; it always reports passwords
+as unverified. Do not treat a successful account audit as proof that an
+existing GitLab password works in Forgejo.
 
 For a complete users/groups/permissions/rules transfer, enable the
 `memberships`, `permissions`, and `rules` surfaces in the plan and set

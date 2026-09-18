@@ -112,6 +112,15 @@ gitea:
     service:
       DISABLE_REGISTRATION: true
       REQUIRE_SIGNIN_VIEW: true
+      ENABLE_NOTIFY_MAIL: true
+    mailer:
+      ENABLED: true
+      PROTOCOL: smtp
+      SMTP_ADDR: "<SMTP_RELAY_HOST>"
+      SMTP_PORT: 25
+      USER: ""
+      PASSWD: ""
+      FROM: "forgejo@<PLATFORM_DOMAIN>"
     repository:
       DEFAULT_BRANCH: main
     database:

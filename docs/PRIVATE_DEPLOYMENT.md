@@ -510,6 +510,7 @@ The private deployment repo should contain:
 
 ```text
 Real internal domains
+Real SMTP relay hosts and organization-specific sender addresses
 Real cluster sizing
 Real storage classes and backup targets
 Real Argo CD Application sources
