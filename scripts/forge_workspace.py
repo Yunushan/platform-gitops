@@ -151,7 +151,7 @@ class WorkspaceError(migration.MigrationError):
     """Raised when a workspace operation cannot be proven safe."""
 
 
-DEFAULT_PAGE_SIZE = 25
+DEFAULT_PAGE_SIZE = 100
 
 
 @dataclass(frozen=True)
@@ -192,6 +192,15 @@ def bool_value(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
     return string(value).lower() not in {"", "0", "false", "no", "off", "none"}
+
+
+def literal_bool(value: Any, label: str, default: bool = False) -> bool:
+    """Require security-sensitive plan flags to be JSON booleans, not truthy strings."""
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise WorkspaceError(f"{label} must be a boolean")
+    return value
 
 
 def surface_config(raw: Any, label: str) -> dict[str, Any]:
@@ -244,15 +253,14 @@ def endpoint(plan: dict[str, Any], name: str, provider: str) -> Endpoint:
     token_env = string(raw.get("token_env"))
     if not api_url or not token_env:
         raise WorkspaceError(f"{name}.api_url and {name}.token_env are required")
-    if not api_url.startswith("https://") and not (
-        api_url.startswith("http://") and bool_value(raw.get("allow_insecure_http"))
-    ):
+    allow_insecure_http = literal_bool(raw.get("allow_insecure_http"), f"{name}.allow_insecure_http")
+    if not api_url.startswith("https://") and not (api_url.startswith("http://") and allow_insecure_http):
         raise WorkspaceError(f"{name}.api_url must use HTTPS")
     return Endpoint(
         provider,
         api_url,
         token_env,
-        allow_insecure_http=bool_value(raw.get("allow_insecure_http")),
+        allow_insecure_http=allow_insecure_http,
     )
 
 
@@ -1049,6 +1057,7 @@ def discover_users(
     query = {key: value for key, value in (("active", config.get("active")), ("blocked", config.get("blocked")), ("external", config.get("external"))) if value is not None}
     usernames = plan["source"].get("usernames") or []
     users_by_username: dict[str, dict[str, Any]] = {}
+    membership_usernames: set[str] = set()
     if usernames:
         for username in usernames:
             candidates = list_pages(source, "users", query={**query, "username": string(username)})
@@ -1071,6 +1080,7 @@ def discover_users(
                 username = member_username(member)
                 if username and username.casefold() not in {key.casefold() for key in users_by_username}:
                     users_by_username[username] = {"username": username}
+                    membership_usernames.add(username)
         for project_item in project_permissions or []:
             members = [
                 member
@@ -1083,6 +1093,23 @@ def discover_users(
                 username = member_username(member)
                 if username and username.casefold() not in {key.casefold() for key in users_by_username}:
                     users_by_username[username] = {"username": username}
+                    membership_usernames.add(username)
+    if membership_usernames:
+        # Membership endpoints often return only username/access fields. Hydrate
+        # those records through the users endpoint before email preflight so a
+        # complete users/groups/permissions export does not lose delivery data.
+        for username in sorted(membership_usernames, key=str.casefold):
+            candidates = list_pages(source, "users", query={"username": username})
+            hydrated = next(
+                (
+                    item
+                    for item in candidates
+                    if string(item.get("username")).casefold() == username.casefold()
+                ),
+                None,
+            )
+            if hydrated is not None:
+                users_by_username[username] = hydrated
     if not users_by_username and source_mode(plan, "users") != "skip":
         raise WorkspaceError("GitLab user discovery returned no users for the selected scope")
     include_email = bool_value(config.get("include_email_for_account_creation"))
@@ -3473,7 +3500,34 @@ def command_audit_users(args: argparse.Namespace) -> int:
     evidence = proof("audit-users", plan, result)
     if args.proof:
         write_json(args.proof, evidence)
-    print(json.dumps(sanitize_proof(evidence), indent=2, sort_keys=True))
+    # Keep stdout to aggregate audit facts only. Never serialize the source
+    # snapshot or a generic proof object into a command log.
+    public_result = {
+        "mode": result.get("mode"),
+        "expected": result.get("expected"),
+        "matched": result.get("matched"),
+        "missing": result.get("missing"),
+        "account_flag_mismatches": result.get("account_flag_mismatches"),
+        "identity_verified": result.get("identity_verified") is True,
+        "account_flags_verified": result.get("account_flags_verified") is True,
+        "passwords_verified": False,
+        "verified": result.get("verified") is True,
+    }
+    print(
+        json.dumps(
+            {
+                "proof_version": PROOF_VERSION,
+                "tool": TOOL,
+                "command": "audit-users",
+                "generated_at": utc_now(),
+                "plan_sha256": canonical_digest(plan),
+                "verified": result.get("verified") is True,
+                "result": public_result,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0 if result.get("verified") else 1
 
 

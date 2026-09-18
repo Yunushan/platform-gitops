@@ -121,10 +121,38 @@ def test_selective_plan_contract() -> None:
     expect_error(insecure_source, "must use HTTPS")
     insecure_source["source"]["allow_insecure_http"] = True  # type: ignore[index]
     workspace.validate_plan(insecure_source)
+    invalid_insecure_flag = copy.deepcopy(insecure_source)
+    invalid_insecure_flag["source"]["allow_insecure_http"] = "flase"  # type: ignore[index]
+    expect_error(invalid_insecure_flag, "source.allow_insecure_http must be a boolean")
 
     invalid_exclusions = copy.deepcopy(plan)
     invalid_exclusions["surfaces"]["users"]["excluded_usernames"] = "ghost"  # type: ignore[index]
     expect_error(invalid_exclusions, "excluded_usernames must contain non-empty strings")
+
+
+def test_membership_only_users_are_hydrated_before_email_export() -> None:
+    plan = base_plan()
+    plan["source"]["usernames"] = []  # type: ignore[index]
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "include_members": True,
+        "include_email_for_account_creation": True,
+    }
+
+    def pages(_source: object, path: str, **kwargs: object) -> list[dict[str, object]]:
+        if path == "users" and kwargs.get("query") == {"username": "member-only"}:
+            return [{"username": "member-only", "email": "member-only@example.test"}]
+        raise AssertionError(f"unexpected user hydration request: {path} {kwargs!r}")
+
+    with mock.patch.object(workspace, "list_pages", side_effect=pages):
+        users = workspace.discover_users(
+            object(),
+            plan,
+            groups=[{"effective_members": [{"username": "member-only", "access_level": 30}]}],
+            project_permissions=[],
+        )
+    if users != [{"username": "member-only", "email": "member-only@example.test"}]:
+        raise AssertionError(f"membership-only user email was not hydrated: {users!r}")
 
 
 def test_redaction_and_destination_url() -> None:
@@ -1302,6 +1330,7 @@ def test_pipeline_schedule_import_is_not_history_import() -> None:
 
 def main() -> int:
     test_selective_plan_contract()
+    test_membership_only_users_are_hydrated_before_email_export()
     test_redaction_and_destination_url()
     test_long_group_targets_are_forgejo_compatible_and_stable()
     test_selected_nested_group_is_a_root()

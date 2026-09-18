@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -214,14 +215,23 @@ def git(
     return run_command(["git", *args], cwd=cwd, check=check, env=env)
 
 
-def git_auth_environment(token_env: str | None, provider: str | None = None) -> dict[str, str] | None:
-    """Return a credential-helper environment without putting a token in argv or URLs."""
+def git_auth_environment(
+    token_env: str | None,
+    provider: str | None = None,
+    remote_url: str | None = None,
+) -> dict[str, str] | None:
+    """Return a host-scoped credential-helper environment without exposing a token."""
     if not token_env:
         return None
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
         raise MigrationError(f"invalid Git credential environment variable name: {token_env!r}")
     if not os.environ.get(token_env, ""):
         raise MigrationError(f"Git credential environment variable {token_env!r} is not set")
+    if not remote_url:
+        raise MigrationError("Git credential helper scope requires the validated remote URL")
+    parsed = urlsplit(remote_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise MigrationError("Git credential helper scope requires an HTTP(S) remote URL")
 
     environment = dict(os.environ)
     environment["GIT_TERMINAL_PROMPT"] = "0"
@@ -229,10 +239,24 @@ def git_auth_environment(token_env: str | None, provider: str | None = None) -> 
         config_count = int(environment.get("GIT_CONFIG_COUNT", "0"))
     except ValueError:
         config_count = 0
+    username = "oauth2" if provider == "gitlab" else "token"
+    expected_protocol = shlex.quote(parsed.scheme.lower())
+    expected_host = shlex.quote(parsed.hostname.lower())
     helper = (
-        "!f() { printf 'username=%s\\npassword=%s\\n' "
-        f"'{('oauth2' if provider == 'gitlab' else 'token')}' "
-        f'"${{{token_env}}}"; }}; f'
+        "!f() { "
+        "protocol=; host=; matched=false; "
+        "while IFS='=' read -r key value; do "
+        'case "$key" in '
+        '"" ) break;; '
+        "protocol) protocol=$value;; "
+        "host) host=$value;; "
+        "quit) exit 0;; "
+        "esac; "
+        "done; "
+        f'if [ "$protocol" = {expected_protocol} ] && [ "$host" = {expected_host} ]; then matched=true; fi; '
+        'if [ "$matched" != true ]; then exit 1; fi; '
+        f"printf 'username=%s\\npassword=%s\\n' {shlex.quote(username)} \"${{{token_env}}}\"; "
+        "}; f"
     )
     environment["GIT_CONFIG_COUNT"] = str(config_count + 1)
     environment[f"GIT_CONFIG_KEY_{config_count}"] = "credential.helper"
@@ -1042,7 +1066,7 @@ def reconcile_destination_default_branch(
         return lifecycle
     source_default_ref, source_error = ls_remote_default_branch(
         repo.source_url,
-        env=git_auth_environment(repo.source_token_env, repo.source_provider),
+        env=git_auth_environment(repo.source_token_env, repo.source_provider, repo.source_url),
     )
     if source_error:
         raise MigrationError(
@@ -3341,7 +3365,7 @@ def prepare_mirror(repo: RepoPlan, work_dir: Path) -> Path:
     repo_root.mkdir(parents=True, exist_ok=True)
     git(
         ["clone", "--mirror", repo.source_url, str(mirror)],
-        env=git_auth_environment(repo.source_token_env, repo.source_provider),
+        env=git_auth_environment(repo.source_token_env, repo.source_provider, repo.source_url),
     )
     git(["fsck", "--full"], cwd=mirror)
     return mirror
@@ -3376,12 +3400,12 @@ def migrate_lfs(repo: RepoPlan, mirror: Path) -> dict[str, Any]:
     git(
         ["lfs", "fetch", "--all"],
         cwd=mirror,
-        env=git_auth_environment(repo.source_token_env, repo.source_provider),
+        env=git_auth_environment(repo.source_token_env, repo.source_provider, repo.source_url),
     )
     git(
         ["lfs", "push", "--all", repo.destination_url],
         cwd=mirror,
-        env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        env=git_auth_environment(repo.destination_token_env, repo.destination_provider, repo.destination_url),
     )
     return {"mode": repo.lfs, "transfer_status": "pushed"}
 
@@ -3440,24 +3464,24 @@ def verify_lfs(
             repo.source_url,
             verification_root / "source.git",
             work_dir,
-            env=git_auth_environment(repo.source_token_env, repo.source_provider),
+            env=git_auth_environment(repo.source_token_env, repo.source_provider, repo.source_url),
         )
     destination_mirror = clone_mirror_for_verification(
         repo.destination_url,
         verification_root / "destination.git",
         work_dir,
-        env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        env=git_auth_environment(repo.destination_token_env, repo.destination_provider, repo.destination_url),
     )
     git(
         ["lfs", "fetch", "--all"],
         cwd=source_mirror,
-        env=git_auth_environment(repo.source_token_env, repo.source_provider),
+        env=git_auth_environment(repo.source_token_env, repo.source_provider, repo.source_url),
     )
     git(["lfs", "fsck"], cwd=source_mirror)
     git(
         ["lfs", "fetch", "--all"],
         cwd=destination_mirror,
-        env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        env=git_auth_environment(repo.destination_token_env, repo.destination_provider, repo.destination_url),
     )
     git(["lfs", "fsck"], cwd=destination_mirror)
     source_objects = lfs_object_ids(source_mirror)
@@ -3485,7 +3509,7 @@ def migrate_wiki(repo: RepoPlan, work_dir: Path) -> dict[str, Any]:
     destination_wiki = repo.destination_wiki_url or derive_wiki_url(repo.destination_url)
     refs, error = ls_remote_refs(
         source_wiki,
-        env=git_auth_environment(repo.source_token_env, repo.source_provider),
+        env=git_auth_environment(repo.source_token_env, repo.source_provider, source_wiki),
     )
     if error or not refs:
         if repo.wiki == "required":
@@ -3518,13 +3542,13 @@ def migrate_wiki(repo: RepoPlan, work_dir: Path) -> dict[str, Any]:
     push_mirror(
         mirror,
         destination_wiki,
-        env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        env=git_auth_environment(repo.destination_token_env, repo.destination_provider, destination_wiki),
     )
     verification = compare_refs(
         source_wiki,
         destination_wiki,
-        source_env=git_auth_environment(repo.source_token_env, repo.source_provider),
-        destination_env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        source_env=git_auth_environment(repo.source_token_env, repo.source_provider, source_wiki),
+        destination_env=git_auth_environment(repo.destination_token_env, repo.destination_provider, destination_wiki),
     )
     if not verification["verified"]:
         raise MigrationError(f"{repo.name}: wiki refs did not verify after push")
@@ -3538,7 +3562,7 @@ def verify_wiki(repo: RepoPlan) -> dict[str, Any]:
     destination_wiki = repo.destination_wiki_url or derive_wiki_url(repo.destination_url)
     refs, error = ls_remote_refs(
         source_wiki,
-        env=git_auth_environment(repo.source_token_env, repo.source_provider),
+        env=git_auth_environment(repo.source_token_env, repo.source_provider, source_wiki),
     )
     if error or not refs:
         if repo.wiki == "required":
@@ -3547,8 +3571,8 @@ def verify_wiki(repo: RepoPlan) -> dict[str, Any]:
     verification = compare_refs(
         source_wiki,
         destination_wiki,
-        source_env=git_auth_environment(repo.source_token_env, repo.source_provider),
-        destination_env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        source_env=git_auth_environment(repo.source_token_env, repo.source_provider, source_wiki),
+        destination_env=git_auth_environment(repo.destination_token_env, repo.destination_provider, destination_wiki),
     )
     return {
         "mode": repo.wiki,
@@ -3565,8 +3589,8 @@ def verify_repo(repo: RepoPlan) -> dict[str, Any]:
     verification = compare_refs(
         repo.source_url,
         repo.destination_url,
-        source_env=git_auth_environment(repo.source_token_env, repo.source_provider),
-        destination_env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        source_env=git_auth_environment(repo.source_token_env, repo.source_provider, repo.source_url),
+        destination_env=git_auth_environment(repo.destination_token_env, repo.destination_provider, repo.destination_url),
     )
     wiki = verify_wiki(repo)
     with tempfile.TemporaryDirectory(prefix="forge-migration-lfs-verify-") as temp:
@@ -3597,14 +3621,14 @@ def migrate_repo(repo: RepoPlan, work_dir: Path) -> dict[str, Any]:
     push_mirror(
         mirror,
         repo.destination_url,
-        env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        env=git_auth_environment(repo.destination_token_env, repo.destination_provider, repo.destination_url),
     )
     destination_repository = reconcile_destination_default_branch(repo, destination_repository)
     verification = compare_refs(
         repo.source_url,
         repo.destination_url,
-        source_env=git_auth_environment(repo.source_token_env, repo.source_provider),
-        destination_env=git_auth_environment(repo.destination_token_env, repo.destination_provider),
+        source_env=git_auth_environment(repo.source_token_env, repo.source_provider, repo.source_url),
+        destination_env=git_auth_environment(repo.destination_token_env, repo.destination_provider, repo.destination_url),
     )
     if not verification["verified"]:
         raise MigrationError(f"{repo.name}: repository refs did not verify after push")
