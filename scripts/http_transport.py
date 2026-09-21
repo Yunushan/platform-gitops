@@ -149,6 +149,7 @@ def open_http_request(
     *,
     timeout: float | None = None,
     use_environment_proxy: bool = True,
+    allow_insecure_http: bool = False,
 ) -> Any:
     """Open one bounded request while rejecting every redirect response."""
     selected_timeout = (
@@ -160,7 +161,11 @@ def open_http_request(
         raise HttpTransportPolicyError(
             "use_environment_proxy must be a boolean"
         )
-    validate_http_request(request)
+    if not isinstance(allow_insecure_http, bool):
+        raise HttpTransportPolicyError(
+            "allow_insecure_http must be a boolean"
+        )
+    validate_http_request(request, allow_insecure_http=allow_insecure_http)
     handlers: tuple[Any, ...] = (RejectRedirectHandler(),)
     if not use_environment_proxy:
         handlers = (ProxyHandler({}), *handlers)
@@ -192,8 +197,16 @@ def _validated_request_limit(raw_value: str, label: str) -> int:
     return limit
 
 
-def validate_http_request(request: Request) -> None:
+def validate_http_request(
+    request: Request,
+    *,
+    allow_insecure_http: bool = False,
+) -> None:
     """Reject unsafe targets, credentials, metadata, or oversized bodies."""
+    if not isinstance(allow_insecure_http, bool):
+        raise HttpTransportPolicyError(
+            "allow_insecure_http must be a boolean"
+        )
     url = request.full_url
     if len(url.encode("utf-8")) > MAX_HTTP_URL_BYTES:
         raise HttpRequestTooLarge(
@@ -251,7 +264,7 @@ def validate_http_request(request: Request) -> None:
         for name, _ in header_items
         if name.lower() in SENSITIVE_HTTP_HEADERS
     }
-    if scheme != "https" and credential_headers:
+    if scheme != "https" and credential_headers and not allow_insecure_http:
         raise HttpTransportPolicyError(
             "credential-bearing HTTP requests require HTTPS"
         )

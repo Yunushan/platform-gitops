@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -114,6 +116,44 @@ def test_selective_plan_contract() -> None:
     members_without_users["surfaces"]["groups"] = {"mode": "managed"}  # type: ignore[index]
     expect_error(members_without_users, "members_mode=skip|mapped|manual")
 
+    insecure_source = copy.deepcopy(plan)
+    insecure_source["source"]["api_url"] = "http://gitlab.example.test/api/v4"  # type: ignore[index]
+    expect_error(insecure_source, "must use HTTPS")
+    insecure_source["source"]["allow_insecure_http"] = True  # type: ignore[index]
+    workspace.validate_plan(insecure_source)
+    invalid_insecure_flag = copy.deepcopy(insecure_source)
+    invalid_insecure_flag["source"]["allow_insecure_http"] = "flase"  # type: ignore[index]
+    expect_error(invalid_insecure_flag, "source.allow_insecure_http must be a boolean")
+
+    invalid_exclusions = copy.deepcopy(plan)
+    invalid_exclusions["surfaces"]["users"]["excluded_usernames"] = "ghost"  # type: ignore[index]
+    expect_error(invalid_exclusions, "excluded_usernames must contain non-empty strings")
+
+
+def test_membership_only_users_are_hydrated_before_email_export() -> None:
+    plan = base_plan()
+    plan["source"]["usernames"] = []  # type: ignore[index]
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "include_members": True,
+        "include_email_for_account_creation": True,
+    }
+
+    def pages(_source: object, path: str, **kwargs: object) -> list[dict[str, object]]:
+        if path == "users" and kwargs.get("query") == {"username": "member-only"}:
+            return [{"username": "member-only", "email": "member-only@example.test"}]
+        raise AssertionError(f"unexpected user hydration request: {path} {kwargs!r}")
+
+    with mock.patch.object(workspace, "list_pages", side_effect=pages):
+        users = workspace.discover_users(
+            object(),
+            plan,
+            groups=[{"effective_members": [{"username": "member-only", "access_level": 30}]}],
+            project_permissions=[],
+        )
+    if users != [{"username": "member-only", "email": "member-only@example.test"}]:
+        raise AssertionError(f"membership-only user email was not hydrated: {users!r}")
+
 
 def test_redaction_and_destination_url() -> None:
     safe = workspace.safe_record(
@@ -147,6 +187,29 @@ def test_redaction_and_destination_url() -> None:
     owner, repo = workspace.destination_name(mapped, grouped_project)
     if owner != "engineering-platform" or repo != "control-plane":
         raise AssertionError("managed group projects were not assigned to their deterministic Forgejo organization")
+
+
+def test_long_group_targets_are_forgejo_compatible_and_stable() -> None:
+    long_path = "rayli-sistemler-yolcu-bilgilendirme-merkez-yazilimi"
+    target = workspace.default_group_target_name(long_path)
+    if len(target) > workspace.FORGEJO_ORGANIZATION_USERNAME_MAX_LENGTH:
+        raise AssertionError(f"long group target exceeded Forgejo's limit: {target!r}")
+    if not target.endswith("-" + hashlib.sha256(long_path.encode("utf-8")).hexdigest()[:8]):
+        raise AssertionError(f"long group target did not retain a stable hash suffix: {target!r}")
+    if workspace.default_group_target_name("short-group") != "short-group":
+        raise AssertionError("short group target was changed unexpectedly")
+    other_path = long_path[:-1] + "x"
+    if workspace.default_group_target_name(other_path) == target:
+        raise AssertionError("different long group paths collided")
+    plan = base_plan()
+    plan["mappings"] = {"groups": {"platform": "x" * 41}}
+    try:
+        workspace.validate_unique_group_targets(plan, [{"full_path": "platform"}])
+    except workspace.WorkspaceError as exc:
+        if "40-character username limit" not in str(exc):
+            raise AssertionError(f"unexpected long explicit group mapping diagnostic: {exc}") from exc
+    else:
+        raise AssertionError("overlong explicit group mapping unexpectedly passed")
 
 
 def test_selected_nested_group_is_a_root() -> None:
@@ -335,6 +398,231 @@ def test_managed_user_requires_readback() -> None:
                 raise AssertionError(f"unexpected user read-back failure: {exc}") from exc
         else:
             raise AssertionError("managed user import accepted a missing read-back")
+
+
+def test_existing_hash_strategy_fails_closed_before_mutation() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "existing_hash_compatibility_required",
+        "password_env_by_username": {},
+    }
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [{"username": "alice", "public_email": "alice@example.test"}]
+            }
+        }
+    }
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "existing-password-hash compatibility migration" not in str(exc):
+                raise AssertionError(f"unexpected hash-strategy diagnostic: {exc}") from exc
+        else:
+            raise AssertionError("existing-password-hash strategy unexpectedly entered API import")
+    if user_probe.called or api_request.called:
+        raise AssertionError("hash-strategy guard ran after destination access")
+
+
+def test_generated_passwords_are_per_user_and_not_in_proof() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": True,
+    }
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [
+                    {"username": "alice", "email": "alice@example.test"},
+                    {"username": "bob", "email": "bob@example.test"},
+                ]
+            }
+        }
+    }
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            side_effect=[(404, {}), (200, {"login": "alice"}), (404, {}), (200, {"login": "bob"})],
+        ),
+        mock.patch.object(workspace, "generated_user_password", side_effect=["one-time-alice", "one-time-bob"]),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    create_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("POST", "admin/users")]
+    if len(create_calls) != 2:
+        raise AssertionError(f"generated-password user creates were not requested: {create_calls!r}")
+    bodies = [call.kwargs.get("body") or {} for call in create_calls]
+    if [body.get("password") for body in bodies] != ["one-time-alice", "one-time-bob"]:
+        raise AssertionError(f"passwords were not generated independently: {bodies!r}")
+    if any(body.get("must_change_password") is not True or body.get("send_notify") is not True for body in bodies):
+        raise AssertionError(f"generated-password accounts were not forced through notification/change flow: {bodies!r}")
+    if result.get("verified") is not True or result.get("created") != 2:
+        raise AssertionError(f"generated-password import was not verified: {result!r}")
+    evidence = workspace.proof("import", plan, result)
+    if "password" in json.dumps(evidence).lower():
+        raise AssertionError("generated passwords leaked into migration proof")
+
+
+def test_generated_passwords_can_use_private_handoff_without_notification() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": False,
+    }
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [
+                    {"username": "alice", "email": "alice@example.test"},
+                    {"username": "bob", "email": "bob@example.test"},
+                ]
+            }
+        }
+    }
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(
+                workspace,
+                "forgejo_user",
+                side_effect=[(404, {}), (200, {"login": "alice"}), (404, {}), (200, {"login": "bob"})],
+            ),
+            mock.patch.object(workspace, "generated_user_password", side_effect=["one-time-alice", "one-time-bob"]),
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            result = workspace.import_users(plan, object(), snapshot, password_output=password_file)  # type: ignore[arg-type]
+        create_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("POST", "admin/users")]
+        bodies = [call.kwargs.get("body") or {} for call in create_calls]
+        if len(bodies) != 2 or [body.get("password") for body in bodies] != ["one-time-alice", "one-time-bob"]:
+            raise AssertionError(f"private-handoff passwords were not generated independently: {bodies!r}")
+        if any(body.get("must_change_password") is not True or body.get("send_notify") is not False for body in bodies):
+            raise AssertionError(f"private-handoff accounts had the wrong notification policy: {bodies!r}")
+        handoff = json.loads(password_file.read_text(encoding="utf-8"))
+        if [entry["password"] for entry in handoff["entries"]] != ["one-time-alice", "one-time-bob"]:
+            raise AssertionError(f"private password handoff was incomplete: {handoff!r}")
+        evidence = workspace.proof("import", plan, result)
+        if any(password in json.dumps(evidence) for password in ("one-time-alice", "one-time-bob")):
+            raise AssertionError("private handoff passwords leaked into migration proof")
+
+
+def test_generated_password_preflight_fails_before_destination_access() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": True,
+    }
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [
+                    {"username": "alice", "email": "alice@example.test"},
+                    {"username": "bob"},
+                ]
+            }
+        }
+    }
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "has no private email" not in str(exc):
+                raise AssertionError(f"unexpected generated-password preflight failure: {exc}") from exc
+        else:
+            raise AssertionError("missing generated-password delivery address unexpectedly passed")
+    if user_probe.called or api_request.called:
+        raise AssertionError("generated-password delivery preflight ran after destination access")
+
+
+def test_managed_user_reconciles_account_flags_when_enabled() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"]["preserve_account_flags"] = True  # type: ignore[index]
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [{"username": "alice", "state": "blocked", "is_admin": True}]
+            }
+        }
+    }
+    first_read = {"login": "alice", "is_admin": False, "prohibit_login": False}
+    second_read = {"login": "alice", "is_admin": True, "prohibit_login": True}
+    with (
+        mock.patch.object(workspace, "forgejo_user", side_effect=[(200, first_read), (200, second_read)]),
+        mock.patch.object(workspace, "request", return_value=(200, {})) as api_request,
+    ):
+        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    if result.get("verified") is not True or result.get("updated") != 1:
+        raise AssertionError(f"account flags were not reconciled: {result!r}")
+    patch_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("PATCH", "admin/users/alice")]
+    if len(patch_calls) != 1 or patch_calls[0].kwargs.get("body") != {"admin": True, "prohibit_login": True}:
+        raise AssertionError(f"unexpected account-flag patch: {patch_calls!r}")
+
+
+def test_excluded_system_user_is_not_created() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"]["excluded_usernames"] = ["ghost"]  # type: ignore[index]
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [
+                    {"username": "ghost", "state": "blocked"},
+                    {"username": "alice", "public_email": "alice@example.test"},
+                ]
+            }
+        }
+    }
+    with (
+        mock.patch.dict(workspace.os.environ, {"IMPORT_PASSWORD": "temporary-password"}),
+        mock.patch.object(workspace, "forgejo_user", side_effect=[(404, {}), (200, {"login": "alice"})]) as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    if result.get("targets") != ["alice"]:
+        raise AssertionError(f"excluded system user was retained as an import target: {result!r}")
+    if user_probe.call_count != 2:
+        raise AssertionError("excluded system user was probed in Forgejo")
+    if any(call.args[1:3] == ("POST", "admin/users") for call in api_request.call_args_list) is not True:
+        raise AssertionError("ordinary user was not imported after excluding system user")
+
+
+def test_user_audit_is_read_only_and_never_verifies_passwords() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"]["preserve_account_flags"] = True  # type: ignore[index]
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [{"username": "alice", "state": "blocked", "is_admin": True}]
+            }
+        }
+    }
+    current = {"login": "alice", "is_admin": False, "prohibit_login": False}
+    with (
+        mock.patch.object(workspace, "forgejo_user", return_value=(200, current)) as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.audit_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    if result.get("matched") != 1 or result.get("missing") != 0:
+        raise AssertionError(f"user audit did not read the expected account: {result!r}")
+    if result.get("account_flag_mismatches") != 2 or result.get("passwords_verified") is not False:
+        raise AssertionError(f"user audit reported unsafe verification state: {result!r}")
+    if result.get("verified") is not False or user_probe.call_count != 1 or api_request.called:
+        raise AssertionError("user audit was not read-only or incorrectly reported success")
 
 
 def test_user_mapping_collision_fails_before_mutation() -> None:
@@ -1042,7 +1330,9 @@ def test_pipeline_schedule_import_is_not_history_import() -> None:
 
 def main() -> int:
     test_selective_plan_contract()
+    test_membership_only_users_are_hydrated_before_email_export()
     test_redaction_and_destination_url()
+    test_long_group_targets_are_forgejo_compatible_and_stable()
     test_selected_nested_group_is_a_root()
     test_project_rules_discovery_is_redacted_and_scoped()
     test_project_permission_discovery_materializes_invited_group_members()
@@ -1051,6 +1341,10 @@ def main() -> int:
     test_all_available_project_discovery_keeps_archived_and_inherited_projects()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
+    test_existing_hash_strategy_fails_closed_before_mutation()
+    test_managed_user_reconciles_account_flags_when_enabled()
+    test_excluded_system_user_is_not_created()
+    test_user_audit_is_read_only_and_never_verifies_passwords()
     test_user_mapping_collision_fails_before_mutation()
     test_variable_environment_collision_fails_before_mutation()
     test_mapped_variable_is_non_mutating()

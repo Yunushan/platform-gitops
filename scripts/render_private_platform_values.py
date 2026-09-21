@@ -1871,7 +1871,14 @@ def refresh_forgejo_postgres_tls(path: Path) -> bool:
     return True
 
 
-def forgejo_bootstrap_values(host: str, data_size: str, storage_class: str, image_tag: str) -> str:
+def forgejo_bootstrap_values(
+    host: str,
+    data_size: str,
+    storage_class: str,
+    image_tag: str,
+    mail_from: str,
+) -> str:
+    mailer_enabled, mailer_config = forgejo_mailer_config(mail_from)
     return f"""# Forgejo bootstrap profile rendered by scripts/render_private_platform_values.py.
 # This opt-in mode uses SQLite and in-process cache/queue for dependency-light
 # lab bootstrap. The default SQL selector renders PostgreSQL.
@@ -1919,6 +1926,8 @@ gitea:
     service:
       DISABLE_REGISTRATION: true
       REQUIRE_SIGNIN_VIEW: true
+      ENABLE_NOTIFY_MAIL: {str(mailer_enabled).lower()}
+{mailer_config}
     repository:
       DEFAULT_BRANCH: main
     database:
@@ -1953,7 +1962,9 @@ def forgejo_external_values(
     redis_secret_name: str | None,
     object_storage_env: str,
     object_storage_config: str,
+    mail_from: str,
 ) -> str:
+    mailer_enabled, mailer_config = forgejo_mailer_config(mail_from)
     redis_config_env = ""
     redis_config = """    cache:
       ADAPTER: memory
@@ -2083,6 +2094,8 @@ gitea:
     service:
       DISABLE_REGISTRATION: true
       REQUIRE_SIGNIN_VIEW: true
+      ENABLE_NOTIFY_MAIL: {str(mailer_enabled).lower()}
+{mailer_config}
     repository:
       DEFAULT_BRANCH: main
     database:
@@ -2105,8 +2118,43 @@ resources:
 """
 
 
+def forgejo_mailer_config(default_from: str) -> tuple[bool, str]:
+    """Render unauthenticated SMTP settings without putting credentials in values."""
+    enabled = env_bool("FORGEJO_MAILER_ENABLED", True)
+    if not enabled:
+        return False, "    mailer:\n      ENABLED: false"
+
+    protocol = os.environ.get("FORGEJO_MAILER_PROTOCOL", "smtp").strip().lower() or "smtp"
+    if protocol != "smtp":
+        raise SystemExit("FORGEJO_MAILER_PROTOCOL must be smtp for the unauthenticated port-25 mail relay")
+    smtp_host = os.environ.get("FORGEJO_MAILER_HOST", "").strip()
+    if not smtp_host:
+        raise SystemExit(
+            "FORGEJO_MAILER_HOST must be set in the private deployment environment "
+            "when Forgejo mailer is enabled"
+        )
+    smtp_port = os.environ.get("FORGEJO_MAILER_PORT", "25").strip() or "25"
+    try:
+        port_number = int(smtp_port)
+    except ValueError as exc:
+        raise SystemExit("FORGEJO_MAILER_PORT must be an integer between 1 and 65535") from exc
+    if not smtp_host or not 1 <= port_number <= 65535:
+        raise SystemExit("FORGEJO_MAILER_HOST must be non-empty and FORGEJO_MAILER_PORT must be between 1 and 65535")
+    mail_from = os.environ.get("FORGEJO_MAILER_FROM", "").strip() or default_from
+    return True, f"""    mailer:
+      ENABLED: true
+      PROTOCOL: smtp
+      SMTP_ADDR: {yaml_string(smtp_host)}
+      SMTP_PORT: {port_number}
+      USER: ""
+      PASSWD: ""
+      FROM: {yaml_string(mail_from)}"""
+
+
 def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
     host = forgejo_public_host(inventory)
+    mail_domain = platform_domain(inventory)
+    mail_from = os.environ.get("FORGEJO_MAILER_FROM", "").strip() or f"forgejo@{mail_domain or host}"
 
     data_size = os.environ.get("FORGEJO_DATA_SIZE", "20Gi").strip() or "20Gi"
     storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical-encrypted").strip()
@@ -2128,7 +2176,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
             raise SystemExit(
                 "FORGEJO_DATABASE_MODE=sqlite is only supported when PLATFORM_PRODUCTION_STRICT=false"
             )
-        rendered = forgejo_bootstrap_values(host, data_size, storage_class, image_tag)
+        rendered = forgejo_bootstrap_values(host, data_size, storage_class, image_tag, mail_from)
     elif database_mode in ("external", "postgres", "postgresql", "mysql", "mariadb"):
         database_type = "mysql" if database_mode in {"mysql", "mariadb"} else "postgres"
         database_host = os.environ.get("FORGEJO_DATABASE_HOST", "").strip()
@@ -2178,6 +2226,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
             database_ssl_mode,
             redis_secret_name,
             *forgejo_object_storage_values(),
+            mail_from,
         )
     else:
         raise SystemExit("FORGEJO_DATABASE_MODE must be sqlite, postgres, postgresql, external, mysql, or mariadb")

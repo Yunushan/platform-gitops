@@ -888,6 +888,8 @@ def render_with_custom_secret_names() -> dict[str, str]:
         "FORGEJO_DATABASE_NAME": "forgejo",
         "FORGEJO_DATABASE_USER": "forgejo",
         "FORGEJO_DATABASE_SECRET_NAME": "forgejo-db-custom",
+        "FORGEJO_MAILER_HOST": "smtp-relay.example.test",
+        "FORGEJO_MAILER_PORT": "25",
         "FORGEJO_REDIS_MODE": "redis",
         "FORGEJO_REDIS_SECRET_NAME": "forgejo-redis-custom",
         "FORGEJO_OBJECT_STORAGE_MODE": "s3",

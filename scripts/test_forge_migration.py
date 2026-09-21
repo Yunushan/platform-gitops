@@ -111,6 +111,51 @@ def test_command_timeout_redacts_credentials() -> None:
         raise AssertionError(f"migration timeout diagnostic was incomplete: {message}")
 
 
+def test_git_auth_environment_does_not_embed_credentials() -> None:
+    credential = "gitlab-secret-for-test"
+    with mock.patch.dict(
+        os.environ,
+        {"MIGRATION_GIT_TOKEN": credential},
+        clear=False,
+    ):
+        environment = migration.git_auth_environment(
+            "MIGRATION_GIT_TOKEN",
+            "gitlab",
+            "https://gitlab.example.test/team/repository.git",
+        )
+    if environment is None:
+        raise AssertionError("Git authentication environment was not created")
+    helper_values = [
+        value
+        for key, value in environment.items()
+        if key.startswith("GIT_CONFIG_VALUE_")
+    ]
+    if not helper_values:
+        raise AssertionError("Git credential helper was not configured")
+    helper = helper_values[-1]
+    if credential in helper:
+        raise AssertionError("Git credential helper embedded the token")
+    if "${MIGRATION_GIT_TOKEN}" not in helper:
+        raise AssertionError("Git credential helper did not reference the token environment variable")
+    if "gitlab.example.test" not in helper or "https" not in helper:
+        raise AssertionError("Git credential helper was not scoped to the validated remote host")
+    if environment.get("GIT_TERMINAL_PROMPT") != "0":
+        raise AssertionError("Git terminal prompting was not disabled")
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        try:
+            migration.git_auth_environment(
+                "MIGRATION_GIT_TOKEN",
+                "gitlab",
+                "https://gitlab.example.test/team/repository.git",
+            )
+        except migration.MigrationError as exc:
+            if "MIGRATION_GIT_TOKEN" not in str(exc):
+                raise AssertionError(f"missing-token error omitted the variable name: {exc}") from exc
+        else:
+            raise AssertionError("missing Git token unexpectedly produced an auth environment")
+
+
 def branch_protection_repo(
     source_provider: str,
     branch_protection: dict[str, object],
@@ -2007,8 +2052,10 @@ def test_api_read_retry_is_bounded_and_write_safe() -> None:
 
     calls = 0
 
-    def flaky_read(_request, timeout: int):
+    def flaky_read(_request, timeout: int, *, allow_insecure_http: bool = False):
         nonlocal calls
+        if allow_insecure_http:
+            raise AssertionError("retry test unexpectedly enabled insecure HTTP")
         if timeout != 30:
             raise AssertionError("migration API timeout changed unexpectedly")
         calls += 1
@@ -2024,8 +2071,10 @@ def test_api_read_retry_is_bounded_and_write_safe() -> None:
 
         calls = 0
 
-        def failed_write(_request, timeout: int):
+        def failed_write(_request, timeout: int, *, allow_insecure_http: bool = False):
             nonlocal calls
+            if allow_insecure_http:
+                raise AssertionError("write test unexpectedly enabled insecure HTTP")
             calls += 1
             raise ConnectionResetError("ambiguous write reset")
 
@@ -2187,6 +2236,7 @@ def main() -> int:
     test_mirror_migration()
     test_eventually_consistent_metadata_comparison()
     test_command_timeout_redacts_credentials()
+    test_git_auth_environment_does_not_embed_credentials()
     test_github_branch_protection_migration()
     test_gitlab_branch_protection_migration()
     test_gitlab_branch_protection_migration_uses_reviewed_snapshot()
