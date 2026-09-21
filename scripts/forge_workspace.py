@@ -792,7 +792,17 @@ def discover_projects(source: Endpoint, plan: dict[str, Any], groups: list[dict[
         # `membership=true` omits projects reachable through inherited or
         # administrator access, and `archived=false` silently drops repos
         # that an all-repository migration must preserve.
-        for project in list_pages(source, "projects"):
+        # Some GitLab reverse proxies truncate the default 100-record full
+        # project response.  The compact representation is sufficient to
+        # discover each path, and the full project record is fetched below.
+        # Keep these pages deliberately small so instance-wide exports remain
+        # valid through those proxies.
+        for project in list_pages(
+            source,
+            "projects",
+            query={"simple": True},
+            page_size=25,
+        ):
             path = string(project.get("path_with_namespace"))
             if path:
                 projects[path] = get_endpoint_value(source, f"projects/{quote(path, safe='')}" )

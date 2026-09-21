@@ -332,7 +332,7 @@ def test_all_available_project_discovery_keeps_archived_and_inherited_projects()
     def pages(_source: object, path: str, **kwargs: object) -> list[dict[str, object]]:
         if path != "projects":
             raise AssertionError(f"unexpected project discovery path: {path}")
-        captured.append(kwargs.get("query"))
+        captured.append((kwargs.get("query"), kwargs.get("page_size")))
         return [project]
 
     with (
@@ -342,8 +342,8 @@ def test_all_available_project_discovery_keeps_archived_and_inherited_projects()
         projects = workspace.discover_projects(object(), plan, [])  # type: ignore[arg-type]
     if [item["path_with_namespace"] for item in projects] != ["platform/archived-repo"]:
         raise AssertionError("all-available project discovery dropped an archived project")
-    if captured != [None]:
-        raise AssertionError(f"all-available projects were narrowed to membership-only scope: {captured!r}")
+    if captured != [({"simple": True}, 25)]:
+        raise AssertionError(f"all-available projects did not use compact bounded pages: {captured!r}")
 
 
 def test_ci_checkout_is_retryable() -> None:
