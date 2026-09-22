@@ -1425,6 +1425,77 @@ def test_permission_readback_fails_closed() -> None:
             raise AssertionError("permission import accepted a weaker read-back permission")
 
 
+def test_workspace_repository_scratch_is_per_repo_and_preserves_existing_files() -> None:
+    plan = base_plan()
+    items = [
+        {
+            "project": {
+                "path_with_namespace": f"platform/{name}",
+                "http_url_to_repo": f"https://gitlab.example.test/platform/{name}.git",
+                "visibility": "private",
+            },
+            "destination": {
+                "owner": "platform",
+                "repo": name,
+                "git_url": f"ssh://git@forgejo.example.test/platform/{name}.git",
+            },
+        }
+        for name in ("one", "two")
+    ]
+    snapshot = {
+        "surfaces": {"repositories": {"items": items}},
+        "indexes": {"projects": items},
+    }
+    seen: list[Path] = []
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        work_dir = Path(temp_dir) / "work"
+        work_dir.mkdir()
+        old_mirror = work_dir / "existing-work"
+        old_mirror.mkdir()
+        (old_mirror / "keep.txt").write_text("keep", encoding="utf-8")
+
+        def migrate(_repo: object, scratch: Path) -> dict[str, bool]:
+            if scratch.parent != work_dir or not scratch.name.startswith("forge-repo-"):
+                raise AssertionError("repository scratch escaped the selected work directory")
+            if any(path.exists() for path in seen):
+                raise AssertionError("the previous repository scratch was retained")
+            seen.append(scratch)
+            (scratch / "repository.git").mkdir()
+            return {"verified": True}
+
+        with (
+            mock.patch.object(workspace, "ensure_repository", return_value={"verified": True}),
+            mock.patch.object(workspace.migration, "migrate_repo", side_effect=migrate),
+        ):
+            result = workspace.import_repositories(plan, snapshot, object(), work_dir)  # type: ignore[arg-type]
+        if result.get("verified") is not True or len(seen) != 2:
+            raise AssertionError("workspace repository migration did not verify both repositories")
+        if any(path.exists() for path in seen) or not (old_mirror / "keep.txt").exists():
+            raise AssertionError("scratch cleanup damaged pre-existing work or left completed mirrors")
+
+        failed_scratch: list[Path] = []
+
+        def fail(_repo: object, scratch: Path) -> dict[str, bool]:
+            failed_scratch.append(scratch)
+            (scratch / "partial.git").mkdir()
+            raise RuntimeError("simulated repository failure")
+
+        with (
+            mock.patch.object(workspace, "ensure_repository", return_value={"verified": True}),
+            mock.patch.object(workspace.migration, "migrate_repo", side_effect=fail),
+        ):
+            try:
+                workspace.import_repositories(plan, snapshot, object(), work_dir)  # type: ignore[arg-type]
+            except RuntimeError as exc:
+                if "simulated repository failure" not in str(exc):
+                    raise
+            else:
+                raise AssertionError("failed repository migration unexpectedly succeeded")
+        if len(failed_scratch) != 1 or failed_scratch[0].exists() or not (old_mirror / "keep.txt").exists():
+            raise AssertionError("failed repository scratch was retained or pre-existing work was removed")
+
+
 def test_rule_import_runs_after_repository_exists_and_passes_policy() -> None:
     plan = base_plan()
     plan["surfaces"]["rules"] = {  # type: ignore[index]
@@ -1657,6 +1728,7 @@ def main() -> int:
     test_permission_import_merges_effective_access_and_verifies_repo_teams()
     test_exact_permission_reconciliation_does_not_remove_unmanaged_collaborators()
     test_permission_readback_fails_closed()
+    test_workspace_repository_scratch_is_per_repo_and_preserves_existing_files()
     test_rule_import_runs_after_repository_exists_and_passes_policy()
     test_ci_destination_and_remote_proof()
     test_ci_commit_is_idempotent()

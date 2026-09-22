@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
+import tempfile
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -2983,6 +2984,8 @@ def import_repositories(plan: dict[str, Any], snapshot: dict[str, Any], destinat
     if not items and project_mode != "skip":
         items = snapshot["surfaces"].get("projects", {}).get("items", [])
     results: list[dict[str, Any]] = []
+    if repository_mode == "managed":
+        work_dir.mkdir(parents=True, exist_ok=True)
     for item in items:
         project = item["project"]
         owner = string(item["destination"]["owner"])
@@ -2990,7 +2993,11 @@ def import_repositories(plan: dict[str, Any], snapshot: dict[str, Any], destinat
         owner_kind = string(item["destination"].get("owner_kind") or "organization")
         results.append(ensure_repository(destination, owner, repo, owner_kind, project))
         if repository_mode == "managed":
-            result = migration.migrate_repo(repo_plan_from_item(plan, item), work_dir)
+            # Keep only one repository's mirrors and LFS verification clones at
+            # a time. A full-workspace import must not accumulate every source
+            # mirror on the controller's disk.
+            with tempfile.TemporaryDirectory(prefix="forge-repo-", dir=work_dir) as scratch:
+                result = migration.migrate_repo(repo_plan_from_item(plan, item), Path(scratch))
             results[-1]["git"] = result
     mode = "managed" if project_mode == "managed" or repository_mode == "managed" else repository_mode
     return {"mode": mode, "items": results, "verified": all(item.get("verified") and item.get("git", {}).get("verified", True) for item in results)}

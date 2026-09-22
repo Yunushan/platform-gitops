@@ -247,6 +247,14 @@ make forge-workspace-audit-users \
   PROOF=private/migrations/proof/user-audit.json
 ```
 
+Repository import uses a fresh scratch directory under `WORK_DIR` for each
+repository and removes that directory after the repository operation, including
+on a Python exception. Allow enough controller disk space for the largest
+repository and its LFS/verification clones, not the sum of all repositories.
+Scratch mirrors left by older importer runs are **not** removed automatically;
+review them separately before any cleanup. Forgejo's persistent volume must
+still be sized for the full destination data set and its storage replicas.
+
 `audit-users` is read-only. It verifies target account presence and, when
 enabled, active/blocked and administrator flags. It also reports aggregate
 email mismatches or unreadable addresses without printing addresses. It always
