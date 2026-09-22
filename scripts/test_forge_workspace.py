@@ -205,6 +205,50 @@ def test_import_email_reconciliation_flag_preserves_saved_plan() -> None:
         raise AssertionError("import CLI lost the private password handoff path")
 
 
+def test_import_mail_confirmation_is_runtime_only() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "send_notify": True,
+    }
+    original = copy.deepcopy(plan)
+    args = workspace.parse_args(
+        ["import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work", "--confirm-mail-delivery"]
+    )
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace", return_value={"verified": True, "surfaces": {}}) as importer,
+        mock.patch("builtins.print"),
+    ):
+        assert args.handler(args) == 0
+    if importer.call_args.kwargs.get("mail_delivery_confirmed") is not True or plan != original:
+        raise AssertionError("mail delivery confirmation was not a runtime-only import choice")
+
+    args = workspace.parse_args(
+        [
+            "import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work",
+            "--confirm-mail-delivery", "--no-send-notify", "--password-file", "private/passwords.json",
+        ]
+    )
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace") as importer,
+    ):
+        try:
+            args.handler(args)
+        except workspace.WorkspaceError as exc:
+            if "cannot be combined" not in str(exc):
+                raise AssertionError(f"unexpected mail confirmation combination error: {exc}") from exc
+        else:
+            raise AssertionError("contradictory mail confirmation flags unexpectedly passed")
+        importer.assert_not_called()
+
+
 def test_membership_only_users_are_hydrated_before_email_export() -> None:
     plan = base_plan()
     plan["source"]["usernames"] = []  # type: ignore[index]
@@ -531,7 +575,7 @@ def test_generated_passwords_are_per_user_and_not_in_proof() -> None:
         mock.patch.object(workspace, "generated_user_password", side_effect=["one-time-alice", "one-time-bob"]),
         mock.patch.object(workspace, "request") as api_request,
     ):
-        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        result = workspace.import_users(plan, object(), snapshot, mail_delivery_confirmed=True)  # type: ignore[arg-type]
     create_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("POST", "admin/users")]
     if len(create_calls) != 2:
         raise AssertionError(f"generated-password user creates were not requested: {create_calls!r}")
@@ -592,6 +636,30 @@ def test_generated_passwords_can_use_private_handoff_without_notification() -> N
             raise AssertionError("private handoff passwords leaked into migration proof")
 
 
+def test_generated_password_mail_requires_confirmation_before_destination_access() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": True,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "--confirm-mail-delivery" not in str(exc):
+                raise AssertionError(f"unexpected mail confirmation error: {exc}") from exc
+        else:
+            raise AssertionError("generated password notification proceeded without a mail test")
+        user_probe.assert_not_called()
+        api_request.assert_not_called()
+
+
 def test_generated_password_preflight_fails_before_destination_access() -> None:
     plan = base_plan()
     plan["surfaces"]["users"] = {  # type: ignore[index]
@@ -615,7 +683,7 @@ def test_generated_password_preflight_fails_before_destination_access() -> None:
         mock.patch.object(workspace, "request") as api_request,
     ):
         try:
-            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+            workspace.import_users(plan, object(), snapshot, mail_delivery_confirmed=True)  # type: ignore[arg-type]
         except workspace.WorkspaceError as exc:
             if "has no real private email" not in str(exc):
                 raise AssertionError(f"unexpected generated-password preflight failure: {exc}") from exc
@@ -639,7 +707,7 @@ def test_generated_password_preflight_rejects_placeholder_address() -> None:
         mock.patch.object(workspace, "request") as api_request,
     ):
         try:
-            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+            workspace.import_users(plan, object(), snapshot, mail_delivery_confirmed=True)  # type: ignore[arg-type]
         except workspace.WorkspaceError as exc:
             if "no real private email" not in str(exc):
                 raise AssertionError(f"unexpected placeholder-email preflight error: {exc}") from exc
@@ -1542,6 +1610,7 @@ def main() -> int:
     test_export_requires_gitlab_token_before_discovery()
     test_import_and_audit_require_forgejo_token()
     test_import_email_reconciliation_flag_preserves_saved_plan()
+    test_import_mail_confirmation_is_runtime_only()
     test_membership_only_users_are_hydrated_before_email_export()
     test_redaction_and_destination_url()
     test_long_group_targets_are_forgejo_compatible_and_stable()
@@ -1556,6 +1625,7 @@ def main() -> int:
     test_existing_hash_strategy_fails_closed_before_mutation()
     test_generated_passwords_are_per_user_and_not_in_proof()
     test_generated_passwords_can_use_private_handoff_without_notification()
+    test_generated_password_mail_requires_confirmation_before_destination_access()
     test_generated_password_preflight_fails_before_destination_access()
     test_generated_password_preflight_rejects_placeholder_address()
     test_managed_user_reconciles_account_flags_when_enabled()

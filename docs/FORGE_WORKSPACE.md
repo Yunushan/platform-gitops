@@ -52,8 +52,13 @@ from becoming an instance-wide import.
   `password_strategy` to `generated_per_user`, enable
   `include_email_for_account_creation`, and set `send_notify: true`. The
   importer generates a different random password for each newly created user,
-  sends it through Forgejo's configured mail delivery, and never writes the
-  password to stdout, JSON, or proof. Existing Forgejo users are not silently
+  requests a Forgejo new-account notification, and never writes the
+  password to stdout, JSON, or proof. The exact message content and delivery
+  must be verified with a test account on the installed Forgejo version. This
+  mode requires `--confirm-mail-delivery` at import time, after the live mailer
+  shows enabled and a test message has actually arrived. The flag is an
+  operator attestation, not an automated SMTP check; do not set it while the
+  mailer is disabled. Existing Forgejo users are not silently
   password-reset by this mode; handle those accounts through a separately
   confirmed password-reset procedure if required.
   Before creating users with generated passwords, the importer rejects missing
@@ -63,7 +68,10 @@ from becoming an instance-wide import.
   placeholder addresses to the private snapshot's addresses, and reads each
   change back. It refuses to overwrite a different real address. This flag
   does not reset an existing password or send that user a credential. Check
-  mail delivery and take a Forgejo backup before running a live import.
+  mail delivery and take a Forgejo backup before running a live import. Once
+  their real addresses are reconciled and mail delivery is verified, existing
+  users can use Forgejo's password-recovery flow to choose a new password;
+  this importer does not trigger that flow or prove that users completed it.
   If mail delivery is intentionally unavailable, run the import with
   `--no-send-notify --password-file private/...`. This writes only the newly
   generated credentials to an atomically replaced, private-permission file
@@ -215,7 +223,8 @@ make forge-workspace-import \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
   SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
   WORK_DIR=private/migrations/workspace \
-  PROOF=private/migrations/proof/workspace-import.json
+  PROOF=private/migrations/proof/workspace-import.json \
+  CONFIRM_MAIL_DELIVERY=1 # only after a live mailer check and received test message
 
 # If Forgejo mail is intentionally unavailable, use a private local handoff:
 make forge-workspace-import \

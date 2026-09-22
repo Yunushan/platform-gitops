@@ -1528,6 +1528,7 @@ def import_users(
     snapshot: dict[str, Any],
     *,
     password_output: Path | None = None,
+    mail_delivery_confirmed: bool = False,
 ) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
     if config["mode"] != "managed":
@@ -1544,6 +1545,11 @@ def import_users(
     emails_updated = 0
     targets: list[str] = []
     notify_users = bool_value(config.get("send_notify"), False)
+    if password_strategy == "generated_per_user" and notify_users and not mail_delivery_confirmed:
+        raise WorkspaceError(
+            "generated_per_user with send_notify=true requires --confirm-mail-delivery "
+            "after the live Forgejo mailer is enabled and a test message is received"
+        )
     credential_entries: list[dict[str, str]] = []
     items = snapshot_surface_items(snapshot, "users", require_nonempty=True)
     if not all(isinstance(item, dict) for item in items):
@@ -3472,6 +3478,7 @@ def import_workspace(
     work_dir: Path,
     *,
     password_output: Path | None = None,
+    mail_delivery_confirmed: bool = False,
 ) -> dict[str, Any]:
     destination = endpoint(plan, "destination", "forgejo")
     validate_import_snapshot_contract(plan, snapshot)
@@ -3479,7 +3486,13 @@ def import_workspace(
     results: dict[str, Any] = {}
     user_result: dict[str, Any] | None = None
     if source_mode(plan, "users") == "managed":
-        user_result = import_users(plan, destination, snapshot, password_output=password_output)
+        user_result = import_users(
+            plan,
+            destination,
+            snapshot,
+            password_output=password_output,
+            mail_delivery_confirmed=mail_delivery_confirmed,
+        )
         results["users"] = user_result
     group_result: dict[str, Any] | None = None
     if source_mode(plan, "groups") == "managed" or source_mode(plan, "subgroups") == "managed":
@@ -3564,6 +3577,19 @@ def command_import(args: argparse.Namespace) -> int:
     destination = endpoint(plan, "destination", "forgejo")
     if not os.environ.get(destination.token_env, "").strip():
         raise WorkspaceError(f"Forgejo import requires {destination.token_env} to be set")
+    if args.confirm_mail_delivery:
+        user_config = ((plan.get("surfaces") or {}).get("users") or {})
+        if (
+            not isinstance(user_config, dict)
+            or string(user_config.get("mode")) != "managed"
+            or string(user_config.get("password_strategy")).lower() != "generated_per_user"
+            or not bool_value(user_config.get("send_notify"))
+            or args.no_send_notify
+        ):
+            raise WorkspaceError(
+                "--confirm-mail-delivery requires generated_per_user managed users "
+                "with send_notify=true and cannot be combined with --no-send-notify"
+            )
     runtime_plan = plan
 
     if args.reconcile_existing_emails:
@@ -3585,7 +3611,13 @@ def command_import(args: argparse.Namespace) -> int:
         password_output = args.password_file
     elif args.password_file is not None:
         raise WorkspaceError("--password-file is only valid together with --no-send-notify")
-    result = import_workspace(runtime_plan, snapshot, args.work_dir, password_output=password_output)
+    result = import_workspace(
+        runtime_plan,
+        snapshot,
+        args.work_dir,
+        password_output=password_output,
+        mail_delivery_confirmed=args.confirm_mail_delivery,
+    )
     evidence = proof("import", plan, result)
     if args.proof:
         write_json(args.proof, evidence)
@@ -3658,6 +3690,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--reconcile-existing-emails",
         action="store_true",
         help="Replace only placeholder emails on existing users; does not reset passwords or send mail",
+    )
+    import_command.add_argument(
+        "--confirm-mail-delivery",
+        action="store_true",
+        help="Use only after live Forgejo mailer is enabled and a test message was received; required for generated password notifications",
     )
     import_command.add_argument(
         "--no-send-notify",
