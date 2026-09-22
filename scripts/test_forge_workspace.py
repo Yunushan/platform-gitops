@@ -130,6 +130,81 @@ def test_selective_plan_contract() -> None:
     expect_error(invalid_exclusions, "excluded_usernames must contain non-empty strings")
 
 
+def test_export_requires_gitlab_token_before_discovery() -> None:
+    plan = base_plan()
+    with mock.patch.dict("os.environ", {"GITLAB_TOKEN": ""}):
+        with mock.patch.object(workspace, "discover_groups") as discover_groups:
+            try:
+                workspace.export_workspace(plan)
+            except workspace.WorkspaceError as exc:
+                assert "GITLAB_TOKEN" in str(exc)
+            else:
+                raise AssertionError("missing GitLab token must block export")
+            discover_groups.assert_not_called()
+
+
+def test_import_and_audit_require_forgejo_token() -> None:
+    plan = base_plan()
+    for argv, operation in (
+        (["import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work"], "import"),
+        (["audit-users", "plan.json", "--snapshot", "snapshot.json"], "audit"),
+    ):
+        args = workspace.parse_args(argv)
+        with (
+            mock.patch.dict("os.environ", {"FORGEJO_TOKEN": ""}),
+            mock.patch.object(workspace, "load_plan", return_value=plan),
+            mock.patch.object(workspace, "require_snapshot", return_value={}),
+            mock.patch.object(workspace, "import_workspace") as importer,
+            mock.patch.object(workspace, "audit_users") as auditor,
+        ):
+            try:
+                args.handler(args)
+            except workspace.WorkspaceError as exc:
+                if "FORGEJO_TOKEN" not in str(exc):
+                    raise AssertionError(f"unexpected {operation} credential error: {exc}") from exc
+            else:
+                raise AssertionError(f"{operation} accepted an absent Forgejo token")
+            importer.assert_not_called()
+            auditor.assert_not_called()
+
+
+def test_import_email_reconciliation_flag_preserves_saved_plan() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "send_notify": True,
+    }
+    original = copy.deepcopy(plan)
+    args = workspace.parse_args(
+        [
+            "import",
+            "plan.json",
+            "--snapshot", "snapshot.json",
+            "--work-dir", "work",
+            "--reconcile-existing-emails",
+            "--no-send-notify",
+            "--password-file", "private/migrations/proof/new-passwords.json",
+        ]
+    )
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace", return_value={"verified": True, "surfaces": {}}) as importer,
+        mock.patch("builtins.print"),
+    ):
+        assert args.handler(args) == 0
+    runtime_plan = importer.call_args.args[0]
+    runtime_users = runtime_plan["surfaces"]["users"]
+    if runtime_users.get("reconcile_existing_emails") is not True or runtime_users.get("send_notify") is not False:
+        raise AssertionError("import CLI did not pass both explicit user overrides")
+    if plan != original or runtime_plan is plan:
+        raise AssertionError("import CLI mutated the saved plan instead of a runtime copy")
+    if importer.call_args.kwargs.get("password_output") != args.password_file:
+        raise AssertionError("import CLI lost the private password handoff path")
+
+
 def test_membership_only_users_are_hydrated_before_email_export() -> None:
     plan = base_plan()
     plan["source"]["usernames"] = []  # type: ignore[index]
@@ -542,12 +617,36 @@ def test_generated_password_preflight_fails_before_destination_access() -> None:
         try:
             workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
         except workspace.WorkspaceError as exc:
-            if "has no private email" not in str(exc):
+            if "has no real private email" not in str(exc):
                 raise AssertionError(f"unexpected generated-password preflight failure: {exc}") from exc
         else:
             raise AssertionError("missing generated-password delivery address unexpectedly passed")
     if user_probe.called or api_request.called:
         raise AssertionError("generated-password delivery preflight ran after destination access")
+
+
+def test_generated_password_preflight_rejects_placeholder_address() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": True,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@migration.invalid"}]}}}
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "no real private email" not in str(exc):
+                raise AssertionError(f"unexpected placeholder-email preflight error: {exc}") from exc
+        else:
+            raise AssertionError("placeholder email passed generated-password delivery preflight")
+    user_probe.assert_not_called()
+    api_request.assert_not_called()
 
 
 def test_managed_user_reconciles_account_flags_when_enabled() -> None:
@@ -572,6 +671,95 @@ def test_managed_user_reconciles_account_flags_when_enabled() -> None:
     patch_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("PATCH", "admin/users/alice")]
     if len(patch_calls) != 1 or patch_calls[0].kwargs.get("body") != {"admin": True, "prohibit_login": True}:
         raise AssertionError(f"unexpected account-flag patch: {patch_calls!r}")
+
+
+def test_existing_email_reconciliation_requires_opt_in_and_readback() -> None:
+    plan = base_plan()
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    current = {"login": "alice", "email": "alice@migration.invalid"}
+    with (
+        mock.patch.object(workspace, "forgejo_user", return_value=(200, current)),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    api_request.assert_not_called()
+
+    plan["surfaces"]["users"]["reconcile_existing_emails"] = True  # type: ignore[index]
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            side_effect=[(200, current), (200, {"login": "alice", "email": "alice@example.test"})],
+        ),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    patch_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("PATCH", "admin/users/alice")]
+    if len(patch_calls) != 1 or patch_calls[0].kwargs.get("body") != {"email": "alice@example.test"}:
+        raise AssertionError(f"existing placeholder email was not reconciled: {patch_calls!r}")
+    if (
+        result.get("updated") != 1
+        or result.get("emails_updated") != 1
+        or result.get("existing") != 1
+        or result.get("credential_delivery") != "none"
+    ):
+        raise AssertionError(f"existing email reconciliation was not recorded: {result!r}")
+
+
+def test_existing_email_reconciliation_refuses_real_address_before_mutation() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"]["reconcile_existing_emails"] = True  # type: ignore[index]
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            return_value=(200, {"login": "alice", "email": "alice@other.test"}),
+        ),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "non-placeholder email" not in str(exc):
+                raise AssertionError(f"unexpected email preflight error: {exc}") from exc
+        else:
+            raise AssertionError("existing real email was overwritten without review")
+    api_request.assert_not_called()
+
+
+def test_existing_email_reconciliation_preflights_all_users() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"]["reconcile_existing_emails"] = True  # type: ignore[index]
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [
+                    {"username": "alice", "email": "alice@example.test"},
+                    {"username": "bob", "email": "bob@example.test"},
+                ]
+            }
+        }
+    }
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            side_effect=[
+                (200, {"login": "alice", "email": "alice@migration.invalid"}),
+                (200, {"login": "bob", "email": "bob@other.test"}),
+            ],
+        ),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "non-placeholder email" not in str(exc):
+                raise AssertionError(f"unexpected bulk preflight error: {exc}") from exc
+        else:
+            raise AssertionError("bulk email reconciliation began before every user was checked")
+    api_request.assert_not_called()
 
 
 def test_excluded_system_user_is_not_created() -> None:
@@ -623,6 +811,27 @@ def test_user_audit_is_read_only_and_never_verifies_passwords() -> None:
         raise AssertionError(f"user audit reported unsafe verification state: {result!r}")
     if result.get("verified") is not False or user_probe.call_count != 1 or api_request.called:
         raise AssertionError("user audit was not read-only or incorrectly reported success")
+
+
+def test_user_audit_reports_email_mismatch_without_mutation() -> None:
+    plan = base_plan()
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [{"username": "alice", "email": "alice@example.test"}]
+            }
+        }
+    }
+    current = {"login": "alice", "email": "alice@migration.invalid"}
+    with (
+        mock.patch.object(workspace, "forgejo_user", return_value=(200, current)),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.audit_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    if result.get("email_mismatches") != 1 or result.get("emails_verified") is not False:
+        raise AssertionError(f"placeholder email was not reported: {result!r}")
+    if api_request.called:
+        raise AssertionError("user email audit attempted a mutation")
 
 
 def test_user_mapping_collision_fails_before_mutation() -> None:
@@ -1330,6 +1539,9 @@ def test_pipeline_schedule_import_is_not_history_import() -> None:
 
 def main() -> int:
     test_selective_plan_contract()
+    test_export_requires_gitlab_token_before_discovery()
+    test_import_and_audit_require_forgejo_token()
+    test_import_email_reconciliation_flag_preserves_saved_plan()
     test_membership_only_users_are_hydrated_before_email_export()
     test_redaction_and_destination_url()
     test_long_group_targets_are_forgejo_compatible_and_stable()
@@ -1342,9 +1554,17 @@ def main() -> int:
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
     test_existing_hash_strategy_fails_closed_before_mutation()
+    test_generated_passwords_are_per_user_and_not_in_proof()
+    test_generated_passwords_can_use_private_handoff_without_notification()
+    test_generated_password_preflight_fails_before_destination_access()
+    test_generated_password_preflight_rejects_placeholder_address()
     test_managed_user_reconciles_account_flags_when_enabled()
+    test_existing_email_reconciliation_requires_opt_in_and_readback()
+    test_existing_email_reconciliation_refuses_real_address_before_mutation()
+    test_existing_email_reconciliation_preflights_all_users()
     test_excluded_system_user_is_not_created()
     test_user_audit_is_read_only_and_never_verifies_passwords()
+    test_user_audit_reports_email_mismatch_without_mutation()
     test_user_mapping_collision_fails_before_mutation()
     test_variable_environment_collision_fails_before_mutation()
     test_mapped_variable_is_non_mutating()

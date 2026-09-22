@@ -1131,6 +1131,8 @@ def discover_users(
 
 def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
     source = endpoint(plan, "source", "gitlab")
+    if not os.environ.get(source.token_env, "").strip():
+        raise WorkspaceError(f"GitLab export requires {source.token_env} to be set")
     surfaces = plan.get("surfaces") or {}
     groups = discover_groups(source, plan) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("groups", "subgroups", "memberships", "projects", "repositories", "permissions", "rules", "variables", "runners")) else []
     projects = discover_projects(source, plan, groups) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("projects", "repositories", "permissions", "rules", "variables", "runners", "ci", "pipelines")) else []
@@ -1539,6 +1541,7 @@ def import_users(
     created = 0
     existing = 0
     updated = 0
+    emails_updated = 0
     targets: list[str] = []
     notify_users = bool_value(config.get("send_notify"), False)
     credential_entries: list[dict[str, str]] = []
@@ -1547,6 +1550,54 @@ def import_users(
         raise WorkspaceError("users snapshot items must be objects")
     validate_unique_user_targets(plan, config, items)
     excluded = excluded_usernames(config)
+    reconcile_existing_emails = bool_value(config.get("reconcile_existing_emails"), False)
+    preflight_users: dict[str, tuple[int, dict[str, Any]]] = {}
+    if reconcile_existing_emails:
+        email_owners: dict[str, str] = {}
+        for item in items:
+            source_username = string(item.get("username"))
+            if (
+                not source_username
+                or source_username.casefold() in excluded
+                or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
+            ):
+                continue
+            target_username = mapped_name(plan, "users", source_username, source_username)
+            email = string(item.get("email") or item.get("public_email")).strip()
+            if not email or email.casefold().endswith("@migration.invalid"):
+                raise WorkspaceError(
+                    f"user {source_username!r} requires a real delivery email before existing-account reconciliation"
+                )
+            prior_owner = email_owners.get(email.casefold())
+            if prior_owner is not None and prior_owner.casefold() != target_username.casefold():
+                raise WorkspaceError("existing-account email reconciliation requires unique target emails")
+            email_owners[email.casefold()] = target_username
+        # Check every existing account before the first write so an unrelated
+        # real address is never overwritten halfway through the user import.
+        for item in items:
+            source_username = string(item.get("username"))
+            if (
+                not source_username
+                or source_username.casefold() in excluded
+                or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
+            ):
+                continue
+            target_username = mapped_name(plan, "users", source_username, source_username)
+            status, current = forgejo_user(destination, target_username)
+            if status == 200:
+                current = require_named_api_record(status, current, target_username, "Forgejo user")
+                current_email = string(current.get("email")).strip()
+                desired_email = string(item.get("email") or item.get("public_email")).strip()
+                if not current_email:
+                    raise WorkspaceError(f"Forgejo user {target_username!r} email was not readable")
+                if (
+                    current_email.casefold() != desired_email.casefold()
+                    and not current_email.casefold().endswith("@migration.invalid")
+                ):
+                    raise WorkspaceError(
+                        f"Forgejo user {target_username!r} has a non-placeholder email; review it manually"
+                    )
+            preflight_users[target_username.casefold()] = (status, current)
     if password_strategy == "generated_per_user":
         if not notify_users:
             if password_output is None:
@@ -1568,9 +1619,10 @@ def import_users(
                 or bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True)
             ):
                 continue
-            if not string(item.get("email") or item.get("public_email")):
+            email = string(item.get("email") or item.get("public_email")).strip()
+            if not email or email.casefold().endswith("@migration.invalid"):
                 raise WorkspaceError(
-                    f"user {source_username!r} has no private email in the snapshot; "
+                    f"user {source_username!r} has no real private email in the snapshot; "
                     "generated_per_user requires a real delivery address"
                 )
     for item in items:
@@ -1583,11 +1635,18 @@ def import_users(
             continue
         target_username = mapped_name(plan, "users", source_username, source_username)
         targets.append(target_username)
-        status, current = forgejo_user(destination, target_username)
+        status, current = (
+            preflight_users[target_username.casefold()]
+            if reconcile_existing_emails
+            else forgejo_user(destination, target_username)
+        )
         desired_flags = source_account_flags(item) if bool_value(config.get("preserve_account_flags")) else {}
         if status == 200:
             current = require_named_api_record(status, current, target_username, "Forgejo user")
-            updates = account_flag_updates(target_username, current, desired_flags)
+            updates: dict[str, Any] = account_flag_updates(target_username, current, desired_flags)
+            desired_email = string(item.get("email") or item.get("public_email")).strip()
+            if reconcile_existing_emails and string(current.get("email")).strip().casefold() != desired_email.casefold():
+                updates["email"] = desired_email
             if updates:
                 request(
                     destination,
@@ -1604,7 +1663,11 @@ def import_users(
                     "Forgejo user",
                 )
                 verify_account_flags(target_username, verified_user, desired_flags)
+                if "email" in updates and string(verified_user.get("email")).strip().casefold() != desired_email.casefold():
+                    raise WorkspaceError(f"Forgejo user {target_username!r} email was not reconciled")
                 updated += 1
+                if "email" in updates:
+                    emails_updated += 1
             existing += 1
             continue
         email = string(item.get("email") or item.get("public_email"))
@@ -1653,9 +1716,10 @@ def import_users(
         "created": created,
         "existing": existing,
         "updated": updated,
+        "emails_updated": emails_updated,
         "verified_count": created + existing,
         "targets": sorted(set(targets), key=str.casefold),
-        "credential_delivery": "forgejo_mail" if notify_users else "private_file",
+        "credential_delivery": ("forgejo_mail" if notify_users else "private_file") if created else "none",
         "initial_credentials_created": len(credential_entries),
         "verified": True,
     }
@@ -1673,6 +1737,9 @@ def audit_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str,
             "account_flag_mismatches": 0,
             "identity_verified": True,
             "account_flags_verified": True,
+            "email_mismatches": 0,
+            "emails_unverifiable": 0,
+            "emails_verified": False,
             "passwords_verified": False,
             "verified": False,
         }
@@ -1685,6 +1752,8 @@ def audit_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str,
     matched = 0
     missing = 0
     account_flag_mismatches = 0
+    email_mismatches = 0
+    emails_unverifiable = 0
     source_states: dict[str, int] = {}
     for item in items:
         source_username = string(item.get("username"))
@@ -1705,12 +1774,19 @@ def audit_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str,
             continue
         current = require_named_api_record(status, current, target_username, "Forgejo user")
         matched += 1
+        expected_email = string(item.get("email") or item.get("public_email")).strip()
+        current_email = string(current.get("email")).strip()
+        if not expected_email or not current_email:
+            emails_unverifiable += 1
+        elif expected_email.casefold() != current_email.casefold():
+            email_mismatches += 1
         if bool_value(config.get("preserve_account_flags")):
             account_flag_mismatches += len(
                 account_flag_updates(target_username, current, source_account_flags(item))
             )
     identity_verified = missing == 0
     account_flags_verified = account_flag_mismatches == 0
+    emails_verified = identity_verified and email_mismatches == 0 and emails_unverifiable == 0
     passwords_verified = False
     return {
         "mode": config["mode"],
@@ -1721,8 +1797,11 @@ def audit_users(plan: dict[str, Any], destination: Endpoint, snapshot: dict[str,
         "account_flag_mismatches": account_flag_mismatches,
         "identity_verified": identity_verified,
         "account_flags_verified": account_flags_verified,
+        "email_mismatches": email_mismatches,
+        "emails_unverifiable": emails_unverifiable,
+        "emails_verified": emails_verified,
         "passwords_verified": passwords_verified,
-        "verified": identity_verified and account_flags_verified and passwords_verified,
+        "verified": identity_verified and account_flags_verified and emails_verified and passwords_verified,
     }
 
 
@@ -3482,7 +3561,17 @@ def command_export(args: argparse.Namespace) -> int:
 def command_import(args: argparse.Namespace) -> int:
     plan = load_plan(args.plan)
     snapshot = require_snapshot(plan, args.snapshot)
+    destination = endpoint(plan, "destination", "forgejo")
+    if not os.environ.get(destination.token_env, "").strip():
+        raise WorkspaceError(f"Forgejo import requires {destination.token_env} to be set")
     runtime_plan = plan
+
+    if args.reconcile_existing_emails:
+        user_config = ((plan.get("surfaces") or {}).get("users") or {})
+        if not isinstance(user_config, dict) or string(user_config.get("mode")) != "managed":
+            raise WorkspaceError("--reconcile-existing-emails requires managed users")
+        runtime_plan = copy.deepcopy(plan)
+        runtime_plan["surfaces"]["users"]["reconcile_existing_emails"] = True
     password_output: Path | None = None
     if args.no_send_notify:
         user_config = ((plan.get("surfaces") or {}).get("users") or {})
@@ -3490,7 +3579,8 @@ def command_import(args: argparse.Namespace) -> int:
             raise WorkspaceError("--no-send-notify currently requires surfaces.users.password_strategy=generated_per_user")
         if args.password_file is None:
             raise WorkspaceError("--no-send-notify requires --password-file under private/")
-        runtime_plan = copy.deepcopy(plan)
+        if runtime_plan is plan:
+            runtime_plan = copy.deepcopy(plan)
         runtime_plan["surfaces"]["users"]["send_notify"] = False
         password_output = args.password_file
     elif args.password_file is not None:
@@ -3506,7 +3596,10 @@ def command_import(args: argparse.Namespace) -> int:
 def command_audit_users(args: argparse.Namespace) -> int:
     plan = load_plan(args.plan)
     snapshot = require_snapshot(plan, args.snapshot)
-    result = audit_users(plan, endpoint(plan, "destination", "forgejo"), snapshot)
+    destination = endpoint(plan, "destination", "forgejo")
+    if not os.environ.get(destination.token_env, "").strip():
+        raise WorkspaceError(f"Forgejo user audit requires {destination.token_env} to be set")
+    result = audit_users(plan, destination, snapshot)
     evidence = proof("audit-users", plan, result)
     if args.proof:
         write_json(args.proof, evidence)
@@ -3518,8 +3611,11 @@ def command_audit_users(args: argparse.Namespace) -> int:
         "matched": result.get("matched"),
         "missing": result.get("missing"),
         "account_flag_mismatches": result.get("account_flag_mismatches"),
+        "email_mismatches": result.get("email_mismatches"),
+        "emails_unverifiable": result.get("emails_unverifiable"),
         "identity_verified": result.get("identity_verified") is True,
         "account_flags_verified": result.get("account_flags_verified") is True,
+        "emails_verified": result.get("emails_verified") is True,
         "passwords_verified": False,
         "verified": result.get("verified") is True,
     }
@@ -3558,6 +3654,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     import_command.add_argument("--snapshot", type=Path, required=True)
     import_command.add_argument("--work-dir", type=Path, required=True)
     import_command.add_argument("--proof", type=Path)
+    import_command.add_argument(
+        "--reconcile-existing-emails",
+        action="store_true",
+        help="Replace only placeholder emails on existing users; does not reset passwords or send mail",
+    )
     import_command.add_argument(
         "--no-send-notify",
         action="store_true",
