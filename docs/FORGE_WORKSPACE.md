@@ -56,6 +56,14 @@ from becoming an instance-wide import.
   password to stdout, JSON, or proof. Existing Forgejo users are not silently
   password-reset by this mode; handle those accounts through a separately
   confirmed password-reset procedure if required.
+  Before creating users with generated passwords, the importer rejects missing
+  or `@migration.invalid` delivery addresses. If existing Forgejo accounts
+  still have placeholder addresses, the opt-in import flag
+  `--reconcile-existing-emails` preflights every selected user, changes only
+  placeholder addresses to the private snapshot's addresses, and reads each
+  change back. It refuses to overwrite a different real address. This flag
+  does not reset an existing password or send that user a credential. Check
+  mail delivery and take a Forgejo backup before running a live import.
   If mail delivery is intentionally unavailable, run the import with
   `--no-send-notify --password-file private/...`. This writes only the newly
   generated credentials to an atomically replaced, private-permission file
@@ -225,9 +233,13 @@ make forge-workspace-audit-users \
 ```
 
 `audit-users` is read-only. It verifies target account presence and, when
-enabled, active/blocked and administrator flags; it always reports passwords
-as unverified. Do not treat a successful account audit as proof that an
-existing GitLab password works in Forgejo.
+enabled, active/blocked and administrator flags. It also reports aggregate
+email mismatches or unreadable addresses without printing addresses. It always
+reports passwords as unverified. Do not treat a successful account audit as
+proof that an existing GitLab password works in Forgejo. The source export,
+destination import, and user audit require their respective API token
+environment variables to be set; missing tokens fail before discovery or
+mutation.
 
 For a complete users/groups/permissions/rules transfer, enable the
 `memberships`, `permissions`, and `rules` surfaces in the plan and set
