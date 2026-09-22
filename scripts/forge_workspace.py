@@ -471,7 +471,7 @@ def validate_plan(plan: dict[str, Any]) -> None:
                     )
                 if not bool_value(config.get("send_notify")):
                     raise WorkspaceError(
-                        "surfaces.users.generated_per_user requires send_notify=true so credentials are delivered by Forgejo mail"
+                        "surfaces.users.generated_per_user requires send_notify=true so Forgejo sends password-setup instructions"
                     )
         if name in {"groups", "subgroups"} and config["mode"] == "managed":
             if source_mode(plan, "users") != "managed" and string(config.get("members_mode") or "import") not in {
@@ -1548,7 +1548,7 @@ def import_users(
     if password_strategy == "generated_per_user" and notify_users and not mail_delivery_confirmed:
         raise WorkspaceError(
             "generated_per_user with send_notify=true requires --confirm-mail-delivery "
-            "after the live Forgejo mailer is enabled and a test message is received"
+            "after a test account receives the Forgejo welcome mail and completes password recovery"
         )
     credential_entries: list[dict[str, str]] = []
     items = snapshot_surface_items(snapshot, "users", require_nonempty=True)
@@ -1725,8 +1725,9 @@ def import_users(
         "emails_updated": emails_updated,
         "verified_count": created + existing,
         "targets": sorted(set(targets), key=str.casefold),
-        "credential_delivery": ("forgejo_mail" if notify_users else "private_file") if created else "none",
+        "credential_delivery": ("forgejo_password_setup_instructions_requested" if notify_users else "private_file") if created else "none",
         "initial_credentials_created": len(credential_entries),
+        "login_verified": False,
         "verified": True,
     }
 
@@ -3694,12 +3695,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     import_command.add_argument(
         "--confirm-mail-delivery",
         action="store_true",
-        help="Use only after live Forgejo mailer is enabled and a test message was received; required for generated password notifications",
+        help="Use only after a test account receives Forgejo welcome mail and completes password recovery; required for generated-password imports",
     )
     import_command.add_argument(
         "--no-send-notify",
         action="store_true",
-        help="Do not email newly generated passwords; requires --password-file under private/",
+        help="Suppress Forgejo welcome mail and use a private handoff for newly generated passwords; requires --password-file under private/",
     )
     import_command.add_argument(
         "--password-file",

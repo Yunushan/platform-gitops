@@ -586,8 +586,14 @@ def test_generated_passwords_are_per_user_and_not_in_proof() -> None:
         raise AssertionError(f"generated-password accounts were not forced through notification/change flow: {bodies!r}")
     if result.get("verified") is not True or result.get("created") != 2:
         raise AssertionError(f"generated-password import was not verified: {result!r}")
+    if (
+        result.get("credential_delivery") != "forgejo_password_setup_instructions_requested"
+        or result.get("initial_credentials_created") != 0
+        or result.get("login_verified") is not False
+    ):
+        raise AssertionError("Forgejo welcome mail was mistaken for delivered credentials or verified login")
     evidence = workspace.proof("import", plan, result)
-    if "password" in json.dumps(evidence).lower():
+    if any(secret in json.dumps(evidence) for secret in ("one-time-alice", "one-time-bob")):
         raise AssertionError("generated passwords leaked into migration proof")
 
 
@@ -631,6 +637,8 @@ def test_generated_passwords_can_use_private_handoff_without_notification() -> N
         handoff = json.loads(password_file.read_text(encoding="utf-8"))
         if [entry["password"] for entry in handoff["entries"]] != ["one-time-alice", "one-time-bob"]:
             raise AssertionError(f"private password handoff was incomplete: {handoff!r}")
+        if result.get("credential_delivery") != "private_file" or result.get("login_verified") is not False:
+            raise AssertionError("private handoff was mistaken for a verified login")
         evidence = workspace.proof("import", plan, result)
         if any(password in json.dumps(evidence) for password in ("one-time-alice", "one-time-bob")):
             raise AssertionError("private handoff passwords leaked into migration proof")

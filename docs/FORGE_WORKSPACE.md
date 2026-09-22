@@ -48,17 +48,23 @@ from becoming an instance-wide import.
   marked to change the password.
   Every managed user is read back by its mapped login before the import can
   report success.
-  For migrations that intentionally issue new credentials, set
+  For migrations that intentionally let users choose new passwords, set
   `password_strategy` to `generated_per_user`, enable
   `include_email_for_account_creation`, and set `send_notify: true`. The
   importer generates a different random password for each newly created user,
   requests a Forgejo new-account notification, and never writes the
-  password to stdout, JSON, or proof. The exact message content and delivery
-  must be verified with a test account on the installed Forgejo version. This
-  mode requires `--confirm-mail-delivery` at import time, after the live mailer
-  shows enabled and a test message has actually arrived. The flag is an
-  operator attestation, not an automated SMTP check; do not set it while the
-  mailer is disabled. Existing Forgejo users are not silently
+  password to stdout or proof. In Forgejo v15.0.6, the
+  [welcome-mail template](https://codeberg.org/forgejo/forgejo/src/tag/v15.0.6/templates/mail/auth/register_notify.tmpl)
+  contains a link to the ordinary password-recovery page, **not** the generated
+  password or a one-time setup token. New users must request recovery and
+  choose their own password before they can sign in. Verify both receipt of
+  the welcome email and a completed password-recovery/sign-in test on the
+  installed Forgejo version. This mode requires `--confirm-mail-delivery` at
+  import time; the flag is an operator attestation, not an automated mail or
+  sign-in check. Do not set it while the mailer is disabled or the recovery
+  flow has not been tested. An API success only proves that the account was
+  created and read back; `credential_delivery` reports a notification request,
+  and `login_verified` remains false. Existing Forgejo users are not silently
   password-reset by this mode; handle those accounts through a separately
   confirmed password-reset procedure if required.
   Before creating users with generated passwords, the importer rejects missing
