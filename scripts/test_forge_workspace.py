@@ -744,13 +744,13 @@ def test_existing_password_issuance_resumes_same_private_passwords() -> None:
             mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
             mock.patch.object(workspace, "forgejo_user", side_effect=users),
             mock.patch.object(workspace, "generated_user_password", side_effect=["one-time-alice", "one-time-bob"]),
-            mock.patch.object(workspace, "request", side_effect=[None, workspace.WorkspaceError("simulated API failure")]) as api_request,
+            mock.patch.object(workspace, "request", side_effect=[None, workspace.WorkspaceError("one-time-bob echoed")]) as api_request,
         ):
             try:
                 workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True)  # type: ignore[arg-type]
             except workspace.WorkspaceError as exc:
-                if "simulated API failure" not in str(exc):
-                    raise
+                if "credential update failed" not in str(exc) or "one-time-bob" in str(exc):
+                    raise AssertionError(f"credential update leaked a remote password echo: {exc}") from exc
             else:
                 raise AssertionError("interrupted credential issuance unexpectedly completed")
         handoff = workspace.load_json(password_file)

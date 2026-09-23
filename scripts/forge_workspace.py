@@ -1650,13 +1650,18 @@ def issue_existing_user_passwords(
         if entry["applied"]:
             continue
         username = entry["username"]
-        request(
-            destination,
-            "PATCH",
-            f"admin/users/{quote(username, safe='')}",
-            body={"password": entry["password"], "must_change_password": True},
-            expected=(200, 204),
-        )
+        try:
+            request(
+                destination,
+                "PATCH",
+                f"admin/users/{quote(username, safe='')}",
+                body={"password": entry["password"], "must_change_password": True},
+                expected=(200, 204),
+            )
+        except WorkspaceError:
+            # A remote error body might echo the submitted password. Keep the
+            # durable handoff for a same-password resume, but never log it.
+            raise WorkspaceError("Forgejo credential update failed; private handoff retained for --resume") from None
         entry["applied"] = True
         atomic_write_text(path, json.dumps(handoff, indent=2, sort_keys=True) + "\n")
         accepted += 1
