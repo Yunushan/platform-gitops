@@ -1523,6 +1523,156 @@ def write_password_handoff(path: Path, entries: list[dict[str, str]]) -> None:
     atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def require_completed_import_proof(plan: dict[str, Any], path: Path) -> None:
+    """Do not issue replacement credentials before this plan's import finished."""
+    evidence = load_json(path)
+    result = evidence.get("result")
+    surfaces = result.get("surfaces") if isinstance(result, dict) else None
+    users = surfaces.get("users") if isinstance(surfaces, dict) else None
+    if (
+        evidence.get("proof_version") != PROOF_VERSION
+        or evidence.get("tool") != TOOL
+        or evidence.get("command") != "import"
+        or evidence.get("plan_sha256") != canonical_digest(plan)
+        or evidence.get("verified") is not True
+        or not isinstance(result, dict)
+        or result.get("verified") is not True
+        or not isinstance(users, dict)
+        or users.get("verified") is not True
+    ):
+        raise WorkspaceError("existing-user credential issuance requires a completed import proof for this plan")
+
+
+def issue_existing_user_passwords(
+    plan: dict[str, Any],
+    destination: Endpoint,
+    snapshot: dict[str, Any],
+    password_file: Path,
+    *,
+    apply: bool,
+    resume: bool = False,
+    allow_admin_accounts: bool = False,
+) -> dict[str, Any]:
+    """Issue private per-user replacements only after a completed import.
+
+    The handoff is durable before the first PATCH. An interrupted run resumes
+    with the same passwords, never generating a second undisclosed set.
+    """
+    config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
+    if config["mode"] != "managed" or string(config.get("password_strategy")).lower() != "generated_per_user":
+        raise WorkspaceError("existing-user credential issuance requires managed generated_per_user accounts")
+    path = private_password_output_path(password_file)
+    if resume and not apply:
+        raise WorkspaceError("--resume requires --apply")
+    if apply and path.exists() and not resume:
+        raise WorkspaceError(f"credential handoff already exists at {path}; use --resume or choose a new private path")
+    if resume and not path.exists():
+        raise WorkspaceError(f"credential handoff does not exist at {path}")
+    items = snapshot_surface_items(snapshot, "users", require_nonempty=True)
+    if not all(isinstance(item, dict) for item in items):
+        raise WorkspaceError("users snapshot items must be objects")
+    validate_unique_user_targets(plan, config, items)
+    excluded = excluded_usernames(config)
+    targets = sorted(
+        (
+            mapped_name(plan, "users", username, username)
+            for item in items
+            if (username := string(item.get("username")))
+            and username.casefold() not in excluded
+            and not (bool_value(item.get("is_bot")) and bool_value(config.get("skip_bots"), True))
+        ),
+        key=str.casefold,
+    )
+    if not targets:
+        raise WorkspaceError("no managed user accounts were selected for credential issuance")
+    admin_accounts = 0
+    for username in targets:
+        status, current = forgejo_user(destination, username)
+        current = require_named_api_record(status, current, username, "Forgejo user")
+        if not isinstance(current.get("is_admin"), bool):
+            raise WorkspaceError(f"Forgejo user {username!r} administrator status was not readable")
+        if current["is_admin"]:
+            admin_accounts += 1
+    if apply and admin_accounts and not allow_admin_accounts:
+        raise WorkspaceError(
+            "selected Forgejo accounts include administrators; review them and pass --allow-admin-accounts explicitly"
+        )
+    if not apply:
+        return {
+            "mode": "preflight",
+            "accounts_selected": len(targets),
+            "admin_accounts": admin_accounts,
+            "api_requests_accepted": 0,
+            "login_verified": False,
+        }
+
+    plan_digest = canonical_digest(plan)
+    snapshot_digest = canonical_digest(snapshot)
+    if resume:
+        handoff = load_json(path)
+        entries = handoff.get("entries")
+        if (
+            handoff.get("format_version") != 2
+            or handoff.get("kind") != "existing_user_password_handoff"
+            or handoff.get("plan_sha256") != plan_digest
+            or handoff.get("snapshot_sha256") != snapshot_digest
+            or handoff.get("complete") is not False
+            or not isinstance(entries, list)
+            or len(entries) != len(targets)
+            or [entry.get("username") for entry in entries if isinstance(entry, dict)] != targets
+            or any(
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("password"), str)
+                or not entry["password"]
+                or not isinstance(entry.get("applied"), bool)
+                for entry in entries
+            )
+        ):
+            raise WorkspaceError("existing-user credential handoff does not match this plan and snapshot")
+    else:
+        handoff = {
+            "format_version": 2,
+            "kind": "existing_user_password_handoff",
+            "warning": "Sensitive local handoff; deliver securely only after completion and remove after use.",
+            "generated_at": utc_now(),
+            "plan_sha256": plan_digest,
+            "snapshot_sha256": snapshot_digest,
+            "complete": False,
+            "entries": [
+                {"username": username, "password": generated_user_password(), "applied": False}
+                for username in targets
+            ],
+        }
+        entries = handoff["entries"]
+        atomic_write_text(path, json.dumps(handoff, indent=2, sort_keys=True) + "\n")
+    accepted = 0
+    for entry in entries:
+        if entry["applied"]:
+            continue
+        username = entry["username"]
+        request(
+            destination,
+            "PATCH",
+            f"admin/users/{quote(username, safe='')}",
+            body={"password": entry["password"], "must_change_password": True},
+            expected=(200, 204),
+        )
+        entry["applied"] = True
+        atomic_write_text(path, json.dumps(handoff, indent=2, sort_keys=True) + "\n")
+        accepted += 1
+    handoff["complete"] = True
+    atomic_write_text(path, json.dumps(handoff, indent=2, sort_keys=True) + "\n")
+    return {
+        "mode": "applied",
+        "accounts_selected": len(targets),
+        "admin_accounts": admin_accounts,
+        "api_requests_accepted": accepted,
+        "handoff_complete": True,
+        "handoff_delivered": False,
+        "login_verified": False,
+    }
+
+
 def import_users(
     plan: dict[str, Any],
     destination: Endpoint,
@@ -3679,6 +3829,29 @@ def command_audit_users(args: argparse.Namespace) -> int:
     return 0 if result.get("verified") else 1
 
 
+def command_issue_existing_passwords(args: argparse.Namespace) -> int:
+    plan = load_plan(args.plan)
+    snapshot = require_snapshot(plan, args.snapshot)
+    require_completed_import_proof(plan, args.import_proof)
+    if args.apply and not args.confirm_reset:
+        raise WorkspaceError("--apply requires --confirm-reset-existing-users")
+    destination = endpoint(plan, "destination", "forgejo")
+    if not os.environ.get(destination.token_env, "").strip():
+        raise WorkspaceError(f"Forgejo credential issuance requires {destination.token_env} to be set")
+    result = issue_existing_user_passwords(
+        plan,
+        destination,
+        snapshot,
+        args.password_file,
+        apply=args.apply,
+        resume=args.resume,
+        allow_admin_accounts=args.allow_admin_accounts,
+    )
+    # Never print the handoff path, usernames, email addresses, or passwords.
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -3717,6 +3890,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="Ignored private local handoff for newly generated passwords",
     )
     import_command.set_defaults(handler=command_import)
+    issue_passwords = subparsers.add_parser("issue-existing-passwords")
+    issue_passwords.add_argument("plan", type=Path)
+    issue_passwords.add_argument("--snapshot", type=Path, required=True)
+    issue_passwords.add_argument("--import-proof", type=Path, required=True)
+    issue_passwords.add_argument("--password-file", type=Path, required=True)
+    issue_passwords.add_argument("--apply", action="store_true", help="Apply replacements after a read-only preflight")
+    issue_passwords.add_argument(
+        "--confirm-reset-existing-users",
+        dest="confirm_reset",
+        action="store_true",
+        help="Acknowledge that previous Forgejo passwords for selected existing users will stop working",
+    )
+    issue_passwords.add_argument("--allow-admin-accounts", action="store_true")
+    issue_passwords.add_argument("--resume", action="store_true", help="Resume an interrupted private handoff using the same passwords")
+    issue_passwords.set_defaults(handler=command_issue_existing_passwords)
     audit = subparsers.add_parser("audit-users")
     audit.add_argument("plan", type=Path)
     audit.add_argument("--snapshot", type=Path, required=True)

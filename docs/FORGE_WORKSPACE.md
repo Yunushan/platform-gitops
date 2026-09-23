@@ -253,6 +253,44 @@ make forge-workspace-audit-users \
   PROOF=private/migrations/proof/user-audit.json
 ```
 
+### Existing accounts without working passwords
+
+The import's private password handoff covers **newly created** users only. It
+does not give an existing Forgejo account a new password. When the operator
+has approved replacement passwords and an out-of-band delivery process, use
+the separate command below **only after** a complete, verified workspace
+import and a Forgejo backup. This is not a substitute for expanding a full
+Forgejo volume or finishing the repository/permission import.
+
+```bash
+# Read-only preflight; no password file or account change:
+python3 scripts/forge_workspace.py issue-existing-passwords \
+  private/migrations/gitlab-to-forgejo.workspace.json \
+  --snapshot private/migrations/proof/workspace-snapshot.json \
+  --import-proof private/migrations/proof/workspace-import.json \
+  --password-file private/migrations/proof/existing-user-passwords.json
+
+# Only after reviewing the selected-account and admin counts, run deliberately:
+python3 scripts/forge_workspace.py issue-existing-passwords \
+  private/migrations/gitlab-to-forgejo.workspace.json \
+  --snapshot private/migrations/proof/workspace-snapshot.json \
+  --import-proof private/migrations/proof/workspace-import.json \
+  --password-file private/migrations/proof/existing-user-passwords.json \
+  --apply --confirm-reset-existing-users
+```
+
+The command preflights every selected Forgejo account before any reset. If
+selected accounts are administrators, it stops unless the operator explicitly
+adds `--allow-admin-accounts`. An apply run replaces those accounts' old
+Forgejo passwords with unique generated passwords and requires a change on
+first login. It never sends mail. The complete handoff is written under the
+ignored `private/` directory with private permissions **before** the first API
+update. If interrupted, rerun the same apply command with `--resume` to reuse
+the already recorded passwords; do not use a fresh handoff path. Deliver the
+completed file through a secure, approved channel and remove it after handoff.
+Successful API responses do **not** prove users received the credentials or
+could log in; verify onboarding separately. Never commit or paste this file.
+
 Repository import uses a fresh scratch directory under `WORK_DIR` for each
 repository and removes that directory after the repository operation, including
 on a Python exception. Allow enough controller disk space for the largest

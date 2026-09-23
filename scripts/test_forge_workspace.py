@@ -653,6 +653,181 @@ def test_generated_passwords_can_use_private_handoff_without_notification() -> N
             raise AssertionError("private handoff passwords leaked into migration proof")
 
 
+def test_existing_password_issuance_requires_completed_import_proof() -> None:
+    plan = base_plan()
+    result = {"verified": True, "surfaces": {"users": {"verified": True}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        proof_path = Path(temp_dir) / "import-proof.json"
+        workspace.write_json(proof_path, workspace.proof("import", plan, result))
+        workspace.require_completed_import_proof(plan, proof_path)
+        other_plan = copy.deepcopy(plan)
+        other_plan["source"]["usernames"] = ["bob"]  # type: ignore[index]
+        try:
+            workspace.require_completed_import_proof(other_plan, proof_path)
+        except workspace.WorkspaceError as exc:
+            if "completed import proof" not in str(exc):
+                raise AssertionError(f"unexpected proof mismatch diagnostic: {exc}") from exc
+        else:
+            raise AssertionError("credential issuance accepted another plan's import proof")
+        workspace.write_json(proof_path, workspace.proof("import", plan, {"verified": False, "surfaces": result["surfaces"]}))
+        try:
+            workspace.require_completed_import_proof(plan, proof_path)
+        except workspace.WorkspaceError:
+            pass
+        else:
+            raise AssertionError("credential issuance accepted an incomplete import")
+
+
+def test_existing_password_issuance_preflights_admins_without_writes() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {"mode": "managed", "password_strategy": "generated_per_user"}  # type: ignore[index]
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice"}, {"username": "bob"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "handoff.json"
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(
+                workspace,
+                "forgejo_user",
+                side_effect=[(200, {"login": "alice", "is_admin": False}), (200, {"login": "bob", "is_admin": True})],
+            ),
+            mock.patch.object(workspace, "request") as api_request,
+            mock.patch.object(workspace, "generated_user_password") as generate,
+        ):
+            result = workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=False)  # type: ignore[arg-type]
+        if result["accounts_selected"] != 2 or result["admin_accounts"] != 1 or result["login_verified"] is not False:
+            raise AssertionError(f"unexpected credential preflight result: {result!r}")
+        if password_file.exists() or api_request.called or generate.called:
+            raise AssertionError("read-only credential preflight wrote passwords or changed users")
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(
+                workspace,
+                "forgejo_user",
+                side_effect=[(200, {"login": "alice", "is_admin": False}), (200, {"login": "bob", "is_admin": True})],
+            ),
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            try:
+                workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "--allow-admin-accounts" not in str(exc):
+                    raise AssertionError(f"unexpected admin credential guard: {exc}") from exc
+            else:
+                raise AssertionError("admin account password changed without an explicit opt-in")
+            api_request.assert_not_called()
+        if password_file.exists():
+            raise AssertionError("admin preflight wrote a credential handoff")
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", return_value=(200, {"login": "alice"})),
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            try:
+                workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "administrator status was not readable" not in str(exc):
+                    raise AssertionError(f"unexpected unreadable-admin guard: {exc}") from exc
+            else:
+                raise AssertionError("credential issuance proceeded without readable admin status")
+            api_request.assert_not_called()
+
+
+def test_existing_password_issuance_resumes_same_private_passwords() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {"mode": "managed", "password_strategy": "generated_per_user"}  # type: ignore[index]
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice"}, {"username": "bob"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "handoff.json"
+        users = [(200, {"login": "alice", "is_admin": False}), (200, {"login": "bob", "is_admin": False})]
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", side_effect=users),
+            mock.patch.object(workspace, "generated_user_password", side_effect=["one-time-alice", "one-time-bob"]),
+            mock.patch.object(workspace, "request", side_effect=[None, workspace.WorkspaceError("simulated API failure")]) as api_request,
+        ):
+            try:
+                workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "simulated API failure" not in str(exc):
+                    raise
+            else:
+                raise AssertionError("interrupted credential issuance unexpectedly completed")
+        handoff = workspace.load_json(password_file)
+        if handoff["complete"] is not False or [entry["applied"] for entry in handoff["entries"]] != [True, False]:
+            raise AssertionError("interrupted issuance lost its durable progress")
+        if [call.kwargs["body"] for call in api_request.call_args_list] != [
+            {"password": "one-time-alice", "must_change_password": True},
+            {"password": "one-time-bob", "must_change_password": True},
+        ]:
+            raise AssertionError("password PATCH payloads were not per-user and change-required")
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", side_effect=users),
+            mock.patch.object(workspace, "generated_user_password") as generate,
+            mock.patch.object(workspace, "request") as resumed_request,
+        ):
+            result = workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True, resume=True)  # type: ignore[arg-type]
+        generate.assert_not_called()
+        if resumed_request.call_count != 1 or resumed_request.call_args.kwargs["body"]["password"] != "one-time-bob":
+            raise AssertionError("credential resume did not reuse only the pending password")
+        if result["api_requests_accepted"] != 1 or result["login_verified"] is not False:
+            raise AssertionError(f"credential issuance overstated login verification: {result!r}")
+        handoff = workspace.load_json(password_file)
+        if handoff["complete"] is not True or not all(entry["applied"] is True for entry in handoff["entries"]):
+            raise AssertionError("completed credential handoff was not recorded")
+
+
+def test_existing_password_resume_rejects_changed_snapshot() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {"mode": "managed", "password_strategy": "generated_per_user"}  # type: ignore[index]
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "handoff.json"
+        workspace.write_json(password_file, {
+            "format_version": 2,
+            "kind": "existing_user_password_handoff",
+            "plan_sha256": workspace.canonical_digest(plan),
+            "snapshot_sha256": "wrong-snapshot",
+            "complete": False,
+            "entries": [{"username": "alice", "password": "one-time-alice", "applied": False}],
+        })
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", return_value=(200, {"login": "alice", "is_admin": False})),
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            try:
+                workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True, resume=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "does not match this plan and snapshot" not in str(exc):
+                    raise AssertionError(f"unexpected mismatched resume guard: {exc}") from exc
+            else:
+                raise AssertionError("credential issuance resumed from another snapshot")
+            api_request.assert_not_called()
+
+
+def test_existing_password_cli_requires_explicit_reset_confirmation() -> None:
+    args = workspace.parse_args([
+        "issue-existing-passwords", "plan.json", "--snapshot", "snapshot.json",
+        "--import-proof", "import.json", "--password-file", "private/handoff.json", "--apply",
+    ])
+    with (
+        mock.patch.object(workspace, "load_plan", return_value=base_plan()),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "require_completed_import_proof"),
+        mock.patch.object(workspace, "issue_existing_user_passwords") as issue,
+    ):
+        try:
+            args.handler(args)
+        except workspace.WorkspaceError as exc:
+            if "--confirm-reset-existing-users" not in str(exc):
+                raise AssertionError(f"unexpected credential confirmation error: {exc}") from exc
+        else:
+            raise AssertionError("credential CLI applied without explicit reset confirmation")
+    issue.assert_not_called()
+
+
 def test_generated_password_mail_requires_confirmation_before_destination_access() -> None:
     plan = base_plan()
     plan["surfaces"]["users"] = {  # type: ignore[index]
@@ -1765,6 +1940,11 @@ def main() -> int:
     test_existing_hash_strategy_fails_closed_before_mutation()
     test_generated_passwords_are_per_user_and_not_in_proof()
     test_generated_passwords_can_use_private_handoff_without_notification()
+    test_existing_password_issuance_requires_completed_import_proof()
+    test_existing_password_issuance_preflights_admins_without_writes()
+    test_existing_password_issuance_resumes_same_private_passwords()
+    test_existing_password_resume_rejects_changed_snapshot()
+    test_existing_password_cli_requires_explicit_reset_confirmation()
     test_generated_password_mail_requires_confirmation_before_destination_access()
     test_generated_password_preflight_fails_before_destination_access()
     test_generated_password_preflight_rejects_placeholder_address()
