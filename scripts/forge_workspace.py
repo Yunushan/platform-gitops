@@ -1523,6 +1523,29 @@ def write_password_handoff(path: Path, entries: list[dict[str, str]]) -> None:
     atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def load_initial_password_handoff(path: Path, expected_users: dict[str, tuple[str, str]]) -> list[dict[str, str]]:
+    """Validate a prior private handoff before an interrupted import resumes."""
+    handoff = load_json(path)
+    entries = handoff.get("entries")
+    if handoff.get("format_version") != 1 or not isinstance(entries, list):
+        raise WorkspaceError("initial credential handoff has an unsupported format")
+    validated: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise WorkspaceError("initial credential handoff contains an invalid entry")
+        username, email, password = (entry.get(key) for key in ("username", "email", "password"))
+        if not all(isinstance(value, str) and value for value in (username, email, password)):
+            raise WorkspaceError("initial credential handoff contains an incomplete entry")
+        assert isinstance(username, str) and isinstance(email, str) and isinstance(password, str)
+        key = username.casefold()
+        if key in seen or expected_users.get(key) != (username, email.casefold()):
+            raise WorkspaceError("initial credential handoff does not match the selected users and emails")
+        seen.add(key)
+        validated.append({"username": username, "email": email, "password": password})
+    return validated
+
+
 def require_completed_import_proof(plan: dict[str, Any], path: Path) -> None:
     """Do not issue replacement credentials before this plan's import finished."""
     evidence = load_json(path)
@@ -1685,8 +1708,11 @@ def import_users(
     *,
     password_output: Path | None = None,
     mail_delivery_confirmed: bool = False,
+    resume_password_handoff: bool = False,
 ) -> dict[str, Any]:
     config = surface_config((plan.get("surfaces") or {}).get("users"), "surfaces.users")
+    if resume_password_handoff and config["mode"] != "managed":
+        raise WorkspaceError("initial credential resume requires managed users")
     if config["mode"] != "managed":
         return {"mode": config["mode"], "verified": config["mode"] in {"skip", "export", "mapped", "manual"}, "created": 0, "existing": 0, "targets": []}
     password_strategy = string(config.get("password_strategy") or "environment").lower()
@@ -1707,6 +1733,9 @@ def import_users(
             "after a test account receives the Forgejo welcome mail and completes password recovery"
         )
     credential_entries: list[dict[str, str]] = []
+    new_initial_credentials = 0
+    if resume_password_handoff and (password_strategy != "generated_per_user" or notify_users or password_output is None):
+        raise WorkspaceError("initial credential resume requires generated_per_user, no mail, and --password-file")
     items = snapshot_surface_items(snapshot, "users", require_nonempty=True)
     if not all(isinstance(item, dict) for item in items):
         raise WorkspaceError("users snapshot items must be objects")
@@ -1769,12 +1798,15 @@ def import_users(
                     "generated_per_user with send_notify=false requires --password-file under private/"
                 )
             password_output = private_password_output_path(password_output)
-            if password_output.exists():
+            if password_output.exists() and not resume_password_handoff:
                 raise WorkspaceError(
-                    f"credential handoff already exists at {password_output}; choose a new private path"
+                    f"credential handoff already exists at {password_output}; use --resume-password-file or choose a new private path"
                 )
+            if resume_password_handoff and not password_output.exists():
+                raise WorkspaceError("initial credential handoff does not exist for --resume-password-file")
         # Validate the complete delivery surface before the first destination
         # call, so one incomplete source record cannot cause a partial import.
+        expected_users: dict[str, tuple[str, str]] = {}
         for item in items:
             source_username = string(item.get("username"))
             if (
@@ -1789,6 +1821,12 @@ def import_users(
                     f"user {source_username!r} has no real private email in the snapshot; "
                     "generated_per_user requires a real delivery address"
                 )
+            target_username = mapped_name(plan, "users", source_username, source_username)
+            expected_users[target_username.casefold()] = (target_username, email.casefold())
+        if resume_password_handoff:
+            assert password_output is not None
+            credential_entries = load_initial_password_handoff(password_output, expected_users)
+    credential_by_username = {entry["username"].casefold(): entry for entry in credential_entries}
     for item in items:
         source_username = string(item.get("username"))
         if (
@@ -1841,19 +1879,18 @@ def import_users(
                     f"user {source_username!r} has no private email in the snapshot; "
                     "generated_per_user requires a real delivery address"
                 )
-            password = generated_user_password()
+            prior_entry = credential_by_username.get(target_username.casefold())
+            password = str(prior_entry["password"]) if prior_entry is not None else generated_user_password()
             if not notify_users:
-                credential_entries.append(
-                    {
-                        "username": target_username,
-                        "email": email,
-                        "password": password,
-                    }
-                )
-                # Record before the API call so an interrupted request cannot
-                # leave a newly created account without a recoverable handoff.
-                assert password_output is not None
-                write_password_handoff(password_output, credential_entries)
+                if prior_entry is None:
+                    new_entry = {"username": target_username, "email": email, "password": password}
+                    credential_entries.append(new_entry)
+                    credential_by_username[target_username.casefold()] = new_entry
+                    new_initial_credentials += 1
+                    # Record before the API call so an interrupted request cannot
+                    # leave a newly created account without a recoverable handoff.
+                    assert password_output is not None
+                    write_password_handoff(password_output, credential_entries)
         else:
             env_map = config.get("password_env_by_username") or {}
             password_env = string(env_map.get(source_username) if isinstance(env_map, dict) else "") or string(config.get("default_password_env"))
@@ -1870,7 +1907,13 @@ def import_users(
             "send_notify": bool_value(config.get("send_notify"), False),
         }
         body.update(desired_flags)
-        request(destination, "POST", "admin/users", body=body, expected=(201, 200))
+        try:
+            request(destination, "POST", "admin/users", body=body, expected=(201, 200))
+        except WorkspaceError:
+            # An API error body may echo the submitted password. The private
+            # handoff, when enabled, was written before the request.
+            detail = "; private handoff retained for retry" if password_output is not None else ""
+            raise WorkspaceError(f"Forgejo user creation failed; API details suppressed{detail}") from None
         verified_status, verified_user = forgejo_user(destination, target_username)
         verified_user = require_named_api_record(verified_status, verified_user, target_username, "Forgejo user")
         verify_account_flags(target_username, verified_user, desired_flags)
@@ -1884,7 +1927,8 @@ def import_users(
         "verified_count": created + existing,
         "targets": sorted(set(targets), key=str.casefold),
         "credential_delivery": ("forgejo_password_setup_instructions_requested" if notify_users else "private_file") if created else "none",
-        "initial_credentials_created": len(credential_entries),
+        "initial_credentials_created": new_initial_credentials,
+        "handoff_credentials_recorded": len(credential_entries),
         "login_verified": False,
         "verified": True,
     }
@@ -3644,6 +3688,7 @@ def import_workspace(
     *,
     password_output: Path | None = None,
     mail_delivery_confirmed: bool = False,
+    resume_password_handoff: bool = False,
 ) -> dict[str, Any]:
     destination = endpoint(plan, "destination", "forgejo")
     validate_import_snapshot_contract(plan, snapshot)
@@ -3657,6 +3702,7 @@ def import_workspace(
             snapshot,
             password_output=password_output,
             mail_delivery_confirmed=mail_delivery_confirmed,
+            resume_password_handoff=resume_password_handoff,
         )
         results["users"] = user_result
     group_result: dict[str, Any] | None = None
@@ -3755,6 +3801,8 @@ def command_import(args: argparse.Namespace) -> int:
                 "--confirm-mail-delivery requires generated_per_user managed users "
                 "with send_notify=true and cannot be combined with --no-send-notify"
             )
+    if args.resume_password_file and not args.no_send_notify:
+        raise WorkspaceError("--resume-password-file requires --no-send-notify and --password-file")
     runtime_plan = plan
 
     if args.reconcile_existing_emails:
@@ -3782,6 +3830,7 @@ def command_import(args: argparse.Namespace) -> int:
         args.work_dir,
         password_output=password_output,
         mail_delivery_confirmed=args.confirm_mail_delivery,
+        resume_password_handoff=args.resume_password_file,
     )
     evidence = proof("import", plan, result)
     if args.proof:
@@ -3896,6 +3945,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--password-file",
         type=Path,
         help="Ignored private local handoff for newly generated passwords",
+    )
+    import_command.add_argument(
+        "--resume-password-file",
+        action="store_true",
+        help="Resume an interrupted import with the same validated private initial-password handoff",
     )
     import_command.set_defaults(handler=command_import)
     issue_passwords = subparsers.add_parser("issue-existing-passwords")

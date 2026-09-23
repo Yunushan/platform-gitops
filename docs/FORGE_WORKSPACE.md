@@ -243,6 +243,17 @@ make forge-workspace-import \
   NO_SEND_NOTIFY=1 \
   PASSWORD_FILE=private/migrations/proof/initial-user-passwords.json
 
+# If an earlier import stopped after creating some users, preserve and reuse
+# that *same* private file on the retry (after fixing the original failure):
+make forge-workspace-import \
+  PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
+  SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
+  WORK_DIR=private/migrations/workspace \
+  PROOF=private/migrations/proof/workspace-import.json \
+  NO_SEND_NOTIFY=1 \
+  PASSWORD_FILE=private/migrations/proof/initial-user-passwords.json \
+  RESUME_PASSWORD_FILE=1
+
 # Optional on a separately reviewed retry with verified private snapshot emails:
 # add RECONCILE_EXISTING_EMAILS=1 to the import command above to replace
 # existing placeholder addresses; it does not send mail or reset passwords.
@@ -252,6 +263,15 @@ make forge-workspace-audit-users \
   SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
   PROOF=private/migrations/proof/user-audit.json
 ```
+
+`RESUME_PASSWORD_FILE=1` checks every recorded username and email against the
+selected snapshot before contacting Forgejo. A missing account with a recorded
+password is created using that same password; a missing account without an
+entry gets a new password recorded *before* the API request. Existing accounts
+are not reset. Keep the original handoff private and backed up. A mismatched
+file stops the import; do not rename, delete, or overwrite it just to bypass
+the check. The retry does not resolve a full Forgejo volume: expand storage
+and verify free space before resuming repository import.
 
 ### Existing accounts without working passwords
 

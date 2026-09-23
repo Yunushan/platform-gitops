@@ -214,6 +214,55 @@ def test_make_import_forwards_email_reconciliation() -> None:
         raise AssertionError("Make import does not forward the opt-in email reconciliation flag")
 
 
+def test_make_import_forwards_password_handoff_resume() -> None:
+    recipe = next(
+        line for line in (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("\t@$(PYTHON) scripts/forge_workspace.py import ")
+    )
+    if "$(RESUME_PASSWORD_FILE)" not in recipe or "--resume-password-file" not in recipe:
+        raise AssertionError("Make import does not forward the explicit private handoff resume flag")
+
+
+def test_import_password_resume_requires_private_handoff_mode() -> None:
+    plan = base_plan()
+    args = workspace.parse_args(
+        ["import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work", "--resume-password-file"]
+    )
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace") as importer,
+    ):
+        try:
+            args.handler(args)
+        except workspace.WorkspaceError as exc:
+            if "requires --no-send-notify" not in str(exc):
+                raise AssertionError(f"unexpected resume mode error: {exc}") from exc
+        else:
+            raise AssertionError("password resume accepted without a private handoff")
+        importer.assert_not_called()
+
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    args = workspace.parse_args([
+        "import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work",
+        "--no-send-notify", "--password-file", "private/initial-passwords.json", "--resume-password-file",
+    ])
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace", return_value={"verified": True, "surfaces": {}}) as importer,
+        mock.patch("builtins.print"),
+    ):
+        if args.handler(args) != 0:
+            raise AssertionError("valid private handoff resume was rejected")
+    if importer.call_args.kwargs.get("resume_password_handoff") is not True:
+        raise AssertionError("import CLI lost the explicit private handoff resume flag")
+
+
 def test_import_mail_confirmation_is_runtime_only() -> None:
     plan = base_plan()
     plan["surfaces"]["users"] = {  # type: ignore[index]
@@ -651,6 +700,125 @@ def test_generated_passwords_can_use_private_handoff_without_notification() -> N
         evidence = workspace.proof("import", plan, result)
         if any(password in json.dumps(evidence) for password in ("one-time-alice", "one-time-bob")):
             raise AssertionError("private handoff passwords leaked into migration proof")
+
+
+def test_initial_password_handoff_resume_reuses_recorded_passwords() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    snapshot = {"surfaces": {"users": {"items": [
+        {"username": "alice", "email": "alice@example.test"},
+        {"username": "bob", "email": "bob@example.test"},
+    ]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        workspace.write_password_handoff(password_file, [
+            {"username": "alice", "email": "alice@example.test", "password": "recorded-alice"},
+        ])
+        observed: list[tuple[str, int]] = []
+
+        def record_request(_destination: object, method: str, path: str, *, body: dict[str, object], **_kwargs: object) -> dict[str, object]:
+            if method == "POST" and path == "admin/users":
+                current = workspace.load_json(password_file)
+                entries = current["entries"]
+                observed.append((str(body["password"]), len(entries)))
+            return {}
+
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", side_effect=[
+                (404, {}), (200, {"login": "alice"}), (404, {}), (200, {"login": "bob"}),
+            ]),
+            mock.patch.object(workspace, "generated_user_password", return_value="new-bob") as generate,
+            mock.patch.object(workspace, "request", side_effect=record_request),
+        ):
+            result = workspace.import_users(
+                plan, object(), snapshot, password_output=password_file, resume_password_handoff=True,
+            )  # type: ignore[arg-type]
+        if observed != [("recorded-alice", 1), ("new-bob", 2)] or generate.call_count != 1:
+            raise AssertionError("resume did not reuse the durable password or record a new one before POST")
+        if result["created"] != 2 or result["initial_credentials_created"] != 1 or result["handoff_credentials_recorded"] != 2:
+            raise AssertionError("resumed account creation counts are incorrect")
+
+
+def test_initial_password_handoff_resume_existing_accounts_does_not_reset_them() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        workspace.write_password_handoff(password_file, [
+            {"username": "alice", "email": "alice@example.test", "password": "recorded-alice"},
+        ])
+        original = password_file.read_bytes()
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", return_value=(200, {"login": "alice"})),
+            mock.patch.object(workspace, "generated_user_password") as generate,
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            result = workspace.import_users(
+                plan, object(), snapshot, password_output=password_file, resume_password_handoff=True,
+            )  # type: ignore[arg-type]
+        if result["existing"] != 1 or result["initial_credentials_created"] != 0:
+            raise AssertionError("existing-account retry incorrectly counted new credentials")
+        if password_file.read_bytes() != original or generate.called or api_request.called:
+            raise AssertionError("existing-account retry changed the handoff or Forgejo account")
+
+
+def test_initial_password_handoff_resume_rejects_mismatch_before_api() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        workspace.write_password_handoff(password_file, [
+            {"username": "alice", "email": "other@example.test", "password": "recorded-alice"},
+        ])
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user") as user_probe,
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            try:
+                workspace.import_users(plan, object(), snapshot, password_output=password_file, resume_password_handoff=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "does not match" not in str(exc):
+                    raise AssertionError(f"unexpected handoff mismatch error: {exc}") from exc
+            else:
+                raise AssertionError("mismatched handoff was accepted")
+            user_probe.assert_not_called()
+            api_request.assert_not_called()
+
+
+def test_user_creation_error_does_not_echo_password() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", return_value=(404, {})),
+            mock.patch.object(workspace, "generated_user_password", return_value="one-time-alice"),
+            mock.patch.object(workspace, "request", side_effect=workspace.WorkspaceError("one-time-alice echoed")),
+        ):
+            try:
+                workspace.import_users(plan, object(), snapshot, password_output=password_file)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "one-time-alice" in str(exc) or "private handoff retained" not in str(exc):
+                    raise AssertionError("user creation failure leaked a generated password") from exc
+            else:
+                raise AssertionError("failed account creation unexpectedly succeeded")
+        if not password_file.exists():
+            raise AssertionError("failed account creation lost the durable password handoff")
 
 
 def test_existing_password_issuance_requires_completed_import_proof() -> None:
@@ -1945,6 +2113,8 @@ def main() -> int:
     test_import_and_audit_require_forgejo_token()
     test_import_email_reconciliation_flag_preserves_saved_plan()
     test_make_import_forwards_email_reconciliation()
+    test_make_import_forwards_password_handoff_resume()
+    test_import_password_resume_requires_private_handoff_mode()
     test_import_mail_confirmation_is_runtime_only()
     test_membership_only_users_are_hydrated_before_email_export()
     test_redaction_and_destination_url()
@@ -1960,6 +2130,10 @@ def main() -> int:
     test_existing_hash_strategy_fails_closed_before_mutation()
     test_generated_passwords_are_per_user_and_not_in_proof()
     test_generated_passwords_can_use_private_handoff_without_notification()
+    test_initial_password_handoff_resume_reuses_recorded_passwords()
+    test_initial_password_handoff_resume_existing_accounts_does_not_reset_them()
+    test_initial_password_handoff_resume_rejects_mismatch_before_api()
+    test_user_creation_error_does_not_echo_password()
     test_existing_password_issuance_requires_completed_import_proof()
     test_existing_password_issuance_preflights_admins_without_writes()
     test_existing_password_issuance_resumes_same_private_passwords()
