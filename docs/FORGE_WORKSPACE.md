@@ -68,9 +68,11 @@ from becoming an instance-wide import.
   password-reset by this mode; handle those accounts through a separately
   confirmed password-reset procedure if required.
   Before creating users with generated passwords, the importer rejects missing
-  or `@migration.invalid` delivery addresses. If existing Forgejo accounts
+  or delivery addresses in the configured placeholder domain (default
+  `migration.invalid`). If existing Forgejo accounts
   still have placeholder addresses, the opt-in import flag
-  `--reconcile-existing-emails` preflights every selected user, changes only
+  `--reconcile-existing-emails` (or `RECONCILE_EXISTING_EMAILS=1` with Make)
+  preflights every selected user, changes only
   placeholder addresses to the private snapshot's addresses, and reads each
   change back. It refuses to overwrite a different real address. This flag
   does not reset an existing password or send that user a credential. Check
@@ -240,6 +242,10 @@ make forge-workspace-import \
   PROOF=private/migrations/proof/workspace-import.json \
   NO_SEND_NOTIFY=1 \
   PASSWORD_FILE=private/migrations/proof/initial-user-passwords.json
+
+# Optional on a separately reviewed retry with verified private snapshot emails:
+# add RECONCILE_EXISTING_EMAILS=1 to the import command above to replace
+# existing placeholder addresses; it does not send mail or reset passwords.
 
 make forge-workspace-audit-users \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json \

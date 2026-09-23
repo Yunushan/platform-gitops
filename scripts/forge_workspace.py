@@ -1557,6 +1557,8 @@ def import_users(
         raise WorkspaceError("users snapshot items must be objects")
     validate_unique_user_targets(plan, config, items)
     excluded = excluded_usernames(config)
+    placeholder_domain = string(config.get("placeholder_email_domain")) or "migration.invalid"
+    placeholder_suffix = f"@{placeholder_domain.casefold()}"
     reconcile_existing_emails = bool_value(config.get("reconcile_existing_emails"), False)
     preflight_users: dict[str, tuple[int, dict[str, Any]]] = {}
     if reconcile_existing_emails:
@@ -1571,7 +1573,7 @@ def import_users(
                 continue
             target_username = mapped_name(plan, "users", source_username, source_username)
             email = string(item.get("email") or item.get("public_email")).strip()
-            if not email or email.casefold().endswith("@migration.invalid"):
+            if not email or email.casefold().endswith(placeholder_suffix):
                 raise WorkspaceError(
                     f"user {source_username!r} requires a real delivery email before existing-account reconciliation"
                 )
@@ -1599,7 +1601,7 @@ def import_users(
                     raise WorkspaceError(f"Forgejo user {target_username!r} email was not readable")
                 if (
                     current_email.casefold() != desired_email.casefold()
-                    and not current_email.casefold().endswith("@migration.invalid")
+                    and not current_email.casefold().endswith(placeholder_suffix)
                 ):
                     raise WorkspaceError(
                         f"Forgejo user {target_username!r} has a non-placeholder email; review it manually"
@@ -1627,7 +1629,7 @@ def import_users(
             ):
                 continue
             email = string(item.get("email") or item.get("public_email")).strip()
-            if not email or email.casefold().endswith("@migration.invalid"):
+            if not email or email.casefold().endswith(placeholder_suffix):
                 raise WorkspaceError(
                     f"user {source_username!r} has no real private email in the snapshot; "
                     "generated_per_user requires a real delivery address"
@@ -1703,7 +1705,7 @@ def import_users(
             password = os.environ.get(password_env, "") if password_env else ""
             if not password:
                 raise WorkspaceError(f"user {source_username!r} requires password environment variable {password_env or '<missing>'}")
-            email = email or f"{target_username}@{string(config.get('placeholder_email_domain'), 'migration.invalid')}"
+            email = email or f"{target_username}@{placeholder_domain}"
         body = {
             "username": target_username,
             "login_name": target_username,

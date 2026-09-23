@@ -205,6 +205,15 @@ def test_import_email_reconciliation_flag_preserves_saved_plan() -> None:
         raise AssertionError("import CLI lost the private password handoff path")
 
 
+def test_make_import_forwards_email_reconciliation() -> None:
+    recipe = next(
+        line for line in (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("\t@$(PYTHON) scripts/forge_workspace.py import ")
+    )
+    if "$(RECONCILE_EXISTING_EMAILS)" not in recipe or "--reconcile-existing-emails" not in recipe:
+        raise AssertionError("Make import does not forward the opt-in email reconciliation flag")
+
+
 def test_import_mail_confirmation_is_runtime_only() -> None:
     plan = base_plan()
     plan["surfaces"]["users"] = {  # type: ignore[index]
@@ -725,6 +734,31 @@ def test_generated_password_preflight_rejects_placeholder_address() -> None:
     api_request.assert_not_called()
 
 
+def test_generated_password_preflight_rejects_configured_placeholder_address() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": True,
+        "placeholder_email_domain": "placeholder.example.test",
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@PLACEHOLDER.EXAMPLE.TEST"}]}}}
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot, mail_delivery_confirmed=True)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "no real private email" not in str(exc):
+                raise AssertionError(f"unexpected configured-placeholder preflight error: {exc}") from exc
+        else:
+            raise AssertionError("configured placeholder email passed generated-password delivery preflight")
+    user_probe.assert_not_called()
+    api_request.assert_not_called()
+
+
 def test_managed_user_reconciles_account_flags_when_enabled() -> None:
     plan = base_plan()
     plan["surfaces"]["users"]["preserve_account_flags"] = True  # type: ignore[index]
@@ -780,6 +814,32 @@ def test_existing_email_reconciliation_requires_opt_in_and_readback() -> None:
         or result.get("credential_delivery") != "none"
     ):
         raise AssertionError(f"existing email reconciliation was not recorded: {result!r}")
+
+
+def test_existing_email_reconciliation_uses_configured_placeholder_domain() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"].update({  # type: ignore[index]
+        "reconcile_existing_emails": True,
+        "placeholder_email_domain": "placeholder.example.test",
+    })
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            side_effect=[
+                (200, {"login": "alice", "email": "alice@PLACEHOLDER.EXAMPLE.TEST"}),
+                (200, {"login": "alice", "email": "alice@example.test"}),
+            ],
+        ),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    patch_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("PATCH", "admin/users/alice")]
+    if len(patch_calls) != 1 or patch_calls[0].kwargs.get("body") != {"email": "alice@example.test"}:
+        raise AssertionError(f"configured placeholder email was not reconciled: {patch_calls!r}")
+    if result.get("emails_updated") != 1 or result.get("verified") is not True:
+        raise AssertionError(f"configured placeholder reconciliation was not verified: {result!r}")
 
 
 def test_existing_email_reconciliation_refuses_real_address_before_mutation() -> None:
@@ -1689,6 +1749,7 @@ def main() -> int:
     test_export_requires_gitlab_token_before_discovery()
     test_import_and_audit_require_forgejo_token()
     test_import_email_reconciliation_flag_preserves_saved_plan()
+    test_make_import_forwards_email_reconciliation()
     test_import_mail_confirmation_is_runtime_only()
     test_membership_only_users_are_hydrated_before_email_export()
     test_redaction_and_destination_url()
@@ -1707,8 +1768,10 @@ def main() -> int:
     test_generated_password_mail_requires_confirmation_before_destination_access()
     test_generated_password_preflight_fails_before_destination_access()
     test_generated_password_preflight_rejects_placeholder_address()
+    test_generated_password_preflight_rejects_configured_placeholder_address()
     test_managed_user_reconciles_account_flags_when_enabled()
     test_existing_email_reconciliation_requires_opt_in_and_readback()
+    test_existing_email_reconciliation_uses_configured_placeholder_domain()
     test_existing_email_reconciliation_refuses_real_address_before_mutation()
     test_existing_email_reconciliation_preflights_all_users()
     test_excluded_system_user_is_not_created()
