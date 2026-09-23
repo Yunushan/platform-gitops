@@ -270,7 +270,8 @@ python3 scripts/forge_workspace.py issue-existing-passwords \
   --import-proof private/migrations/proof/workspace-import.json \
   --password-file private/migrations/proof/existing-user-passwords.json
 
-# Only after reviewing the selected-account and admin counts, run deliberately:
+# Only after reviewing the selected accounts in the private snapshot and the
+# read-only user audit, run deliberately:
 python3 scripts/forge_workspace.py issue-existing-passwords \
   private/migrations/gitlab-to-forgejo.workspace.json \
   --snapshot private/migrations/proof/workspace-snapshot.json \

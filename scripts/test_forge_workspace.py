@@ -828,6 +828,26 @@ def test_existing_password_cli_requires_explicit_reset_confirmation() -> None:
     issue.assert_not_called()
 
 
+def test_existing_password_cli_does_not_log_credential_result() -> None:
+    args = workspace.parse_args([
+        "issue-existing-passwords", "plan.json", "--snapshot", "snapshot.json",
+        "--import-proof", "import.json", "--password-file", "private/handoff.json",
+        "--apply", "--confirm-reset-existing-users",
+    ])
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=base_plan()),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "require_completed_import_proof"),
+        mock.patch.object(workspace, "issue_existing_user_passwords", return_value={"password": "synthetic-secret"}) as issue,
+        mock.patch("builtins.print") as printer,
+    ):
+        assert args.handler(args) == 0
+    issue.assert_called_once()
+    if "synthetic-secret" in str(printer.call_args_list) or "handoff.json" in str(printer.call_args_list):
+        raise AssertionError("credential CLI logged a handoff value or private path")
+
+
 def test_generated_password_mail_requires_confirmation_before_destination_access() -> None:
     plan = base_plan()
     plan["surfaces"]["users"] = {  # type: ignore[index]
@@ -1945,6 +1965,7 @@ def main() -> int:
     test_existing_password_issuance_resumes_same_private_passwords()
     test_existing_password_resume_rejects_changed_snapshot()
     test_existing_password_cli_requires_explicit_reset_confirmation()
+    test_existing_password_cli_does_not_log_credential_result()
     test_generated_password_mail_requires_confirmation_before_destination_access()
     test_generated_password_preflight_fails_before_destination_access()
     test_generated_password_preflight_rejects_placeholder_address()

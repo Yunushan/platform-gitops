@@ -3838,7 +3838,7 @@ def command_issue_existing_passwords(args: argparse.Namespace) -> int:
     destination = endpoint(plan, "destination", "forgejo")
     if not os.environ.get(destination.token_env, "").strip():
         raise WorkspaceError(f"Forgejo credential issuance requires {destination.token_env} to be set")
-    result = issue_existing_user_passwords(
+    issue_existing_user_passwords(
         plan,
         destination,
         snapshot,
@@ -3847,8 +3847,11 @@ def command_issue_existing_passwords(args: argparse.Namespace) -> int:
         resume=args.resume,
         allow_admin_accounts=args.allow_admin_accounts,
     )
-    # Never print the handoff path, usernames, email addresses, or passwords.
-    print(json.dumps(result, indent=2, sort_keys=True))
+    # Do not serialize a return value from a function that handles passwords.
+    if args.apply:
+        print("Existing-user credential issuance completed; deliver the private handoff securely and verify logins.")
+    else:
+        print("Existing-user credential preflight passed; no accounts or files were changed.")
     return 0
 
 
