@@ -38,6 +38,21 @@ def load_renderer():
     return module
 
 
+def test_render_result_omits_private_paths(renderer) -> None:
+    sensitive_path = "private/company-host/secret-token-values.yaml"
+    for changed in ([], [sensitive_path]):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            renderer.report_render_result(changed)
+        text = output.getvalue()
+        if sensitive_path in text or "secret-token" in text:
+            raise AssertionError("render summary exposed a private path")
+        if changed and text != "Rendered private platform values.\n":
+            raise AssertionError("render summary did not report an update")
+        if not changed and text != "Private platform values already rendered.\n":
+            raise AssertionError("render summary did not report an unchanged profile")
+
+
 def load_checker():
     spec = importlib.util.spec_from_file_location("check_gitops_profile", CHECKER_PATH)
     if spec is None or spec.loader is None:
@@ -1057,6 +1072,7 @@ def test_forgejo_config_env_migration(renderer) -> None:
 
 def main() -> int:
     renderer = load_renderer()
+    test_render_result_omits_private_paths(renderer)
     test_forgejo_config_env_migration(renderer)
     test_forgejo_storage_bindings(renderer)
     checker = load_checker()

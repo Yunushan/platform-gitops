@@ -850,20 +850,21 @@ def reconcile_postgres_certificate_contract(
         time.sleep(min(POSTGRES_CERTIFICATE_REPAIR_DELAY_SECONDS, remaining))
 
     status_ca, status_tls = postgres_status_certificate_refs(current)
+    # The status fields are Kubernetes Secret references. Never include their
+    # values (or collected pod diagnostics) in command output on failure.
+    if (status_ca, status_tls) != (expected, expected):
+        fail(
+            "forgejo-postgres-certificate-contract-timeout",
+            "CloudNativePG certificate references did not converge before the "
+            "repair deadline. Inspect the cluster certificate status privately.",
+        )
     fail(
         "forgejo-postgres-certificate-contract-timeout",
-        f"CloudNativePG did not serve a PostgreSQL STARTTLS certificate "
-        f"verified by {POSTGRES_NAMESPACE}/{expected} within "
-        f"{POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS}s.\n"
-        f"CNPG status: serverCASecret={status_ca or 'unset'} "
-        f"serverTLSSecret={status_tls or 'unset'}.\n"
-        "The certificate probe uses a localhost-only Kubernetes API port-forward, "
-        "not the node-to-ClusterIP path. Check API/kubelet connectivity and "
-        "pods/portforward RBAC for port-forward failures, the primary listener "
-        "for SSLRequest timeouts, and certificate reload for verification failures. "
-        "This probe does not validate Forgejo's pod-to-Service network path; "
-        "Forgejo initialization, rollout, and ready endpoints are still required.\n"
-        f"{postgres_runtime_diagnostics()}",
+        "CloudNativePG certificate references converged, but the PostgreSQL "
+        "STARTTLS probe did not verify before the repair deadline. Check "
+        "API/kubelet connectivity, port-forward RBAC, the primary listener, "
+        "and certificate reload. The probe does not validate Forgejo's "
+        "pod-to-Service network path.",
     )
     return cluster, expected
 
@@ -1698,8 +1699,10 @@ def main() -> int:
         return 0
     except RepairError:
         return 1
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-        print(f"result=fail reason=forgejo-runtime-unexpected-error detail={exc}", file=sys.stderr)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        # Exceptions from external commands can contain credentials or private
+        # paths. The stable reason code is sufficient for routine logs.
+        print("result=fail reason=forgejo-runtime-unexpected-error", file=sys.stderr)
         return 1
 
 

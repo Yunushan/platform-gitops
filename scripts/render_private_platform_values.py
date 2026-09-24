@@ -4846,6 +4846,14 @@ def render_platform_image_integrity(path: Path, inventory: dict[str, str]) -> bo
     return changed
 
 
+def report_render_result(changed: list[str]) -> None:
+    """Report completion without disclosing paths to private configuration."""
+    if changed:
+        print("Rendered private platform values.")
+    else:
+        print("Private platform values already rendered.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inventory", type=Path, default=Path("inventory/hosts.local.ini"))
@@ -5305,12 +5313,7 @@ def main() -> int:
     ):
         changed.append(str(args.platform_image_integrity_policy))
 
-    if changed:
-        print("Rendered private platform values:")
-        for path in changed:
-            print(f"- {path}")
-    else:
-        print("Private platform values already rendered.")
+    report_render_result(changed)
     return 0
 
 
