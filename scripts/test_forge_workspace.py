@@ -214,6 +214,16 @@ def test_make_import_forwards_email_reconciliation() -> None:
         raise AssertionError("Make import does not forward the opt-in email reconciliation flag")
 
 
+def test_make_export_forwards_instance_counts() -> None:
+    recipe = next(
+        line for line in (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("\t@$(PYTHON) scripts/forge_workspace.py export ")
+    )
+    for name in ("USERS", "GROUPS", "PROJECTS"):
+        if f"$(EXPECTED_{name})" not in recipe or f"--expected-{name.lower()}" not in recipe:
+            raise AssertionError(f"Make export does not forward the expected {name.lower()} count")
+
+
 def test_make_import_forwards_password_handoff_resume() -> None:
     recipe = next(
         line for line in (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
@@ -491,6 +501,69 @@ def test_all_available_group_discovery_includes_top_level_groups() -> None:
         raise AssertionError(f"all-available group discovery omitted a top-level group: {result!r}")
     if result[0].get("direct_members") != [{"username": "alice", "access_level": 40}]:
         raise AssertionError("all-available group discovery did not retain direct memberships")
+
+
+def test_instance_wide_export_checks_operator_totals() -> None:
+    plan = base_plan()
+    plan["source"].update({  # type: ignore[index]
+        "group_paths": [],
+        "project_paths": [],
+        "usernames": [],
+        "all_available_groups": True,
+        "all_available_projects": True,
+    })
+    plan["surfaces"] = {  # type: ignore[index]
+        "users": {"mode": "managed", "all_available": True},
+        "groups": {"mode": "managed"},
+        "subgroups": {"mode": "managed", "include_subgroups": True},
+        "projects": {"mode": "managed"},
+    }
+    if not workspace.instance_wide_export(plan):  # type: ignore[arg-type]
+        raise AssertionError("unfiltered all-surface plan did not enable instance-count verification")
+    selective = copy.deepcopy(plan)
+    selective["source"]["project_paths"] = ["team/repo"]  # type: ignore[index]
+    if workspace.instance_wide_export(selective):  # type: ignore[arg-type]
+        raise AssertionError("selective project plan was mistaken for an instance-wide export")
+
+    group = {"id": 1, "full_path": "team", "path": "team", "name": "Team"}
+    user = {"username": "alice"}
+    counts = {"users": 1, "groups": 1, "projects": 0}
+
+    def run_export(expected: dict[str, int] | None) -> dict[str, object]:
+        with (
+            mock.patch.dict("os.environ", {"GITLAB_TOKEN": "test-token"}),
+            mock.patch.object(workspace, "discover_groups", return_value=[group]),
+            mock.patch.object(workspace, "discover_projects", return_value=[]),
+            mock.patch.object(workspace, "discover_users", return_value=[user]),
+        ):
+            return workspace.export_workspace(plan, expected_instance_counts=expected)  # type: ignore[arg-type]
+
+    snapshot = run_export(counts)
+    if snapshot.get("expected_instance_counts") != counts:
+        raise AssertionError("operator-provided totals were not retained in the private snapshot")
+
+    for expected, expected_error in (
+        (None, "requires --expected-users"),
+        ({**counts, "users": 2}, "incomplete GitLab users export"),
+        ({**counts, "groups": 2}, "incomplete GitLab groups export"),
+        ({**counts, "projects": 2}, "incomplete GitLab projects export"),
+        ({"groups": 1}, "must include non-negative"),
+        ({**counts, "groups": -1}, "must include non-negative"),
+    ):
+        try:
+            run_export(expected)
+        except workspace.WorkspaceError as exc:
+            if expected_error not in str(exc):
+                raise AssertionError(f"unexpected instance-count diagnostic: {exc}") from exc
+        else:
+            raise AssertionError(f"instance-wide export ignored {expected_error}")
+
+    args = workspace.parse_args([
+        "export", "plan.json", "--snapshot", "snapshot.json",
+        "--expected-users", "1", "--expected-groups", "1", "--expected-projects", "0",
+    ])
+    if (args.expected_users, args.expected_groups, args.expected_projects) != (1, 1, 0):
+        raise AssertionError("export CLI did not accept instance-wide count expectations")
 
 
 def test_all_available_project_discovery_keeps_archived_and_inherited_projects() -> None:
@@ -2112,6 +2185,7 @@ def main() -> int:
     test_export_requires_gitlab_token_before_discovery()
     test_import_and_audit_require_forgejo_token()
     test_import_email_reconciliation_flag_preserves_saved_plan()
+    test_make_export_forwards_instance_counts()
     test_make_import_forwards_email_reconciliation()
     test_make_import_forwards_password_handoff_resume()
     test_import_password_resume_requires_private_handoff_mode()
@@ -2124,6 +2198,7 @@ def main() -> int:
     test_project_permission_discovery_materializes_invited_group_members()
     test_managed_import_rejects_missing_snapshot_surface_before_mutation()
     test_all_available_group_discovery_includes_top_level_groups()
+    test_instance_wide_export_checks_operator_totals()
     test_all_available_project_discovery_keeps_archived_and_inherited_projects()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()

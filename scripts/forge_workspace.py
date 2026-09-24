@@ -1130,10 +1130,47 @@ def discover_users(
     ]
 
 
-def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
+def instance_wide_export(plan: dict[str, Any]) -> bool:
+    """Identify an unfiltered export that claims to cover the whole GitLab instance."""
+    source = plan["source"]
+    surfaces = plan.get("surfaces") or {}
+    users = surface_config(surfaces.get("users"), "surfaces.users")
+    subgroups = surface_config(surfaces.get("subgroups"), "surfaces.subgroups")
+    return (
+        bool_value(source.get("all_available_groups"))
+        and bool_value(source.get("all_available_projects"))
+        and bool_value(users.get("all_available"))
+        and not source_group_paths(plan)
+        and not source_project_paths(plan)
+        and not source.get("usernames")
+        and all(
+            surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip"
+            for name in ("users", "groups", "subgroups", "projects")
+        )
+        and bool_value(subgroups.get("include_subgroups"), True)
+        and all(users.get(name) is None for name in ("active", "blocked", "external"))
+    )
+
+
+def export_workspace(
+    plan: dict[str, Any], *, expected_instance_counts: dict[str, int] | None = None
+) -> dict[str, Any]:
     source = endpoint(plan, "source", "gitlab")
     if not os.environ.get(source.token_env, "").strip():
         raise WorkspaceError(f"GitLab export requires {source.token_env} to be set")
+    if instance_wide_export(plan):
+        if expected_instance_counts is None:
+            raise WorkspaceError(
+                "instance-wide export requires --expected-users, --expected-groups, and --expected-projects from the GitLab admin dashboard"
+            )
+    elif expected_instance_counts is not None:
+        raise WorkspaceError("--expected-* counts apply only to unfiltered instance-wide exports")
+    if expected_instance_counts is not None:
+        if set(expected_instance_counts) != {"users", "groups", "projects"} or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in expected_instance_counts.values()
+        ):
+            raise WorkspaceError("expected instance counts must include non-negative users, groups, and projects")
     surfaces = plan.get("surfaces") or {}
     groups = discover_groups(source, plan) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("groups", "subgroups", "memberships", "projects", "repositories", "permissions", "rules", "variables", "runners")) else []
     projects = discover_projects(source, plan, groups) if any(surface_config(surfaces.get(name), f"surfaces.{name}")["mode"] != "skip" for name in ("projects", "repositories", "permissions", "rules", "variables", "runners", "ci", "pipelines")) else []
@@ -1225,6 +1262,19 @@ def export_workspace(plan: dict[str, Any]) -> dict[str, Any]:
                 ],
             }
     snapshot["counts"] = {name: len(value.get("items") or []) for name, value in snapshot["surfaces"].items()}
+    if expected_instance_counts is not None:
+        discovered_counts = {
+            "users": len(discovered_users),
+            "groups": len(groups),
+            "projects": len(projects),
+        }
+        for name, expected in expected_instance_counts.items():
+            actual = discovered_counts[name]
+            if actual != expected:
+                raise WorkspaceError(
+                    f"incomplete GitLab {name} export: discovered {actual}, expected {expected}"
+                )
+        snapshot["expected_instance_counts"] = expected_instance_counts
     return snapshot
 
 
@@ -3773,7 +3823,13 @@ def command_validate(args: argparse.Namespace) -> int:
 
 def command_export(args: argparse.Namespace) -> int:
     plan = load_plan(args.plan)
-    result = export_workspace(plan)
+    supplied_counts = {
+        "users": args.expected_users,
+        "groups": args.expected_groups,
+        "projects": args.expected_projects,
+    }
+    expected_counts = supplied_counts if any(value is not None for value in supplied_counts.values()) else None
+    result = export_workspace(plan, expected_instance_counts=expected_counts)
     write_json(args.snapshot, result)
     evidence = proof("export", plan, {"verified": True, "counts": result.get("counts", {})})
     if args.proof:
@@ -3920,6 +3976,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     export.add_argument("plan", type=Path)
     export.add_argument("--snapshot", type=Path, required=True)
     export.add_argument("--proof", type=Path)
+    export.add_argument("--expected-users", type=int)
+    export.add_argument("--expected-groups", type=int)
+    export.add_argument("--expected-projects", type=int)
     export.set_defaults(handler=command_export)
     import_command = subparsers.add_parser("import")
     import_command.add_argument("plan", type=Path)

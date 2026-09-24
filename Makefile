@@ -189,7 +189,7 @@ forge-workspace-validate:
 forge-workspace-export:
 	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/gitlab-to-forgejo.workspace.json is required" >&2; exit 2)
 	@test -n "$(SNAPSHOT)" || (echo "SNAPSHOT=private/migrations/proof/workspace-snapshot.json is required" >&2; exit 2)
-	@$(PYTHON) scripts/forge_workspace.py export "$(PLAN)" --snapshot "$(SNAPSHOT)" $(if $(PROOF),--proof "$(PROOF)",)
+	@$(PYTHON) scripts/forge_workspace.py export "$(PLAN)" --snapshot "$(SNAPSHOT)" $(if $(PROOF),--proof "$(PROOF)",) $(if $(EXPECTED_USERS),--expected-users "$(EXPECTED_USERS)",) $(if $(EXPECTED_GROUPS),--expected-groups "$(EXPECTED_GROUPS)",) $(if $(EXPECTED_PROJECTS),--expected-projects "$(EXPECTED_PROJECTS)",)
 
 forge-workspace-import:
 	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/gitlab-to-forgejo.workspace.json is required" >&2; exit 2)

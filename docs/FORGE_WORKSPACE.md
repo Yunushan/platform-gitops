@@ -217,12 +217,13 @@ opt-in in a public plan or for an internet-facing endpoint.
 make forge-workspace-validate \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json
 
+export GITLAB_MIGRATION_TOKEN='...'
+
 make forge-workspace-export \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
   SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
   PROOF=private/migrations/proof/workspace-export.json
 
-export GITLAB_MIGRATION_TOKEN='...'
 export FORGEJO_ADMIN_TOKEN='...'
 export FORGEJO_IMPORTED_USER_PASSWORD='...'
 export WOODPECKER_ADMIN_TOKEN='...'
@@ -377,9 +378,18 @@ start from
 to the migration token, and the all-project listing includes archived projects
 so repository scope is not silently narrowed. The example deliberately keeps
 exact reconciliation off and leaves bots included so the export is truly broad;
-review the redacted snapshot and change `skip_bots` only when that is your
-intended account policy.
-The GitLab token must be permitted to enumerate users, groups, group members,
+ review the redacted snapshot and change `skip_bots` only when that is your
+ intended account policy.
+For an unfiltered instance-wide export, record the current users, groups, and
+projects totals from the GitLab administrator dashboard and pass them as
+`EXPECTED_USERS`, `EXPECTED_GROUPS`, and `EXPECTED_PROJECTS` to
+`make forge-workspace-export` (or use the corresponding `--expected-*` Python
+flags). All three are required for this scope. The export checks its discovered
+totals against those values before writing a snapshot or success proof. Check
+the dashboard totals again after export; if the source changed during the run,
+repeat the export with fresh totals. Never put instance-specific counts,
+addresses, or credentials in a public plan.
+ The GitLab token must be permitted to enumerate users, groups, group members,
 project members, invited groups, and protected branches. A Forgejo
 administrator token is required for user creation and organization/team
 reconciliation.
