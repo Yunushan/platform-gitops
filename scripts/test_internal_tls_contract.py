@@ -453,13 +453,37 @@ def test_forgejo_postgres_tls_probe() -> None:
                 raise AssertionError("connection refusal was treated as a verified handshake")
 
 
+def test_forgejo_runtime_unexpected_error_hides_exception() -> None:
+    output = io.StringIO()
+    sentinel = "private-credential-sentinel"
+    with mock.patch.object(forgejo_runtime, "KUBECTL", str(FORGEJO_RUNTIME_REPAIR_HELPER)), \
+            mock.patch.object(forgejo_runtime, "KUBECONFIG", str(FORGEJO_RUNTIME_REPAIR_HELPER)), \
+            mock.patch.object(forgejo_runtime.os, "access", return_value=True), \
+            mock.patch.object(forgejo_runtime.shutil, "which", return_value="openssl"), \
+            mock.patch.object(forgejo_runtime, "resource_json", side_effect=OSError(sentinel)), \
+            mock.patch.object(sys, "argv", ["repair_forgejo_runtime.py"]), \
+            contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+        if forgejo_runtime.main() != 1:
+            raise AssertionError("unexpected repair error did not fail closed")
+    if sentinel in output.getvalue():
+        raise AssertionError("unexpected repair error logged private exception details")
+    if "reason=forgejo-runtime-unexpected-error" not in output.getvalue():
+        raise AssertionError("unexpected repair error lost its safe reason code")
+
+
 def test_forgejo_postgres_probe_retry_deadline() -> None:
     expected = forgejo_runtime.POSTGRES_SERVER_CERTIFICATE_SECRET
-    cluster = {"spec": {"certificates": {
-        "serverCASecret": expected, "serverTLSSecret": expected,
-    }}}
     ca_path = Path("probe-ca.crt")
-    for recover in (True, False):
+    for recover, status_matches in ((True, False), (False, False), (False, True)):
+        status_ref = expected if status_matches else "sensitive-status-ref-test"
+        cluster = {
+            "spec": {"certificates": {
+                "serverCASecret": expected, "serverTLSSecret": expected,
+            }},
+            "status": {"certificates": {
+                "serverCASecret": status_ref, "serverTLSSecret": status_ref,
+            }},
+        }
         clock = [0.0]
         attempts: list[float] = []
 
@@ -478,7 +502,7 @@ def test_forgejo_postgres_probe_retry_deadline() -> None:
                                return_value=(ca_path, Path("leaf.crt"))), \
                 mock.patch.object(forgejo_runtime, "postgres_cluster", return_value=cluster), \
                 mock.patch.object(forgejo_runtime, "postgres_server_handshake_verifies", side_effect=probe), \
-                mock.patch.object(forgejo_runtime, "postgres_runtime_diagnostics", return_value="probe-diagnostics"), \
+                mock.patch.object(forgejo_runtime, "postgres_runtime_diagnostics", return_value="sensitive-probe-diagnostics-test") as diagnostics, \
                 mock.patch.object(forgejo_runtime, "POSTGRES_CERTIFICATE_REPAIR_TIMEOUT_SECONDS", 23), \
                 mock.patch.object(forgejo_runtime.time, "monotonic", side_effect=lambda: clock[0]), \
                 mock.patch.object(forgejo_runtime.time, "sleep", side_effect=sleep), \
@@ -493,8 +517,18 @@ def test_forgejo_postgres_probe_retry_deadline() -> None:
                     raise AssertionError("repair falsely succeeded or failed to recover")
         if attempts != [0.0, 15.0] or clock[0] != 23:
             raise AssertionError("retry loop exceeded its remaining deadline")
-        if not recover and "probe-diagnostics" not in output.getvalue():
-            raise AssertionError("exhausted retry did not include PostgreSQL diagnostics")
+        if not recover:
+            if "reason=forgejo-postgres-certificate-contract-timeout" not in output.getvalue():
+                raise AssertionError("exhausted retry lost its failure classification")
+            if "sensitive-status-ref-test" in output.getvalue() or "sensitive-probe-diagnostics-test" in output.getvalue():
+                raise AssertionError("exhausted retry logged private certificate metadata")
+            expected_detail = (
+                "certificate references converged" if status_matches
+                else "certificate references did not converge"
+            )
+            if expected_detail not in output.getvalue():
+                raise AssertionError("exhausted retry lost its safe failure guidance")
+            diagnostics.assert_not_called()
 
     with mock.patch.object(forgejo_runtime, "run_bounded") as runner:
         runner.return_value = subprocess.CompletedProcess([], 0, '{"spec":{}}', "")
@@ -1674,6 +1708,7 @@ gitea:
     test_forgejo_runtime_storage_preflight()
     test_forgejo_config_environment_runtime()
     test_forgejo_chart_dependency_env_precedence()
+    test_forgejo_runtime_unexpected_error_hides_exception()
     test_forgejo_postgres_tls_probe()
     test_forgejo_postgres_probe_retry_deadline()
     test_forgejo_postgres_tunnel_failures()
