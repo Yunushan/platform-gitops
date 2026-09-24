@@ -541,6 +541,52 @@ def test_instance_wide_export_checks_operator_totals() -> None:
     snapshot = run_export(counts)
     if snapshot.get("expected_instance_counts") != counts:
         raise AssertionError("operator-provided totals were not retained in the private snapshot")
+    workspace.validate_instance_wide_snapshot_counts(plan, snapshot)  # type: ignore[arg-type]
+
+    for altered, expected_error in (
+        ({key: value for key, value in snapshot.items() if key != "expected_instance_counts"}, "requires a new export"),
+        ({**snapshot, "expected_instance_counts": {**counts, "groups": 2}}, "groups snapshot count changed"),
+        ({**snapshot, "expected_instance_counts": {**counts, "users": 2}}, "users snapshot count changed"),
+        ({**snapshot, "expected_instance_counts": {**counts, "projects": 1}}, "projects snapshot count changed"),
+        ({**snapshot, "expected_instance_counts": {**counts, "groups": True}}, "requires a new export"),
+    ):
+        try:
+            workspace.validate_instance_wide_snapshot_counts(plan, altered)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if expected_error not in str(exc):
+                raise AssertionError(f"unexpected import count diagnostic: {exc}") from exc
+        else:
+            raise AssertionError(f"instance-wide import accepted {expected_error}")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        work_dir = Path(temp_dir) / "untouched"
+        legacy = {key: value for key, value in snapshot.items() if key != "expected_instance_counts"}
+        with mock.patch.object(workspace, "endpoint", side_effect=AssertionError("destination accessed")):
+            try:
+                workspace.import_workspace(plan, legacy, work_dir)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "requires a new export" not in str(exc):
+                    raise AssertionError(f"unexpected legacy import diagnostic: {exc}") from exc
+            else:
+                raise AssertionError("instance-wide import accepted a legacy snapshot")
+        args = workspace.parse_args([
+            "import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", str(work_dir),
+        ])
+        with (
+            mock.patch.object(workspace, "load_plan", return_value=plan),
+            mock.patch.object(workspace, "require_snapshot", return_value=legacy),
+            mock.patch.object(workspace, "endpoint", side_effect=AssertionError("destination accessed")),
+        ):
+            try:
+                workspace.command_import(args)
+            except workspace.WorkspaceError as exc:
+                if "requires a new export" not in str(exc):
+                    raise AssertionError(f"unexpected CLI legacy import diagnostic: {exc}") from exc
+            else:
+                raise AssertionError("import command accepted a legacy instance-wide snapshot")
+        if work_dir.exists():
+            raise AssertionError("legacy snapshot created import work files before preflight")
+    workspace.validate_instance_wide_snapshot_counts(selective, {})  # type: ignore[arg-type]
 
     for expected, expected_error in (
         (None, "requires --expected-users"),

@@ -1294,6 +1294,32 @@ def require_snapshot(plan: dict[str, Any], path: Path) -> dict[str, Any]:
     return snapshot
 
 
+def validate_instance_wide_snapshot_counts(plan: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    """Reject full-instance snapshots lacking matching export counts before writes."""
+    if not instance_wide_export(plan):
+        return
+    expected = snapshot.get("expected_instance_counts")
+    if not isinstance(expected, dict) or set(expected) != {"users", "groups", "projects"} or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in expected.values()
+    ):
+        raise WorkspaceError(
+            "instance-wide import requires a new export with --expected-users, "
+            "--expected-groups, and --expected-projects from the GitLab admin dashboard"
+        )
+    discovered = {
+        "users": len(snapshot_surface_items(snapshot, "users")),
+        "groups": len(snapshot_surface_items(snapshot, "groups"))
+        + len(snapshot_surface_items(snapshot, "subgroups")),
+        "projects": len(snapshot_surface_items(snapshot, "projects")),
+    }
+    for name, count in discovered.items():
+        if count != expected[name]:
+            raise WorkspaceError(
+                f"instance-wide {name} snapshot count changed: found {count}, expected {expected[name]}; re-export before import"
+            )
+
+
 def snapshot_surface_items(
     snapshot: dict[str, Any],
     surface: str,
@@ -3740,8 +3766,9 @@ def import_workspace(
     mail_delivery_confirmed: bool = False,
     resume_password_handoff: bool = False,
 ) -> dict[str, Any]:
-    destination = endpoint(plan, "destination", "forgejo")
+    validate_instance_wide_snapshot_counts(plan, snapshot)
     validate_import_snapshot_contract(plan, snapshot)
+    destination = endpoint(plan, "destination", "forgejo")
     work_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {}
     user_result: dict[str, Any] | None = None
@@ -3841,6 +3868,7 @@ def command_export(args: argparse.Namespace) -> int:
 def command_import(args: argparse.Namespace) -> int:
     plan = load_plan(args.plan)
     snapshot = require_snapshot(plan, args.snapshot)
+    validate_instance_wide_snapshot_counts(plan, snapshot)
     destination = endpoint(plan, "destination", "forgejo")
     if not os.environ.get(destination.token_env, "").strip():
         raise WorkspaceError(f"Forgejo import requires {destination.token_env} to be set")

@@ -378,8 +378,8 @@ start from
 to the migration token, and the all-project listing includes archived projects
 so repository scope is not silently narrowed. The example deliberately keeps
 exact reconciliation off and leaves bots included so the export is truly broad;
- review the redacted snapshot and change `skip_bots` only when that is your
- intended account policy.
+review the redacted snapshot and change `skip_bots` only when that is your
+intended account policy.
 For an unfiltered instance-wide export, record the current users, groups, and
 projects totals from the GitLab administrator dashboard and pass them as
 `EXPECTED_USERS`, `EXPECTED_GROUPS`, and `EXPECTED_PROJECTS` to
@@ -389,12 +389,17 @@ totals against those values before writing a snapshot or success proof. Check
 the dashboard totals again after export; if the source changed during the run,
 repeat the export with fresh totals. Never put instance-specific counts,
 addresses, or credentials in a public plan.
- The GitLab token must be permitted to enumerate users, groups, group members,
+The GitLab token must be permitted to enumerate users, groups, group members,
 project members, invited groups, and protected branches. A Forgejo
 administrator token is required for user creation and organization/team
 reconciliation.
 
 Before destination changes begin, import validates that every selected managed
 surface is present in the snapshot and that users, groups, projects, and
-permissions are non-empty. A truncated or hand-edited export therefore stops
-before creating partial users, teams, or repository grants.
+permissions are non-empty. An instance-wide import also requires the export's
+operator-supplied dashboard totals and checks them against the snapshot's
+users, combined groups and subgroups, and projects. Older snapshots without
+those totals must be re-exported before import; a truncated or hand-edited
+snapshot with inconsistent counts stops before creating partial users, teams,
+or repository grants. Recheck the live dashboard before import; matching
+snapshot counts cannot prove that an active GitLab source has not changed.
