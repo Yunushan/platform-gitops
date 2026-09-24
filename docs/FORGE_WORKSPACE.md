@@ -48,14 +48,38 @@ from becoming an instance-wide import.
   marked to change the password.
   Every managed user is read back by its mapped login before the import can
   report success.
-  For migrations that intentionally issue new credentials, set
+  For migrations that intentionally let users choose new passwords, set
   `password_strategy` to `generated_per_user`, enable
   `include_email_for_account_creation`, and set `send_notify: true`. The
   importer generates a different random password for each newly created user,
-  sends it through Forgejo's configured mail delivery, and never writes the
-  password to stdout, JSON, or proof. Existing Forgejo users are not silently
+  requests a Forgejo new-account notification, and never writes the
+  password to stdout or proof. In Forgejo v15.0.6, the
+  [welcome-mail template](https://codeberg.org/forgejo/forgejo/src/tag/v15.0.6/templates/mail/auth/register_notify.tmpl)
+  contains a link to the ordinary password-recovery page, **not** the generated
+  password or a one-time setup token. New users must request recovery and
+  choose their own password before they can sign in. Verify both receipt of
+  the welcome email and a completed password-recovery/sign-in test on the
+  installed Forgejo version. This mode requires `--confirm-mail-delivery` at
+  import time; the flag is an operator attestation, not an automated mail or
+  sign-in check. Do not set it while the mailer is disabled or the recovery
+  flow has not been tested. An API success only proves that the account was
+  created and read back; `credential_delivery` reports a notification request,
+  and `login_verified` remains false. Existing Forgejo users are not silently
   password-reset by this mode; handle those accounts through a separately
   confirmed password-reset procedure if required.
+  Before creating users with generated passwords, the importer rejects missing
+  or delivery addresses in the configured placeholder domain (default
+  `migration.invalid`). If existing Forgejo accounts
+  still have placeholder addresses, the opt-in import flag
+  `--reconcile-existing-emails` (or `RECONCILE_EXISTING_EMAILS=1` with Make)
+  preflights every selected user, changes only
+  placeholder addresses to the private snapshot's addresses, and reads each
+  change back. It refuses to overwrite a different real address. This flag
+  does not reset an existing password or send that user a credential. Check
+  mail delivery and take a Forgejo backup before running a live import. Once
+  their real addresses are reconciled and mail delivery is verified, existing
+  users can use Forgejo's password-recovery flow to choose a new password;
+  this importer does not trigger that flow or prove that users completed it.
   If mail delivery is intentionally unavailable, run the import with
   `--no-send-notify --password-file private/...`. This writes only the newly
   generated credentials to an atomically replaced, private-permission file
@@ -193,12 +217,13 @@ opt-in in a public plan or for an internet-facing endpoint.
 make forge-workspace-validate \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json
 
+export GITLAB_MIGRATION_TOKEN='...'
+
 make forge-workspace-export \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
   SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
   PROOF=private/migrations/proof/workspace-export.json
 
-export GITLAB_MIGRATION_TOKEN='...'
 export FORGEJO_ADMIN_TOKEN='...'
 export FORGEJO_IMPORTED_USER_PASSWORD='...'
 export WOODPECKER_ADMIN_TOKEN='...'
@@ -207,7 +232,8 @@ make forge-workspace-import \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
   SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
   WORK_DIR=private/migrations/workspace \
-  PROOF=private/migrations/proof/workspace-import.json
+  PROOF=private/migrations/proof/workspace-import.json \
+  CONFIRM_MAIL_DELIVERY=1 # only after a live mailer check and received test message
 
 # If Forgejo mail is intentionally unavailable, use a private local handoff:
 make forge-workspace-import \
@@ -218,16 +244,91 @@ make forge-workspace-import \
   NO_SEND_NOTIFY=1 \
   PASSWORD_FILE=private/migrations/proof/initial-user-passwords.json
 
+# If an earlier import stopped after creating some users, preserve and reuse
+# that *same* private file on the retry (after fixing the original failure):
+make forge-workspace-import \
+  PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
+  SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
+  WORK_DIR=private/migrations/workspace \
+  PROOF=private/migrations/proof/workspace-import.json \
+  NO_SEND_NOTIFY=1 \
+  PASSWORD_FILE=private/migrations/proof/initial-user-passwords.json \
+  RESUME_PASSWORD_FILE=1
+
+# Optional on a separately reviewed retry with verified private snapshot emails:
+# add RECONCILE_EXISTING_EMAILS=1 to the import command above to replace
+# existing placeholder addresses; it does not send mail or reset passwords.
+
 make forge-workspace-audit-users \
   PLAN=private/migrations/gitlab-to-forgejo.workspace.json \
   SNAPSHOT=private/migrations/proof/workspace-snapshot.json \
   PROOF=private/migrations/proof/user-audit.json
 ```
 
+`RESUME_PASSWORD_FILE=1` checks every recorded username and email against the
+selected snapshot before contacting Forgejo. A missing account with a recorded
+password is created using that same password; a missing account without an
+entry gets a new password recorded *before* the API request. Existing accounts
+are not reset. Keep the original handoff private and backed up. A mismatched
+file stops the import; do not rename, delete, or overwrite it just to bypass
+the check. The retry does not resolve a full Forgejo volume: expand storage
+and verify free space before resuming repository import.
+
+### Existing accounts without working passwords
+
+The import's private password handoff covers **newly created** users only. It
+does not give an existing Forgejo account a new password. When the operator
+has approved replacement passwords and an out-of-band delivery process, use
+the separate command below **only after** a complete, verified workspace
+import and a Forgejo backup. This is not a substitute for expanding a full
+Forgejo volume or finishing the repository/permission import.
+
+```bash
+# Read-only preflight; no password file or account change:
+python3 scripts/forge_workspace.py issue-existing-passwords \
+  private/migrations/gitlab-to-forgejo.workspace.json \
+  --snapshot private/migrations/proof/workspace-snapshot.json \
+  --import-proof private/migrations/proof/workspace-import.json \
+  --password-file private/migrations/proof/existing-user-passwords.json
+
+# Only after reviewing the selected accounts in the private snapshot and the
+# read-only user audit, run deliberately:
+python3 scripts/forge_workspace.py issue-existing-passwords \
+  private/migrations/gitlab-to-forgejo.workspace.json \
+  --snapshot private/migrations/proof/workspace-snapshot.json \
+  --import-proof private/migrations/proof/workspace-import.json \
+  --password-file private/migrations/proof/existing-user-passwords.json \
+  --apply --confirm-reset-existing-users
+```
+
+The command preflights every selected Forgejo account before any reset. If
+selected accounts are administrators, it stops unless the operator explicitly
+adds `--allow-admin-accounts`. An apply run replaces those accounts' old
+Forgejo passwords with unique generated passwords and requires a change on
+first login. It never sends mail. The complete handoff is written under the
+ignored `private/` directory with private permissions **before** the first API
+update. If interrupted, rerun the same apply command with `--resume` to reuse
+the already recorded passwords; do not use a fresh handoff path. Deliver the
+completed file through a secure, approved channel and remove it after handoff.
+Successful API responses do **not** prove users received the credentials or
+could log in; verify onboarding separately. Never commit or paste this file.
+
+Repository import uses a fresh scratch directory under `WORK_DIR` for each
+repository and removes that directory after the repository operation, including
+on a Python exception. Allow enough controller disk space for the largest
+repository and its LFS/verification clones, not the sum of all repositories.
+Scratch mirrors left by older importer runs are **not** removed automatically;
+review them separately before any cleanup. Forgejo's persistent volume must
+still be sized for the full destination data set and its storage replicas.
+
 `audit-users` is read-only. It verifies target account presence and, when
-enabled, active/blocked and administrator flags; it always reports passwords
-as unverified. Do not treat a successful account audit as proof that an
-existing GitLab password works in Forgejo.
+enabled, active/blocked and administrator flags. It also reports aggregate
+email mismatches or unreadable addresses without printing addresses. It always
+reports passwords as unverified. Do not treat a successful account audit as
+proof that an existing GitLab password works in Forgejo. The source export,
+destination import, and user audit require their respective API token
+environment variables to be set; missing tokens fail before discovery or
+mutation.
 
 For a complete users/groups/permissions/rules transfer, enable the
 `memberships`, `permissions`, and `rules` surfaces in the plan and set
@@ -279,6 +380,15 @@ so repository scope is not silently narrowed. The example deliberately keeps
 exact reconciliation off and leaves bots included so the export is truly broad;
 review the redacted snapshot and change `skip_bots` only when that is your
 intended account policy.
+For an unfiltered instance-wide export, record the current users, groups, and
+projects totals from the GitLab administrator dashboard and pass them as
+`EXPECTED_USERS`, `EXPECTED_GROUPS`, and `EXPECTED_PROJECTS` to
+`make forge-workspace-export` (or use the corresponding `--expected-*` Python
+flags). All three are required for this scope. The export checks its discovered
+totals against those values before writing a snapshot or success proof. Check
+the dashboard totals again after export; if the source changed during the run,
+repeat the export with fresh totals. Never put instance-specific counts,
+addresses, or credentials in a public plan.
 The GitLab token must be permitted to enumerate users, groups, group members,
 project members, invited groups, and protected branches. A Forgejo
 administrator token is required for user creation and organization/team
@@ -286,5 +396,10 @@ reconciliation.
 
 Before destination changes begin, import validates that every selected managed
 surface is present in the snapshot and that users, groups, projects, and
-permissions are non-empty. A truncated or hand-edited export therefore stops
-before creating partial users, teams, or repository grants.
+permissions are non-empty. An instance-wide import also requires the export's
+operator-supplied dashboard totals and checks them against the snapshot's
+users, combined groups and subgroups, and projects. Older snapshots without
+those totals must be re-exported before import; a truncated or hand-edited
+snapshot with inconsistent counts stops before creating partial users, teams,
+or repository grants. Recheck the live dashboard before import; matching
+snapshot counts cannot prove that an active GitLab source has not changed.

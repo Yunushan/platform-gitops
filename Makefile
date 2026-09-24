@@ -189,13 +189,13 @@ forge-workspace-validate:
 forge-workspace-export:
 	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/gitlab-to-forgejo.workspace.json is required" >&2; exit 2)
 	@test -n "$(SNAPSHOT)" || (echo "SNAPSHOT=private/migrations/proof/workspace-snapshot.json is required" >&2; exit 2)
-	@$(PYTHON) scripts/forge_workspace.py export "$(PLAN)" --snapshot "$(SNAPSHOT)" $(if $(PROOF),--proof "$(PROOF)",)
+	@$(PYTHON) scripts/forge_workspace.py export "$(PLAN)" --snapshot "$(SNAPSHOT)" $(if $(PROOF),--proof "$(PROOF)",) $(if $(EXPECTED_USERS),--expected-users "$(EXPECTED_USERS)",) $(if $(EXPECTED_GROUPS),--expected-groups "$(EXPECTED_GROUPS)",) $(if $(EXPECTED_PROJECTS),--expected-projects "$(EXPECTED_PROJECTS)",)
 
 forge-workspace-import:
 	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/gitlab-to-forgejo.workspace.json is required" >&2; exit 2)
 	@test -n "$(SNAPSHOT)" || (echo "SNAPSHOT=private/migrations/proof/workspace-snapshot.json is required" >&2; exit 2)
 	@test -n "$(WORK_DIR)" || (echo "WORK_DIR=private/migrations/workspace is required" >&2; exit 2)
-	@$(PYTHON) scripts/forge_workspace.py import "$(PLAN)" --snapshot "$(SNAPSHOT)" --work-dir "$(WORK_DIR)" $(if $(PROOF),--proof "$(PROOF)",) $(if $(filter 1 true yes,$(NO_SEND_NOTIFY)),--no-send-notify,) $(if $(PASSWORD_FILE),--password-file "$(PASSWORD_FILE)",)
+	@$(PYTHON) scripts/forge_workspace.py import "$(PLAN)" --snapshot "$(SNAPSHOT)" --work-dir "$(WORK_DIR)" $(if $(PROOF),--proof "$(PROOF)",) $(if $(filter 1 true yes,$(CONFIRM_MAIL_DELIVERY)),--confirm-mail-delivery,) $(if $(filter 1 true yes,$(RECONCILE_EXISTING_EMAILS)),--reconcile-existing-emails,) $(if $(filter 1 true yes,$(NO_SEND_NOTIFY)),--no-send-notify,) $(if $(PASSWORD_FILE),--password-file "$(PASSWORD_FILE)",) $(if $(filter 1 true yes,$(RESUME_PASSWORD_FILE)),--resume-password-file,)
 
 forge-workspace-audit-users:
 	@test -n "$(PLAN)" || (echo "PLAN=private/migrations/gitlab-to-forgejo.workspace.json is required" >&2; exit 2)

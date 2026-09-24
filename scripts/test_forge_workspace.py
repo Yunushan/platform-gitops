@@ -130,6 +130,193 @@ def test_selective_plan_contract() -> None:
     expect_error(invalid_exclusions, "excluded_usernames must contain non-empty strings")
 
 
+def test_export_requires_gitlab_token_before_discovery() -> None:
+    plan = base_plan()
+    with mock.patch.dict("os.environ", {"GITLAB_TOKEN": ""}):
+        with mock.patch.object(workspace, "discover_groups") as discover_groups:
+            try:
+                workspace.export_workspace(plan)
+            except workspace.WorkspaceError as exc:
+                assert "GITLAB_TOKEN" in str(exc)
+            else:
+                raise AssertionError("missing GitLab token must block export")
+            discover_groups.assert_not_called()
+
+
+def test_import_and_audit_require_forgejo_token() -> None:
+    plan = base_plan()
+    for argv, operation in (
+        (["import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work"], "import"),
+        (["audit-users", "plan.json", "--snapshot", "snapshot.json"], "audit"),
+    ):
+        args = workspace.parse_args(argv)
+        with (
+            mock.patch.dict("os.environ", {"FORGEJO_TOKEN": ""}),
+            mock.patch.object(workspace, "load_plan", return_value=plan),
+            mock.patch.object(workspace, "require_snapshot", return_value={}),
+            mock.patch.object(workspace, "import_workspace") as importer,
+            mock.patch.object(workspace, "audit_users") as auditor,
+        ):
+            try:
+                args.handler(args)
+            except workspace.WorkspaceError as exc:
+                if "FORGEJO_TOKEN" not in str(exc):
+                    raise AssertionError(f"unexpected {operation} credential error: {exc}") from exc
+            else:
+                raise AssertionError(f"{operation} accepted an absent Forgejo token")
+            importer.assert_not_called()
+            auditor.assert_not_called()
+
+
+def test_import_email_reconciliation_flag_preserves_saved_plan() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "send_notify": True,
+    }
+    original = copy.deepcopy(plan)
+    args = workspace.parse_args(
+        [
+            "import",
+            "plan.json",
+            "--snapshot", "snapshot.json",
+            "--work-dir", "work",
+            "--reconcile-existing-emails",
+            "--no-send-notify",
+            "--password-file", "private/migrations/proof/new-passwords.json",
+        ]
+    )
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace", return_value={"verified": True, "surfaces": {}}) as importer,
+        mock.patch("builtins.print"),
+    ):
+        assert args.handler(args) == 0
+    runtime_plan = importer.call_args.args[0]
+    runtime_users = runtime_plan["surfaces"]["users"]
+    if runtime_users.get("reconcile_existing_emails") is not True or runtime_users.get("send_notify") is not False:
+        raise AssertionError("import CLI did not pass both explicit user overrides")
+    if plan != original or runtime_plan is plan:
+        raise AssertionError("import CLI mutated the saved plan instead of a runtime copy")
+    if importer.call_args.kwargs.get("password_output") != args.password_file:
+        raise AssertionError("import CLI lost the private password handoff path")
+
+
+def test_make_import_forwards_email_reconciliation() -> None:
+    recipe = next(
+        line for line in (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("\t@$(PYTHON) scripts/forge_workspace.py import ")
+    )
+    if "$(RECONCILE_EXISTING_EMAILS)" not in recipe or "--reconcile-existing-emails" not in recipe:
+        raise AssertionError("Make import does not forward the opt-in email reconciliation flag")
+
+
+def test_make_export_forwards_instance_counts() -> None:
+    recipe = next(
+        line for line in (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("\t@$(PYTHON) scripts/forge_workspace.py export ")
+    )
+    for name in ("USERS", "GROUPS", "PROJECTS"):
+        if f"$(EXPECTED_{name})" not in recipe or f"--expected-{name.lower()}" not in recipe:
+            raise AssertionError(f"Make export does not forward the expected {name.lower()} count")
+
+
+def test_make_import_forwards_password_handoff_resume() -> None:
+    recipe = next(
+        line for line in (ROOT / "Makefile").read_text(encoding="utf-8").splitlines()
+        if line.startswith("\t@$(PYTHON) scripts/forge_workspace.py import ")
+    )
+    if "$(RESUME_PASSWORD_FILE)" not in recipe or "--resume-password-file" not in recipe:
+        raise AssertionError("Make import does not forward the explicit private handoff resume flag")
+
+
+def test_import_password_resume_requires_private_handoff_mode() -> None:
+    plan = base_plan()
+    args = workspace.parse_args(
+        ["import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work", "--resume-password-file"]
+    )
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace") as importer,
+    ):
+        try:
+            args.handler(args)
+        except workspace.WorkspaceError as exc:
+            if "requires --no-send-notify" not in str(exc):
+                raise AssertionError(f"unexpected resume mode error: {exc}") from exc
+        else:
+            raise AssertionError("password resume accepted without a private handoff")
+        importer.assert_not_called()
+
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    args = workspace.parse_args([
+        "import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work",
+        "--no-send-notify", "--password-file", "private/initial-passwords.json", "--resume-password-file",
+    ])
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace", return_value={"verified": True, "surfaces": {}}) as importer,
+        mock.patch("builtins.print"),
+    ):
+        if args.handler(args) != 0:
+            raise AssertionError("valid private handoff resume was rejected")
+    if importer.call_args.kwargs.get("resume_password_handoff") is not True:
+        raise AssertionError("import CLI lost the explicit private handoff resume flag")
+
+
+def test_import_mail_confirmation_is_runtime_only() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "send_notify": True,
+    }
+    original = copy.deepcopy(plan)
+    args = workspace.parse_args(
+        ["import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work", "--confirm-mail-delivery"]
+    )
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace", return_value={"verified": True, "surfaces": {}}) as importer,
+        mock.patch("builtins.print"),
+    ):
+        assert args.handler(args) == 0
+    if importer.call_args.kwargs.get("mail_delivery_confirmed") is not True or plan != original:
+        raise AssertionError("mail delivery confirmation was not a runtime-only import choice")
+
+    args = workspace.parse_args(
+        [
+            "import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", "work",
+            "--confirm-mail-delivery", "--no-send-notify", "--password-file", "private/passwords.json",
+        ]
+    )
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=plan),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "import_workspace") as importer,
+    ):
+        try:
+            args.handler(args)
+        except workspace.WorkspaceError as exc:
+            if "cannot be combined" not in str(exc):
+                raise AssertionError(f"unexpected mail confirmation combination error: {exc}") from exc
+        else:
+            raise AssertionError("contradictory mail confirmation flags unexpectedly passed")
+        importer.assert_not_called()
+
+
 def test_membership_only_users_are_hydrated_before_email_export() -> None:
     plan = base_plan()
     plan["source"]["usernames"] = []  # type: ignore[index]
@@ -316,6 +503,115 @@ def test_all_available_group_discovery_includes_top_level_groups() -> None:
         raise AssertionError("all-available group discovery did not retain direct memberships")
 
 
+def test_instance_wide_export_checks_operator_totals() -> None:
+    plan = base_plan()
+    plan["source"].update({  # type: ignore[index]
+        "group_paths": [],
+        "project_paths": [],
+        "usernames": [],
+        "all_available_groups": True,
+        "all_available_projects": True,
+    })
+    plan["surfaces"] = {  # type: ignore[index]
+        "users": {"mode": "managed", "all_available": True},
+        "groups": {"mode": "managed"},
+        "subgroups": {"mode": "managed", "include_subgroups": True},
+        "projects": {"mode": "managed"},
+    }
+    if not workspace.instance_wide_export(plan):  # type: ignore[arg-type]
+        raise AssertionError("unfiltered all-surface plan did not enable instance-count verification")
+    selective = copy.deepcopy(plan)
+    selective["source"]["project_paths"] = ["team/repo"]  # type: ignore[index]
+    if workspace.instance_wide_export(selective):  # type: ignore[arg-type]
+        raise AssertionError("selective project plan was mistaken for an instance-wide export")
+
+    group = {"id": 1, "full_path": "team", "path": "team", "name": "Team"}
+    user = {"username": "alice"}
+    counts = {"users": 1, "groups": 1, "projects": 0}
+
+    def run_export(expected: dict[str, int] | None) -> dict[str, object]:
+        with (
+            mock.patch.dict("os.environ", {"GITLAB_TOKEN": "test-token"}),
+            mock.patch.object(workspace, "discover_groups", return_value=[group]),
+            mock.patch.object(workspace, "discover_projects", return_value=[]),
+            mock.patch.object(workspace, "discover_users", return_value=[user]),
+        ):
+            return workspace.export_workspace(plan, expected_instance_counts=expected)  # type: ignore[arg-type]
+
+    snapshot = run_export(counts)
+    if snapshot.get("expected_instance_counts") != counts:
+        raise AssertionError("operator-provided totals were not retained in the private snapshot")
+    workspace.validate_instance_wide_snapshot_counts(plan, snapshot)  # type: ignore[arg-type]
+
+    for altered, expected_error in (
+        ({key: value for key, value in snapshot.items() if key != "expected_instance_counts"}, "requires a new export"),
+        ({**snapshot, "expected_instance_counts": {**counts, "groups": 2}}, "groups snapshot count changed"),
+        ({**snapshot, "expected_instance_counts": {**counts, "users": 2}}, "users snapshot count changed"),
+        ({**snapshot, "expected_instance_counts": {**counts, "projects": 1}}, "projects snapshot count changed"),
+        ({**snapshot, "expected_instance_counts": {**counts, "groups": True}}, "requires a new export"),
+    ):
+        try:
+            workspace.validate_instance_wide_snapshot_counts(plan, altered)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if expected_error not in str(exc):
+                raise AssertionError(f"unexpected import count diagnostic: {exc}") from exc
+        else:
+            raise AssertionError(f"instance-wide import accepted {expected_error}")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        work_dir = Path(temp_dir) / "untouched"
+        legacy = {key: value for key, value in snapshot.items() if key != "expected_instance_counts"}
+        with mock.patch.object(workspace, "endpoint", side_effect=AssertionError("destination accessed")):
+            try:
+                workspace.import_workspace(plan, legacy, work_dir)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "requires a new export" not in str(exc):
+                    raise AssertionError(f"unexpected legacy import diagnostic: {exc}") from exc
+            else:
+                raise AssertionError("instance-wide import accepted a legacy snapshot")
+        args = workspace.parse_args([
+            "import", "plan.json", "--snapshot", "snapshot.json", "--work-dir", str(work_dir),
+        ])
+        with (
+            mock.patch.object(workspace, "load_plan", return_value=plan),
+            mock.patch.object(workspace, "require_snapshot", return_value=legacy),
+            mock.patch.object(workspace, "endpoint", side_effect=AssertionError("destination accessed")),
+        ):
+            try:
+                workspace.command_import(args)
+            except workspace.WorkspaceError as exc:
+                if "requires a new export" not in str(exc):
+                    raise AssertionError(f"unexpected CLI legacy import diagnostic: {exc}") from exc
+            else:
+                raise AssertionError("import command accepted a legacy instance-wide snapshot")
+        if work_dir.exists():
+            raise AssertionError("legacy snapshot created import work files before preflight")
+    workspace.validate_instance_wide_snapshot_counts(selective, {})  # type: ignore[arg-type]
+
+    for expected, expected_error in (
+        (None, "requires --expected-users"),
+        ({**counts, "users": 2}, "incomplete GitLab users export"),
+        ({**counts, "groups": 2}, "incomplete GitLab groups export"),
+        ({**counts, "projects": 2}, "incomplete GitLab projects export"),
+        ({"groups": 1}, "must include non-negative"),
+        ({**counts, "groups": -1}, "must include non-negative"),
+    ):
+        try:
+            run_export(expected)
+        except workspace.WorkspaceError as exc:
+            if expected_error not in str(exc):
+                raise AssertionError(f"unexpected instance-count diagnostic: {exc}") from exc
+        else:
+            raise AssertionError(f"instance-wide export ignored {expected_error}")
+
+    args = workspace.parse_args([
+        "export", "plan.json", "--snapshot", "snapshot.json",
+        "--expected-users", "1", "--expected-groups", "1", "--expected-projects", "0",
+    ])
+    if (args.expected_users, args.expected_groups, args.expected_projects) != (1, 1, 0):
+        raise AssertionError("export CLI did not accept instance-wide count expectations")
+
+
 def test_all_available_project_discovery_keeps_archived_and_inherited_projects() -> None:
     plan = base_plan()
     plan["source"]["project_paths"] = []  # type: ignore[index]
@@ -456,7 +752,7 @@ def test_generated_passwords_are_per_user_and_not_in_proof() -> None:
         mock.patch.object(workspace, "generated_user_password", side_effect=["one-time-alice", "one-time-bob"]),
         mock.patch.object(workspace, "request") as api_request,
     ):
-        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        result = workspace.import_users(plan, object(), snapshot, mail_delivery_confirmed=True)  # type: ignore[arg-type]
     create_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("POST", "admin/users")]
     if len(create_calls) != 2:
         raise AssertionError(f"generated-password user creates were not requested: {create_calls!r}")
@@ -467,8 +763,14 @@ def test_generated_passwords_are_per_user_and_not_in_proof() -> None:
         raise AssertionError(f"generated-password accounts were not forced through notification/change flow: {bodies!r}")
     if result.get("verified") is not True or result.get("created") != 2:
         raise AssertionError(f"generated-password import was not verified: {result!r}")
+    if (
+        result.get("credential_delivery") != "forgejo_password_setup_instructions_requested"
+        or result.get("initial_credentials_created") != 0
+        or result.get("login_verified") is not False
+    ):
+        raise AssertionError("Forgejo welcome mail was mistaken for delivered credentials or verified login")
     evidence = workspace.proof("import", plan, result)
-    if "password" in json.dumps(evidence).lower():
+    if any(secret in json.dumps(evidence) for secret in ("one-time-alice", "one-time-bob")):
         raise AssertionError("generated passwords leaked into migration proof")
 
 
@@ -512,9 +814,349 @@ def test_generated_passwords_can_use_private_handoff_without_notification() -> N
         handoff = json.loads(password_file.read_text(encoding="utf-8"))
         if [entry["password"] for entry in handoff["entries"]] != ["one-time-alice", "one-time-bob"]:
             raise AssertionError(f"private password handoff was incomplete: {handoff!r}")
+        if result.get("credential_delivery") != "private_file" or result.get("login_verified") is not False:
+            raise AssertionError("private handoff was mistaken for a verified login")
         evidence = workspace.proof("import", plan, result)
         if any(password in json.dumps(evidence) for password in ("one-time-alice", "one-time-bob")):
             raise AssertionError("private handoff passwords leaked into migration proof")
+
+
+def test_initial_password_handoff_resume_reuses_recorded_passwords() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    snapshot = {"surfaces": {"users": {"items": [
+        {"username": "alice", "email": "alice@example.test"},
+        {"username": "bob", "email": "bob@example.test"},
+    ]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        workspace.write_password_handoff(password_file, [
+            {"username": "alice", "email": "alice@example.test", "password": "recorded-alice"},
+        ])
+        observed: list[tuple[str, int]] = []
+
+        def record_request(_destination: object, method: str, path: str, *, body: dict[str, object], **_kwargs: object) -> dict[str, object]:
+            if method == "POST" and path == "admin/users":
+                current = workspace.load_json(password_file)
+                entries = current["entries"]
+                observed.append((str(body["password"]), len(entries)))
+            return {}
+
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", side_effect=[
+                (404, {}), (200, {"login": "alice"}), (404, {}), (200, {"login": "bob"}),
+            ]),
+            mock.patch.object(workspace, "generated_user_password", return_value="new-bob") as generate,
+            mock.patch.object(workspace, "request", side_effect=record_request),
+        ):
+            result = workspace.import_users(
+                plan, object(), snapshot, password_output=password_file, resume_password_handoff=True,
+            )  # type: ignore[arg-type]
+        if observed != [("recorded-alice", 1), ("new-bob", 2)] or generate.call_count != 1:
+            raise AssertionError("resume did not reuse the durable password or record a new one before POST")
+        if result["created"] != 2 or result["initial_credentials_created"] != 1 or result["handoff_credentials_recorded"] != 2:
+            raise AssertionError("resumed account creation counts are incorrect")
+
+
+def test_initial_password_handoff_resume_existing_accounts_does_not_reset_them() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        workspace.write_password_handoff(password_file, [
+            {"username": "alice", "email": "alice@example.test", "password": "recorded-alice"},
+        ])
+        original = password_file.read_bytes()
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", return_value=(200, {"login": "alice"})),
+            mock.patch.object(workspace, "generated_user_password") as generate,
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            result = workspace.import_users(
+                plan, object(), snapshot, password_output=password_file, resume_password_handoff=True,
+            )  # type: ignore[arg-type]
+        if result["existing"] != 1 or result["initial_credentials_created"] != 0:
+            raise AssertionError("existing-account retry incorrectly counted new credentials")
+        if password_file.read_bytes() != original or generate.called or api_request.called:
+            raise AssertionError("existing-account retry changed the handoff or Forgejo account")
+
+
+def test_initial_password_handoff_resume_rejects_mismatch_before_api() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        workspace.write_password_handoff(password_file, [
+            {"username": "alice", "email": "other@example.test", "password": "recorded-alice"},
+        ])
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user") as user_probe,
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            try:
+                workspace.import_users(plan, object(), snapshot, password_output=password_file, resume_password_handoff=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "does not match" not in str(exc):
+                    raise AssertionError(f"unexpected handoff mismatch error: {exc}") from exc
+            else:
+                raise AssertionError("mismatched handoff was accepted")
+            user_probe.assert_not_called()
+            api_request.assert_not_called()
+
+
+def test_user_creation_error_does_not_echo_password() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed", "password_strategy": "generated_per_user", "send_notify": False,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "initial-user-passwords.json"
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", return_value=(404, {})),
+            mock.patch.object(workspace, "generated_user_password", return_value="one-time-alice"),
+            mock.patch.object(workspace, "request", side_effect=workspace.WorkspaceError("one-time-alice echoed")),
+        ):
+            try:
+                workspace.import_users(plan, object(), snapshot, password_output=password_file)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "one-time-alice" in str(exc) or "private handoff retained" not in str(exc):
+                    raise AssertionError("user creation failure leaked a generated password") from exc
+            else:
+                raise AssertionError("failed account creation unexpectedly succeeded")
+        if not password_file.exists():
+            raise AssertionError("failed account creation lost the durable password handoff")
+
+
+def test_existing_password_issuance_requires_completed_import_proof() -> None:
+    plan = base_plan()
+    result = {"verified": True, "surfaces": {"users": {"verified": True}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        proof_path = Path(temp_dir) / "import-proof.json"
+        workspace.write_json(proof_path, workspace.proof("import", plan, result))
+        workspace.require_completed_import_proof(plan, proof_path)
+        other_plan = copy.deepcopy(plan)
+        other_plan["source"]["usernames"] = ["bob"]  # type: ignore[index]
+        try:
+            workspace.require_completed_import_proof(other_plan, proof_path)
+        except workspace.WorkspaceError as exc:
+            if "completed import proof" not in str(exc):
+                raise AssertionError(f"unexpected proof mismatch diagnostic: {exc}") from exc
+        else:
+            raise AssertionError("credential issuance accepted another plan's import proof")
+        workspace.write_json(proof_path, workspace.proof("import", plan, {"verified": False, "surfaces": result["surfaces"]}))
+        try:
+            workspace.require_completed_import_proof(plan, proof_path)
+        except workspace.WorkspaceError:
+            pass
+        else:
+            raise AssertionError("credential issuance accepted an incomplete import")
+
+
+def test_existing_password_issuance_preflights_admins_without_writes() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {"mode": "managed", "password_strategy": "generated_per_user"}  # type: ignore[index]
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice"}, {"username": "bob"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "handoff.json"
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(
+                workspace,
+                "forgejo_user",
+                side_effect=[(200, {"login": "alice", "is_admin": False}), (200, {"login": "bob", "is_admin": True})],
+            ),
+            mock.patch.object(workspace, "request") as api_request,
+            mock.patch.object(workspace, "generated_user_password") as generate,
+        ):
+            result = workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=False)  # type: ignore[arg-type]
+        if result["accounts_selected"] != 2 or result["admin_accounts"] != 1 or result["login_verified"] is not False:
+            raise AssertionError(f"unexpected credential preflight result: {result!r}")
+        if password_file.exists() or api_request.called or generate.called:
+            raise AssertionError("read-only credential preflight wrote passwords or changed users")
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(
+                workspace,
+                "forgejo_user",
+                side_effect=[(200, {"login": "alice", "is_admin": False}), (200, {"login": "bob", "is_admin": True})],
+            ),
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            try:
+                workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "--allow-admin-accounts" not in str(exc):
+                    raise AssertionError(f"unexpected admin credential guard: {exc}") from exc
+            else:
+                raise AssertionError("admin account password changed without an explicit opt-in")
+            api_request.assert_not_called()
+        if password_file.exists():
+            raise AssertionError("admin preflight wrote a credential handoff")
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", return_value=(200, {"login": "alice"})),
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            try:
+                workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "administrator status was not readable" not in str(exc):
+                    raise AssertionError(f"unexpected unreadable-admin guard: {exc}") from exc
+            else:
+                raise AssertionError("credential issuance proceeded without readable admin status")
+            api_request.assert_not_called()
+
+
+def test_existing_password_issuance_resumes_same_private_passwords() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {"mode": "managed", "password_strategy": "generated_per_user"}  # type: ignore[index]
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice"}, {"username": "bob"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "handoff.json"
+        users = [(200, {"login": "alice", "is_admin": False}), (200, {"login": "bob", "is_admin": False})]
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", side_effect=users),
+            mock.patch.object(workspace, "generated_user_password", side_effect=["one-time-alice", "one-time-bob"]),
+            mock.patch.object(workspace, "request", side_effect=[None, workspace.WorkspaceError("one-time-bob echoed")]) as api_request,
+        ):
+            try:
+                workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "credential update failed" not in str(exc) or "one-time-bob" in str(exc):
+                    raise AssertionError(f"credential update leaked a remote password echo: {exc}") from exc
+            else:
+                raise AssertionError("interrupted credential issuance unexpectedly completed")
+        handoff = workspace.load_json(password_file)
+        if handoff["complete"] is not False or [entry["applied"] for entry in handoff["entries"]] != [True, False]:
+            raise AssertionError("interrupted issuance lost its durable progress")
+        if [call.kwargs["body"] for call in api_request.call_args_list] != [
+            {"password": "one-time-alice", "must_change_password": True},
+            {"password": "one-time-bob", "must_change_password": True},
+        ]:
+            raise AssertionError("password PATCH payloads were not per-user and change-required")
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", side_effect=users),
+            mock.patch.object(workspace, "generated_user_password") as generate,
+            mock.patch.object(workspace, "request") as resumed_request,
+        ):
+            result = workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True, resume=True)  # type: ignore[arg-type]
+        generate.assert_not_called()
+        if resumed_request.call_count != 1 or resumed_request.call_args.kwargs["body"]["password"] != "one-time-bob":
+            raise AssertionError("credential resume did not reuse only the pending password")
+        if result["api_requests_accepted"] != 1 or result["login_verified"] is not False:
+            raise AssertionError(f"credential issuance overstated login verification: {result!r}")
+        handoff = workspace.load_json(password_file)
+        if handoff["complete"] is not True or not all(entry["applied"] is True for entry in handoff["entries"]):
+            raise AssertionError("completed credential handoff was not recorded")
+
+
+def test_existing_password_resume_rejects_changed_snapshot() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {"mode": "managed", "password_strategy": "generated_per_user"}  # type: ignore[index]
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice"}]}}}
+    with tempfile.TemporaryDirectory() as temp_dir:
+        password_file = Path(temp_dir) / "handoff.json"
+        workspace.write_json(password_file, {
+            "format_version": 2,
+            "kind": "existing_user_password_handoff",
+            "plan_sha256": workspace.canonical_digest(plan),
+            "snapshot_sha256": "wrong-snapshot",
+            "complete": False,
+            "entries": [{"username": "alice", "password": "one-time-alice", "applied": False}],
+        })
+        with (
+            mock.patch.object(workspace, "private_password_output_path", return_value=password_file),
+            mock.patch.object(workspace, "forgejo_user", return_value=(200, {"login": "alice", "is_admin": False})),
+            mock.patch.object(workspace, "request") as api_request,
+        ):
+            try:
+                workspace.issue_existing_user_passwords(plan, object(), snapshot, password_file, apply=True, resume=True)  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "does not match this plan and snapshot" not in str(exc):
+                    raise AssertionError(f"unexpected mismatched resume guard: {exc}") from exc
+            else:
+                raise AssertionError("credential issuance resumed from another snapshot")
+            api_request.assert_not_called()
+
+
+def test_existing_password_cli_requires_explicit_reset_confirmation() -> None:
+    args = workspace.parse_args([
+        "issue-existing-passwords", "plan.json", "--snapshot", "snapshot.json",
+        "--import-proof", "import.json", "--password-file", "private/handoff.json", "--apply",
+    ])
+    with (
+        mock.patch.object(workspace, "load_plan", return_value=base_plan()),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "require_completed_import_proof"),
+        mock.patch.object(workspace, "issue_existing_user_passwords") as issue,
+    ):
+        try:
+            args.handler(args)
+        except workspace.WorkspaceError as exc:
+            if "--confirm-reset-existing-users" not in str(exc):
+                raise AssertionError(f"unexpected credential confirmation error: {exc}") from exc
+        else:
+            raise AssertionError("credential CLI applied without explicit reset confirmation")
+    issue.assert_not_called()
+
+
+def test_existing_password_cli_does_not_log_credential_result() -> None:
+    args = workspace.parse_args([
+        "issue-existing-passwords", "plan.json", "--snapshot", "snapshot.json",
+        "--import-proof", "import.json", "--password-file", "private/handoff.json",
+        "--apply", "--confirm-reset-existing-users",
+    ])
+    with (
+        mock.patch.dict("os.environ", {"FORGEJO_TOKEN": "test-token"}),
+        mock.patch.object(workspace, "load_plan", return_value=base_plan()),
+        mock.patch.object(workspace, "require_snapshot", return_value={}),
+        mock.patch.object(workspace, "require_completed_import_proof"),
+        mock.patch.object(workspace, "issue_existing_user_passwords", return_value={"password": "synthetic-secret"}) as issue,
+        mock.patch("builtins.print") as printer,
+    ):
+        assert args.handler(args) == 0
+    issue.assert_called_once()
+    if "synthetic-secret" in str(printer.call_args_list) or "handoff.json" in str(printer.call_args_list):
+        raise AssertionError("credential CLI logged a handoff value or private path")
+
+
+def test_generated_password_mail_requires_confirmation_before_destination_access() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": True,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "--confirm-mail-delivery" not in str(exc):
+                raise AssertionError(f"unexpected mail confirmation error: {exc}") from exc
+        else:
+            raise AssertionError("generated password notification proceeded without a mail test")
+        user_probe.assert_not_called()
+        api_request.assert_not_called()
 
 
 def test_generated_password_preflight_fails_before_destination_access() -> None:
@@ -540,14 +1182,63 @@ def test_generated_password_preflight_fails_before_destination_access() -> None:
         mock.patch.object(workspace, "request") as api_request,
     ):
         try:
-            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+            workspace.import_users(plan, object(), snapshot, mail_delivery_confirmed=True)  # type: ignore[arg-type]
         except workspace.WorkspaceError as exc:
-            if "has no private email" not in str(exc):
+            if "has no real private email" not in str(exc):
                 raise AssertionError(f"unexpected generated-password preflight failure: {exc}") from exc
         else:
             raise AssertionError("missing generated-password delivery address unexpectedly passed")
     if user_probe.called or api_request.called:
         raise AssertionError("generated-password delivery preflight ran after destination access")
+
+
+def test_generated_password_preflight_rejects_placeholder_address() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": True,
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@migration.invalid"}]}}}
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot, mail_delivery_confirmed=True)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "no real private email" not in str(exc):
+                raise AssertionError(f"unexpected placeholder-email preflight error: {exc}") from exc
+        else:
+            raise AssertionError("placeholder email passed generated-password delivery preflight")
+    user_probe.assert_not_called()
+    api_request.assert_not_called()
+
+
+def test_generated_password_preflight_rejects_configured_placeholder_address() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"] = {  # type: ignore[index]
+        "mode": "managed",
+        "password_strategy": "generated_per_user",
+        "include_email_for_account_creation": True,
+        "send_notify": True,
+        "placeholder_email_domain": "placeholder.example.test",
+    }
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@PLACEHOLDER.EXAMPLE.TEST"}]}}}
+    with (
+        mock.patch.object(workspace, "forgejo_user") as user_probe,
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot, mail_delivery_confirmed=True)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "no real private email" not in str(exc):
+                raise AssertionError(f"unexpected configured-placeholder preflight error: {exc}") from exc
+        else:
+            raise AssertionError("configured placeholder email passed generated-password delivery preflight")
+    user_probe.assert_not_called()
+    api_request.assert_not_called()
 
 
 def test_managed_user_reconciles_account_flags_when_enabled() -> None:
@@ -572,6 +1263,121 @@ def test_managed_user_reconciles_account_flags_when_enabled() -> None:
     patch_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("PATCH", "admin/users/alice")]
     if len(patch_calls) != 1 or patch_calls[0].kwargs.get("body") != {"admin": True, "prohibit_login": True}:
         raise AssertionError(f"unexpected account-flag patch: {patch_calls!r}")
+
+
+def test_existing_email_reconciliation_requires_opt_in_and_readback() -> None:
+    plan = base_plan()
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    current = {"login": "alice", "email": "alice@migration.invalid"}
+    with (
+        mock.patch.object(workspace, "forgejo_user", return_value=(200, current)),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    api_request.assert_not_called()
+
+    plan["surfaces"]["users"]["reconcile_existing_emails"] = True  # type: ignore[index]
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            side_effect=[(200, current), (200, {"login": "alice", "email": "alice@example.test"})],
+        ),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    patch_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("PATCH", "admin/users/alice")]
+    if len(patch_calls) != 1 or patch_calls[0].kwargs.get("body") != {"email": "alice@example.test"}:
+        raise AssertionError(f"existing placeholder email was not reconciled: {patch_calls!r}")
+    if (
+        result.get("updated") != 1
+        or result.get("emails_updated") != 1
+        or result.get("existing") != 1
+        or result.get("credential_delivery") != "none"
+    ):
+        raise AssertionError(f"existing email reconciliation was not recorded: {result!r}")
+
+
+def test_existing_email_reconciliation_uses_configured_placeholder_domain() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"].update({  # type: ignore[index]
+        "reconcile_existing_emails": True,
+        "placeholder_email_domain": "placeholder.example.test",
+    })
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            side_effect=[
+                (200, {"login": "alice", "email": "alice@PLACEHOLDER.EXAMPLE.TEST"}),
+                (200, {"login": "alice", "email": "alice@example.test"}),
+            ],
+        ),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    patch_calls = [call for call in api_request.call_args_list if call.args[1:3] == ("PATCH", "admin/users/alice")]
+    if len(patch_calls) != 1 or patch_calls[0].kwargs.get("body") != {"email": "alice@example.test"}:
+        raise AssertionError(f"configured placeholder email was not reconciled: {patch_calls!r}")
+    if result.get("emails_updated") != 1 or result.get("verified") is not True:
+        raise AssertionError(f"configured placeholder reconciliation was not verified: {result!r}")
+
+
+def test_existing_email_reconciliation_refuses_real_address_before_mutation() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"]["reconcile_existing_emails"] = True  # type: ignore[index]
+    snapshot = {"surfaces": {"users": {"items": [{"username": "alice", "email": "alice@example.test"}]}}}
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            return_value=(200, {"login": "alice", "email": "alice@other.test"}),
+        ),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "non-placeholder email" not in str(exc):
+                raise AssertionError(f"unexpected email preflight error: {exc}") from exc
+        else:
+            raise AssertionError("existing real email was overwritten without review")
+    api_request.assert_not_called()
+
+
+def test_existing_email_reconciliation_preflights_all_users() -> None:
+    plan = base_plan()
+    plan["surfaces"]["users"]["reconcile_existing_emails"] = True  # type: ignore[index]
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [
+                    {"username": "alice", "email": "alice@example.test"},
+                    {"username": "bob", "email": "bob@example.test"},
+                ]
+            }
+        }
+    }
+    with (
+        mock.patch.object(
+            workspace,
+            "forgejo_user",
+            side_effect=[
+                (200, {"login": "alice", "email": "alice@migration.invalid"}),
+                (200, {"login": "bob", "email": "bob@other.test"}),
+            ],
+        ),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        try:
+            workspace.import_users(plan, object(), snapshot)  # type: ignore[arg-type]
+        except workspace.WorkspaceError as exc:
+            if "non-placeholder email" not in str(exc):
+                raise AssertionError(f"unexpected bulk preflight error: {exc}") from exc
+        else:
+            raise AssertionError("bulk email reconciliation began before every user was checked")
+    api_request.assert_not_called()
 
 
 def test_excluded_system_user_is_not_created() -> None:
@@ -623,6 +1429,27 @@ def test_user_audit_is_read_only_and_never_verifies_passwords() -> None:
         raise AssertionError(f"user audit reported unsafe verification state: {result!r}")
     if result.get("verified") is not False or user_probe.call_count != 1 or api_request.called:
         raise AssertionError("user audit was not read-only or incorrectly reported success")
+
+
+def test_user_audit_reports_email_mismatch_without_mutation() -> None:
+    plan = base_plan()
+    snapshot = {
+        "surfaces": {
+            "users": {
+                "items": [{"username": "alice", "email": "alice@example.test"}]
+            }
+        }
+    }
+    current = {"login": "alice", "email": "alice@migration.invalid"}
+    with (
+        mock.patch.object(workspace, "forgejo_user", return_value=(200, current)),
+        mock.patch.object(workspace, "request") as api_request,
+    ):
+        result = workspace.audit_users(plan, object(), snapshot)  # type: ignore[arg-type]
+    if result.get("email_mismatches") != 1 or result.get("emails_verified") is not False:
+        raise AssertionError(f"placeholder email was not reported: {result!r}")
+    if api_request.called:
+        raise AssertionError("user email audit attempted a mutation")
 
 
 def test_user_mapping_collision_fails_before_mutation() -> None:
@@ -1140,6 +1967,77 @@ def test_permission_readback_fails_closed() -> None:
             raise AssertionError("permission import accepted a weaker read-back permission")
 
 
+def test_workspace_repository_scratch_is_per_repo_and_preserves_existing_files() -> None:
+    plan = base_plan()
+    items = [
+        {
+            "project": {
+                "path_with_namespace": f"platform/{name}",
+                "http_url_to_repo": f"https://gitlab.example.test/platform/{name}.git",
+                "visibility": "private",
+            },
+            "destination": {
+                "owner": "platform",
+                "repo": name,
+                "git_url": f"ssh://git@forgejo.example.test/platform/{name}.git",
+            },
+        }
+        for name in ("one", "two")
+    ]
+    snapshot = {
+        "surfaces": {"repositories": {"items": items}},
+        "indexes": {"projects": items},
+    }
+    seen: list[Path] = []
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        work_dir = Path(temp_dir) / "work"
+        work_dir.mkdir()
+        old_mirror = work_dir / "existing-work"
+        old_mirror.mkdir()
+        (old_mirror / "keep.txt").write_text("keep", encoding="utf-8")
+
+        def migrate(_repo: object, scratch: Path) -> dict[str, bool]:
+            if scratch.parent != work_dir or not scratch.name.startswith("forge-repo-"):
+                raise AssertionError("repository scratch escaped the selected work directory")
+            if any(path.exists() for path in seen):
+                raise AssertionError("the previous repository scratch was retained")
+            seen.append(scratch)
+            (scratch / "repository.git").mkdir()
+            return {"verified": True}
+
+        with (
+            mock.patch.object(workspace, "ensure_repository", return_value={"verified": True}),
+            mock.patch.object(workspace.migration, "migrate_repo", side_effect=migrate),
+        ):
+            result = workspace.import_repositories(plan, snapshot, object(), work_dir)  # type: ignore[arg-type]
+        if result.get("verified") is not True or len(seen) != 2:
+            raise AssertionError("workspace repository migration did not verify both repositories")
+        if any(path.exists() for path in seen) or not (old_mirror / "keep.txt").exists():
+            raise AssertionError("scratch cleanup damaged pre-existing work or left completed mirrors")
+
+        failed_scratch: list[Path] = []
+
+        def fail(_repo: object, scratch: Path) -> dict[str, bool]:
+            failed_scratch.append(scratch)
+            (scratch / "partial.git").mkdir()
+            raise RuntimeError("simulated repository failure")
+
+        with (
+            mock.patch.object(workspace, "ensure_repository", return_value={"verified": True}),
+            mock.patch.object(workspace.migration, "migrate_repo", side_effect=fail),
+        ):
+            try:
+                workspace.import_repositories(plan, snapshot, object(), work_dir)  # type: ignore[arg-type]
+            except RuntimeError as exc:
+                if "simulated repository failure" not in str(exc):
+                    raise
+            else:
+                raise AssertionError("failed repository migration unexpectedly succeeded")
+        if len(failed_scratch) != 1 or failed_scratch[0].exists() or not (old_mirror / "keep.txt").exists():
+            raise AssertionError("failed repository scratch was retained or pre-existing work was removed")
+
+
 def test_rule_import_runs_after_repository_exists_and_passes_policy() -> None:
     plan = base_plan()
     plan["surfaces"]["rules"] = {  # type: ignore[index]
@@ -1330,6 +2228,14 @@ def test_pipeline_schedule_import_is_not_history_import() -> None:
 
 def main() -> int:
     test_selective_plan_contract()
+    test_export_requires_gitlab_token_before_discovery()
+    test_import_and_audit_require_forgejo_token()
+    test_import_email_reconciliation_flag_preserves_saved_plan()
+    test_make_export_forwards_instance_counts()
+    test_make_import_forwards_email_reconciliation()
+    test_make_import_forwards_password_handoff_resume()
+    test_import_password_resume_requires_private_handoff_mode()
+    test_import_mail_confirmation_is_runtime_only()
     test_membership_only_users_are_hydrated_before_email_export()
     test_redaction_and_destination_url()
     test_long_group_targets_are_forgejo_compatible_and_stable()
@@ -1338,13 +2244,35 @@ def main() -> int:
     test_project_permission_discovery_materializes_invited_group_members()
     test_managed_import_rejects_missing_snapshot_surface_before_mutation()
     test_all_available_group_discovery_includes_top_level_groups()
+    test_instance_wide_export_checks_operator_totals()
     test_all_available_project_discovery_keeps_archived_and_inherited_projects()
     test_ci_checkout_is_retryable()
     test_managed_user_requires_readback()
     test_existing_hash_strategy_fails_closed_before_mutation()
+    test_generated_passwords_are_per_user_and_not_in_proof()
+    test_generated_passwords_can_use_private_handoff_without_notification()
+    test_initial_password_handoff_resume_reuses_recorded_passwords()
+    test_initial_password_handoff_resume_existing_accounts_does_not_reset_them()
+    test_initial_password_handoff_resume_rejects_mismatch_before_api()
+    test_user_creation_error_does_not_echo_password()
+    test_existing_password_issuance_requires_completed_import_proof()
+    test_existing_password_issuance_preflights_admins_without_writes()
+    test_existing_password_issuance_resumes_same_private_passwords()
+    test_existing_password_resume_rejects_changed_snapshot()
+    test_existing_password_cli_requires_explicit_reset_confirmation()
+    test_existing_password_cli_does_not_log_credential_result()
+    test_generated_password_mail_requires_confirmation_before_destination_access()
+    test_generated_password_preflight_fails_before_destination_access()
+    test_generated_password_preflight_rejects_placeholder_address()
+    test_generated_password_preflight_rejects_configured_placeholder_address()
     test_managed_user_reconciles_account_flags_when_enabled()
+    test_existing_email_reconciliation_requires_opt_in_and_readback()
+    test_existing_email_reconciliation_uses_configured_placeholder_domain()
+    test_existing_email_reconciliation_refuses_real_address_before_mutation()
+    test_existing_email_reconciliation_preflights_all_users()
     test_excluded_system_user_is_not_created()
     test_user_audit_is_read_only_and_never_verifies_passwords()
+    test_user_audit_reports_email_mismatch_without_mutation()
     test_user_mapping_collision_fails_before_mutation()
     test_variable_environment_collision_fails_before_mutation()
     test_mapped_variable_is_non_mutating()
@@ -1359,6 +2287,7 @@ def main() -> int:
     test_permission_import_merges_effective_access_and_verifies_repo_teams()
     test_exact_permission_reconciliation_does_not_remove_unmanaged_collaborators()
     test_permission_readback_fails_closed()
+    test_workspace_repository_scratch_is_per_repo_and_preserves_existing_files()
     test_rule_import_runs_after_repository_exists_and_passes_policy()
     test_ci_destination_and_remote_proof()
     test_ci_commit_is_idempotent()
