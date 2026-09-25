@@ -246,13 +246,39 @@
         name: "{{ inventory_hostname }}"
 
     - name: Prune transient CNI interfaces from permanent firewalld trust
-      ansible.builtin.script:
-        cmd: "{{ playbook_dir }}/../../scripts/cleanup_firewalld_cni_interfaces.py --path /etc/firewalld/zones/trusted.xml"
-        executable: /usr/bin/python3
-      register: platform_ingress_firewalld_interface_cleanup
-      changed_when: >-
-        'firewalld_ephemeral_interface_cleanup=changed' in
-        (platform_ingress_firewalld_interface_cleanup.stdout | default(''))
+      block:
+        - name: Create temporary directory for standalone firewalld cleanup helper
+          ansible.builtin.file:
+            path: /run/platform-firewalld-cni-cleanup
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        - name: Stage bounded-file dependency for standalone firewalld cleanup helper
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../scripts/bounded_file.py"
+            dest: /run/platform-firewalld-cni-cleanup/bounded_file.py
+            owner: root
+            group: root
+            mode: "0600"
+
+        - name: Run standalone firewalld cleanup helper
+          ansible.builtin.script:
+            cmd: "{{ playbook_dir }}/../../scripts/cleanup_firewalld_cni_interfaces.py --path /etc/firewalld/zones/trusted.xml"
+            executable: /usr/bin/python3
+          environment:
+            PYTHONPATH: /run/platform-firewalld-cni-cleanup
+          register: platform_ingress_firewalld_interface_cleanup
+          changed_when: >-
+            'firewalld_ephemeral_interface_cleanup=changed' in
+            (platform_ingress_firewalld_interface_cleanup.stdout | default(''))
+      always:
+        - name: Remove temporary firewalld cleanup helper dependency
+          ansible.builtin.file:
+            path: /run/platform-firewalld-cni-cleanup
+            state: absent
+          changed_when: false
 
     - name: Restore firewalld trusted zone SELinux context after cleanup
       ansible.builtin.command: restorecon -F /etc/firewalld/zones/trusted.xml
