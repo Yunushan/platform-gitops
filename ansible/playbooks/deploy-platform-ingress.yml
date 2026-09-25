@@ -2698,6 +2698,35 @@
               PLATFORM_TRAEFIK_ROLLOUT_TIMEOUT=1200 make platform-ingress
           run_once: true
 
+    - name: Discover the active Argo CD server backend
+      ansible.builtin.shell: |
+        set -euo pipefail
+        K=/var/lib/rancher/rke2/bin/kubectl
+        C=/etc/rancher/rke2/rke2.yaml
+
+        for name in argo-cd-argocd-server argocd-server; do
+          if "$K" --kubeconfig "$C" -n argocd get "deployment/${name}" >/dev/null 2>&1; then
+            "$K" --kubeconfig "$C" -n argocd get "service/${name}" >/dev/null
+            printf '%s\n' "${name}"
+            exit 0
+          fi
+        done
+
+        echo 'No Argo CD server deployment found in namespace argocd.' >&2
+        "$K" --kubeconfig "$C" -n argocd get deployments,services -o name >&2
+        exit 1
+      args:
+        executable: /bin/bash
+      register: platform_argocd_server_backend_discovery
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      run_once: true
+
+    - name: Select the active Argo CD server backend
+      ansible.builtin.set_fact:
+        platform_argocd_server_backend_name: "{{ platform_argocd_server_backend_discovery.stdout | trim }}"
+      run_once: true
+
     - name: Configure Argo CD server for TLS termination at Traefik
       ansible.builtin.command:
         argv:
@@ -2720,12 +2749,12 @@
 
     - name: Configure Argo CD server as node-local ingress backend
       ansible.builtin.shell: |
-        set -o pipefail
+        set -euo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
         C=/etc/rancher/rke2/rke2.yaml
         replicas={{ platform_argocd_server_replicas_effective | int }}
 
-        "$K" --kubeconfig "$C" -n argocd patch deployment/argocd-server --type merge -p "$(cat <<EOF
+        "$K" --kubeconfig "$C" -n argocd patch deployment/{{ platform_argocd_server_backend_name }} --type merge -p "$(cat <<EOF
         {
           "spec": {
             "replicas": ${replicas},
@@ -2789,7 +2818,7 @@
         EOF
         )"
 
-        "$K" --kubeconfig "$C" -n argocd patch service/argocd-server --type merge \
+        "$K" --kubeconfig "$C" -n argocd patch service/{{ platform_argocd_server_backend_name }} --type merge \
           -p '{"metadata":{"annotations":{"traefik.ingress.kubernetes.io/service.nativelb":"true"}},"spec":{"internalTrafficPolicy":"Local"}}'
       args:
         executable: /bin/bash
@@ -2817,7 +2846,7 @@
     - name: Restart Argo CD server after TLS termination change
       ansible.builtin.command: >-
         /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-        -n argocd rollout restart deployment/argocd-server
+        -n argocd rollout restart deployment/{{ platform_argocd_server_backend_name }}
       register: platform_argocd_server_restart
       changed_when: "'restarted' in platform_argocd_server_restart.stdout"
       delegate_to: "{{ rke2_first_server }}"
@@ -2828,7 +2857,7 @@
         - name: Poll Argo CD server rollout after restart
           ansible.builtin.command: >-
             /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml
-            -n argocd rollout status deployment/argocd-server --timeout={{ platform_ingress_poll_interval_effective }}s
+            -n argocd rollout status deployment/{{ platform_argocd_server_backend_name }} --timeout={{ platform_ingress_poll_interval_effective }}s
           register: platform_argocd_server_rollout
           retries: "{{ platform_ingress_wait_retries }}"
           delay: "{{ platform_ingress_poll_interval_effective }}"
@@ -2842,8 +2871,8 @@
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
             echo "===== argocd-server deployment ====="
-            "$K" --kubeconfig "$C" -n argocd get deployment/argocd-server -o wide || true
-            "$K" --kubeconfig "$C" -n argocd get deployment/argocd-server \
+            "$K" --kubeconfig "$C" -n argocd get deployment/{{ platform_argocd_server_backend_name }} -o wide || true
+            "$K" --kubeconfig "$C" -n argocd get deployment/{{ platform_argocd_server_backend_name }} \
               -o jsonpath='{.metadata.name}{" generation="}{.metadata.generation}{" observed="}{.status.observedGeneration}{" desired="}{.spec.replicas}{" updated="}{.status.updatedReplicas}{" ready="}{.status.readyReplicas}{" available="}{.status.availableReplicas}{" unavailable="}{.status.unavailableReplicas}{"\n"}' || true
             echo "===== argocd-server replicaset state ====="
             "$K" --kubeconfig "$C" -n argocd get rs -l app.kubernetes.io/name=argocd-server -o wide || true
@@ -2907,8 +2936,8 @@
             echo "===== Argo CD server pods ====="
             "$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server -o wide
             echo "===== Argo CD server endpoints ====="
-            "$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server -o wide || true
-            ready_nodes="$("$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server \
+            "$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name={{ platform_argocd_server_backend_name }} -o wide || true
+            ready_nodes="$("$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name={{ platform_argocd_server_backend_name }} \
               -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.nodeName}{"\n"}{end}' |
               sort -u)"
             printf 'ready_argocd_server_nodes:\n%s\n' "${ready_nodes}"
@@ -2938,12 +2967,12 @@
             echo "===== argocd-server pods ====="
             "$K" --kubeconfig "$C" -n argocd get pods -l app.kubernetes.io/name=argocd-server -o wide || true
             echo "===== argocd-server endpointslices ====="
-            "$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server -o wide || true
+            "$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name={{ platform_argocd_server_backend_name }} -o wide || true
             echo "===== argocd-server deployment scheduling rules ====="
-            "$K" --kubeconfig "$C" -n argocd get deployment/argocd-server \
+            "$K" --kubeconfig "$C" -n argocd get deployment/{{ platform_argocd_server_backend_name }} \
               -o jsonpath='{.spec.template.spec.affinity}{"\n"}{.spec.template.spec.topologySpreadConstraints}{"\n"}' || true
             echo "===== node-local backend missing summary ====="
-            ready_nodes="$("$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name=argocd-server \
+            ready_nodes="$("$K" --kubeconfig "$C" -n argocd get endpointslice -l kubernetes.io/service-name={{ platform_argocd_server_backend_name }} \
               -o jsonpath='{range .items[*].endpoints[?(@.conditions.ready==true)]}{.nodeName}{"\n"}{end}' 2>/dev/null | sort -u || true)"
             for node in {{ groups['rke2_servers'] | join(' ') }}; do
               if printf '%s\n' "${ready_nodes}" | grep -Fx "${node}" >/dev/null; then
@@ -3004,7 +3033,7 @@
                       pathType: Prefix
                       backend:
                         service:
-                          name: argocd-server
+                          name: {{ platform_argocd_server_backend_name }}
                           port:
                             number: 80
             tls:
@@ -3044,7 +3073,7 @@
             - match: Host(`{{ platform_argocd_host_effective }}`)
               kind: Rule
               services:
-                - name: argocd-server
+                - name: {{ platform_argocd_server_backend_name }}
                   namespace: argocd
                   port: 80
                   scheme: http
@@ -3104,7 +3133,7 @@
               middlewares:
                 - name: platform-app-vip-to-host
               services:
-                - name: argocd-server
+                - name: {{ platform_argocd_server_backend_name }}
                   namespace: argocd
                   port: 80
                   scheme: http
@@ -3209,7 +3238,7 @@
             "$K" --kubeconfig "$C" -n argocd get ingress,ingressroute,svc,endpoints,endpointslice,pods -o wide || true
             "$K" --kubeconfig "$C" -n argocd describe ingress argocd-server || true
             "$K" --kubeconfig "$C" -n argocd describe ingressroute argocd-server || true
-            "$K" --kubeconfig "$C" -n argocd describe service argocd-server || true
+            "$K" --kubeconfig "$C" -n argocd describe service {{ platform_argocd_server_backend_name }} || true
             echo "===== MetalLB state ====="
             "$K" --kubeconfig "$C" -n metallb-system get ipaddresspool,l2advertisement,deploy,ds,pods -o wide || true
             "$K" --kubeconfig "$C" -n metallb-system describe ipaddresspool platform-ingress || true
