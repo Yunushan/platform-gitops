@@ -340,7 +340,7 @@
     - name: Install or update MetalLB through the RKE2 Helm controller
       ansible.builtin.shell: |
         set -o pipefail
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply --server-side --force-conflicts --field-manager=platform-gitops -f -
       args:
         executable: /bin/bash
         stdin: |
@@ -2199,7 +2199,7 @@
     - name: Install or update Traefik through the RKE2 Helm controller
       ansible.builtin.shell: |
         set -o pipefail
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply --server-side --force-conflicts --field-manager=platform-gitops -f -
       args:
         executable: /bin/bash
         stdin: |

@@ -228,7 +228,7 @@
         - name: Apply Longhorn namespace, storage classes, and RKE2 HelmChart
           ansible.builtin.shell: |
             set -o pipefail
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply -f -
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply --server-side --force-conflicts --field-manager=platform-gitops -f -
           args:
             executable: /bin/bash
             stdin: |
