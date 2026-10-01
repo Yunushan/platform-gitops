@@ -291,6 +291,11 @@ After the window:
 
 ## Upgrade Procedure
 
+Use [PLATFORM_UPDATES.md](PLATFORM_UPDATES.md) for opt-in Forgejo LTS/stable,
+exact application versions and read-only Argo CD application diagnostics.
+Upgrades do not by themselves repair placeholder manifests, immutable
+StatefulSet changes or unhealthy pods; review those causes independently.
+
 Use `docs/PLATFORM_SUPPORT.md` before upgrades to confirm support tier,
 lifecycle status, compatibility gates, and any private exception or
 deprecation record for the component being changed.

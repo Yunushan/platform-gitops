@@ -22,6 +22,7 @@ RENDERER_ENV_PREFIXES = (
     "FORGEJO_",
     "LONGHORN_",
     "WOODPECKER_",
+    "ARGOCD_",
     "HARBOR_",
     "MONITORING_",
     "PROMETHEUS_",

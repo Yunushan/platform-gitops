@@ -305,7 +305,7 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
             raise AssertionError("focused Woodpecker rendering returned a non-zero status")
         assert_contains(
             forgejo_path,
-            'tag: "15.0.6"',
+            'tag: "15.0.6-rootless"',
             "host: code.private.example.test",
             "DOMAIN: code.private.example.test",
             "PRIVATE_FEATURE_FLAG",

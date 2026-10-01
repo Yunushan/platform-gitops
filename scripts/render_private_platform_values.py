@@ -24,10 +24,19 @@ from forgejo_storage_contract import (
     select_filesystem_storage,
 )
 from strict_yaml import StrictYamlError, loads_strict_yaml_all
+from platform_release_policy import ReleasePolicyError, release_from_environment, version_tuple
+from update_platform_versions import current_tags, load_catalog, update_values_text, values_document
 
 
 INTERNAL_MINIO_ENDPOINT = "http://platform-minio.object-storage.svc.cluster.local:9000"
 FORGEJO_DEFAULT_IMAGE_TAG = "15.0.6"
+
+
+def selected_image_tag(component: str, *, current: str = "") -> str:
+    try:
+        return release_from_environment(component, current=current)
+    except ReleasePolicyError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def read_inventory_vars(path: Path) -> dict[str, str]:
@@ -1511,9 +1520,22 @@ def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
 
     tag_index = tag_lines[0]
     newline = "\r\n" if lines[tag_index].endswith("\r\n") else "\n"
-    expected_tag_line = f"  tag: {yaml_string(FORGEJO_DEFAULT_IMAGE_TAG)}{newline}"
-    if image["tag"] == FORGEJO_DEFAULT_IMAGE_TAG and lines[tag_index] == expected_tag_line:
+    selected_tag = selected_image_tag("forgejo")
+    # A focused contract refresh must not undo an operator's newer, reviewed release.
+    explicitly_selected = bool(os.environ.get("FORGEJO_IMAGE_TAG", "").strip()) or (
+        os.environ.get("FORGEJO_UPDATE_CHANNEL", "pinned").strip() not in {"", "pinned"}
+    )
+    if version_tuple("forgejo", image["tag"]) > version_tuple("forgejo", selected_tag):
+        if explicitly_selected:
+            raise SystemExit("Forgejo image downgrades require backup/restore; release-pin refresh stopped")
         return False
+    if image["tag"].endswith("-rootless"):
+        selected_tag = selected_tag.removesuffix("-rootless") + "-rootless"
+    expected_tag_line = f"  tag: {yaml_string(selected_tag)}{newline}"
+    if image["tag"] == selected_tag and lines[tag_index] == expected_tag_line:
+        return False
+    if any(image.get(key) for key in ("digest", "sha", "fullOverride")):
+        raise SystemExit("Forgejo image has a digest pin or full override; review its image reference separately")
     lines[tag_index] = expected_tag_line
     rendered = "".join(lines)
     try:
@@ -1521,7 +1543,7 @@ def refresh_forgejo_reviewed_image_pin(path: Path) -> bool:
     except StrictYamlError as exc:
         raise SystemExit(f"refreshed Forgejo values are invalid YAML in {path}: {exc}") from exc
     rendered_image = rendered_documents[0].get("image")
-    if not isinstance(rendered_image, dict) or rendered_image.get("tag") != FORGEJO_DEFAULT_IMAGE_TAG:
+    if not isinstance(rendered_image, dict) or rendered_image.get("tag") != selected_tag:
         raise SystemExit(f"failed to refresh Forgejo image.tag in {path}")
     atomic_write_text(path, rendered)
     return True
@@ -2158,10 +2180,7 @@ def render_forgejo(path: Path, inventory: dict[str, str]) -> bool:
 
     data_size = os.environ.get("FORGEJO_DATA_SIZE", "20Gi").strip() or "20Gi"
     storage_class = os.environ.get("FORGEJO_STORAGE_CLASS", "longhorn-critical-encrypted").strip()
-    image_tag = (
-        os.environ.get("FORGEJO_IMAGE_TAG", FORGEJO_DEFAULT_IMAGE_TAG).strip()
-        or FORGEJO_DEFAULT_IMAGE_TAG
-    )
+    image_tag = selected_image_tag("forgejo")
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$", image_tag):
         raise SystemExit("FORGEJO_IMAGE_TAG must be an immutable release tag such as 15.0.6-rootless")
     database_mode = (
@@ -2458,6 +2477,15 @@ def render_argocd(path: Path, inventory: dict[str, str]) -> bool:
         if substitutions != 1:
             raise SystemExit("Argo CD values must define configs.cm")
 
+    if os.environ.get("ARGOCD_IMAGE_TAG", "").strip() or os.environ.get("ARGOCD_UPDATE_CHANNEL", "pinned").strip() not in {"", "pinned"}:
+        target = selected_image_tag("argocd")
+        try:
+            tags = current_tags("argocd", values_document(rendered), load_catalog())
+            if any(version_tuple("argocd", target) < version_tuple("argocd", old) for old in tags):
+                raise ReleasePolicyError("Argo CD image downgrades require backup/restore")
+            rendered = update_values_text("argocd", rendered, target, current=tags)
+        except ReleasePolicyError as exc:
+            raise SystemExit(str(exc)) from exc
     changed = rendered != text
     if changed:
         atomic_write_text(path, rendered)
@@ -2695,7 +2723,7 @@ def render_woodpecker(
     open_registration = env_bool("WOODPECKER_OPEN", False)
     oauth_secret_name = os.environ.get("WOODPECKER_FORGEJO_OAUTH_SECRET_NAME", "woodpecker-forgejo-oauth").strip()
     agent_secret_name = os.environ.get("WOODPECKER_AGENT_SECRET_NAME", "woodpecker-agent-secret").strip() or "woodpecker-agent-secret"
-    image_tag = normalize_woodpecker_image_tag(os.environ.get("WOODPECKER_IMAGE_TAG", "v3.16.0").strip() or "v3.16.0")
+    image_tag = selected_image_tag("woodpecker")
     log_level = os.environ.get("WOODPECKER_LOG_LEVEL", "info").strip().lower() or "info"
     default_pipeline_timeout = os.environ.get("WOODPECKER_DEFAULT_PIPELINE_TIMEOUT", "60").strip() or "60"
     max_pipeline_timeout = os.environ.get("WOODPECKER_MAX_PIPELINE_TIMEOUT", "120").strip() or "120"
@@ -5028,6 +5056,14 @@ def main() -> int:
     args = parser.parse_args()
     if args.reconcile_existing_forgejo_host and not args.refresh_forgejo_host:
         parser.error("--reconcile-existing-forgejo-host requires --refresh-forgejo-host")
+    # Validate selected version controls before an unrelated app can be written.
+    for component, enabled in (
+        ("forgejo", not args.skip_forgejo or args.refresh_forgejo_release_pin),
+        ("woodpecker", not args.skip_woodpecker),
+        ("argocd", not args.skip_argocd),
+    ):
+        if enabled:
+            selected_image_tag(component)
 
     inventory = read_inventory_vars(args.inventory)
     changed: list[str] = []

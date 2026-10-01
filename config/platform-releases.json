@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "reviewed_on": "2026-10-01",
+  "review_before": "2026-10-29",
+  "components": {
+    "forgejo": {
+      "pinned": "15.0.6",
+      "lts": "15.0.9",
+      "stable": "16.0.5",
+      "lts_supported_until": "2027-07-15",
+      "stable_supported_until": "2026-10-29",
+      "source": "https://forgejo.org/releases/"
+    },
+    "woodpecker": {
+      "pinned": "v3.16.0",
+      "stable": "v3.18.1",
+      "source": "https://github.com/woodpecker-ci/woodpecker/releases/tag/v3.18.1"
+    },
+    "argocd": {
+      "pinned": "v3.5.0",
+      "stable": "v3.5.3",
+      "source": "https://github.com/argoproj/argo-cd/releases/tag/v3.5.3"
+    }
+  }
+}
