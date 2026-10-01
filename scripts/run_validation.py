@@ -41,6 +41,8 @@ VALIDATION_SCRIPTS = (
     "scripts/test_forge_migration_live.py",
     "scripts/test_forge_migration_live_workflow.py",
     "scripts/test_private_values_renderer.py",
+    "scripts/test_platform_version_updates.py",
+    "scripts/test_argocd_application_diagnostics.py",
     "scripts/test_platform_secret_contract.py",
     "scripts/test_policy_examples.py",
     "scripts/test_image_integrity_contract.py",

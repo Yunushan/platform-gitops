@@ -168,6 +168,12 @@ The private values renderer pins both Woodpecker server and agent images with
 an intentional Woodpecker upgrade: render, validate, sync, then prove the
 Woodpecker server and agents are healthy.
 
+Optional Forgejo LTS/stable and exact Forgejo, Woodpecker and Argo CD image
+updates are described in [PLATFORM_UPDATES.md](PLATFORM_UPDATES.md). The
+image-only updater preserves existing private storage/database settings;
+default pins remain unchanged. Persist explicit approved tags in the ignored
+private env file before subsequent full renders.
+
 Object-storage backed apps and external app databases are rendered with bucket
 names, endpoints, regions, cache sizes, database hosts, and Kubernetes secret
 names only. Runtime credentials stay outside Git. `make platform-app-secrets`
