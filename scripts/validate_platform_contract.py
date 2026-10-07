@@ -4972,19 +4972,30 @@ def main() -> None:
         "PLATFORM_DNS_CILIUM_API_BOOTSTRAP",
         "PLATFORM_DNS_CILIUM_API_HOST",
         "PLATFORM_DNS_CILIUM_API_PORT",
-        "Configure node-local Kubernetes API service routing before pod service probes",
+        "Ensure Kubernetes API service keeps cluster-wide endpoint routing before pod service probes",
         "Read existing RKE2 Cilium API bootstrap values",
         "Merge RKE2 Cilium API bootstrap endpoint with existing values",
         "Wait for Cilium API bootstrap endpoint rollout",
         "'k8sServiceHost': platform_dns_cilium_api_host_effective",
         "'k8sServicePort': platform_dns_cilium_api_port_effective | int",
-        "patch-endpoint-topology",
-        "kubernetes.io/service-name=kubernetes",
-        "endpoint.get(\"nodeName\", \"\")",
-        "patch-local-service",
-        "kubernetes_api_service_routing=local",
+        "internalTrafficPolicy\":\"Cluster\"",
+        "patch-cluster-service",
+        "kubernetes_api_service_routing=cluster",
     ):
         require_text(dns_repair_text, needle, f"DNS repair must support forced CNI service-path recovery: {needle}")
+    api_routing_task = re.search(
+        r"(?ms)^\s*- name: Ensure Kubernetes API service keeps cluster-wide endpoint routing before pod service probes\s*$\n"
+        r"(?P<body>.*?)(?=^\s*- name:|\Z)",
+        dns_repair_text,
+    )
+    if api_routing_task and 'internalTrafficPolicy":"Local"' in api_routing_task.group("body"):
+        errors.append("Kubernetes API Service repair must not restrict traffic to node-local endpoints")
+    if api_routing_task:
+        routing_body = api_routing_task.group("body")
+        if "platform_dns_service_path_repair_effective | bool" not in routing_body:
+            errors.append("Kubernetes API Service restoration must be gated by service-path repair")
+        if "platform_dns_cilium_api_bootstrap_effective" in routing_body:
+            errors.append("Kubernetes API Service restoration must not depend on optional Cilium bootstrap")
     cleanup_script_text = read(firewalld_cleanup_script)
     for needle in (
         "TRANSIENT_INTERFACE_RE",
