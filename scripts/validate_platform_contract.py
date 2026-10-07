@@ -4990,6 +4990,12 @@ def main() -> None:
     )
     if api_routing_task and 'internalTrafficPolicy":"Local"' in api_routing_task.group("body"):
         errors.append("Kubernetes API Service repair must not restrict traffic to node-local endpoints")
+    if api_routing_task:
+        routing_body = api_routing_task.group("body")
+        if "platform_dns_service_path_repair_effective | bool" not in routing_body:
+            errors.append("Kubernetes API Service restoration must be gated by service-path repair")
+        if "platform_dns_cilium_api_bootstrap_effective" in routing_body:
+            errors.append("Kubernetes API Service restoration must not depend on optional Cilium bootstrap")
     cleanup_script_text = read(firewalld_cleanup_script)
     for needle in (
         "TRANSIENT_INTERFACE_RE",

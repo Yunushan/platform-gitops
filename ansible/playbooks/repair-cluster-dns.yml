@@ -541,7 +541,6 @@
       run_once: true
       when:
         - platform_dns_service_path_repair_effective | bool
-        - platform_dns_cilium_api_bootstrap_effective | bool
 
     - name: Read existing RKE2 Cilium API bootstrap values
       ansible.builtin.command:
