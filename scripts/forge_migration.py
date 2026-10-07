@@ -3371,11 +3371,38 @@ def prepare_mirror(repo: RepoPlan, work_dir: Path) -> Path:
     return mirror
 
 
+def mirror_migratable_refs(mirror: Path) -> dict[str, str]:
+    output = git(
+        ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/", "refs/tags/", "refs/notes/"],
+        cwd=mirror,
+    ).stdout
+    refs: dict[str, str] = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if (len(parts) != 2 or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", parts[0])
+                or not parts[1].startswith(("refs/heads/", "refs/tags/", "refs/notes/"))
+                or parts[1] in refs):
+            raise MigrationError("cannot verify local mirror refs; details suppressed")
+        refs[parts[1]] = parts[0]
+    return refs
+
+
 def push_mirror(
     mirror: Path,
     destination_url: str,
     env: Mapping[str, str] | None = None,
 ) -> None:
+    local_refs = mirror_migratable_refs(mirror)
+    destination_refs, error = ls_remote_refs(destination_url, env=env)
+    if error:
+        raise MigrationError("cannot verify destination refs before push; details suppressed")
+    if not local_refs and destination_refs:
+        raise MigrationError("empty source has a nonempty destination; refuse to prune destination refs")
+    if local_refs == destination_refs:
+        # Matching ref names alone are insufficient: every object ID must match.
+        # Avoid a write request to archived repositories already fully mirrored.
+        # migrate_repo still verifies default branch, LFS, and other surfaces.
+        return
     git(
         [
             "push",
