@@ -123,12 +123,26 @@ from becoming an instance-wide import.
   Expired memberships are skipped and pending memberships are skipped unless
   the plan explicitly chooses a different policy. Role downgrades remove stale
   managed team memberships and every membership is read back.
+  Newly created non-admin teams receive explicit repository-unit permissions
+  at the mapped coarse role level, with external issue/wiki links capped at
+  `read`. Their unit map is read back before any memberships are assigned.
+  Existing teams are not rewritten, and admin/Owners permissions retain
+  Forgejo's built-in behavior.
 - **Projects:** project metadata that Forgejo can represent is reconciled on
   the destination repository. The source project is not deleted or disabled.
 - **Repositories:** Git refs, tags, LFS data when selected, and the supported
   repository metadata are delegated to `forge_migration.py`. For private
   GitLab remotes, the source token is supplied to Git through an inherited
   credential helper; it is never embedded in a clone URL or command argument.
+  Sources without branch, tag, or note refs require an independently verified
+  empty destination. No push or pruning is attempted in that case, including
+  for archived empty repositories. A nonempty or unreadable destination stops
+  the transfer instead of deleting data or treating the repository as migrated.
+  Nonempty mirrors also skip Git push when the complete branch, tag, and note
+  ref sets and every object ID already match. This avoids unnecessary write
+  requests to archived repositories without unarchiving them. Final ref,
+  default-branch, LFS, and metadata checks still run; matching Git refs alone
+  do not mark the whole repository migration verified.
 - **Permissions:** The managed surface inventories GitLab direct and effective
   project members, including inherited access and available invited-group
   metadata. Invited groups are expanded to their current member set and each

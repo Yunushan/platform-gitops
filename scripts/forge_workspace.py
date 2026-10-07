@@ -57,6 +57,13 @@ MODES = {"skip", "export", "managed", "mapped", "manual"}
 ACCOUNTED_MODES = {"managed", "mapped", "manual", "skipped"}
 FORGEJO_PERMISSIONS = {"none", "read", "write", "admin"}
 FORGEJO_TEAM_PERMISSIONS = FORGEJO_PERMISSIONS | {"owner"}
+# Unit permissions make the existing coarse role mapping explicit. Forgejo
+# requires nonempty units for non-admin teams; external links are read-only.
+FORGEJO_TEAM_REPOSITORY_UNITS = (
+    "repo.code", "repo.issues", "repo.pulls", "repo.releases",
+    "repo.wiki", "repo.projects", "repo.packages", "repo.actions",
+)
+FORGEJO_TEAM_EXTERNAL_UNITS = ("repo.ext_issues", "repo.ext_wiki")
 # Forgejo uses the same username validator for organization usernames. Keep
 # flattened GitLab group paths within that limit while retaining a stable,
 # collision-resistant reference to the original path.
@@ -2699,6 +2706,13 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
         "can_create_org_repo": False,
         "includes_all_repositories": False,
     }
+    if permission in {"none", "read", "write"}:
+        units_map = {unit: permission for unit in FORGEJO_TEAM_REPOSITORY_UNITS}
+        units_map.update({
+            unit: "none" if permission == "none" else "read"
+            for unit in FORGEJO_TEAM_EXTERNAL_UNITS
+        })
+        body["units_map"] = units_map
     created = request(destination, "POST", f"orgs/{quote(org, safe='')}/teams", body=body, expected=(201, 200))
     if not isinstance(created, dict) or created.get("id") is None:
         raise WorkspaceError(f"Forgejo team create returned no id for {org}/{name}")
@@ -2710,6 +2724,8 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
     )
     if not verified or string(verified.get("permission")).lower() != permission:
         raise WorkspaceError(f"Forgejo team {org}/{name} did not verify after creation")
+    if "units_map" in body and verified.get("units_map") != body["units_map"]:
+        raise WorkspaceError(f"Forgejo team {org}/{name} unit permissions did not verify after creation")
     return team_id
 
 
