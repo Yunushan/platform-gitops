@@ -171,6 +171,8 @@ jobs:
         run: python scripts/test_forge_migration_live_workflow.py
       - name: Test private values renderer
         run: python scripts/test_private_values_renderer.py
+      - name: Test private system mail preparation
+        run: python scripts/test_system_mail.py
       - name: Test optional platform version updates
         run: python scripts/test_platform_version_updates.py
       - name: Test read-only Argo application diagnostics

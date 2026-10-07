@@ -34,6 +34,7 @@ validate:
     - python scripts/test_forge_migration_live.py
     - python scripts/test_forge_migration_live_workflow.py
     - python scripts/test_private_values_renderer.py
+    - python scripts/test_system_mail.py
     - python scripts/test_platform_version_updates.py
     - python scripts/test_argocd_application_diagnostics.py
     - python scripts/test_platform_secret_contract.py

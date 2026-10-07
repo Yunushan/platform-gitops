@@ -37,6 +37,7 @@
   <a href="docs/INSTALLATION.md">Launch</a> •
   <a href="docs/PREMIUM_3NODE.md">Premium 3-Node</a> •
   <a href="docs/PRIVATE_DEPLOYMENT.md">Private Deployment</a> •
+  <a href="docs/SYSTEM_MAIL.md">Private System Mail</a> •
   <a href="docs/COMPONENT_SWITCHING.md">Change Components</a> •
   <a href="docs/FORGE_MIGRATION.md">Forge Migration</a> •
   <a href="docs/FORGE_TRANSITION.md">Forge Transition</a> •
