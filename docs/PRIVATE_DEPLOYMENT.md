@@ -541,6 +541,11 @@ reviewed external-image exceptions and their hash-bound Trivy reports
 Plaintext secrets should still not be committed, even to a private repository.
 Use encrypted secrets or an external secret manager.
 
+For an existing installation, use the opt-in [private system mail workflow](SYSTEM_MAIL.md)
+to prepare focused Forgejo/Argo CD SMTP overlays and secret-backed Woodpecker
+pipeline notifications. Do not re-render stateful application values just to
+change a mail relay or shared sender.
+
 ## Important Boundary
 
 `PLATFORM_REPO_URL` is a source URL. It tells Argo CD where to read manifests
