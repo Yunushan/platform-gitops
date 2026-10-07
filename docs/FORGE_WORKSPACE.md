@@ -128,6 +128,10 @@ from becoming an instance-wide import.
   `read`. Their unit map is read back before any memberships are assigned.
   Existing teams are not rewritten, and admin/Owners permissions retain
   Forgejo's built-in behavior.
+  Forgejo may summarize a granular write team as `read` because its external
+  links are read-only. Creation and retry accept that summary only when the
+  complete intended write-unit map matches; missing, weaker, or broader units
+  still fail verification.
 - **Projects:** project metadata that Forgejo can represent is reconciled on
   the destination repository. The source project is not deleted or disabled.
 - **Repositories:** Git refs, tags, LFS data when selected, and the supported
