@@ -62,6 +62,19 @@ def tests() -> None:
         "ENVELOPE_FROM": "other@example.test"}}}}, SETTINGS))
     rejects(lambda: mail.forgejo_overlay({"gitea": {"additionalConfigFromEnvs": [
         {"name": "FORGEJO__MAILER__SMTP_ADDR", "value": "other.example.test"}]}}, SETTINGS))
+    for parent, field in (("gitea", "additionalConfigFromEnvs"), ("deployment", "env")):
+        for prefix in ("FORGEJO__MAILER__", "GITEA__MAILER__"):
+            for key in ("SMTP_ADDR", "PROTOCOL", "USER", "PASSWD"):
+                rejects(lambda parent=parent, field=field, prefix=prefix, key=key:
+                        mail.forgejo_overlay({parent: {field: [{"name": prefix + key,
+                            "valueFrom": {"secretKeyRef": {"name": "example-mail", "key": "example"}}}]}}, SETTINGS))
+        for entries in (None, {}, [None], [{"name": None}]):
+            rejects(lambda parent=parent, field=field, entries=entries:
+                    mail.forgejo_overlay({parent: {field: entries}}, SETTINGS))
+        existing_env = {parent: {field: [{"name": "FORGEJO__DATABASE__DB_TYPE", "value": "postgres"}]}}
+        before = copy.deepcopy(existing_env)
+        assert mail.forgejo_overlay(existing_env, SETTINGS)["gitea"]["config"]["mailer"]["FROM"] == SETTINGS["email"]
+        assert existing_env == before
     rejects(lambda: mail.argocd_overlay({"notifications": {"cm": {"create": False}}}, SETTINGS))
     rejects(lambda: mail.argocd_overlay({"notifications": {"podLabels": {
         "platform.gitops/system-mail-sender": "other"}}}, SETTINGS))
@@ -74,6 +87,10 @@ def tests() -> None:
     policies = mail.loads_strict_yaml_all(files["smtp-egress.yaml"])
     assert {p["metadata"]["namespace"] for p in policies} == {"argocd", "woodpecker"}
     assert policies[0]["spec"]["podSelector"]["matchLabels"] == n["podLabels"]
+    assert policies[1]["spec"]["podSelector"] == {"matchLabels": {"woodpecker-ci.org/step": "system-mail"}}
+    assert policies[1]["spec"]["podSelector"]["matchLabels"]["woodpecker-ci.org/step"] in (
+        mail.document(files["woodpecker-mail-step.yaml"])["steps"]
+    )
     for p in policies:
         assert p["spec"]["egress"] == [{"to": [{"ipBlock": {"cidr": SETTINGS["host"] + "/32"}}],
                                         "ports": [{"protocol": "TCP", "port": 25}]}]

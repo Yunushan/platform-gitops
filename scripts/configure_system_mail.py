@@ -127,15 +127,19 @@ def dump(value: object) -> str:
 
 def forgejo_overlay(values: dict, settings: dict) -> dict:
     gitea = mapping(values.get("gitea", {}))
-    config_envs = gitea.get("additionalConfigFromEnvs", [])
-    if not isinstance(config_envs, list):
-        raise MailError("Forgejo configuration environment entries are invalid")
-    for item in config_envs:
-        if not isinstance(item, dict):
-            raise MailError("Forgejo configuration environment entry is invalid")
-        name = item.get("name", "")
-        if not isinstance(name, str) or name.upper().startswith(("FORGEJO__MAILER__", "GITEA__MAILER__")):
-            raise MailError("Forgejo mailer is overridden by configuration environment; review that source first")
+    deployment = mapping(values.get("deployment", {}))
+    # Both chart lists are injected into init-app-ini and can override mailer
+    # values, including secret-backed credentials. Inspect both before changing
+    # the relay; no existing credential may silently follow it to a new host.
+    for config_envs in (gitea.get("additionalConfigFromEnvs", []), deployment.get("env", [])):
+        if not isinstance(config_envs, list):
+            raise MailError("Forgejo configuration environment entries are invalid")
+        for item in config_envs:
+            if not isinstance(item, dict):
+                raise MailError("Forgejo configuration environment entry is invalid")
+            name = item.get("name", "")
+            if not isinstance(name, str) or name.upper().startswith(("FORGEJO__MAILER__", "GITEA__MAILER__")):
+                raise MailError("Forgejo mailer is overridden by configuration environment; review that source first")
     config = mapping(gitea.get("config", {}))
     mapping(config.get("service", {}))
     mailer = copy.deepcopy(mapping(config.get("mailer", {})))
@@ -230,7 +234,7 @@ def smtp_policies(settings: dict) -> list[dict]:
                                   "ports": [{"protocol": "TCP", "port": settings["port"]}]}]}}
             for namespace, selector in (
                 ("argocd", {"matchLabels": {"platform.gitops/system-mail-sender": "argocd-notifications"}}),
-                ("woodpecker", {}),
+                ("woodpecker", {"matchLabels": {"woodpecker-ci.org/step": "system-mail"}}),
             )]
 
 

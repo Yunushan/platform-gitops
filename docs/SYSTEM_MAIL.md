@@ -57,11 +57,16 @@ directory after changing inputs rather than overwriting an operator's files.
    belong only to the internal repository, never to this public one.
 3. Add the two documents in `smtp-egress.yaml` to the appropriate internal app
    resources. Argo permits only the notification controller to the relay's /32
-   on TCP/25. Woodpecker permits its namespace's build pods to that same relay
-   and port. If the build backend runs elsewhere, adapt the **private** policy's
+   on TCP/25. Woodpecker selects only step pods labeled
+   `woodpecker-ci.org/step: system-mail`, matching the generated notification
+   step, rather than every server, agent, and pipeline pod in its namespace.
+   If the build backend runs elsewhere, adapt the **private** policy's
    namespace before promotion. This does not remove or relax other policies;
    existing Forgejo SMTP egress is already provided by its component. Cilium
    deny rules and external firewall restrictions may still need inspection.
+   A step-name label is not authentication: pipeline authors can choose step
+   names. Retain relay sender/source restrictions and trusted workflow/admission
+   controls; this policy does not authorize arbitrary pipelines to send mail.
 4. Review the internal rendered diff: only mail configuration and the scoped
    egress policies should change. Commit to the **internal** source, then let
    Argo CD reconcile. It is not enough to change local files or live objects
