@@ -1601,6 +1601,109 @@ def test_team_permission_fails_closed() -> None:
             raise AssertionError("team permission mismatch was accepted")
 
 
+def test_team_creation_sends_and_verifies_unit_permissions() -> None:
+    internal_units = {
+        "repo.code", "repo.issues", "repo.pulls", "repo.releases",
+        "repo.wiki", "repo.projects", "repo.packages", "repo.actions",
+    }
+    for permission in ("none", "read", "write"):
+        expected_units = {unit: permission for unit in internal_units}
+        expected_units.update({
+            "repo.ext_issues": "none" if permission == "none" else "read",
+            "repo.ext_wiki": "none" if permission == "none" else "read",
+        })
+        summary = "read" if permission == "write" else permission
+        team = {"id": 7, "name": "gitlab-role", "permission": summary, "units_map": expected_units}
+        with (
+            mock.patch.object(workspace, "list_pages", side_effect=[[], [team]]),
+            mock.patch.object(workspace, "request", return_value={"id": 7}) as create,
+        ):
+            result = workspace.ensure_team(object(), "platform", "gitlab-role", permission)  # type: ignore[arg-type]
+        if result != 7 or create.call_count != 1:
+            raise AssertionError("team creation was not performed exactly once")
+        if create.call_args.args[1:] != ("POST", "orgs/platform/teams"):
+            raise AssertionError("team creation used an unexpected API endpoint")
+        body = create.call_args.kwargs["body"]
+        if body["units_map"] != expected_units or body["permission"] != permission:
+            raise AssertionError("team unit permissions changed the mapped role")
+        if body["includes_all_repositories"] or body["can_create_org_repo"]:
+            raise AssertionError("team creation broadened organization privileges")
+        if "units" in body or "password" in body:
+            raise AssertionError("team creation used legacy units or a credential field")
+
+
+def test_team_creation_unit_readback_fails_closed() -> None:
+    for units in (None, {}, {"repo.code": "read"}, {"repo.code": "admin"}):
+        team = {"id": 7, "name": "gitlab-developers", "permission": "write", "units_map": units}
+        with (
+            mock.patch.object(workspace, "list_pages", side_effect=[[], [team]]),
+            mock.patch.object(workspace, "request", return_value={"id": 7}),
+        ):
+            try:
+                workspace.ensure_team(object(), "platform", "gitlab-developers", "write")  # type: ignore[arg-type]
+            except workspace.WorkspaceError as exc:
+                if "unit permissions did not verify" not in str(exc):
+                    raise AssertionError(f"unexpected unit read-back diagnostic: {exc}") from exc
+            else:
+                raise AssertionError("missing or changed team units passed read-back")
+
+
+def test_existing_and_admin_teams_are_not_reconfigured() -> None:
+    for name, permission in (("gitlab-role", "write"), ("Owners", "owner")):
+        with (
+            mock.patch.object(workspace, "list_pages", return_value=[{"id": 7, "name": name, "permission": permission}]),
+            mock.patch.object(workspace, "request") as api,
+        ):
+            result = workspace.ensure_team(object(), "platform", name, permission)  # type: ignore[arg-type]
+        if result != 7 or api.called:
+            raise AssertionError("an existing team was mutated during compatibility repair")
+    admin = {"id": 7, "name": "gitlab-admin", "permission": "admin"}
+    with (
+        mock.patch.object(workspace, "list_pages", side_effect=[[], [admin]]),
+        mock.patch.object(workspace, "request", return_value={"id": 7}) as create,
+    ):
+        workspace.ensure_team(object(), "platform", "gitlab-admin", "admin")  # type: ignore[arg-type]
+    if "units_map" in create.call_args.kwargs["body"]:
+        raise AssertionError("admin team's built-in unit behavior was overridden")
+
+
+def test_granular_write_team_resumes_without_reconfiguration() -> None:
+    expected_units = {
+        unit: "write" for unit in (
+            "repo.code", "repo.issues", "repo.pulls", "repo.releases",
+            "repo.wiki", "repo.projects", "repo.packages", "repo.actions",
+        )
+    }
+    expected_units.update({"repo.ext_issues": "read", "repo.ext_wiki": "read"})
+    team = {"id": 7, "name": "gitlab-developers", "permission": "read", "units_map": expected_units}
+    with (
+        mock.patch.object(workspace, "list_pages", return_value=[team]),
+        mock.patch.object(workspace, "request") as api,
+    ):
+        assert workspace.ensure_team(object(), "platform", "gitlab-developers", "write") == 7
+    assert not api.called
+    for units in (None, {}, {**expected_units, "repo.code": "read"},
+                  {**expected_units, "repo.code": "admin"},
+                  {key: value for key, value in expected_units.items() if key != "repo.actions"}):
+        invalid = {**team, "units_map": units}
+        for creating in (False, True):
+            rows = [[], [invalid]] if creating else [[invalid]]
+            with (
+                mock.patch.object(workspace, "list_pages", side_effect=rows),
+                mock.patch.object(workspace, "request", return_value={"id": 7}) as api,
+            ):
+                try:
+                    workspace.ensure_team(object(), "platform", "gitlab-developers", "write")
+                except workspace.WorkspaceError:
+                    pass
+                else:
+                    raise AssertionError("read summary accepted missing, broader, or weaker write units")
+            assert api.call_count == int(creating)
+    for summary in ("none", "admin", "owner", ""):
+        invalid = {**team, "permission": summary}
+        assert not workspace.team_permission_matches(invalid, "write")
+
+
 def test_gitlab_owner_maps_to_builtin_owners_team() -> None:
     plan = base_plan()
     plan["surfaces"]["memberships"] = {"mode": "managed"}  # type: ignore[index]
@@ -2278,6 +2381,10 @@ def main() -> int:
     test_mapped_variable_is_non_mutating()
     test_team_membership_is_reconciled_and_verified()
     test_team_permission_fails_closed()
+    test_team_creation_sends_and_verifies_unit_permissions()
+    test_team_creation_unit_readback_fails_closed()
+    test_existing_and_admin_teams_are_not_reconfigured()
+    test_granular_write_team_resumes_without_reconfiguration()
     test_gitlab_owner_maps_to_builtin_owners_team()
     test_recursive_group_discovery_keeps_direct_and_effective_members()
     test_role_mapping_supports_custom_roles_and_fails_closed()

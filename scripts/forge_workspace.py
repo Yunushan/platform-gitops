@@ -57,6 +57,13 @@ MODES = {"skip", "export", "managed", "mapped", "manual"}
 ACCOUNTED_MODES = {"managed", "mapped", "manual", "skipped"}
 FORGEJO_PERMISSIONS = {"none", "read", "write", "admin"}
 FORGEJO_TEAM_PERMISSIONS = FORGEJO_PERMISSIONS | {"owner"}
+# Unit permissions make the existing coarse role mapping explicit. Forgejo
+# requires nonempty units for non-admin teams; external links are read-only.
+FORGEJO_TEAM_REPOSITORY_UNITS = (
+    "repo.code", "repo.issues", "repo.pulls", "repo.releases",
+    "repo.wiki", "repo.projects", "repo.packages", "repo.actions",
+)
+FORGEJO_TEAM_EXTERNAL_UNITS = ("repo.ext_issues", "repo.ext_wiki")
 # Forgejo uses the same username validator for organization usernames. Keep
 # flattened GitLab group paths within that limit while retaining a stable,
 # collision-resistant reference to the original path.
@@ -2666,6 +2673,28 @@ def import_memberships(
     }
 
 
+def team_unit_permissions(permission: str) -> dict[str, str]:
+    units = {unit: permission for unit in FORGEJO_TEAM_REPOSITORY_UNITS}
+    units.update({
+        unit: "none" if permission == "none" else "read"
+        for unit in FORGEJO_TEAM_EXTERNAL_UNITS
+    })
+    return units
+
+
+def team_permission_matches(team: dict[str, Any], permission: str) -> bool:
+    actual = string(team.get("permission")).lower()
+    if actual == permission:
+        return True
+    # Forgejo derives the summary permission from the least-privileged unit.
+    # A write team with read-only external links therefore reports "read".
+    # Accept that summary only after verifying the complete intended unit map.
+    return (
+        permission == "write" and actual == "read"
+        and team.get("units_map") == team_unit_permissions(permission)
+    )
+
+
 def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> int:
     permission = string(permission).lower()
     if permission not in FORGEJO_TEAM_PERMISSIONS:
@@ -2682,7 +2711,7 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
     existing = next((item for item in teams if string(item.get("name")) == name), None)
     if existing and existing.get("id") is not None:
         actual_permission = string(existing.get("permission")).lower()
-        if actual_permission != permission:
+        if not team_permission_matches(existing, permission):
             raise WorkspaceError(
                 f"Forgejo team {org}/{name} permission mismatch: "
                 f"expected {permission!r}, got {actual_permission or '<missing>'!r}"
@@ -2699,6 +2728,8 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
         "can_create_org_repo": False,
         "includes_all_repositories": False,
     }
+    if permission in {"none", "read", "write"}:
+        body["units_map"] = team_unit_permissions(permission)
     created = request(destination, "POST", f"orgs/{quote(org, safe='')}/teams", body=body, expected=(201, 200))
     if not isinstance(created, dict) or created.get("id") is None:
         raise WorkspaceError(f"Forgejo team create returned no id for {org}/{name}")
@@ -2708,8 +2739,10 @@ def ensure_team(destination: Endpoint, org: str, name: str, permission: str) -> 
         (item for item in verified_teams if int(item.get("id") or 0) == team_id),
         None,
     )
-    if not verified or string(verified.get("permission")).lower() != permission:
+    if not verified or not team_permission_matches(verified, permission):
         raise WorkspaceError(f"Forgejo team {org}/{name} did not verify after creation")
+    if "units_map" in body and verified.get("units_map") != body["units_map"]:
+        raise WorkspaceError(f"Forgejo team {org}/{name} unit permissions did not verify after creation")
     return team_id
 
 

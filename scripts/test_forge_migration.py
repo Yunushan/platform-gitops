@@ -2229,11 +2229,235 @@ def test_plan_rejects_literal_credentials() -> None:
         raise AssertionError("malformed URL unexpectedly passed plan validation")
 
 
+def test_empty_repository_migration_and_destination_preservation() -> None:
+    with tempfile.TemporaryDirectory(prefix="forge-migration-empty-test-") as temp:
+        root = Path(temp)
+        source = root / "empty-source.git"
+        destination = root / "empty-destination.git"
+        git(["init", "--bare", str(source)])
+        git(["init", "--bare", str(destination)])
+        repo = migration.parse_repo({
+            "name": "empty",
+            "source_url": str(source),
+            "destination_url": str(destination),
+            "wiki": False,
+            "lfs": False,
+            "metadata": {"issues": "skip", "pull_requests": "skip"},
+        }, 0, "gitlab-to-forgejo")
+        with mock.patch.object(migration, "git", wraps=migration.git) as commands:
+            result = migration.migrate_repo(repo, root / "work")
+        if not result["verified"] or result["git"]["source_ref_count"] != 0:
+            raise AssertionError("empty repository migration did not produce verified empty refs")
+        if any(call.args[0][0] == "push" for call in commands.call_args_list):
+            raise AssertionError("empty repository migration attempted a Git push")
+
+        populated = create_source_repo(root)
+        before, error = migration.ls_remote_refs(str(populated))
+        if error or not before:
+            raise AssertionError("destination-preservation fixture was not populated")
+        repo = migration.parse_repo({
+            "name": "empty-to-populated",
+            "source_url": str(source),
+            "destination_url": str(populated),
+            "wiki": False,
+            "lfs": False,
+            "metadata": {"issues": "skip", "pull_requests": "skip"},
+        }, 0, "gitlab-to-forgejo")
+        with mock.patch.object(migration, "git", wraps=migration.git) as commands:
+            try:
+                migration.migrate_repo(repo, root / "work")
+            except migration.MigrationError as exc:
+                if "refuse to prune" not in str(exc):
+                    raise AssertionError("empty source did not stop at the destination-ref guard") from exc
+            else:
+                raise AssertionError("empty source accepted a populated destination")
+        after, error = migration.ls_remote_refs(str(populated))
+        if error or before != after:
+            raise AssertionError("empty source changed destination branches, tags, or notes")
+        if any(call.args[0][0] == "push" for call in commands.call_args_list):
+            raise AssertionError("empty-to-populated repository attempted a Git push")
+
+
+def test_empty_mirror_push_is_read_only_and_fails_closed() -> None:
+    mirror = Path("synthetic-empty-mirror.git")
+    destination = "https://forgejo.example.test/engineering/empty.git"
+    environment = {"GIT_TERMINAL_PROMPT": "0"}
+    empty = subprocess.CompletedProcess([], 0, "", "")
+    with (
+        mock.patch.object(migration, "git", return_value=empty) as git,
+        mock.patch.object(migration, "ls_remote_refs", return_value=({}, None)) as remote,
+    ):
+        migration.push_mirror(mirror, destination, env=environment)
+    if git.call_count != 1 or git.call_args.args[0][0] != "for-each-ref":
+        raise AssertionError("empty mirror attempted a push or another Git write")
+    if remote.call_args != mock.call(destination, env=environment):
+        raise AssertionError("empty mirror was not checked against the authenticated destination")
+
+    for refs, error, expected in (
+        ({"refs/heads/existing": "a" * 40}, None, "refuse to prune"),
+        ({}, "SYNTHETIC_PRIVATE_ERROR", "cannot verify destination refs"),
+    ):
+        with (
+            mock.patch.object(migration, "git", return_value=empty) as git,
+            mock.patch.object(migration, "ls_remote_refs", return_value=(refs, error)),
+        ):
+            try:
+                migration.push_mirror(mirror, destination, env=environment)
+            except migration.MigrationError as exc:
+                if expected not in str(exc) or "SYNTHETIC_PRIVATE_ERROR" in str(exc):
+                    raise AssertionError("empty mirror guard returned an unsafe or incorrect diagnostic") from exc
+            else:
+                raise AssertionError("empty mirror accepted an unverified or nonempty destination")
+        if git.call_count != 1:
+            raise AssertionError("empty mirror guard attempted a Git write after failed verification")
+
+
+def test_nonempty_mirror_push_retains_refspecs() -> None:
+    refs = subprocess.CompletedProcess([], 0, "a" * 40 + " refs/heads/main\n", "")
+    pushed = subprocess.CompletedProcess([], 0, "", "")
+    mirror = Path("synthetic-nonempty-mirror.git")
+    destination = "https://forgejo.example.test/engineering/nonempty.git"
+    with (
+        mock.patch.object(migration, "git", side_effect=[refs, pushed]) as git,
+        mock.patch.object(migration, "ls_remote_refs", return_value=({}, None)) as remote,
+    ):
+        migration.push_mirror(mirror, destination)
+    if remote.call_count != 1 or git.call_count != 2:
+        raise AssertionError("nonempty mirror changed its existing push workflow")
+    if git.call_args.args[0] != [
+        "push", "--prune", destination,
+        "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*", "+refs/notes/*:refs/notes/*",
+    ]:
+        raise AssertionError("nonempty mirror changed its reviewed push refspecs")
+
+
+def test_identical_mirror_refs_skip_push_and_differences_do_not() -> None:
+    mirror = Path("synthetic-identical-mirror.git")
+    destination = "https://forgejo.example.test/engineering/archived.git"
+    environment = {"GIT_TERMINAL_PROMPT": "0"}
+    local = {
+        "refs/heads/main": "a" * 40,
+        "refs/tags/v1": "b" * 40,
+        "refs/notes/commits": "c" * 40,
+    }
+    output = "\n".join(f"{sha} {name}" for name, sha in local.items()) + "\n"
+    completed = subprocess.CompletedProcess([], 0, output, "")
+    with (
+        mock.patch.object(migration, "git", return_value=completed) as commands,
+        mock.patch.object(migration, "ls_remote_refs", return_value=(dict(local), None)) as remote,
+    ):
+        migration.push_mirror(mirror, destination, env=environment)
+    if commands.call_count != 1 or commands.call_args.args[0][0] != "for-each-ref":
+        raise AssertionError("identical ref sets attempted a Git write")
+    remote.assert_called_once_with(destination, env=environment)
+
+    variants = (
+        {**local, "refs/heads/main": "d" * 40},
+        {name: sha for name, sha in local.items() if name != "refs/tags/v1"},
+        {**local, "refs/heads/destination-only": "e" * 40},
+    )
+    for refs in variants:
+        with (
+            mock.patch.object(migration, "git", side_effect=[completed, subprocess.CompletedProcess([], 0, "", "")]) as commands,
+            mock.patch.object(migration, "ls_remote_refs", return_value=(refs, None)),
+        ):
+            migration.push_mirror(mirror, destination, env=environment)
+        if commands.call_count != 2 or commands.call_args.args[0][0] != "push":
+            raise AssertionError("nonidentical ref sets were treated as already mirrored")
+        if commands.call_args.kwargs.get("env") is not environment:
+            raise AssertionError("changed refs lost their destination credential environment")
+
+    with (
+        mock.patch.object(migration, "git", return_value=completed) as commands,
+        mock.patch.object(migration, "ls_remote_refs", return_value=({}, "SYNTHETIC_PRIVATE_READ_FAILURE")),
+    ):
+        try:
+            migration.push_mirror(mirror, destination, env=environment)
+        except migration.MigrationError as exc:
+            if "cannot verify destination refs" not in str(exc) or "SYNTHETIC_PRIVATE" in str(exc):
+                raise AssertionError("destination read failure leaked data or was not fail-closed") from exc
+        else:
+            raise AssertionError("unreadable destination was treated as unchanged")
+    if commands.call_count != 1:
+        raise AssertionError("unreadable destination was written")
+
+
+def test_local_mirror_ref_parser_fails_closed() -> None:
+    for output in (
+        "SYNTHETIC_PRIVATE malformed ref output\n",
+        "z" * 40 + " refs/heads/main\n",
+        "a" * 40 + " refs/remotes/unsafe\n",
+        ("a" * 40 + " refs/heads/main\n") * 2,
+    ):
+        with (
+            mock.patch.object(migration, "git", return_value=subprocess.CompletedProcess([], 0, output, "")) as commands,
+            mock.patch.object(migration, "ls_remote_refs") as remote,
+        ):
+            try:
+                migration.push_mirror(Path("synthetic.git"), "https://forgejo.example.test/repo.git")
+            except migration.MigrationError as exc:
+                if str(exc) != "cannot verify local mirror refs; details suppressed":
+                    raise AssertionError("local ref parser printed private data") from exc
+            else:
+                raise AssertionError("malformed local refs were treated as empty or verified")
+        if commands.call_count != 1 or remote.called:
+            raise AssertionError("malformed local refs attempted a remote operation")
+    refs = "a" * 64 + " refs/heads/main\n"
+    with mock.patch.object(migration, "git", return_value=subprocess.CompletedProcess([], 0, refs, "")):
+        result = migration.mirror_migratable_refs(Path("synthetic-sha256.git"))
+    if result != {"refs/heads/main": "a" * 64}:
+        raise AssertionError("valid SHA-256 repository refs were rejected")
+
+
+def test_repeated_mirror_migration_keeps_final_checks_without_push() -> None:
+    with tempfile.TemporaryDirectory(prefix="forge-migration-repeat-test-") as temp:
+        root = Path(temp)
+        source = create_source_repo(root)
+        destination = root / "destination.git"
+        git(["clone", "--mirror", str(source), str(destination)])
+        repo = migration.parse_repo({
+            "name": "already-mirrored",
+            "source_url": str(source), "destination_url": str(destination),
+            "wiki": False, "lfs": False,
+            "metadata": {"issues": "skip", "pull_requests": "skip"},
+        }, 0, "gitlab-to-forgejo")
+        with (
+            mock.patch.object(migration, "git", wraps=migration.git) as commands,
+            mock.patch.object(migration, "compare_refs", wraps=migration.compare_refs) as compare,
+            mock.patch.object(migration, "verify_lfs", wraps=migration.verify_lfs) as lfs,
+            mock.patch.object(migration, "migrate_metadata", wraps=migration.migrate_metadata) as metadata,
+        ):
+            result = migration.migrate_repo(repo, root / "work")
+        if not result["verified"] or not result["git"]["default_branch_verified"]:
+            raise AssertionError("already-mirrored repository did not pass the full proof checks")
+        if not compare.called or not lfs.called or not metadata.called:
+            raise AssertionError("verified-ref no-op bypassed final migration checks")
+        if any(call.args[0][0] == "push" for call in commands.call_args_list):
+            raise AssertionError("already-mirrored repository still attempted a Git write")
+        git(["symbolic-ref", "HEAD", "refs/heads/feature/migration-proof"], cwd=destination)
+        with mock.patch.object(migration, "git", wraps=migration.git) as commands:
+            try:
+                migration.migrate_repo(repo, root / "work-default-branch-check")
+            except migration.MigrationError as exc:
+                if "repository refs did not verify after push" not in str(exc):
+                    raise AssertionError("default-branch mismatch did not reach final verification") from exc
+            else:
+                raise AssertionError("identical refs hid a default-branch mismatch")
+        if any(call.args[0][0] == "push" for call in commands.call_args_list):
+            raise AssertionError("default-branch verification attempted a Git push for identical refs")
+
+
 def main() -> int:
     if not shutil.which("git"):
         print("git is required for forge migration tests", file=sys.stderr)
         return 1
     test_mirror_migration()
+    test_empty_repository_migration_and_destination_preservation()
+    test_empty_mirror_push_is_read_only_and_fails_closed()
+    test_nonempty_mirror_push_retains_refspecs()
+    test_identical_mirror_refs_skip_push_and_differences_do_not()
+    test_local_mirror_ref_parser_fails_closed()
+    test_repeated_mirror_migration_keeps_final_checks_without_push()
     test_eventually_consistent_metadata_comparison()
     test_command_timeout_redacts_credentials()
     test_git_auth_environment_does_not_embed_credentials()
