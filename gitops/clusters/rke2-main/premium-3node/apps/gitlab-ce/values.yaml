@@ -1,0 +1,142 @@
+# GitLab CE premium profile sized for 100+ users on the compact three-node budget.
+# Externalizes PostgreSQL to CloudNativePG, Redis to platform Valkey, and artifacts,
+# LFS, uploads, backups, and registry storage to external S3-compatible object storage.
+# Secret object names are deployment-specific placeholders. Create the referenced
+# PostgreSQL, Redis, Redis CA, object-storage, and registry-storage secrets outside Git
+# before syncing, then replace every <...> placeholder through the private values renderer
+# or a private overlay.
+global:
+  edition: ce
+  hosts:
+    domain: <PLATFORM_DOMAIN>
+    https: true
+    gitlab:
+      name: gitlab.<PLATFORM_DOMAIN>
+    registry:
+      name: registry-gitlab.<PLATFORM_DOMAIN>
+  ingress:
+    enabled: true
+    class: traefik
+    configureCertmanager: false
+    tls:
+      enabled: true
+      secretName: gitlab-tls
+  shell:
+    port: 22
+  psql:
+    host: platform-postgres-rw.platform-databases.svc.cluster.local
+    port: 5432
+    database: gitlabhq_production
+    username: gitlab
+    password:
+      useSecret: true
+      secret: <GITLAB_POSTGRES_SECRET_NAME>
+      key: psql-password
+  redis:
+    host: platform-valkey.platform-cache.svc.cluster.local
+    port: 6379
+    scheme: rediss
+    auth:
+      enabled: true
+      secret: <GITLAB_REDIS_SECRET_NAME>
+      key: redis-password
+    redisTLS:
+      caFile:
+        secret: <GITLAB_REDIS_CA_SECRET_NAME>
+        key: ca.crt
+  appConfig:
+    object_store:
+      enabled: true
+      proxy_download: true
+      connection:
+        secret: <GITLAB_OBJECT_STORAGE_SECRET_NAME>
+        key: connection
+    backups:
+      bucket: gitlab-backups
+  registry:
+    bucket: gitlab-registry
+  monitoring:
+    enabled: true
+
+certmanager:
+  install: false
+
+certmanager-issuer:
+  install: false
+
+nginx-ingress:
+  enabled: false
+
+prometheus:
+  install: false
+
+gitlab-runner:
+  install: false
+
+postgresql:
+  install: false
+
+redis:
+  install: false
+
+minio:
+  install: false
+
+registry:
+  enabled: true
+  hpa:
+    minReplicas: 2
+    maxReplicas: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  storage:
+    secret: <GITLAB_REGISTRY_STORAGE_SECRET_NAME>
+    key: config
+
+gitlab:
+  webservice:
+    minReplicas: 2
+    maxReplicas: 3
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        memory: 3Gi
+  sidekiq:
+    minReplicas: 2
+    maxReplicas: 3
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        memory: 2560Mi
+  gitlab-shell:
+    minReplicas: 2
+    maxReplicas: 3
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+  gitaly:
+    persistence:
+      storageClass: longhorn-critical-encrypted
+      size: 200Gi
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        memory: 4Gi
+  toolbox:
+    backups:
+      cron:
+        enabled: true
+        schedule: "0 2 * * *"
