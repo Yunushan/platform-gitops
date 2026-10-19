@@ -122,6 +122,26 @@
       "patches": []
     },
     {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/gitlab-ce/charts/gitlab-10.1.1/gitlab",
+      "repository": "https://charts.gitlab.io/",
+      "name": "gitlab",
+      "version": "10.1.1",
+      "packageSha256": "0ea33554ba544b5ac82c21accaa8441a824dd03fbdf8b17997e3a0572d77b582",
+      "upstreamTreeSha256": "ba3484f46d22d9040fc9f80624e23a9ad180e536250cacb3e2b5b6faf858a4f9",
+      "treeSha256": "ba3484f46d22d9040fc9f80624e23a9ad180e536250cacb3e2b5b6faf858a4f9",
+      "patches": []
+    },
+    {
+      "path": "gitops/clusters/rke2-main/premium-3node/apps/gitlab-runner/charts/gitlab-runner-0.90.1/gitlab-runner",
+      "repository": "https://charts.gitlab.io/",
+      "name": "gitlab-runner",
+      "version": "0.90.1",
+      "packageSha256": "075cf28c4466772c0641a8f4fbcc9759f23a3080ecaf2c7f9baf4ef9f9ac8d58",
+      "upstreamTreeSha256": "4ac7b466ac16febaaaecb9a407d079af2d3a7855e17f0c298840265dcb3c0b84",
+      "treeSha256": "4ac7b466ac16febaaaecb9a407d079af2d3a7855e17f0c298840265dcb3c0b84",
+      "patches": []
+    },
+    {
       "path": "gitops/clusters/rke2-main/premium-3node/apps/harbor/charts/harbor-1.19.1/harbor",
       "repository": "https://helm.goharbor.io",
       "name": "harbor",

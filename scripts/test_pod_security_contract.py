@@ -9,12 +9,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APPS = ROOT / "gitops/clusters/rke2-main/premium-3node/apps"
 PROJECT = ROOT / "gitops/clusters/rke2-main/projects/platform-project.yaml"
+GITLAB_PROJECT = ROOT / "gitops/clusters/rke2-main/projects/platform-gitlab-project.yaml"
 NAMESPACE_POLICIES = {
     "gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/namespace.yaml": ("argocd", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/cert-manager/namespace.yaml": ("cert-manager", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/cloudnativepg/namespace.yaml": ("cnpg-system", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/external-secrets/namespace.yaml": ("external-secrets", "restricted", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/forgejo/namespace.yaml": ("forgejo", "baseline", "restricted", "restricted"),
+    "gitops/clusters/rke2-main/premium-3node/apps/gitlab-ce/namespace.yaml": ("gitlab", "baseline", "restricted", "restricted"),
+    "gitops/clusters/rke2-main/premium-3node/apps/gitlab-runner/namespace.yaml": ("gitlab-runner", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/harbor/namespace.yaml": ("harbor", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/keycloak/namespace.yaml": ("keycloak", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/kyverno/namespace.yaml": ("kyverno", "baseline", "restricted", "restricted"),
@@ -70,7 +73,8 @@ def main() -> int:
 
     project_destinations = {
         line.split(":", 1)[1].strip()
-        for line in read(PROJECT).splitlines()
+        for project in (PROJECT, GITLAB_PROJECT)
+        for line in read(project).splitlines()
         if line.strip().startswith("- namespace:")
     }
     expected_destinations = managed_namespaces | {"kube-system"}
