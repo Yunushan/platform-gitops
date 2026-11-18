@@ -122,8 +122,14 @@ unit_tests:
   - kubectl cluster-info
   - bash -c "for _i in {0..60}; do kubectl -n default get serviceaccount default -o name > /dev/null 2>&1 && break; sleep 1; done"
   - bash -c "for _i in {0..60}; do kubectl get nodes|grep -w Ready > /dev/null 2>&1 && break; sleep 1; done"
-  # Install helm latest version instead of pre-installed one in registry.gitlab.com/gitlab-org/gitlab-build-images image
-  - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  - |
+    set -e
+    helm_archive="$(mktemp)"
+    curl -fsSL --max-time 180 -o "$helm_archive" https://get.helm.sh/helm-v3.21.0-linux-amd64.tar.gz
+    echo "0093eb572e3d2380f094df162ddb525e219249de88957afe24cfbb19632acd36  $helm_archive" | sha256sum -c -
+    tar -xzOf "$helm_archive" linux-amd64/helm > /usr/local/bin/helm
+    chmod 0755 /usr/local/bin/helm
+    rm -f "$helm_archive"
   # Run tests
   - bash -x scripts/integration.sh "${TOKEN_PROVISION_METHOD}" "${TOKEN}" "${VALUE_YAML_FILE}"
   after_script:
