@@ -1,0 +1,27 @@
+profile: premium-3node-gitlab-ce
+summary: Premium 3-node profile with GitLab CE and GitLab Runner sized for 100+ users, replacing Forgejo and Woodpecker.
+inherits: premium-3node
+components:
+  git_forge: gitlab-ce
+  ci: gitlab-runner
+  sizing: 100-plus-users
+  database: cloudnativepg
+  cache: valkey-ha
+  object_storage: external-s3-required
+remove:
+  - gitops/clusters/rke2-main/premium-3node/apps/forgejo
+  - gitops/clusters/rke2-main/premium-3node/apps/woodpecker
+includes:
+  - gitops/clusters/rke2-main/premium-3node/apps/gitlab-ce
+  - gitops/clusters/rke2-main/premium-3node/apps/gitlab-runner
+operational_requirements:
+  - dedicated_disks_for_longhorn
+  - off_cluster_object_storage_for_backups
+  - external_object_storage_for_gitlab_artifacts_lfs_uploads_and_registry
+  - gitlab_database_and_role_provisioned_in_platform_postgres
+  - gitlab_redis_auth_and_ca_secrets_created_outside_git
+  - tested_restore_drills
+  - private_secret_management
+  - centralized_sso_and_rbac_review
+  - resource_requests_limits_and_pdb_review
+  - node_anti_affinity_review

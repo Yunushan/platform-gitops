@@ -1,0 +1,41 @@
+# GitLab Runner premium profile for 100+ users. Kubernetes executor jobs run in the
+# gitlab-runner namespace. Set runnerToken through a private overlay or ExternalSecret;
+# never commit registration or authentication tokens.
+gitlabUrl: https://gitlab.<PLATFORM_DOMAIN>
+
+rbac:
+  create: true
+
+concurrent: 20
+checkInterval: 30
+
+runners:
+  locked: false
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = "gitlab-runner"
+        image = "alpine:3.22"
+        privileged = false
+        cpu_request = "250m"
+        memory_request = "256Mi"
+        memory_limit = "2Gi"
+        service_cpu_request = "100m"
+        service_memory_request = "128Mi"
+        service_memory_limit = "512Mi"
+        helper_cpu_request = "100m"
+        helper_memory_request = "128Mi"
+        helper_memory_limit = "512Mi"
+        poll_timeout = 600
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true

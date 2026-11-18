@@ -56,6 +56,10 @@ APP_SYNC_WAVES = {
     "velero": "5",
 }
 SERVER_SIDE_APPLY_APPS = {"kyverno", "platform-image-integrity", "velero"}
+APP_PROJECT_OVERRIDES = {
+    "gitlab-ce": "platform-gitlab",
+    "gitlab-runner": "platform-gitlab",
+}
 NAMESPACE_ONLY_APPS = {
     "forgejo",
     "gitea",
@@ -231,6 +235,8 @@ def generated_application_doc(repo_url: str, source_path: str, source_dir: Path)
     name = source_dir.name
     namespace = kustomization_namespace(source_dir)
     project = "platform-services" if name in NAMESPACE_ONLY_APPS else "platform"
+    if name in APP_PROJECT_OVERRIDES:
+        project = APP_PROJECT_OVERRIDES[name]
     sync_wave = APP_SYNC_WAVES.get(name, "4")
     sync_options = [
         "CreateNamespace=true",

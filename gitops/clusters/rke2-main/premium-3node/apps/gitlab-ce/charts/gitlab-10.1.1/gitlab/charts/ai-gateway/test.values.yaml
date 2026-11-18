@@ -1,0 +1,7 @@
+logging:
+  level: "debug"
+  json: false
+
+gitlab:
+  url: "http://gdk.test:3000/"
+  apiUrl: "http://gdk.test:3000/api/v4/"

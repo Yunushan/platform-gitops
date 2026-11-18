@@ -940,6 +940,26 @@
       when: platform_apply_gitops_effective
       run_once: true
 
+    - name: Apply the scoped GitLab Argo CD project
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/kubectl
+          - --kubeconfig
+          - /etc/rancher/rke2/rke2.yaml
+          - apply
+          - -f
+          - "-"
+        stdin: >-
+          {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../gitops/clusters/rke2-main/projects/platform-gitlab-project.yaml')
+             | replace('<THIS_REPO_URL>', platform_repo_url_effective) }}
+      register: platform_gitlab_project_apply
+      changed_when: "'created' in platform_gitlab_project_apply.stdout or 'configured' in platform_gitlab_project_apply.stdout"
+      delegate_to: "{{ rke2_first_server }}"
+      when:
+        - platform_apply_gitops_effective
+        - platform_applications_manifest_effective is search('(?m)^  project:[ \t]+platform-gitlab[ \t]*$')
+      run_once: true
+
     - name: Register platform applications in Argo CD
       ansible.builtin.shell: |
         set -o pipefail
