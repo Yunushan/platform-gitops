@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 import locale
 import math
 import os
 from pathlib import Path
+import signal
 import subprocess
 import threading
 import time
@@ -84,6 +86,51 @@ def _decode(value: bytes, *, text_mode: bool, encoding: str, errors: str) -> str
     if not text_mode:
         return value
     return value.decode(encoding, errors=errors)
+
+
+@contextmanager
+def stream_stdout(
+    args: Sequence[str | os.PathLike[str]],
+    *,
+    stdin: BinaryIO,
+    env: Mapping[str, str],
+    timeout: float,
+) -> Iterator[BinaryIO]:
+    """Stream stdout from a POSIX process group with a finite lifetime."""
+    if os.name != "posix" or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("Require POSIX process groups and a positive streaming timeout")
+    process = subprocess.Popen(args, stdin=stdin, stdout=subprocess.PIPE,
+                               env=dict(env), start_new_session=True)
+    assert process.stdout is not None
+    expired = threading.Event()
+
+    def terminate() -> None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def expire() -> None:
+        expired.set()
+        terminate()
+
+    timer = threading.Timer(timeout, expire)
+    timer.daemon = True
+    try:
+        timer.start()
+        yield process.stdout
+    finally:
+        timer.cancel()
+        if timer.is_alive():
+            timer.join()
+        process.stdout.close()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            terminate()
+            process.wait(timeout=STREAM_JOIN_SECONDS)
+    if expired.is_set():
+        raise subprocess.TimeoutExpired(args, timeout)
 
 
 def run_bounded(
@@ -187,6 +234,8 @@ def run_bounded(
             with lock:
                 reader_failures.append(f"{label}: {exc}")
             terminate()
+        finally:
+            stream.close()
 
     def write_input() -> None:
         if input_bytes is None or process.stdin is None:
@@ -200,6 +249,8 @@ def run_bounded(
             with lock:
                 reader_failures.append(f"stdin: {exc}")
             terminate()
+        finally:
+            process.stdin.close()
 
     readers = [
         threading.Thread(

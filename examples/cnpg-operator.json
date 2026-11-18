@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "operation_id": "00000000-0000-4000-8000-000000000001",
+  "version": "1.30.1",
+  "target": {
+    "kubeconfig_env": "CNPG_BOOTSTRAP_KUBECONFIG",
+    "context": "reviewed-cluster",
+    "cluster_uid": "00000000-0000-4000-8000-000000000002"
+  },
+  "namespace_uid": "00000000-0000-4000-8000-000000000003",
+  "nodes": [
+    {"name": "worker-a", "uid": "00000000-0000-4000-8000-000000000004", "domain": "zone-a"},
+    {"name": "worker-b", "uid": "00000000-0000-4000-8000-000000000005", "domain": "zone-b"}
+  ],
+  "domain_label": "topology.kubernetes.io/zone",
+  "resources": {
+    "requests": {"cpu": "100m", "memory": "256Mi"},
+    "limits": {"cpu": "1", "memory": "512Mi"}
+  },
+  "admitted_sha256": null
+}

@@ -1,0 +1,11 @@
+--- a/zuul/zk/__init__.py
++++ b/zuul/zk/__init__.py
+@@ -152,6 +152,8 @@
+                 args['keyfile'] = self.tls_key
+                 args['certfile'] = self.tls_cert
+                 args['ca'] = self.tls_ca
++                args['verify_certs'] = True
++                args['check_hostname'] = True
+             self.client = ZuulKazooClient(**args)
+             self.client.add_listener(self._connectionListener)
+             # Manually retry initial connection attempt

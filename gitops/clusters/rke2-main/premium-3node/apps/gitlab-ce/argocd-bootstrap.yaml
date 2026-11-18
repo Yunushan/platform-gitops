@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitlab-upgrade-check
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitlab-upgrade-check
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [gitlab-gitlab-chart-info]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [gitlab-webservice-default, gitlab-sidekiq-all-in-1-v2]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    resourceNames: [gitlab-praefect, gitlab-gitaly, gitlab-gitaly-default]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    resourceNames:
+      - repo-data-gitlab-gitaly-0
+      - repo-data-gitlab-gitaly-default-0
+      - repo-data-gitlab-gitaly-default-1
+      - repo-data-gitlab-gitaly-default-2
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitlab-upgrade-check
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitlab-upgrade-check
+subjects:
+  - kind: ServiceAccount
+    name: gitlab-upgrade-check
+    namespace: gitlab
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gitlab-allow-bootstrap-api
+  annotations:
+    argocd.argoproj.io/sync-wave: "-20"
+spec:
+  podSelector:
+    matchLabels:
+      platform.gitops/gitlab-bootstrap: "true"
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443

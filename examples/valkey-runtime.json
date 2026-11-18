@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "8841a004a88d9efffb3fb11be8b2563136e3a23084e01918dedd1e394d3c141e",
+  "trust": {
+    "ca_file": "/etc/platform-valkey-observer/ca.pem",
+    "ca_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "client_cert_file": "/etc/platform-valkey-observer/client_cert.pem",
+    "client_cert_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "client_key_file": "/etc/platform-valkey-observer/client_key.pem",
+    "client_key_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "credentials": {
+    "probe_env": "VALKEY_TEST_PROBE",
+    "discovery_env": "VALKEY_TEST_DISCOVERY"
+  },
+  "members": {
+    "cache-a": {
+      "connect_address": "192.0.2.51",
+      "addresses": [
+        "192.0.2.51"
+      ],
+      "server_run_id": "1111111111111111111111111111111111111111",
+      "sentinel_id": "4444444444444444444444444444444444444444",
+      "server_cert_sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "cache-b": {
+      "connect_address": "192.0.2.52",
+      "addresses": [
+        "192.0.2.52"
+      ],
+      "server_run_id": "2222222222222222222222222222222222222222",
+      "sentinel_id": "5555555555555555555555555555555555555555",
+      "server_cert_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    "cache-c": {
+      "connect_address": "192.0.2.53",
+      "addresses": [
+        "192.0.2.53"
+      ],
+      "server_run_id": "3333333333333333333333333333333333333333",
+      "sentinel_id": "6666666666666666666666666666666666666666",
+      "server_cert_sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+    }
+  },
+  "limits": {
+    "request_seconds": 5,
+    "operation_seconds": 60,
+    "max_response_bytes": 524288,
+    "canary_ttl_seconds": 180,
+    "replication_wait_ms": 3000
+  }
+}

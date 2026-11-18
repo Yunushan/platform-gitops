@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "version": "<REVIEWED_KEYCLOAK_26_4_PATCH>",
+  "image": "registry.example.com/platform/keycloak@sha256:<REVIEWED_OPTIMIZED_IMAGE_DIGEST>",
+  "namespace": "identity",
+  "hostname": "identity.example.com",
+  "realm": "platform",
+  "database": {
+    "host": "postgres-rw.example.com",
+    "port": 5432,
+    "name": "keycloak",
+    "username": "keycloak",
+    "postgres_major": 17,
+    "secret": "keycloak-database",
+    "password_key": "password"
+  },
+  "tls_secret": "keycloak-tls",
+  "database_ca_secret": "keycloak-db-ca",
+  "private_dir": "/etc/platform-keycloak",
+  "native_home": "/opt/keycloak-release",
+  "native_manifest_sha256": "<REVIEWED_NATIVE_FILE_MANIFEST_SHA256>",
+  "members": [
+    {"name": "keycloak-a", "node": "identity-a", "address": "192.0.2.31", "failure_domain": "domain-a"},
+    {"name": "keycloak-b", "node": "identity-b", "address": "192.0.2.32", "failure_domain": "domain-b"},
+    {"name": "keycloak-c", "node": "identity-c", "address": "192.0.2.33", "failure_domain": "domain-c"}
+  ],
+  "network": {
+    "ingress_namespaces": ["ingress"],
+    "monitoring_namespace": "monitoring",
+    "database_cidrs": ["192.0.2.0/24"]
+  }
+}

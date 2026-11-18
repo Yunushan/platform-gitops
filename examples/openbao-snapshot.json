@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "source": {
+    "url": "https://bao-a.example.com:8200",
+    "cluster_id": "00000000-0000-0000-0000-000000000001",
+    "version": "2.7.2",
+    "raft": {
+      "bao-a": "192.0.2.41:8201",
+      "bao-b": "192.0.2.42:8201",
+      "bao-c": "192.0.2.43:8201"
+    },
+    "ca_file": "/etc/backup-trust/openbao-ca.crt",
+    "ca_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "token_env": "OPENBAO_SNAPSHOT_TOKEN"
+  },
+  "limits": {
+    "request_seconds": 30,
+    "transfer_seconds": 300,
+    "max_bytes": 536870912
+  }
+}

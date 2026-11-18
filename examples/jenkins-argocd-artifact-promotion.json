@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "handoff": {
+    "schema_version": 1,
+    "runtime": "rke2",
+    "report": {
+      "schema_version": 1,
+      "trigger": {
+        "schema_version": 1,
+        "jenkins_origin": "https://ci.example.invalid",
+        "job": [
+          "team",
+          "review-build"
+        ],
+        "job_config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "gerrit_origin": "https://review.example.invalid",
+        "project": "team/project",
+        "branch": "main",
+        "change": 123,
+        "patchset": 1,
+        "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "reviewer_username": "ci-review",
+      "reviewer_account_id": 123,
+      "label_definition_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "trust_jenkins_controller": true
+    },
+    "promotion": {
+      "schema_version": 1,
+      "runtime": "rke2",
+      "bridge_contract_sha256": "da09f96447c5b5de6b1864c7b72d7e335810f9c733e646670c2cefc7e0246d6f",
+      "deployment_branch": "deploy/staging",
+      "allow_create_branch": false,
+      "allow_prune": false,
+      "git_username": "cd-writer",
+      "timeout_seconds": 300,
+      "cd": {
+        "kind": "argocd",
+        "management_target": {
+          "kubeconfig_env": "PLATFORM_CD_KUBECONFIG",
+          "context": "example-cd",
+          "cluster_uid": "77777777-7777-4777-8777-777777777777"
+        },
+        "namespace": "argocd",
+        "name": "example-app",
+        "uid": "88888888-8888-4888-8888-888888888888",
+        "spec_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "path": "deploy/staging"
+      }
+    }
+  },
+  "artifact_policy": {
+    "manifest": "deploy/staging/workload.json",
+    "namespace": "application",
+    "deployment": "application",
+    "deployment_uid": "55555555-5555-4555-8555-555555555555",
+    "container": "web",
+    "expected_image": "registry.example.invalid/applications/example@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "expected_deployment_revision": "cccccccccccccccccccccccccccccccccccccccc",
+    "commit_name": "Promotion Writer",
+    "commit_email": "promotion-writer@example.invalid",
+    "destination_server": "https://kubernetes.example.invalid:6443"
+  },
+  "publisher_contract_sha256": "REVIEWED_PUBLISHER_CONTRACT_SHA256",
+  "signature_policy": {
+    "cosign_binary": {
+      "path": "/usr/local/bin/cosign",
+      "sha256": "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa"
+    },
+    "registry_ca": {
+      "path": "/run/platform/promoter/registry-ca.crt",
+      "sha256": "REVIEWED_HARBOR_CA_SHA256"
+    },
+    "public_key": {
+      "path": "/run/platform/promoter/release.pub",
+      "sha256": "REVIEWED_RELEASE_PUBLIC_KEY_SHA256"
+    },
+    "trusted_root": {
+      "path": "/run/platform/promoter/trusted-root.json",
+      "sha256": "REVIEWED_TRANSPARENCY_LOG_TRUST_SHA256"
+    },
+    "credential": {
+      "path": "/run/platform/promoter/registry-pull.json",
+      "sha256": "REVIEWED_PULL_CREDENTIAL_SHA256"
+    }
+  }
+}

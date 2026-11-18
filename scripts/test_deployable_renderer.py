@@ -37,6 +37,7 @@ def render(
     applications_file: Path | None = None,
     profile: str | None = None,
     required_paths: list[Path] | None = None,
+    recovery_commit: str | None = None,
 ) -> tuple[int, str]:
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -47,6 +48,7 @@ def render(
         repo_url="git://seed.example/platform-gitops.git",
         output=output,
         required_path=required_paths or [],
+        recovery_commit=recovery_commit,
     )
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         rc = renderer.render(args)
@@ -210,6 +212,29 @@ def main() -> int:
             raise AssertionError(f"vendored chart/CRD placeholders should stay ignored\n{logs}")
         if "IGNORED_EXAMPLE_PLACEHOLDER" in logs:
             raise AssertionError(f"example placeholders should stay ignored\n{logs}")
+
+        from strict_yaml import loads_strict_yaml_all
+
+        revision = "1" * 40
+        rc, logs = render(renderer, repo, output, applications_file=applications_file, recovery_commit=revision)
+        if rc != 0:
+            raise AssertionError(f"expected pinned Applications, got rc={rc}\n{logs}")
+        pinned = output.read_text(encoding="utf-8")
+        applications = loads_strict_yaml_all(pinned)
+        if len(applications) != 2 or any(app["spec"]["source"]["targetRevision"] != revision for app in applications):
+            raise AssertionError("Recovery must pin every selected Application to the exact string commit")
+
+        rc, _ = render(renderer, repo, output, applications_file=applications_file, recovery_commit="1" * 8)
+        if rc != 1 or output.read_text(encoding="utf-8") != pinned:
+            raise AssertionError("Invalid recovery pins must leave the existing output alone")
+
+        applications_file.write_text(
+            applications_file.read_text(encoding="utf-8").replace("<THIS_REPO_URL>", "https://other.example/repo.git", 1),
+            encoding="utf-8",
+        )
+        rc, _ = render(renderer, repo, output, applications_file=applications_file, recovery_commit=revision)
+        if rc != 1 or output.read_text(encoding="utf-8") != pinned:
+            raise AssertionError("Recovery must reject a source outside the selected recovery repository")
 
     with tempfile.TemporaryDirectory(prefix="deployable-renderer-empty-") as tmp:
         repo = Path(tmp)

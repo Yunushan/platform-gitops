@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "name": "scm-manager",
+  "namespace": "scm-manager",
+  "state_claim": "scm-manager-state",
+  "bootstrap_secret": null
+}

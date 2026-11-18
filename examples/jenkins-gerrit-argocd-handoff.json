@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "runtime": "rke2",
+  "report": {
+    "schema_version": 1,
+    "trigger": {
+      "schema_version": 1,
+      "jenkins_origin": "https://ci.example.invalid",
+      "job": ["team", "review-build"],
+      "job_config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "gerrit_origin": "https://review.example.invalid",
+      "project": "team/project",
+      "branch": "main",
+      "change": 123,
+      "patchset": 1,
+      "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "reviewer_username": "ci-review",
+    "reviewer_account_id": 123,
+    "label_definition_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "trust_jenkins_controller": true
+  },
+  "promotion": {
+    "schema_version": 1,
+    "runtime": "rke2",
+    "bridge_contract_sha256": "da09f96447c5b5de6b1864c7b72d7e335810f9c733e646670c2cefc7e0246d6f",
+    "deployment_branch": "deploy/staging",
+    "allow_create_branch": false,
+    "allow_prune": false,
+    "git_username": "cd-writer",
+    "timeout_seconds": 300,
+    "cd": {
+      "kind": "argocd",
+      "management_target": {
+        "kubeconfig_env": "PLATFORM_CD_KUBECONFIG",
+        "context": "example-cd",
+        "cluster_uid": "77777777-7777-4777-8777-777777777777"
+      },
+      "namespace": "argocd",
+      "name": "example-app",
+      "uid": "88888888-8888-4888-8888-888888888888",
+      "spec_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "path": "deploy/staging"
+    }
+  }
+}

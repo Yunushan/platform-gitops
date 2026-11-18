@@ -112,16 +112,24 @@
           "${cert}" \
           "${fullchain}"
 
-        for host in \
-          "{{ platform_argocd_host_effective }}" \
-          "{{ platform_forgejo_host_effective }}" \
-          "{{ platform_woodpecker_host_effective }}" \
-          "{{ platform_harbor_host_effective }}" \
-          "{{ platform_keycloak_host_effective }}" \
-          "{{ platform_grafana_host_effective }}" \
-          "{{ platform_prometheus_host_effective }}" \
+        hosts=(
+          "{{ platform_argocd_host_effective }}"
+          "{{ platform_harbor_host_effective }}"
+          "{{ platform_keycloak_host_effective }}"
+          "{{ platform_grafana_host_effective }}"
+          "{{ platform_prometheus_host_effective }}"
           "{{ platform_loki_host_effective }}"
-        do
+        )
+        {% if platform_gitlab_profile_enabled | bool %}
+        hosts+=(
+          "{{ platform_gitlab_host_effective }}"
+          "{{ platform_gitlab_registry_host_effective }}"
+          "{{ platform_gitlab_kas_host_effective }}"
+        )
+        {% else %}
+        hosts+=("{{ platform_forgejo_host_effective }}" "{{ platform_woodpecker_host_effective }}")
+        {% endif %}
+        for host in "${hosts[@]}"; do
           output="$(openssl x509 -in "${cert}" -noout -checkhost "${host}")"
           printf 'host=%s certificate_check=%s\n' "${host}" "${output}"
           printf '%s' "${output}" | grep -F 'does match' >/dev/null
@@ -131,7 +139,10 @@
         changed=0
 
         while IFS=: read -r namespace secret; do
-          namespace_result="$("$K" --kubeconfig "$C" create namespace "${namespace}" --dry-run=client -o yaml | "$K" --kubeconfig "$C" apply -f -)"
+          namespace_result=""
+          if ! "$K" --kubeconfig "$C" get namespace "${namespace}" >/dev/null 2>&1; then
+            namespace_result="$("$K" --kubeconfig "$C" create namespace "${namespace}")"
+          fi
           secret_result="$("$K" --kubeconfig "$C" -n "${namespace}" create secret tls "${secret}" \
             --cert="${fullchain}" \
             --key="${key}" \
@@ -142,8 +153,12 @@
           echo "tls_secret=${namespace}/${secret} state=applied"
         done <<'TARGETS'
         argocd:argocd-server-tls
+        {% if platform_gitlab_profile_enabled | bool %}
+        gitlab:gitlab-tls
+        {% else %}
         forgejo:forgejo-tls
         woodpecker:woodpecker-tls
+        {% endif %}
         harbor:harbor-tls
         keycloak:keycloak-tls
         monitoring:grafana-tls

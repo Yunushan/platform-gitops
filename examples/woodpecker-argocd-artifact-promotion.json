@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "runtime": "rke2",
+  "pipeline": {
+    "woodpecker_origin": "https://ci.example.invalid",
+    "forge_origin": "https://git.example.invalid",
+    "provider": "gitea",
+    "forge_id": 1,
+    "woodpecker_repository_id": 17,
+    "forge_repository_id": 25,
+    "repository": "platform/example",
+    "branch": "main",
+    "number": 42,
+    "revision": "1234567890abcdef1234567890abcdef12345678",
+    "required_steps": {
+      "woodpecker": [
+        "git",
+        "verify-checkout",
+        "publish-static-image"
+      ]
+    }
+  },
+  "handoff": {
+    "schema_version": 1,
+    "runtime": "rke2",
+    "bridge_contract_sha256": "PIPELINE_OBJECT_SHA256",
+    "deployment_branch": "deploy/staging",
+    "allow_create_branch": false,
+    "allow_prune": false,
+    "git_username": "promotion-writer",
+    "timeout_seconds": 120,
+    "cd": {
+      "kind": "argocd",
+      "management_target": {
+        "kubeconfig_env": "PLATFORM_PROMOTER_KUBECONFIG",
+        "context": "reviewed-context",
+        "cluster_uid": "11111111-1111-1111-1111-111111111111"
+      },
+      "namespace": "argocd",
+      "name": "example",
+      "uid": "22222222-2222-2222-2222-222222222222",
+      "spec_sha256": "APPLICATION_SPEC_SHA256",
+      "path": "deploy/staging"
+    }
+  },
+  "artifact_policy": {
+    "manifest": "deploy/staging/workload.json",
+    "namespace": "example-app",
+    "deployment": "example-web",
+    "deployment_uid": "55555555-5555-4555-8555-555555555555",
+    "container": "web",
+    "expected_image": "registry.example.invalid/applications/example@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "expected_deployment_revision": "cccccccccccccccccccccccccccccccccccccccc",
+    "commit_name": "Promotion Writer",
+    "commit_email": "promotion-writer@example.invalid",
+    "destination_server": "https://kubernetes.example.invalid:6443"
+  },
+  "publisher_contract_sha256": "REVIEWED_PUBLISHER_CONTRACT_SHA256",
+  "signature_policy": {
+    "cosign_binary": {
+      "path": "/usr/local/bin/cosign",
+      "sha256": "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa"
+    },
+    "registry_ca": {
+      "path": "/run/platform/promoter/registry-ca.crt",
+      "sha256": "REVIEWED_HARBOR_CA_SHA256"
+    },
+    "public_key": {
+      "path": "/run/platform/promoter/release.pub",
+      "sha256": "REVIEWED_RELEASE_PUBLIC_KEY_SHA256"
+    },
+    "trusted_root": {
+      "path": "/run/platform/promoter/trusted-root.json",
+      "sha256": "REVIEWED_TRANSPARENCY_LOG_TRUST_SHA256"
+    },
+    "credential": {
+      "path": "/run/platform/promoter/registry-pull.json",
+      "sha256": "REVIEWED_PULL_CREDENTIAL_SHA256"
+    }
+  }
+}

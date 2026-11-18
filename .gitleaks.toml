@@ -55,6 +55,24 @@ id = "generic-api-key"
     '''^config/seed-git[.]env[.]example$'''
   ]
 
+  [[rules.allowlists]]
+  description = "Reviewed SHA-256 pins for public binaries and source archives in runtime tests"
+  condition = "AND"
+  regexTarget = "secret"
+  regexes = [
+    '''^f2fc0aba1341baac0a1a42d41d14ea6bccf0b7a1cc45cfa2bdb906522643436c$''',
+    '''^db3642dfc2fb24e42313b9e9c1557cf0160acce3bf2cd366ce654ce291133b50$''',
+    '''^7e0ca79f225ef4211c47be7a77513e0ef9e88ab64ce078fb21292658c55eceef$''',
+    '''^aca60ab72ae4d67adc6b8fe7fca5e08d16a6bb5e4a4f2ebb54050e3f5503fd2b$''',
+    '''^999e4874de50139f40929d6a9f4844efc66ad09647dc0e84031daca4711f12b6$'''
+  ]
+  paths = [
+    '''^scripts/test_argocd_identity_runtime_fixture[.]py$''',
+    '''^scripts/test_argocd_reconciliation_fixture[.]py$''',
+    '''^scripts/test_keycloak_runtime_fixture[.]py$''',
+    '''^scripts/test_rook_api_fixture[.]py$'''
+  ]
+
 [[rules]]
 id = "private-key"
 
@@ -69,6 +87,7 @@ id = "private-key"
     '''^gitops/clusters/rke2-main/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$''',
     '''^gitops/clusters/rke2-main/premium-3node/apps/step-ca/charts/step-certificates-1[.]30[.]1/step-certificates/values[.]yaml$''',
     '''^gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10[.]0[.]0/argo-cd/values[.]yaml$''',
+    '''^gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10[.]3[.]2/argo-cd/values[.]yaml$''',
     '''^gitops/clusters/rke2-main/premium-3node/apps/keycloak/charts/keycloak-25[.]2[.]0/keycloak/README[.]md$'''
   ]
 

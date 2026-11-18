@@ -3,13 +3,17 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
+
+import validate_rendered_manifests as schema
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +71,56 @@ def pod_list(private_image_id: str = PRIVATE_DIGEST) -> dict[str, object]:
     }
 
 
+def test_schema_image_handoff(root: Path, manifest: Path) -> Path:
+    application_file = root / "gitops/clusters/rke2-main/premium-3node/platform-apps.yaml"
+    application_file.parent.mkdir(parents=True, exist_ok=True)
+    (application_file.parent / "app").mkdir()
+    application_file.write_text(
+        "kind: Application\nmetadata:\n  name: app\nspec:\n  source:\n"
+        "    path: gitops/clusters/rke2-main/premium-3node/app\n",
+        encoding="utf-8",
+    )
+    rendered = "---\n" + manifest.read_text(encoding="utf-8") + (
+        "---\napiVersion: v1\nkind: List\nitems:\n"
+        "  - apiVersion: v1\n    kind: Secret\n    metadata:\n      name: private\n"
+        "    stringData:\n      image: secret-sample-value\n"
+    )
+    kubeconform_report = {
+        "resources": [
+            {"filename": "premium-3node-app.yaml", "kind": kind, "name": name,
+             "version": version, "status": "statusValid", "msg": ""}
+            for kind, name, version in (("Deployment", "app", "apps/v1"), ("Secret", "private", "v1"))
+        ],
+        "summary": {"valid": 2, "invalid": 0, "errors": 0, "skipped": 0},
+    }
+    args = Namespace(
+        profile=["premium-3node"],
+        allow_incomplete=False,
+        kubernetes_version=None,
+        output_dir="rendered/schema-handoff",
+    )
+    with (
+        patch.object(schema, "required_tool", side_effect=lambda _env, tool: tool),
+        patch.object(
+            schema, "run", side_effect=[
+                subprocess.CompletedProcess([], 0, rendered, ""),
+                subprocess.CompletedProcess([], 0, json.dumps(kubeconform_report), ""),
+            ],
+        ),
+    ):
+        if schema.validate(args, root=root, include_images=True) != 0:
+            raise AssertionError("schema validation did not produce image references")
+    output = root / args.output_dir
+    summary = output / "summary.json"
+    record = json.loads(summary.read_text(encoding="utf-8"))["rendered"][0]
+    expected = ["docker.io/library/busybox:1.36", "registry.example.test/platform/app:v1"]
+    if record.get("imageReferences") != expected:
+        raise AssertionError("schema evidence did not retain exactly the workload image references")
+    if "manifest" in record or (output / "manifests").exists():
+        raise AssertionError("raw rendered manifests escaped the temporary checkout")
+    return summary
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="platform-image-inventory-") as directory:
         root = Path(directory)
@@ -77,7 +131,9 @@ def main() -> int:
                 "kind": "Deployment",
                 "metadata": {"namespace": "platform", "name": "app"},
                 "spec": {
+                    "selector": {"matchLabels": {"app": "app"}},
                     "template": {
+                        "metadata": {"labels": {"app": "app"}},
                         "spec": {
                             "containers": [
                                 {"name": "app", "image": "registry.example.test/platform/app:v1"},
@@ -129,7 +185,8 @@ def main() -> int:
             root / "private/supply-chain/reports/busybox.json",
             {"SchemaVersion": 2, "Results": [{"Target": UPSTREAM_DIGEST, "Vulnerabilities": []}]},
         )
-        today = date.today()
+        # Evidence timestamps use UTC; a local date can be a day ahead at night.
+        today = datetime.now(timezone.utc).date()
         exceptions = write(
             root / "private/supply-chain/exceptions.json",
             {
@@ -173,6 +230,14 @@ def main() -> int:
         accepted = run(RECONCILE, *base, "--exceptions", str(exceptions))
         if accepted.returncode != 0:
             raise AssertionError(accepted.stderr or accepted.stdout)
+
+        new_summary = test_schema_image_handoff(root, manifest)
+        current = run(
+            RECONCILE, "--rendered-summary", str(new_summary), *base[2:],
+            "--exceptions", str(exceptions),
+        )
+        if current.returncode != 0:
+            raise AssertionError(current.stderr or current.stdout)
         verified = run(
             VERIFY,
             str(evidence),

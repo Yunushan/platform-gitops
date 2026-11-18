@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "8841a004a88d9efffb3fb11be8b2563136e3a23084e01918dedd1e394d3c141e",
+  "member": "cache-a",
+  "machine_id_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "boot_id": "00000000-0000-0000-0000-000000000010",
+  "service_uid": 1000,
+  "service_gid": 1000,
+  "files_sha256": {
+    "tls/tls.key": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "auth/server-auth.conf": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "tls/tls.crt": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "auth/sentinel-auth.conf": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "auth/server.acl": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "tls/ca.crt": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "auth/sentinel.acl": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "credentials": {
+    "probe_env": "VALKEY_HOST_PROBE",
+    "discovery_env": "VALKEY_HOST_DISCOVERY"
+  },
+  "storage": {
+    "server": {
+      "device": 1,
+      "inode": 2
+    },
+    "sentinel": {
+      "device": 1,
+      "inode": 3
+    }
+  },
+  "native": {
+    "user": "valkey",
+    "group": "valkey",
+    "systemctl_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "max_runtime_seconds": null
+  },
+  "docker": null
+}

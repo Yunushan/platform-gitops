@@ -3,13 +3,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from http.client import HTTPResponse
 import math
 import os
+import ssl
+import time
 from typing import Any, BinaryIO
 from urllib.error import HTTPError
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 from urllib.request import (
     HTTPRedirectHandler,
+    HTTPSHandler,
     ProxyHandler,
     Request,
     build_opener,
@@ -25,6 +30,7 @@ DEFAULT_HTTP_REQUEST_MAX_BYTES = 16 * 1024 * 1024
 MAX_HTTP_REQUEST_BYTES = 64 * 1024 * 1024
 DEFAULT_HTTP_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
 MAX_HTTP_RESPONSE_BYTES = 64 * 1024 * 1024
+MAX_HTTP_STREAM_BYTES = 8 * 1024 ** 3
 MAX_HTTP_URL_BYTES = 16 * 1024
 MAX_HTTP_QUERY_FIELDS = 256
 MAX_HTTP_HEADER_COUNT = 128
@@ -150,6 +156,7 @@ def open_http_request(
     timeout: float | None = None,
     use_environment_proxy: bool = True,
     allow_insecure_http: bool = False,
+    tls_context: ssl.SSLContext | None = None,
 ) -> Any:
     """Open one bounded request while rejecting every redirect response."""
     selected_timeout = (
@@ -169,6 +176,11 @@ def open_http_request(
     handlers: tuple[Any, ...] = (RejectRedirectHandler(),)
     if not use_environment_proxy:
         handlers = (ProxyHandler({}), *handlers)
+    if tls_context is not None:
+        if (request.type != "https" or not isinstance(tls_context, ssl.SSLContext)
+                or not tls_context.check_hostname or tls_context.verify_mode != ssl.CERT_REQUIRED):
+            raise HttpTransportPolicyError("Custom TLS trust requires HTTPS with certificate and hostname verification")
+        handlers += (HTTPSHandler(context=tls_context),)
     return build_opener(*handlers).open(request, timeout=selected_timeout)
 
 
@@ -342,15 +354,43 @@ def read_bounded_response(
 ) -> bytes:
     """Read at most one byte beyond the limit and reject oversized responses."""
     limit = _selected_response_limit(max_bytes)
-    remaining = limit + 1
-    chunks: list[bytes] = []
-    while remaining > 0:
-        chunk = response.read(remaining)
+    return b"".join(_response_chunks(response.read, limit, limit + 1))
+
+
+def stream_bounded_response(
+    response: HTTPResponse,
+    *,
+    max_bytes: int,
+    deadline: float,
+) -> Iterator[bytes]:
+    """Transfer large bodies in bounded chunks under a monotonic deadline."""
+    if type(max_bytes) is not int or not 0 < max_bytes <= MAX_HTTP_STREAM_BYTES:
+        raise HttpTransportPolicyError("HTTP stream limit is outside the supported range")
+    if not math.isfinite(deadline):
+        raise HttpTransportPolicyError("HTTP stream requires a finite deadline")
+    return _response_chunks(response.read1, max_bytes, 1024 * 1024, deadline)
+
+
+def _response_chunks(
+    read: Callable[[int], bytes],
+    limit: int,
+    chunk_bytes: int,
+    deadline: float | None = None,
+) -> Iterator[bytes]:
+    remaining = limit
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("HTTP stream transfer deadline expired")
+        chunk = read(min(chunk_bytes, remaining + 1))
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("HTTP stream transfer deadline expired")
         if not isinstance(chunk, (bytes, bytearray)):
             raise HttpTransportPolicyError("HTTP response reader did not return bytes")
         if not chunk:
-            break
-        value = bytes(chunk)
-        chunks.append(value)
-        remaining -= len(value)
-    return require_bounded_payload(b"".join(chunks), max_bytes=limit)
+            return
+        remaining -= len(chunk)
+        if remaining < 0:
+            raise HttpResponseTooLarge(
+                f"HTTP response exceeds the configured limit of {limit} bytes"
+            )
+        yield bytes(chunk)

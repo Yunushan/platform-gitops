@@ -44,12 +44,11 @@ no destination-unrestricted egress role.
 Sensitive shared data ports are deliberately absent from those generic
 policies. Separate client and server policies enforce these paths:
 
-- PostgreSQL `5432` accepts Forgejo, Woodpecker, Harbor, Keycloak, Grafana,
-  and the CloudNativePG operator. Only those five workload namespaces receive
-  PostgreSQL client egress.
-- Valkey TLS `6379` accepts Forgejo and Harbor. Only those two workload
-  namespaces receive Valkey client egress; Valkey peers additionally receive
-  `6379` and Sentinel `26379`, while monitoring receives exporter `9121` only.
+- PostgreSQL `5432` accepts Forgejo, GitLab, Woodpecker, Harbor, Keycloak,
+  Grafana, and the CloudNativePG operator.
+- Forgejo, GitLab and Harbor reach the Valkey TLS primary Service on `6379`.
+  Its backend proxy listens on `6380`. Valkey peers also receive `6379` and
+  Sentinel `26379`. Monitoring receives exporter `9121`.
 - PostgreSQL TLS and Valkey authentication remain mandatory application-layer
   controls; NetworkPolicy reduces reachability but does not replace them.
 

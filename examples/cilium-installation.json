@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "name": "platform-cilium",
+  "namespace": "kube-system",
+  "management_target": {
+    "kubeconfig_env": "PLATFORM_MANAGEMENT_KUBECONFIG",
+    "context": "management",
+    "cluster_uid": "11111111-1111-4111-8111-111111111111"
+  },
+  "cilium_version": "1.18.3",
+  "kubernetes_version": "1.32.3",
+  "chart_sha256": "ab93b9f4bb186374f87850b154f634568ec9baab4ada0d4077ecb2a710e83067",
+  "helm_sha256": "c16af303055cfe1c1e64652b547cfdbed924e89fd2a20d8632d797978c14def3",
+  "gateway_crds_sha256": "38ed055bb25dc580c0366899c0bed9b9e92dfcd1c180a569133f3946026cf102",
+  "images": {
+    "agent": "registry.example.com/cilium/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "envoy": "registry.example.com/cilium/envoy@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "operator": "registry.example.com/cilium/operator@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "bootstrap_api": {
+    "host": "api.example.com",
+    "port": 6443
+  },
+  "cni_paths": {
+    "bin": "/opt/cni/bin",
+    "config": "/etc/cni/net.d"
+  },
+  "pod_cidr": "192.0.2.0/24",
+  "node_cidr_mask": 28,
+  "mtu": 1500,
+  "serving_selector": {
+    "platform.gitops/edge": "true"
+  },
+  "failure_domain_key": "topology.kubernetes.io/zone"
+}

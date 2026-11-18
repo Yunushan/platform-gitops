@@ -68,7 +68,7 @@ accepted exception in `docs/COMPLIANCE_AUDIT.md`.
 | YAML parsing is unambiguous and bounded | `python scripts/test_strict_yaml_contract.py`; rendered evidence rejects duplicate keys, anchors and aliases, non-JSON tags and mapping keys, non-finite numbers, streams above 10,000 documents, structures deeper than 128 containers, and structures above 1,000,000 nodes while classifying decoder recursion and malformed input without echoing document content |
 | API transport is bounded and credential-safe | `python scripts/test_http_transport_contract.py`; direct HTTP calls use the shared fail-closed opener, require HTTPS for credential headers, reject URL credentials and every 3xx before forwarding authorization, bound URLs/queries/headers/request and response bodies plus CLI fallback payloads, and reject unsafe timeout or byte-limit overrides |
 | Migration parser robustness passed | The pinned ClusterFuzzLite workflow has no unresolved crashes, and `bash scripts/forge-coverage.sh` passes the 81.0% subprocess branch-coverage ratchet with retained JSON/XML evidence |
-| Rendered Kubernetes schemas passed | `make rendered-schema-verify` and `make rendered-private-schema-verify`; the synthetic complete premium profile and exact private profile render without skipped applications, and built-in objects pass strict Kubeconform validation |
+| Rendered Kubernetes schemas passed | `make rendered-schema-verify` and `make rendered-private-schema-verify` validate every application and object in the complete premium profile. Evidence covers native Kubernetes resources, CRD definitions and custom resources matched to the served schemas in that profile. |
 | Active admission policies compiled | `KYVERNO_BIN=<KYVERNO_1_18_1_BINARY> make policy-cel-verify`; compliant, violating, second-rule, and privileged-namespace fixtures produce the expected decisions, and the stable image policy compiles without registry access |
 | Secret scan passed | `make no-secrets` or `python scripts/validate_no_secrets.py` |
 | Policy enforcement accepted | `PLATFORM_POLICY_ENFORCEMENT=Enforce make platform-policy-readiness`; all three managed ValidatingPolicies must be Ready with `Deny`, both legacy ClusterPolicies must be absent, and managed violations must be zero |
@@ -146,7 +146,7 @@ make platform-forgejo-recovery-drill
 PLATFORM_PROFILE=<PROFILE> make platform-production-check
 ```
 
-After the production gate passes, retain a fresh private schema-v7 record that
+After the production gate passes, retain a fresh private acceptance packet that
 binds every repository, profile, schema, supply-chain, cluster, security,
 OpenBao readiness/custody, observability, capacity, application, and
 data-protection gate to the exact Git revision and requires a distinct operator
@@ -155,14 +155,16 @@ and approver. The generator rejects a dirty or detached checkout and requires
 Git tree, remote name, and a non-secret hash of the remote URL. It also copies
 the exact rendered/live image reconciliation and independently approved
 OpenBao ceremony record into the private packet. It also atomically retains the
-exact restore/continuity and Forgejo cross-node recovery records that passed the
+exact restore and forge recovery records that passed the
 gate, binds all four artifacts by SHA-256, and revalidates their profile,
 revision, freshness, and recovery controls when calculating the final score.
-Earlier schema-v1/v2/v3/v4/v5/v6 records remain historical evidence but do not
-certify the current gate set:
+The Forgejo path writes schema v7. The `premium-3node-gitlab-ce` profile writes
+schema v8 and retains GitLab-specific evidence. Schemas v1 through v6 remain
+historical evidence. For the Forgejo path, run the following command.
 
 ```bash
 PLATFORM_RELEASE_ID=<APPROVED_CHANGE_ID> \
+PLATFORM_REPO_URL=<PRIVATE_GITOPS_REPO_URL> \
 PLATFORM_EVIDENCE_OPERATOR=<OPERATOR_ID> \
 PLATFORM_EVIDENCE_APPROVER=<INDEPENDENT_APPROVER_ID> \
 PLATFORM_PRODUCTION_APPROVAL_APPROVER=<INDEPENDENT_APPROVER_ID> \
@@ -174,7 +176,9 @@ make platform-production-evidence
 ```
 
 The command writes a JSON record and hashed log below the ignored
-`private/production-evidence/` directory. It never creates a passing record
+`private/production-evidence/` directory. Each invocation reserves its own
+directory. Use the JSON path printed at completion when signing the packet.
+It never creates a passing record
 when a gate fails. Run `git fetch <REMOTE>` first. If the current branch tracks
 the reviewed deployment ref, the expected-ref setting can be omitted and the
 upstream is used automatically. The runner uses `umask 077`, and the shared
@@ -182,11 +186,65 @@ artifact writer flushes and atomically replaces JSON evidence with mode `0600`.
 
 ### GitLab CE recovery evidence
 
-For `premium-3node-gitlab-ce`, the collector expects a schema-v8 acceptance
-packet containing GitLab recovery evidence. Use the Forgejo command above
-with the profile and recovery input shown here in place of the Forgejo input.
-The production check verifies that the selected Argo CD applications are
-healthy and synced to the commit under acceptance.
+For a deployment limited to the three platform nodes, choose `premium-3node`
+with off-cluster object storage when the service owner can accept Forgejo's
+measured restart and volume reattachment time. If GitLab repository-level HA
+is required, GitLab recommends its Cloud Native Hybrid architecture with
+Linux-package Gitaly and Praefect outside Kubernetes. GitLab classifies
+Praefect on Kubernetes as beta. The GitLab drill below exercises Kubernetes
+pod identities. A hybrid deployment needs recovery evidence for its actual
+storage hosts before the service owner can approve it.
+[GitLab deployment options](https://docs.gitlab.com/administration/gitaly/kubernetes/#deployment-options)
+
+GitHub validation and release workflows require a complete synthetic GitLab
+render with the TLS-enabled Praefect topology, managed CloudNativePG databases,
+and GitLab Runner. Run it locally with
+`PLATFORM_PROFILE=premium-3node-gitlab-ce make rendered-private-schema-verify`.
+
+The GitLab profile uses the managed PostgreSQL trust bundle with hostname
+verification. `make platform-internal-tls-verify` checks the running Rails and
+Sidekiq TLS settings, verifies the PostgreSQL and Valkey peers with their
+configured CAs, and checks the live database sessions. The application gate
+requires GitLab and its Runner to be healthy in Argo CD and GitLab webservice
+readiness to return HTTP 200 from pods pinned to each node. The ingress TLS gate
+verifies the GitLab, registry, and KAS hosts against the `gitlab/gitlab-tls`
+Secret and the chain served by the VIP.
+
+For `premium-3node-gitlab-ce`, set `PLATFORM_GITLAB_RECOVERY_EVIDENCE_FILE` to
+the independently reviewed private record from a planned primary-loss drill.
+Use the [GitLab recovery example](../examples/gitlab-recovery-evidence.example.json)
+for the record shape. Start with a dedicated test project and a named branch,
+review the change with the service owner, and schedule the drill for the
+approved maintenance window. Use the installed GitLab HTTPS endpoint with TLS
+verification and the installed SSH endpoint with a pinned host key.
+
+1. Record the Kubernetes `kube-system` Namespace UID, the application UIDs and
+   revisions for `gitlab-ce` and `gitlab-runner`, the GitLab project ID, and the
+   Praefect repository ID. Record matching HTTPS and SSH reads of the canary
+   branch. Use `praefect metadata` to identify the current primary and verify
+   all three assigned replicas are healthy, current, and on separate nodes.
+2. With the approved interruption in effect, confirm the original primary pod
+   is absent and the surviving original replicas are serving. Read the exact
+   pre-failure ref through both transports. Push two known fast-forward canary
+   commits, first over SSH and then over HTTPS, while the primary is still
+   absent. Record both surviving replica states and confirm both transports
+   return the final commit. The evidence validator measures service recovery
+   from the interruption to this observation.
+3. Restore normal scheduling. Wait for the replacement pod on the original
+   storage to catch up. Record current replica generations and verify repository
+   consistency using the [GitLab replica checksum task](https://docs.gitlab.com/administration/gitaly/praefect/troubleshooting/#check-that-repositories-are-in-sync).
+   Confirm both Argo CD Applications are healthy at the reviewed revision.
+4. Retain the successful push pipeline and Runner job for the final canary
+   commit, and verify its artifact. In the record, include the retained backup
+   of the observations and checks by URI and SHA-256. The independent approver
+   reviews those artifacts and confirms they came from the accepted cluster.
+5. In the isolated restore drill, use the `gitlab` check in `checks` and retain
+   proof that the GitLab application database, repositories, and configured
+   object-storage data were restored and readable. Bind the isolated restore
+   and the primary-loss record to the exact production Git revision.
+
+Use the same production evidence command with the following settings and the
+release, approval, OpenBao, and restore inputs shown above.
 
 ```bash
 PLATFORM_PROFILE=premium-3node-gitlab-ce \
@@ -194,35 +252,19 @@ PLATFORM_GITLAB_RECOVERY_EVIDENCE_FILE=private/gitlab-recovery-evidence.json \
 make platform-production-evidence
 ```
 
-Use the [GitLab recovery record template](../examples/gitlab-recovery-evidence.example.json)
-to record an independently reviewed drill from a dedicated canary project.
-The primary-loss drill requires an already deployed three-replica Praefect
-topology on separate nodes. The default single-Gitaly values need a reviewed
-deployment overlay before they can satisfy this check. Schedule the drill
-in an approved maintenance window and retain evidence of these observations.
-
-1. Record the Kubernetes cluster UID, GitLab project and Praefect repository
-   IDs, and the GitLab and Runner Argo CD application UIDs and revisions.
-   Verify the baseline branch and all three current replicas before the outage.
-2. During the approved primary interruption, confirm the original primary
-   pod is absent. Verify HTTPS and SSH reads, then push distinct fast-forward
-   canary commits over SSH and HTTPS with the surviving replicas. Record the
-   recovery time and the approved recovery time objective.
-3. Confirm the replacement replica catches up, verify consistency across
-   all three replicas, and retain the successful Runner job and verified
-   artifact for the recovered branch. Use evidence URIs, SHA-256 digests,
-   and timestamps in the reviewed record.
-4. In the separate isolated restore record, use `checks.gitlab` and retain
-   proof that the database, repositories, and configured object storage
-   were restored and readable.
-
-The collector retains the exact GitLab record that passed and binds its
-SHA-256 into the acceptance log. The scorer checks the retained record
-against the reviewed commit and live inventory's cluster UID. The live
-acceptance packet still requires a detached signature from the approved
-independent signer. Existing Forgejo profiles continue to use schema v7.
+The final scorer rechecks the retained GitLab recovery record, its hash, and
+its Kubernetes cluster UID against the live image inventory. The separate
+production approval still requires the independent approver's signature.
 
 ## 100-Point Production Gate
+
+The production gate verifies that every application selected by the profile is
+healthy and synced to the reviewed commit. Set `PLATFORM_REPO_URL` to the
+production URL used by Argo CD, or set `PLATFORM_APP_HEALTH_EXPECTED_REPO_URL`
+when Argo CD uses a different transport. The gate compares the configured URL,
+Git path, project and destination with each live Application. The retained log
+includes the repository URL fingerprint, profile and verified commit. Collect
+a fresh packet for releases whose previous log lacks the fingerprint.
 
 Repository checks, live cluster acceptance, GitHub governance, independently
 approved release execution, and signed release provenance are separate trust
@@ -232,11 +274,16 @@ acceptance record to carry a detached signature from the independent approver.
 Partial evidence reports its earned score but exits non-zero; it must not be
 used as launch approval.
 
+The release workflow emits schema v2 approval evidence bound to the pushed tag
+and its first workflow run attempt. Reusing an approval from another tag on the
+same commit fails verification. An incomplete or unverifiable signed release
+bundle earns zero points for both governance and release provenance.
+
 Keep the approval signing key outside the operator workspace in an approved
 KMS, HSM, or offline approver environment. Place only the public key on the
 deployment controller, and pin its lowercase SHA-256 and authorized approver
 identity through protected private configuration. The independent approver
-reviews the completed schema-v7 packet, creates the exact approval statement,
+reviews the completed acceptance packet, creates the exact approval statement,
 signs it, and verifies it before handing the approval and Sigstore bundle to
 the operator:
 

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "nodepool_version": "<REVIEWED_NODEPOOL_VERSION>",
+  "image": "registry.example.com/platform/nodepool@sha256:<REVIEWED_NODEPOOL_IMAGE_DIGEST>",
+  "namespace": "nodepool",
+  "pools": [
+    {
+      "name": "platform-linux",
+      "tenant": "platform",
+      "label": "platform-linux",
+      "nodes": [
+        {
+          "host": "worker-a.example.com",
+          "port": 22,
+          "username": "zuul",
+          "host_key": "<APPROVED_WORKER_A_SSH_PUBLIC_HOST_KEY>",
+          "failure_domain": "rack-a"
+        },
+        {
+          "host": "worker-b.example.com",
+          "port": 22,
+          "username": "zuul",
+          "host_key": "<APPROVED_WORKER_B_SSH_PUBLIC_HOST_KEY>",
+          "failure_domain": "rack-b"
+        }
+      ]
+    }
+  ]
+}

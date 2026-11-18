@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "gogs",
+  "namespace": "gogs",
+  "state_claim": "gogs-state",
+  "credentials_secret": "gogs-credentials",
+  "https_url": "https://gogs.example.com",
+  "ssh_host": "gogs-ssh.example.com",
+  "ssh_public_port": 22,
+  "database": {"type": "postgres", "host": "postgres.example.com", "port": 5432,
+    "name": "gogs", "user": "gogs", "ca": "gogs-postgres-ca"}
+}

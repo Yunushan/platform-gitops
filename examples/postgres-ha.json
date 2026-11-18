@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "cluster_id": "<NEW_CLUSTER_UUID>",
+  "name": "platform-postgres",
+  "namespace": "platform-databases",
+  "postgres_version": "<REVIEWED_POSTGRES_17_OR_18_PATCH>",
+  "cnpg_version": "<REVIEWED_CNPG_1.30_PATCH>",
+  "patroni_version": "<REVIEWED_PATRONI_4.1_PATCH>",
+  "images": {"postgres": "registry.example.com/platform/postgres@sha256:<REVIEWED_DIGEST>", "patroni": "registry.example.com/platform/patroni@sha256:<REVIEWED_DIGEST>"},
+  "storage": {"size": "100Gi", "class": "ceph-rbd"},
+  "resources": {"requests": {"cpu": "500m", "memory": "1Gi"}, "limits": {"cpu": "2", "memory": "4Gi"}},
+  "bootstrap": {"database": "platform", "owner": "platform_owner", "secret": "platform-postgres-owner"},
+  "failure_domain_key": "topology.kubernetes.io/zone",
+  "replication": {"standbys": 1, "synchronous_commit": "remote_apply"},
+  "ports": {"sql": 5432, "rest": 8008},
+  "client_cidrs": ["192.0.2.0/24"],
+  "members": [
+    {"name": "pg-1", "host": "pg-1.example.com", "address": "192.0.2.21", "failure_domain": "rack-1", "node_name": "db-1", "node_uid": "<LIVE_NODE_UID_1>", "state_path": "/srv/postgres/pg-1", "tls_secret": "pg-1-tls"},
+    {"name": "pg-2", "host": "pg-2.example.com", "address": "192.0.2.22", "failure_domain": "rack-2", "node_name": "db-2", "node_uid": "<LIVE_NODE_UID_2>", "state_path": "/srv/postgres/pg-2", "tls_secret": "pg-2-tls"},
+    {"name": "pg-3", "host": "pg-3.example.com", "address": "192.0.2.23", "failure_domain": "rack-3", "node_name": "db-3", "node_uid": "<LIVE_NODE_UID_3>", "state_path": "/srv/postgres/pg-3", "tls_secret": "pg-3-tls"}
+  ],
+  "zookeeper": {"hosts": [{"host": "zk-1.example.com", "port": 2281}, {"host": "zk-2.example.com", "port": 2281}, {"host": "zk-3.example.com", "port": 2281}], "principals": ["CN=patroni-pg-1", "CN=patroni-pg-2", "CN=patroni-pg-3"]},
+  "tls": {"server_ca_secret": "postgres-server-ca", "server_secret": "postgres-server-tls", "ca_sha256": {"postgres": "<POSTGRES_CA_SHA256>", "rest": "<REST_CA_SHA256>", "zk": "<ZOOKEEPER_CA_SHA256>"}},
+  "native": {"postgres_bin_dir": "/usr/lib/postgresql/18/bin", "uid": 26, "gid": 26}
+}

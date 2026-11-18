@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "scan": {
+    "schema_version": 1,
+    "jenkins_origin": "https://ci.example.invalid",
+    "job": ["team", "review-build"],
+    "job_config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "gerrit_origin": "https://review.example.invalid",
+    "project": "team/project",
+    "branch": "main",
+    "max_changes": 100,
+    "max_submissions": 10
+  },
+  "reviewer_username": "ci-review",
+  "reviewer_account_id": 123,
+  "label_definition_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "trust_jenkins_controller": true,
+  "max_reports": 10,
+  "report_failures": false
+}

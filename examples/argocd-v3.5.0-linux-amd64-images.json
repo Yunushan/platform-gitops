@@ -1,0 +1,6 @@
+{
+  "quay.io/argoproj/argocd:v3.5.0": "sha256:521d6b62ecd0434c9cc6e9242a74f0e1137bb8fc0026b2c483ea88f3f17e725d",
+  "ghcr.io/dexidp/dex:v2.45.0": "sha256:8a9281c3a115180415b0726ca160e38fc40f9284bc9a2d1032c839a3a934695c",
+  "public.ecr.aws/docker/library/redis:8.2.3-alpine": "sha256:e499175dfb27569cd40010c2eee346113db95fdd0efc88ab9fd70a9e807f4542",
+  "public.ecr.aws/docker/library/haproxy:3.0.8-alpine": "sha256:3ad414bdb5c94d712e0e9a7dc1517eca45cce652afc85a002fd7bb42b44d5dde"
+}

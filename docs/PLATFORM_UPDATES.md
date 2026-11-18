@@ -1,28 +1,28 @@
 # Optional application updates and Argo CD recovery
 
 Updates are opt-in. Existing public defaults and vendored charts are unchanged.
-This workflow edits **application image versions**, not Helm chart versions,
-and never deploys, syncs, prunes, changes authentication or resets passwords.
+This workflow edits **application image versions and reviewed image digests**
+in Helm values files. Deployment uses the existing GitOps promotion workflow.
 Use the existing release-promotion and backup gates before publishing changes
 to a private repository watched by Argo CD: a push there can trigger auto-sync.
 
 ## Reviewed release choices
 
-The offline catalog is `config/platform-releases.json`, reviewed on
-2026-10-01. Named channels require another review before 2026-10-29;
-they are not floating container tags or an automatic production updater.
+The offline catalog is `config/platform-releases.json`. The choices below
+reflect its 2026-10-01 review. Named channels require a fresh upstream review
+after the catalog deadline of 2026-10-29. Exact versions can be selected
+independently.
 
-| Component | Existing default | Optional LTS | Optional stable |
+| Component | Existing default | LTS at review | Stable at review |
 | --- | --- | --- | --- |
 | Forgejo | 15.0.6 | 15.0.9 | 16.0.5 |
 | Woodpecker server and agent | v3.16.0 | Not offered upstream | v3.18.1 |
 | Argo CD core components | v3.5.0 | Not offered upstream | v3.5.3 |
 
 `lts-stable` is an alias for Forgejo `lts`, not the newer stable major.
-Forgejo 15 LTS is supported until 2027-07-15; Forgejo 16 stable until
-2026-10-29. Prefer the LTS patch update for an existing Forgejo 15 deployment.
-Woodpecker has stable/next, not an LTS channel. Argo CD's current stable
-patch line is 3.5; do not substitute a 3.6 release candidate.
+Forgejo 15 LTS is supported until 2027-07-15. Forgejo 16 support ended on
+2026-10-29. Gitea supports explicit version and digest selection through
+`specific`. Woodpecker uses its upstream stable release series.
 
 Sources: [Forgejo releases](https://forgejo.org/releases/),
 [Forgejo upgrade requirements](https://forgejo.org/docs/latest/admin/upgrade/),
@@ -40,8 +40,9 @@ updater and does not certify database/chart compatibility or restore readiness.
 ## Plan and edit existing private values
 
 Run inside the appropriate checkout. The default paths select the premium
-profile; `--forgejo-values`, `--woodpecker-values`, and `--argocd-values` can
-select existing private values elsewhere. Omitted components stay untouched.
+profile for Forgejo, Woodpecker and Argo CD. Gitea defaults to the alternative
+chart values. Each component's `--<component>-values` flag can select its
+existing private values elsewhere. Omitted components stay untouched.
 The CLI uses explicit arguments, not ambient version environment variables.
 
 ```sh
@@ -57,6 +58,11 @@ python3 scripts/update_platform_versions.py \
   --forgejo specific --forgejo-version 15.0.9 \
   --woodpecker specific --woodpecker-version 3.18.1 \
   --argocd specific --argocd-version 3.5.3
+
+# Gitea needs the reviewed digest for the selected image variant.
+python3 scripts/update_platform_versions.py \
+  --gitea specific --gitea-version "$GITEA_VERSION" \
+  --gitea-digest "$GITEA_DIGEST" --gitea-values "$GITEA_VALUES"
 ```
 
 After a verified, restorable backup of Forgejo's database **and** repositories,
@@ -67,9 +73,13 @@ backup verification or approval to push/deploy. Forgejo's three healthy
 Longhorn replicas are not an independent backup. A database schema migration
 may prevent rollback by changing an image tag alone.
 
-The updater preserves unrelated values and comments: existing storage sizes,
-storage classes, database/Redis settings, hostnames, SSO and secret references
-are not re-rendered. An explicit Forgejo `-rootless` suffix is retained.
+The updater preserves storage, database, cache, host, SSO and Secret settings,
+including their comments. An explicit Forgejo `-rootless` suffix is retained.
+Pass `--forgejo-digest` to add a reviewed pin or replace the digest for a
+digest-pinned update. Use the manifest digest from the approved registry for
+the selected tag and image variant. Gitea requires the digest with its target
+version. A digest-pinned forge version change requires a new digest, and the
+tag and digest are staged together.
 Argo CD uses `global.image.tag`; Redis and Dex are not upgraded with the core
 image. Existing Argo core component overrides and digest pins require separate
 review. Major upgrades additionally require `--allow-major-upgrade`; image
@@ -81,6 +91,41 @@ required. Do not modify vendored sources in place.
 prereleases, and ambiguous values. All selected files are validated before
 writes; replacements are atomic per file, not a multi-file transaction.
 Inspect local changes after an I/O interruption before retrying.
+
+## Maintain a single active forge during an upgrade
+
+Confirm the rendered forge Deployment uses one replica and the Recreate
+strategy. During backup, hold writes at ingress and pause any reconciliation
+that could restart a scaled-down writer. Wait for the old Pod to terminate
+before copying the repository volume and capturing database state. Include
+the external data stores used by the private deployment in the same backup
+window. Verify the backup before upgrading.
+
+Render and review the version and digest change through the same chart.
+After promotion, verify the new Pod and expected image, the original claim,
+an existing login and Git ref, and read/write behavior for representative
+permissions. Recover from a failed, database-changing upgrade by restoring
+the pre-upgrade database and files with the old image in a fresh deployment.
+Compare the restored ref to the backup-time ref before reopening ingress.
+[Kubernetes Deployment strategy](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy)
+
+A disposable K3s v1.35.0 lab ran the vendored Gitea 12.7.0 chart with its
+SQLite profile. The version and digest edit advanced Gitea 28.2.0 to 28.3.0
+on its original claim and the new Pod accepted an SSH push. Recovery on
+28.2.0 used the cold backup and a fresh claim in a new namespace on the other
+worker. The original login, SSH host key, repository ID, issue, read-only
+collaborator permissions and backup-time Git ref were preserved. The
+recovered repository excluded the post-upgrade write and accepted a new SSH
+push from the owner. The lab used local volumes and verified cached images.
+
+A disposable K3s v1.35.0 lab started rootless Forgejo 15.0.6 on an empty local
+claim with single-instance CloudNativePG and `verify-full` TLS. Forgejo
+15.0.11 reused the claim and accepted an SSH push. The lab restored the
+pre-upgrade database and files into a fresh CloudNativePG cluster and claim
+on the other worker, then started 15.0.6. The existing login, SSH host key,
+repository ID, issue, read-only collaborator permissions, and backup-time Git
+ref survived recovery. The restore excluded the post-upgrade write and the
+owner could push again. The lab used local volumes and verified cached images.
 
 ## Keep subsequent private renders consistent
 

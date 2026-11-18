@@ -6,6 +6,7 @@
   vars:
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     rke2_first_server_ip: "{{ hostvars[rke2_first_server].ansible_host }}"
+    rke2_expected_node_resources: "{{ (groups['rke2_servers'] + groups.get('rke2_agents', [])) | unique | map('regex_replace', '^', 'node/') | list }}"
     rke2_verify_timeout_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERIFY_TIMEOUT') }}"
     rke2_verify_api_vip_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_VERIFY_API_VIP') }}"
     rke2_api_vip_from_env: "{{ lookup('ansible.builtin.env', 'RKE2_API_VIP') }}"
@@ -100,6 +101,31 @@
           retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
           delay: "{{ rke2_verify_poll_interval }}"
           until: rke2_verify_api_vip_http.rc == 0
+
+        - name: Verify TLS-validated supervisor path through the registration VIP and DNS
+          ansible.builtin.command:
+            argv:
+              - curl
+              - --silent
+              - --show-error
+              - --fail
+              - --noproxy
+              - "*"
+              - --cacert
+              - /var/lib/rancher/rke2/server/tls/server-ca.crt
+              - --connect-timeout
+              - "5"
+              - --max-time
+              - "15"
+              - --output
+              - /dev/null
+              - "https://{{ item }}:9345/cacerts"
+          loop: "{{ [rke2_api_vip_effective, rke2_api_dns_effective] | unique | list }}"
+          register: rke2_verify_supervisor
+          changed_when: false
+          retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
+          delay: "{{ rke2_verify_poll_interval }}"
+          until: rke2_verify_supervisor.rc == 0
 
         - name: Verify authenticated API readiness through VIP
           ansible.builtin.command: >-
@@ -200,12 +226,11 @@
     - name: Verify all expected nodes are Ready
       block:
         - name: Poll all expected nodes Ready
-          ansible.builtin.shell: |
-            set -o pipefail
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
-              awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
-          args:
-            executable: /bin/bash
+          ansible.builtin.command:
+            argv: >-
+              {{ ['/var/lib/rancher/rke2/bin/kubectl', '--kubeconfig', '/etc/rancher/rke2/rke2.yaml',
+                  '--request-timeout=8s', 'wait', '--for=condition=Ready', '--timeout=0s']
+                 + rke2_expected_node_resources }}
           register: rke2_verify_nodes_ready
           retries: "{{ (((rke2_verify_timeout_effective | int) / rke2_verify_poll_interval) | round(0, 'ceil') | int) + 1 }}"
           delay: "{{ rke2_verify_poll_interval }}"

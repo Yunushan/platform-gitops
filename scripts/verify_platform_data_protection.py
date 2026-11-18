@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from bounded_file import read_bounded_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from cnpg_schedule import cnpg_backup_schedule
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
 
@@ -266,22 +267,51 @@ def verify_velero(kube: Kubectl, now: datetime, max_age: timedelta) -> str:
     return f"velero=ok backup={name} age_hours={(now - timestamp).total_seconds() / 3600:.1f}"
 
 
+def verify_cnpg_placement(cluster: dict[str, Any], pods: list[dict[str, Any]]) -> int:
+    instances = nested(cluster, "spec.instances")
+    if type(instances) is not int or instances < 3 or nested(cluster, "status.readyInstances") != instances:
+        raise ProtectionError("CloudNativePG platform-postgres requires at least three fully Ready instances")
+    uid = nested(cluster, "metadata.uid")
+    members = nested(cluster, "status.instanceNames") or []
+    if not uid or not isinstance(members, list) or len(set(members)) != instances:
+        raise ProtectionError("CloudNativePG platform-postgres has incomplete instance identities")
+    placements = {}
+    for pod in pods:
+        name = nested(pod, "metadata.name")
+        if name not in members or nested(pod, "metadata.deletionTimestamp"):
+            continue
+        owned = any(
+            owner.get("kind") == "Cluster" and owner.get("uid") == uid and owner.get("controller") is True
+            for owner in nested(pod, "metadata.ownerReferences") or []
+        )
+        ready = any(
+            condition.get("type") == "Ready" and condition.get("status") == "True"
+            for condition in nested(pod, "status.conditions") or []
+        )
+        node = nested(pod, "spec.nodeName")
+        if owned and ready and node and nested(pod, "status.phase") == "Running":
+            placements[name] = node
+    if len(set(placements.values())) != instances:
+        raise ProtectionError("CloudNativePG requires one Ready database instance per distinct node")
+    return instances
+
+
 def verify_cnpg(kube: Kubectl, now: datetime, max_age: timedelta) -> str:
     cluster = kube.json(
         "-n", "platform-databases", "get", "cluster.postgresql.cnpg.io", "platform-postgres"
     )
-    if nested(cluster, "status.readyInstances") != nested(cluster, "spec.instances"):
-        raise ProtectionError("CloudNativePG platform-postgres is not fully Ready")
+    pods = kube.json("-n", "platform-databases", "get", "pods", "-l", "cnpg.io/cluster=platform-postgres")
+    node_count = verify_cnpg_placement(cluster, pods.get("items", []))
     destination = str(nested(cluster, "spec.backup.barmanObjectStore.destinationPath") or "")
     endpoint = str(nested(cluster, "spec.backup.barmanObjectStore.endpointURL") or "")
     if not destination.lower().startswith("s3://"):
         raise ProtectionError("CloudNativePG backup destination is not S3")
     require_external_endpoint(endpoint, "CloudNativePG object-storage endpoint")
-    conditions = nested(cluster, "status.conditions")
+    conditions = nested(cluster, "status.conditions") or []
     archive = [
         condition
         for condition in conditions if isinstance(conditions, list)
-        if condition.get("type") == "ContinuousArchiving"
+        if isinstance(condition, dict) and condition.get("type") == "ContinuousArchiving"
     ]
     if not archive or str(archive[-1].get("status", "")).lower() != "true":
         raise ProtectionError("CloudNativePG continuous WAL archiving is not healthy")
@@ -290,25 +320,39 @@ def verify_cnpg(kube: Kubectl, now: datetime, max_age: timedelta) -> str:
         "-n", "platform-databases", "get", "scheduledbackups.postgresql.cnpg.io"
     ).get("items", [])
     enabled = [
-        item
-        for item in schedules if isinstance(schedules, list)
-        if not bool(nested(item, "spec.suspend"))
+        item for item in schedules
+        if nested(item, "spec.cluster.name") == "platform-postgres"
+        and not nested(item, "spec.suspend")
+        and (nested(item, "spec.method") or "barmanObjectStore") == "barmanObjectStore"
     ]
     if not enabled:
-        raise ProtectionError("CloudNativePG has no enabled ScheduledBackup")
+        raise ProtectionError("CloudNativePG platform-postgres has no enabled ScheduledBackup")
+    for item in enabled:
+        schedule_name = nested(item, "metadata.name")
+        try:
+            cnpg_backup_schedule(str(nested(item, "spec.schedule") or ""))
+        except ValueError as exc:
+            raise ProtectionError(f"CloudNativePG schedule {schedule_name}: {exc}") from exc
+        next_run = parse_timestamp(nested(item, "status.nextScheduleTime"))
+        if nested(item, "status.error") or next_run is None or next_run < now - timedelta(minutes=5):
+            raise ProtectionError(f"CloudNativePG schedule {schedule_name} has no healthy next execution")
+    last_run, schedule_name = newest_timestamp(enabled, ("status.lastScheduleTime",))
+    require_fresh(last_run, name=schedule_name, label="CloudNativePG scheduled execution", max_age=max_age, now=now)
 
     backups = kube.json("-n", "platform-databases", "get", "backups.postgresql.cnpg.io").get("items", [])
     completed = [
-        item
-        for item in backups if isinstance(backups, list)
-        if str(nested(item, "status.phase") or "").lower() in {"completed", "succeeded"}
+        item for item in backups
+        if nested(item, "spec.cluster.name") == "platform-postgres"
+        and nested(item, "status.destinationPath") == destination
+        and nested(item, "status.endpointURL") == endpoint
+        and str(nested(item, "status.phase") or "").lower() in {"completed", "succeeded"}
     ]
     timestamp, name = newest_timestamp(
         completed,
-        ("status.stoppedAt", "status.endTime", "metadata.creationTimestamp"),
+        ("status.stoppedAt",),
     )
     require_fresh(timestamp, name=name, label="CloudNativePG backup", max_age=max_age, now=now)
-    return f"cnpg=ok backup={name} age_hours={(now - timestamp).total_seconds() / 3600:.1f}"
+    return f"cnpg=ok nodes={node_count} backup={name} age_hours={(now - timestamp).total_seconds() / 3600:.1f}"
 
 
 def setting_value(kube: Kubectl, name: str) -> str:

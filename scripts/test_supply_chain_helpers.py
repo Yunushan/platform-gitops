@@ -12,6 +12,7 @@ import re
 import sys
 import tarfile
 import tempfile
+import tomllib
 
 from vendored_chart_inventory import (
     chart_package_record,
@@ -811,7 +812,7 @@ def main() -> int:
                 'export INSTALL_RKE2_VERSION="${RKE2_VERSION}"',
                 "unset INSTALL_RKE2_CHANNEL",
                 "10#${timeout_value}",
-                "for required_command in chmod chown curl",
+                'for required_command in chmod chown "${download_command}"',
                 "trap 'exit 143' TERM",
                 "--retry-all-errors",
                 "--proto '=https'",
@@ -956,11 +957,26 @@ def main() -> int:
             'commits = ["2ee7db41c7d02791b3bf21db00371e523cf948db"]',
             "apps/step-ca/charts/step-certificates-1[.]30[.]1/",
             "premium-3node/apps/argocd-ha/charts/argo-cd-10[.]0[.]0/",
+            "premium-3node/apps/argocd-ha/charts/argo-cd-10[.]3[.]2/",
             "premium-3node/apps/keycloak/charts/keycloak-25[.]2[.]0/",
             label=str(GITLEAKS_CONFIG.relative_to(ROOT)),
         )
         if "paths = [\n  '''.*charts" in gitleaks_text:
             problems.append(".gitleaks.toml must not broadly allow every vendored chart path")
+        digest_rules = [
+            item for rule in tomllib.loads(gitleaks_text)["rules"] if rule["id"] == "generic-api-key"
+            for item in rule.get("allowlists", []) if item.get("regexTarget") == "secret"
+        ]
+        if len(digest_rules) != 1 or digest_rules[0].get("condition") != "AND":
+            problems.append("fixture checksum exceptions must require both the exact path and digest")
+        else:
+            entry = digest_rules[0]
+            pins = entry.get("regexes", [])
+            paths = entry.get("paths", [])
+            if not pins or not all(re.fullmatch(r"\^[a-f0-9]{64}\$", pin) for pin in pins):
+                problems.append("fixture checksum exceptions must use exact SHA-256 literals")
+            if not paths or not all(re.fullmatch(r"\^scripts/test_[a-z0-9_]+\[\.\]py\$", p) for p in paths):
+                problems.append("fixture checksum exceptions must use literal test file paths")
     except AssertionError as exc:
         problems.append(str(exc))
     try:
@@ -1501,7 +1517,8 @@ def main() -> int:
             SECURITY_SCAN_SCRIPT,
             (
                 "gitleaks_args=(\n  dir",
-                'gitleaks_args+=("${ROOT}")',
+                "gitleaks_args+=(.)",
+                '(cd "${ROOT}" && gitleaks "${gitleaks_args[@]}")',
                 "trivy_args=(\n  fs",
                 "semgrep",
             ),

@@ -180,6 +180,7 @@ configs:
     reposerver.parallelism.limit: "2"
   cm:
     admin.enabled: "true"
+    kustomize.buildOptions: "--enable-helm"
     timeout.reconciliation: 180s
     timeout.reconciliation.jitter: 60s
   rbac:

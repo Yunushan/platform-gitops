@@ -18,6 +18,7 @@ NAMESPACE_POLICIES = {
     "gitops/clusters/rke2-main/premium-3node/apps/forgejo/namespace.yaml": ("forgejo", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/gitlab-ce/namespace.yaml": ("gitlab", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/gitlab-runner/namespace.yaml": ("gitlab-runner", "baseline", "restricted", "restricted"),
+    "gitops/clusters/rke2-main/premium-3node/apps/gitlab-runner/jobs-namespace.yaml": ("gitlab-jobs", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/harbor/namespace.yaml": ("harbor", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/keycloak/namespace.yaml": ("keycloak", "baseline", "restricted", "restricted"),
     "gitops/clusters/rke2-main/premium-3node/apps/kyverno/namespace.yaml": ("kyverno", "baseline", "restricted", "restricted"),
@@ -66,7 +67,7 @@ def main() -> int:
         require(text, f"pod-security.kubernetes.io/enforce: {enforce}", label)
         require(text, f"pod-security.kubernetes.io/audit: {audit}", label)
         require(text, f"pod-security.kubernetes.io/warn: {warn}", label)
-        require(read(path.parent / "kustomization.yaml"), "- namespace.yaml", f"{label} owner Kustomization")
+        require(read(path.parent / "kustomization.yaml"), f"- {path.name}", f"{label} owner Kustomization")
         if namespace in managed_namespaces:
             raise AssertionError(f"namespace is classified more than once: {namespace}")
         managed_namespaces.add(namespace)

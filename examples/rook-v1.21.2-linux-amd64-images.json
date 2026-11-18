@@ -1,0 +1,15 @@
+{
+  "rook_bootstrap_images": {
+    "addons": "quay.io/csiaddons/k8s-sidecar@sha256:96e800e073aca2da912e49493ddefcdcc5de7f00f686822aaddf6938a175607f",
+    "attacher": "registry.k8s.io/sig-storage/csi-attacher@sha256:3998c70f02511068e879b2222d7d4943db86fe044dd311f7bbb90812f778ad82",
+    "csi_operator": "quay.io/cephcsi/ceph-csi-operator@sha256:e1d393dcf8cc9d01f045146896333b5126fca1f40b896e9a6008e2cbdffa2a81",
+    "plugin": "quay.io/cephcsi/cephcsi@sha256:1cea44cd8f5ebb1f429cc6358fa2361b5f50c018e76714661536526e65ebcb76",
+    "provisioner": "registry.k8s.io/sig-storage/csi-provisioner@sha256:54de28a6565647405647b34d092eefb4a51c7be14f29bdafc721773a5ec0600c",
+    "registrar": "registry.k8s.io/sig-storage/csi-node-driver-registrar@sha256:692a30d9f27d32a25ea2784d01251b73e189e9d1156dd43c58f87ad2b70ec1e6",
+    "resizer": "registry.k8s.io/sig-storage/csi-resizer@sha256:da560f720351d2c5ed1d3f85ad5a03d3935967a0586810eb2c1ea4d3109493fa",
+    "rook": "docker.io/rook/ceph@sha256:833fd6fd2c51d3677e0ae09ec0eb0f2cbb0e8320886ab277834a8d836baca235",
+    "snapshot_metadata": "registry.k8s.io/sig-storage/csi-snapshot-metadata@sha256:8007f648feb267fc3b9075cf40ec55e07f670296fcef4365511ee3597cb96195",
+    "snapshotter": "registry.k8s.io/sig-storage/csi-snapshotter@sha256:87a9712e10c3a70b9070ada79611aff48174ce2f4b60f447503481d1d467be70"
+  },
+  "ceph_image": "quay.io/ceph/ceph@sha256:09ee90f6f3e0c7b9954f71d214ee05e9bbaaaea3716b1dd619603283b829f8b8"
+}

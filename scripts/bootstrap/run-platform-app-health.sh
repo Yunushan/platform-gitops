@@ -84,6 +84,9 @@ PY
   )
   read -r -a rendered_apps <<<"${rendered_profile[0]:-}"
   read -r -a rendered_namespaces <<<"${rendered_profile[1]:-}"
+  if [[ "${PLATFORM_PROFILE:-}" == premium-3node-gitlab-ce && " ${rendered_namespaces[*]} " != *" gitlab-jobs "* ]]; then
+    rendered_namespaces+=(gitlab-jobs)
+  fi
 fi
 
 if ((${#rendered_apps[@]} > 0)); then

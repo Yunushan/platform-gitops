@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "version": "2.7.2",
+  "image": "quay.io/openbao/openbao@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "namespace": "platform-openbao",
+  "cluster_domain": "cluster.local",
+  "private_dir": "/etc/platform-openbao",
+  "binary": "/opt/openbao/bin/bao",
+  "binary_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "audit_dir": "/var/log/platform-openbao",
+  "members": [
+    {"name": "bao-a", "node": "worker-a.example.com", "address": "192.0.2.41", "failure_domain": "zone-a", "data_dir": "/var/lib/openbao-a", "data_claim": "bao-a-data", "audit_claim": "bao-a-audit", "tls_secret": "bao-a-tls"},
+    {"name": "bao-b", "node": "worker-b.example.com", "address": "192.0.2.42", "failure_domain": "zone-b", "data_dir": "/var/lib/openbao-b", "data_claim": "bao-b-data", "audit_claim": "bao-b-audit", "tls_secret": "bao-b-tls"},
+    {"name": "bao-c", "node": "worker-c.example.com", "address": "192.0.2.43", "failure_domain": "zone-c", "data_dir": "/var/lib/openbao-c", "data_claim": "bao-c-data", "audit_claim": "bao-c-audit", "tls_secret": "bao-c-tls"}
+  ],
+  "network": {"ingress_namespaces": ["argocd", "forgejo", "woodpecker"], "monitoring_namespace": "monitoring"}
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "name": "scm-manager",
+  "state_path": "/srv/scm-manager/state",
+  "http_port": 8080,
+  "bootstrap_env_file": null
+}

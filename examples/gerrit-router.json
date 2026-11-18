@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "canonical_host": "review.example.com",
+  "primary_host": "gerrit-a.example.com",
+  "backup_host": "gerrit-b.example.com",
+  "hold_primary": false,
+  "https_port": 8443,
+  "ssh_port": 29418,
+  "namespace": "gerrit",
+  "ca_secret": "gerrit-backend-ca",
+  "haproxy_image": "docker.io/library/haproxy@sha256:<REVIEWED_HAPROXY_IMAGE_DIGEST>"
+}

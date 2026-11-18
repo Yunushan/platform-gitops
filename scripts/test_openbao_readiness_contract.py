@@ -89,14 +89,14 @@ def main() -> int:
     require(premium, "make platform-openbao-verify", str(PREMIUM.relative_to(ROOT)))
 
     runner = read(EVIDENCE_RUNNER)
-    require(runner, '"schemaVersion": 7 if recovery_key == "forgejoRecovery" else 8', "production evidence runner")
+    require(runner, '"schemaVersion": 7', "production evidence runner")
     require(runner, '"openbaoReadiness": "passed"', "production evidence runner")
     require(runner, '"openbaoCeremony": "passed"', "production evidence runner")
 
     validator = read(EVIDENCE_VALIDATOR)
     require(validator, '"openbaoReadiness"', "production evidence validator")
     require(validator, '"openbaoCeremony"', "production evidence validator")
-    require(validator, "version = 8 if gitlab else 7", "production evidence validator")
+    require(validator, "version = 8 if gitlab else 7", "profile-specific production evidence schema")
 
     print("OpenBao production-readiness contract passed.")
     return 0

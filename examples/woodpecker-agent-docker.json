@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "runtime": "docker",
+  "name": "woodpecker-agent",
+  "server": "ci-grpc.example.invalid:443",
+  "state_path": "/var/lib/woodpecker-agent",
+  "inputs_path": "/etc/platform/woodpecker-agent",
+  "custom_https_ca": true,
+  "docker_socket": "/run/woodpecker-engine/docker.sock",
+  "socket_gid": 2000,
+  "image": "docker.io/woodpeckerci/woodpecker-agent@sha256:72f170f9356616d025e234836b82da830d48f3fe3a5260ed0f56fc08f95372c8"
+}

@@ -6,8 +6,9 @@ from __future__ import annotations
 import ast
 import os
 from pathlib import Path
+import ssl
 from unittest import mock
-from urllib.request import ProxyHandler, Request
+from urllib.request import HTTPSHandler, ProxyHandler, Request
 
 import http_transport
 from http_transport import (
@@ -28,6 +29,7 @@ from http_transport import (
     open_http_request,
     read_bounded_response,
     require_bounded_text,
+    stream_bounded_response,
 )
 
 
@@ -280,6 +282,33 @@ def test_bounded_response_reader() -> None:
         assert chunked.offset == 4
 
 
+def test_stream_reader_bounds_and_deadline() -> None:
+    response = mock.Mock()
+    body = ChunkedResponse(b"abcd")
+    response.read1.side_effect = body.read
+    with mock.patch.object(http_transport.time, "monotonic", return_value=0):
+        assert list(stream_bounded_response(response, max_bytes=4, deadline=1)) == [b"ab", b"cd"]
+        assert body.requests[-1] == 1
+
+        response.read1.side_effect = ChunkedResponse(b"abcde").read
+        try:
+            list(stream_bounded_response(response, max_bytes=4, deadline=1))
+        except HttpResponseTooLarge:
+            pass
+        else:
+            raise AssertionError("oversized HTTP stream was accepted")
+
+    response.read1.side_effect = None
+    response.read1.return_value = b"late"
+    with mock.patch.object(http_transport.time, "monotonic", side_effect=[0, 2]):
+        try:
+            next(stream_bounded_response(response, max_bytes=4, deadline=1))
+        except TimeoutError:
+            pass
+        else:
+            raise AssertionError("expired HTTP stream yielded data")
+
+
 def test_bounded_text_uses_encoded_bytes() -> None:
     assert require_bounded_text("ab", max_bytes=2) == "ab"
     try:
@@ -348,6 +377,18 @@ def test_shared_opener_policy() -> None:
         isinstance(handler, RejectRedirectHandler)
         for handler in direct_build.call_args.args
     )
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    with mock.patch.object(http_transport, "build_opener", return_value=opener) as build:
+        open_http_request(request, timeout=10, use_environment_proxy=False, tls_context=context)
+    assert any(isinstance(handler, HTTPSHandler) for handler in build.call_args.args)
+    context.check_hostname = False
+    try:
+        open_http_request(request, timeout=10, tls_context=context)
+    except HttpTransportPolicyError:
+        pass
+    else:
+        raise AssertionError("custom TLS trust disabled hostname verification")
 
     for timeout in (True, 0, -1, float("nan"), float("inf"), 301):
         try:
@@ -473,6 +514,7 @@ def main() -> int:
     test_request_limit_policy()
     test_response_limit_policy()
     test_bounded_response_reader()
+    test_stream_reader_bounds_and_deadline()
     test_bounded_text_uses_encoded_bytes()
     test_redirect_policy_rejects_before_forwarding()
     test_shared_opener_policy()

@@ -31,6 +31,7 @@
             - forgejo_config_env.py
             - valkey_runtime_contract.py
             - forgejo_storage_contract.py
+            - forgejo_database_contract.py
             - bounded_file.py
             - bounded_subprocess.py
             - strict_json.py

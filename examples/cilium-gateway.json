@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "name": "platform-edge",
+  "namespace": "platform-gateway",
+  "class_name": "platform-cilium",
+  "management_target": {
+    "kubeconfig_env": "PLATFORM_MANAGEMENT_KUBECONFIG",
+    "context": "management",
+    "cluster_uid": "11111111-1111-4111-8111-111111111111"
+  },
+  "cilium": {
+    "version": "1.18.3",
+    "gateway_api_version": "1.2.0",
+    "namespace": "kube-system",
+    "images": {
+      "agent": "registry.example.com/cilium/agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "envoy": "registry.example.com/cilium/envoy@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "operator": "registry.example.com/cilium/operator@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  },
+  "serving_selector": {
+    "platform.gitops/edge": "true"
+  },
+  "failure_domain_key": "topology.kubernetes.io/zone",
+  "https_port": 8443,
+  "tls_secret": "platform-edge-tls",
+  "routes": [
+    {
+      "name": "forge",
+      "namespace": "forgejo",
+      "hostname": "forge.example.com",
+      "protocol": "http",
+      "service": "forgejo-http",
+      "port": 3000,
+      "target_port": 3000,
+      "pod_selector": {
+        "app.kubernetes.io/name": "forgejo"
+      }
+    }
+  ]
+}

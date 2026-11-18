@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "realm_plan": {
+    "schema_version": 1,
+    "contract_sha256": "<ORIGINAL_KEYCLOAK_CONTRACT_SHA256>",
+    "server": {
+      "url": "https://identity.example.com",
+      "master_realm_id": "<ORIGINAL_MASTER_REALM_UUID>",
+      "token_env": "KEYCLOAK_ADMIN_ACCESS_TOKEN",
+      "ca_file": "/etc/platform-bootstrap/identity-ca.crt",
+      "ca_sha256": "<REVIEWED_CA_FILE_SHA256>"
+    }
+  },
+  "realm_proof": {
+    "path": "/srv/platform/private/keycloak-realm-operation/keycloak-realm-proof.json",
+    "sha256": "<COMPLETED_ORIGINAL_REALM_PROOF_SHA256>"
+  },
+  "application": {
+    "kind": "argocd",
+    "version": "<REVIEWED_ARGOCD_3_5_PATCH>",
+    "client_id": "argocd",
+    "origin": "https://argocd.example.com",
+    "client_secret_env": "KEYCLOAK_ARGOCD_CLIENT_CREDENTIAL",
+    "namespace": "argocd",
+    "secret_name": "platform-sso-argocd",
+    "secret_key": "client-secret",
+    "group_roles": [
+      {"group": "/platform-admins", "role": "admin"},
+      {"group": "/platform-readers", "role": "readonly"}
+    ]
+  }
+}

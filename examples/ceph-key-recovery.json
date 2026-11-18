@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "operation_id": "<FRESH_OPERATION_UUID>",
+  "runtime": "rke2",
+  "source": {
+    "target": {
+      "kubeconfig_env": "CEPH_RECOVERY_KUBECONFIG",
+      "context": "<MANAGEMENT_CONTEXT>",
+      "cluster_uid": "<KUBE_SYSTEM_NAMESPACE_UID>"
+    },
+    "namespace": "rook-ceph",
+    "namespace_uid": "<PROVIDER_NAMESPACE_UID>",
+    "name": "ceph",
+    "cluster_uid": "<CEPH_CLUSTER_UID>",
+    "spec_sha256": "<ADMITTED_CEPH_CLUSTER_SPEC_SHA256>",
+    "fsid": "<CEPH_FSID>",
+    "ceph_version": "<REVIEWED_20.2_PATCH>",
+    "pod": {
+      "name": "<TOOLBOX_POD_NAME>",
+      "uid": "<TOOLBOX_POD_UID>",
+      "node": "<TOOLBOX_NODE_NAME>",
+      "node_uid": "<TOOLBOX_NODE_UID>",
+      "container": "toolbox",
+      "spec_sha256": "<ADMITTED_TOOLBOX_POD_SPEC_SHA256>",
+      "image": "quay.io/ceph/ceph@sha256:<REVIEWED_IMAGE_DIGEST>",
+      "image_id": "<ORIGINAL_RUNTIME_IMAGE_ID>",
+      "container_id": "<ORIGINAL_CRI_CONTAINER_ID>",
+      "started_at": "<ORIGINAL_CONTAINER_STARTED_AT_UTC>"
+    },
+    "osds": [
+      {"id": 0, "uuid": "<OSD_0_UUID>"},
+      {"id": 1, "uuid": "<OSD_1_UUID>"},
+      {"id": 2, "uuid": "<OSD_2_UUID>"},
+      {"id": 3, "uuid": "<OSD_3_UUID>"}
+    ]
+  },
+  "destination": {
+    "server": {
+      "url": "https://bao.example.com:8200",
+      "cluster_id": "<OPENBAO_CLUSTER_ID>",
+      "version": "2.7.2",
+      "raft": {
+        "bao-a": "bao-a.example.com:8201",
+        "bao-b": "bao-b.example.com:8201",
+        "bao-c": "bao-c.example.com:8201"
+      },
+      "ca_file": "/opt/platform/private/bao-ca.crt",
+      "ca_sha256": "<OPENBAO_CA_SHA256>",
+      "token_env": "CEPH_RECOVERY_ESCROW_TOKEN"
+    },
+    "mount": "recovery",
+    "mount_uuid": "<ORIGINAL_OPENBAO_KV_MOUNT_UUID>",
+    "prefix": "ceph/provider"
+  },
+  "encryption": {
+    "binary": "/opt/platform/bin/age",
+    "binary_sha256": "<REVIEWED_AGE_EXECUTABLE_SHA256>",
+    "recipient": "<PUBLIC_AGE_X25519_RECIPIENT>"
+  },
+  "limits": {
+    "command_seconds": 30,
+    "overall_seconds": 1800
+  }
+}

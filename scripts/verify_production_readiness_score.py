@@ -11,12 +11,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from atomic_file import atomic_write_text
-from bounded_file import read_bounded_bytes, read_bounded_text
+from atomic_file import atomic_write_text, atomic_write_bytes
+from bounded_file import read_bounded_bytes
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
@@ -99,18 +100,19 @@ class ReadinessError(ValueError):
     """Raised when a retained readiness artifact is incomplete or untrusted."""
 
 
-def load_document(path: Path, label: str) -> dict[str, Any]:
+def load_document(path: Path, label: str) -> tuple[dict[str, Any], str]:
     try:
-        document = loads_strict_json(read_bounded_text(path))
+        raw = read_bounded_bytes(path)
+        document = loads_strict_json(raw.decode("utf-8"))
     except FileNotFoundError as exc:
         raise ReadinessError(f"{label} does not exist: {path}") from exc
     except OSError as exc:
         raise ReadinessError(f"{label} cannot be read: {path}: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except ValueError as exc:
         raise ReadinessError(f"{label} is not valid JSON: {path}: {exc}") from exc
     if not isinstance(document, dict):
         raise ReadinessError(f"{label} root must be a JSON object")
-    return document
+    return document, hashlib.sha256(raw).hexdigest()
 
 
 def parse_timestamp(value: Any, label: str) -> datetime:
@@ -223,13 +225,14 @@ def validate_release_approval_evidence(
     document: dict[str, Any],
     *,
     expected_repository: str,
+    expected_tag: str,
     expected_commit: str,
     expected_environment: str,
     now: datetime,
     max_age_hours: int,
 ) -> None:
-    if document.get("schemaVersion") != 1:
-        raise ReadinessError("GitHub release approval evidence schemaVersion must be 1")
+    if type(document.get("schemaVersion")) is not int or document["schemaVersion"] != 2:
+        raise ReadinessError("GitHub release approval evidence schemaVersion must be 2")
     if document.get("result") != "passed":
         raise ReadinessError("GitHub release approval evidence result must be passed")
     require_fresh(
@@ -240,14 +243,16 @@ def validate_release_approval_evidence(
     )
     if document.get("repository") != expected_repository:
         raise ReadinessError("GitHub release approval repository does not match")
+    if document.get("tag") != expected_tag:
+        raise ReadinessError("GitHub release approval tag does not match")
     if str(document.get("commit", "")).lower() != expected_commit:
         raise ReadinessError("GitHub release approval commit does not match the production commit")
     if document.get("releaseEnvironment") != expected_environment:
         raise ReadinessError("GitHub release approval environment does not match")
-    if not isinstance(document.get("runId"), int) or document["runId"] <= 0:
+    if type(document.get("runId")) is not int or document["runId"] <= 0:
         raise ReadinessError("GitHub release approval runId is invalid")
-    if not isinstance(document.get("runAttempt"), int) or document["runAttempt"] <= 0:
-        raise ReadinessError("GitHub release approval runAttempt is invalid")
+    if type(document.get("runAttempt")) is not int or document["runAttempt"] != 1:
+        raise ReadinessError("GitHub release approval must cover the first workflow run attempt")
     if not SHA256_RE.fullmatch(str(document.get("approvalBindingSha256", ""))):
         raise ReadinessError("GitHub release approval binding SHA-256 is invalid")
     require_hash_map(
@@ -297,11 +302,8 @@ def artifact_sha256(path: Path) -> str:
     return hashlib.sha256(read_bounded_bytes(path)).hexdigest()
 
 
-def parse_checksum_manifest(path: Path) -> dict[str, str]:
-    try:
-        lines = read_bounded_text(path).splitlines()
-    except OSError as exc:
-        raise ReadinessError(f"release checksum manifest cannot be read: {path}: {exc}") from exc
+def parse_checksum_manifest(manifest: bytes) -> dict[str, str]:
+    lines = manifest.decode("utf-8").splitlines()
     entries: dict[str, str] = {}
     for line_number, line in enumerate(lines, 1):
         if not line.strip():
@@ -328,11 +330,14 @@ def verify_release_bundle(
     repository: str,
     tag: str,
     cosign_bin: str,
+    loaded_evidence_hashes: dict[str, str] | None = None,
     runner: Any = run_bounded,
 ) -> dict[str, str]:
     if not bundle_path.is_file():
         raise ReadinessError(f"release Sigstore bundle does not exist: {bundle_path}")
-    entries = parse_checksum_manifest(checksums_path)
+    checksums_bytes = read_bounded_bytes(checksums_path)
+    bundle_bytes = read_bounded_bytes(bundle_path)
+    entries = parse_checksum_manifest(checksums_bytes)
     artifact = f"platform-gitops-{tag}"
     required_names = {
         f"{artifact}.tar.gz",
@@ -347,10 +352,16 @@ def verify_release_bundle(
         raise ReadinessError(
             "release checksum manifest is missing required artifacts: " + ", ".join(missing)
         )
+    if loaded_evidence_hashes is None:
+        loaded_evidence_hashes = {
+            "governance": artifact_sha256(governance_path),
+            "release": artifact_sha256(release_path),
+            "releaseApproval": artifact_sha256(release_approval_path),
+        }
     expected_hashes = {
-        f"{artifact}.github-governance.json": artifact_sha256(governance_path),
-        f"{artifact}.github-release.json": artifact_sha256(release_path),
-        f"{artifact}.github-release-approval.json": artifact_sha256(release_approval_path),
+        f"{artifact}.github-governance.json": loaded_evidence_hashes["governance"],
+        f"{artifact}.github-release.json": loaded_evidence_hashes["release"],
+        f"{artifact}.github-release-approval.json": loaded_evidence_hashes["releaseApproval"],
     }
     mismatched = sorted(name for name, digest in expected_hashes.items() if entries[name] != digest)
     if mismatched:
@@ -370,22 +381,21 @@ def verify_release_bundle(
             COSIGN_TIMEOUT_SECONDS,
             "PLATFORM_COSIGN_COMMAND_TIMEOUT_SECONDS",
         )
-        result = runner(
-            [
-                str(executable),
-                "verify-blob",
-                "--bundle",
-                str(bundle_path),
-                "--certificate-identity",
-                identity,
-                "--certificate-oidc-issuer",
-                GITHUB_ACTIONS_OIDC_ISSUER,
-                str(checksums_path),
-            ],
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="platform-release-signature-") as directory:
+            checksums = Path(directory) / "SHA256SUMS"
+            bundle = Path(directory) / "SHA256SUMS.sigstore.json"
+            atomic_write_bytes(checksums, checksums_bytes)
+            atomic_write_bytes(bundle, bundle_bytes)
+            result = runner(
+                [
+                    str(executable), "verify-blob", "--bundle", str(bundle),
+                    "--certificate-identity", identity,
+                    "--certificate-oidc-issuer", GITHUB_ACTIONS_OIDC_ISSUER, str(checksums),
+                ],
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
     except ValueError as exc:
         raise ReadinessError(str(exc)) from None
     except subprocess.TimeoutExpired:
@@ -399,8 +409,8 @@ def verify_release_bundle(
     if result.returncode != 0:
         raise ReadinessError("Cosign rejected the release checksum Sigstore bundle")
     return {
-        "checksums": artifact_sha256(checksums_path),
-        "sigstoreBundle": artifact_sha256(bundle_path),
+        "checksums": hashlib.sha256(checksums_bytes).hexdigest(),
+        "sigstoreBundle": hashlib.sha256(bundle_bytes).hexdigest(),
     }
 
 
@@ -460,12 +470,7 @@ def evaluate_readiness(
                 now=now,
                 max_age_days=max_production_age_days,
             )
-        except (
-            production_evidence.EvidenceError,
-            production_approval.ApprovalError,
-            OSError,
-            json.JSONDecodeError,
-        ) as exc:
+        except (OSError, ValueError) as exc:
             diagnostics.append(f"live platform acceptance evidence failed: {exc}")
         else:
             categories[0].update(earned=PRODUCTION_WEIGHT, result="passed")
@@ -507,6 +512,7 @@ def evaluate_readiness(
             validate_release_approval_evidence(
                 release_approval_document,
                 expected_repository=expected_repository,
+                expected_tag=expected_tag,
                 expected_commit=expected_commit,
                 expected_environment=expected_environment,
                 now=now,
@@ -700,8 +706,7 @@ def main() -> int:
         ),
     ):
         try:
-            documents[name] = load_document(path, label)
-            evidence_hashes[name] = artifact_sha256(path)
+            documents[name], evidence_hashes[name] = load_document(path, label)
         except (ReadinessError, OSError) as exc:
             documents[name] = None
             load_problems.append(str(exc))
@@ -717,18 +722,16 @@ def main() -> int:
                 public_key_path=args.production_approval_public_key,
                 expected_key_sha256=args.production_approval_public_key_sha256,
                 cosign_bin=os.environ.get("COSIGN_BIN", "cosign"),
+                expected_approval_sha256=evidence_hashes["productionApproval"],
             )
-        except (production_approval.ApprovalError, OSError) as exc:
+        except (ValueError, OSError) as exc:
             documents["productionApproval"] = None
             load_problems.append(f"signed production approval failed: {exc}")
         else:
             evidence_hashes.update(approval_hashes)
 
-    if (
-        documents.get("governance") is not None
-        and documents.get("release") is not None
-        and documents.get("releaseApproval") is not None
-    ):
+    release_records = ("governance", "release", "releaseApproval")
+    if all(documents[name] is not None for name in release_records):
         try:
             release_bundle_hashes = verify_release_bundle(
                 checksums_path=args.release_checksums,
@@ -739,14 +742,16 @@ def main() -> int:
                 repository=args.repository,
                 tag=args.tag,
                 cosign_bin=os.environ.get("COSIGN_BIN", "cosign"),
+                loaded_evidence_hashes=evidence_hashes,
             )
-        except (ReadinessError, OSError) as exc:
-            documents["governance"] = None
-            documents["release"] = None
-            documents["releaseApproval"] = None
+        except (ValueError, OSError) as exc:
             load_problems.append(f"signed release bundle failed: {exc}")
         else:
             evidence_hashes.update(release_bundle_hashes)
+    if "sigstoreBundle" not in evidence_hashes:
+        # The release workflow signs these three records together.
+        for name in release_records:
+            documents[name] = None
 
     report, diagnostics = evaluate_readiness(
         production_document=documents["production"],

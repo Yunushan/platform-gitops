@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "<REVIEWED_POSTGRES_CONTRACT_SHA256>",
+  "target": {"kubeconfig_env": "DATABASE_KUBECONFIG", "context": "database-cluster", "cluster_uid": "<LIVE_KUBE_SYSTEM_NAMESPACE_UID>"},
+  "namespace_uid": "<LIVE_DATABASE_NAMESPACE_UID>",
+  "operator": {
+    "namespace": "cnpg-system",
+    "namespace_uid": "<LIVE_OPERATOR_NAMESPACE_UID>",
+    "deployment": "cnpg-controller-manager",
+    "uid": "<LIVE_OPERATOR_DEPLOYMENT_UID>",
+    "image": "ghcr.io/cloudnative-pg/cloudnative-pg:<REVIEWED_CNPG_1.30_PATCH>@sha256:<REVIEWED_OPERATOR_DIGEST>",
+    "crd_uid": "<LIVE_CLUSTER_CRD_UID>"
+  },
+  "storage_class_uid": "<LIVE_STORAGE_CLASS_UID>",
+  "storage_parameters_sha256": "<CANONICAL_STORAGE_PARAMETERS_SHA256>",
+  "secrets": {
+    "postgres-server-ca": {"uid": "<LIVE_SERVER_CA_SECRET_UID>", "type": "Opaque"},
+    "postgres-server-tls": {"uid": "<LIVE_SERVER_TLS_SECRET_UID>", "type": "kubernetes.io/tls"},
+    "platform-postgres-owner": {"uid": "<LIVE_BOOTSTRAP_SECRET_UID>", "type": "kubernetes.io/basic-auth"}
+  },
+  "admitted_spec_sha256": null
+}

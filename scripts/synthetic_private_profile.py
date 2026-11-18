@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -11,10 +12,12 @@ import sys
 
 from atomic_file import atomic_write_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from render_private_gitlab_values import CNPG_HOST, PROFILE as GITLAB_PROFILE, SECRET_FIELDS
 from subprocess_timeout import bounded_timeout_seconds
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PROFILE = "premium-3node"
 RENDER_TIMEOUT_SECONDS = 600
 RENDERER_ENV_PREFIXES = (
     "PLATFORM_",
@@ -22,6 +25,7 @@ RENDERER_ENV_PREFIXES = (
     "FORGEJO_",
     "LONGHORN_",
     "WOODPECKER_",
+    "GITLAB_",
     "ARGOCD_",
     "HARBOR_",
     "MONITORING_",
@@ -76,7 +80,7 @@ def synthetic_environment(cosign_public_key: Path) -> dict[str, str]:
         "WOODPECKER_IMAGE_TAG": "3.16.0",
         "WOODPECKER_DATABASE_MODE": "postgres",
         "WOODPECKER_DATABASE_SECRET_NAME": "woodpecker-db-test",
-        "WOODPECKER_SERVER_REPLICAS": "3",
+        "WOODPECKER_SERVER_REPLICAS": "1",
         "WOODPECKER_AGENT_REPLICAS": "3",
         "HARBOR_STORAGE_CLASS": "longhorn-critical-encrypted",
         "HARBOR_REGISTRY_SIZE": "55Gi",
@@ -115,7 +119,7 @@ def synthetic_environment(cosign_public_key: Path) -> dict[str, str]:
         "VELERO_DAILY_BACKUP_CRON": "15 2 * * *",
         "CNPG_OBJECT_STORE_SECRET_NAME": "cnpg-object-test",
         "CNPG_BACKUP_DESTINATION": "s3://platform-test-cnpg/platform-postgres",
-        "CNPG_BACKUP_SCHEDULE": "20 2 * * *",
+        "CNPG_BACKUP_SCHEDULE": "0 20 2 * * *",
         "CNPG_BACKUP_ENABLED": "true",
         "CNPG_STORAGE_CLASS": "longhorn-critical-encrypted",
         "POSTGRES_DATA_SIZE": "80Gi",
@@ -173,6 +177,7 @@ def prepare_synthetic_private_profile(
     *,
     source_root: Path = ROOT,
     environment_overrides: dict[str, str] | None = None,
+    profile: str = DEFAULT_PROFILE,
 ) -> str:
     """Copy and render the real premium profile using deterministic safe values."""
 
@@ -189,6 +194,38 @@ def prepare_synthetic_private_profile(
     atomic_write_text(public_key, TEST_COSIGN_PUBLIC_KEY)
 
     values = synthetic_environment(public_key)
+    if profile == GITLAB_PROFILE:
+        profile_path = Path("profiles") / f"{profile}.yaml"
+        (destination / profile_path.parent).mkdir()
+        shutil.copyfile(source_root / profile_path, destination / profile_path)
+        repository_plan = Path("private/synthetic-gitlab-praefect.json")
+        atomic_write_text(destination / repository_plan, json.dumps({
+            "schema_version": 3,
+            "fresh_install": True,
+            "virtual_storage": "default",
+            "storage_class": "longhorn-critical-encrypted",
+            "storage_size_gi": 100,
+            "postgres_host": CNPG_HOST,
+            "postgres_port": 5432,
+            "postgres_database": "praefect",
+            "postgres_user": "praefect",
+            "postgres_secret": "praefect-db-test",
+            "postgres_secret_key": "password",
+            "postgres_ca_secret": "praefect-db-ca-test",
+            "gitaly_auth_secret": "gitaly-auth-test",
+            "praefect_auth_secret": "praefect-auth-test",
+            "gitaly_tls_secret": "gitaly-tls-test",
+            "praefect_tls_secret": "praefect-tls-test",
+            "repository_ca_secret": "gitlab-repository-ca-test",
+        }) + "\n")
+        values.update({
+            "PLATFORM_DOMAIN": "example.test",
+            "PLATFORM_PROFILE": profile,
+            "GITLAB_CNPG_MANAGED_DATABASES": "true",
+            "GITLAB_PRAEFECT_PLAN_FILE": repository_plan.as_posix(),
+        })
+        values.update({name: name.removesuffix("_SECRET_NAME").lower().replace("_", "-") + "-test"
+                       for name in SECRET_FIELDS})
     if environment_overrides:
         values.update(environment_overrides)
     values["PLATFORM_COSIGN_PUBLIC_KEY_FILE"] = str(public_key)

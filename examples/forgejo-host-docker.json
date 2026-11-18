@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "provider": "forgejo",
+  "runtime": "docker",
+  "name": "forgejo",
+  "state_path": "/srv/platform/forgejo",
+  "inputs_path": "/etc/platform/forgejo-inputs",
+  "https_url": "https://forge.example.invalid",
+  "ssh_host": "forge.example.invalid",
+  "ssh_public_port": 2222,
+  "http_port": 13000,
+  "ssh_port": 12222,
+  "database": {
+    "type": "postgres",
+    "host": "postgres-rw.example.invalid",
+    "port": 5432,
+    "name": "forgejo",
+    "user": "forgejo"
+  },
+  "webhook_hosts": ["ci.example.invalid"],
+  "custom_https_ca": false,
+  "image": "codeberg.org/forgejo/forgejo@sha256:90a7b5b335dd84dbed7f031f2721ae877c713a9226a2b246bc0ed7e1fc7dd9ec"
+}

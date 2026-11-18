@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "gitbucket",
+  "state_path": "/srv/gitbucket/state",
+  "http_port": 8080,
+  "ssh_port": 29418,
+  "java": "/usr/bin/java",
+  "war": "/opt/gitbucket/gitbucket-4.48.0.war",
+  "user": "gitbucket",
+  "group": "gitbucket",
+  "https_url": "https://gitbucket.example.com",
+  "ssh_host": "gitbucket-ssh.example.com",
+  "ssh_public_port": 22
+}

@@ -232,6 +232,22 @@ def main() -> int:
         lambda values: values.update(rulesets_document=[]),
         "no active tag ruleset",
     )
+    for exclusion in (["refs/tags/v1.2.3"], ["refs/tags/*"], ["~ALL"], None):
+        reject(
+            lambda values: values["rulesets_document"][0]["conditions"]["ref_name"].update(exclude=exclusion),
+            "no active tag ruleset",
+        )
+    unrelated = fixtures()
+    unrelated["rulesets_document"][0]["conditions"]["ref_name"]["exclude"] = ["refs/tags/test-*"]
+    validate(unrelated)
+
+    def add_overlapping_authority(values: dict[str, object]) -> None:
+        second = deepcopy(values["rulesets_document"][0])
+        second["bypass_actors"] = [{"actor_type": "Team", "actor_id": 9, "bypass_mode": "always"}]
+        values["rulesets_document"].append(second)
+        values["reviewer_members_document"]["Team:9"] = [{"id": 200, "login": "security-one"}]
+
+    reject(add_overlapping_authority, "no independently review-capable user or team")
     reject(
         lambda values: values["rulesets_document"][0].update(
             bypass_actors=[
@@ -295,6 +311,21 @@ def main() -> int:
         lambda values: values["environment_policies_document"]["branch_policies"][0].update(
             type="branch"
         ),
+        "release environment does not allow only the intended tag pattern",
+    )
+    reject(
+        lambda values: values["environment_policies_document"].update(
+            total_count=2,
+            branch_policies=[{"type": "tag", "name": "v*.*.*"}, {"type": "branch", "name": "main"}],
+        ),
+        "release environment does not allow only the intended tag pattern",
+    )
+    reject(
+        lambda values: values["environment_policies_document"].update(total_count=2),
+        "release environment does not allow only the intended tag pattern",
+    )
+    reject(
+        lambda values: values["environment_policies_document"]["branch_policies"][0].pop("type"),
         "release environment does not allow only the intended tag pattern",
     )
 

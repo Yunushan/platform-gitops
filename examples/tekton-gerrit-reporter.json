@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source_contract_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "account": "gerrit-result-reporter",
+  "secret": "gerrit-result-inputs",
+  "http_username": "ci-review",
+  "account_id": 9,
+  "label_definition_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "helper_images": [
+    "registry.example.com/entrypoint@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  ],
+  "poll_seconds": 30,
+  "max_runs_per_poll": 25
+}

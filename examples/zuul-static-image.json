@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "tenant": "platform",
+  "config_project": "platform/ci-config",
+  "project": "applications/example",
+  "branch": "main",
+  "pipeline": "platform-static-post",
+  "job": "platform-static-publish",
+  "secret": "private-static-publisher",
+  "source": {
+    "clone_url": "https://review.example.invalid/a/applications/example.git",
+    "read_username": "publication-reader",
+    "ca_sha256": "REVIEWED_GERRIT_CA_SHA256",
+    "checkout_program_sha256": "REVIEWED_CHECKOUT_PROGRAM_SHA256"
+  },
+  "static_directory": "site",
+  "registry": {
+    "origin": "https://registry.example.invalid",
+    "ca_sha256": "REVIEWED_REGISTRY_CA_SHA256",
+    "leaf_sha256": "REVIEWED_REGISTRY_LEAF_SHA256",
+    "credential_sha256": "REVIEWED_PRIVATE_ROBOT_FILE_SHA256",
+    "project_id": 1,
+    "robot_id": 1,
+    "repository": "applications/example",
+    "base_digest": "sha256:REVIEWED_BASE_MANIFEST_SHA256",
+    "files": ["index.html"]
+  }
+}

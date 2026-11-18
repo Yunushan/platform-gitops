@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "rhodecode",
+  "namespace": "rhodecode",
+  "state_claim": "rhodecode-state",
+  "config_secret": "rhodecode-config",
+  "image": "docker.io/rhodecode/rhodecode-ce@sha256:b23f2f8d02c326da17610fc5631b71c7eb1694c3a2819e3acee4ea551d10e552"
+}

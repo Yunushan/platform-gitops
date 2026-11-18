@@ -396,7 +396,15 @@ includes:
         if "<PROFILE_SUMMARY>" not in output:
             raise AssertionError(f"expected failure output to name inherited profile placeholder\n{output}")
 
-    for profile in ("default", "premium-3node", "gitea-woodpecker-argocd"):
+    with tempfile.TemporaryDirectory(prefix="platform-profile-check-inherited-apps-") as tmp:
+        repo = Path(tmp)
+        create_fixture(repo)
+        write(repo / "profiles/child-profile.yaml", "profile: child-profile\ninherits: premium-3node\n")
+        rc, output = run_check(checker, repo, "child-profile")
+        if rc != 0:
+            raise AssertionError(f"expected inherited Application repoURL to resolve at registration\n{output}")
+
+    for profile in ("default", "premium-3node", "premium-3node-gitlab-ce", "gitea-woodpecker-argocd"):
         rc, output = run_check(
             checker,
             ROOT,

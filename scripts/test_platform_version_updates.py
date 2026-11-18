@@ -130,6 +130,45 @@ class VersionUpdatesTest(unittest.TestCase):
             with self.assertRaises(policy.ReleasePolicyError):
                 updater.update_values_text("forgejo", text, "15.0.9", current=["15.0.6"])
 
+    def test_forge_versions_and_digests_move_together(self):
+        old_digest = "sha256:" + "a" * 64
+        new_digest = "sha256:" + "b" * 64
+        for component, old, target in (("forgejo", "15.0.6-rootless", "15.0.11-rootless"),
+                                       ("gitea", "28.2.0", "28.3.0")):
+            with self.subTest(component=component):
+                text = FORGEJO.replace("15.0.6-rootless", old)
+                expected = text.replace(old, target).replace(
+                    "  tag:", f'  digest: "{new_digest}"\n  tag:')
+                rendered = updater.update_values_text(component, text, target, current=[old], digest=new_digest)
+                self.assertEqual(rendered, expected)
+                self.assertEqual(updater.update_values_text(component, rendered, target,
+                                                           current=[target], digest=new_digest), rendered)
+                pinned = expected.replace(target, old).replace(new_digest, old_digest)
+                with self.assertRaisesRegex(policy.ReleasePolicyError, "matching new digest"):
+                    updater.update_values_text(component, pinned, target, current=[old], digest=old_digest)
+                self.assertEqual(updater.update_values_text(component, pinned, target,
+                                                           current=[old], digest=new_digest), expected)
+                with self.assertRaises(policy.ReleasePolicyError):
+                    updater.update_values_text(component, text, target, current=[old], digest="sha256:not-a-digest")
+
+    def test_gitea_cli_requires_reviewed_digest_and_refuses_downgrade(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "values.yaml"
+            original = FORGEJO.replace("15.0.6-rootless", "28.2.0")
+            path.write_text(original, encoding="utf-8")
+            arguments = ["--gitea", "specific", "--gitea-version", "28.3.0", "--gitea-values", str(path)]
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(updater.main(arguments + ["--write"]), 1)
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
+            digest = "sha256:" + "c" * 64
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(updater.main(arguments + ["--gitea-digest", digest, "--write"]), 0)
+            self.assertEqual(updater.values_document(path.read_text(encoding="utf-8"))["image"],
+                             {"rootless": True, "tag": "28.3.0", "digest": digest})
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(updater.main(arguments + ["--gitea-version", "28.2.0",
+                                                          "--gitea-digest", digest, "--write"]), 1)
+
     def test_cli_plan_write_preflight_and_downgrades(self):
         with tempfile.TemporaryDirectory() as folder:
             forgejo = Path(folder) / "forgejo.yaml"

@@ -146,6 +146,7 @@ tree="$(git rev-parse 'HEAD^{tree}')"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 evidence_dir="${PLATFORM_PRODUCTION_EVIDENCE_DIR:-private/production-evidence}"
 mkdir -p "${evidence_dir}"
+evidence_dir="$(mktemp -d "${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}.XXXXXX")"
 log_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}.log"
 evidence_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}.json"
 
@@ -158,11 +159,15 @@ set +e
   printf '%s\n' '== platform-production-check =='
   PLATFORM_PRODUCTION_SOURCE_COMMIT="${commit}" make platform-production-check
 } 2>&1 | tee "${log_path}"
-gate_status=${PIPESTATUS[0]}
+pipeline_status=("${PIPESTATUS[@]}")
 set -e
-if [[ "${gate_status}" -ne 0 ]]; then
+if [[ "${pipeline_status[0]}" -ne 0 ]]; then
   printf 'Production gate failed; no evidence record was created. Log: %s\n' "${log_path}" >&2
-  exit "${gate_status}"
+  exit "${pipeline_status[0]}"
+fi
+if [[ "${pipeline_status[1]}" -ne 0 ]]; then
+  printf '%s\n' 'Production gate output could not be retained in full.' >&2
+  exit "${pipeline_status[1]}"
 fi
 verified_revision="$(git rev-parse HEAD)"
 worktree_status="$(git status --porcelain=v1 --untracked-files=all)"
@@ -225,7 +230,7 @@ image_inventory_hash="$(sha256sum "${image_inventory_path}" | awk '{print $1}')"
 restore_evidence_hash="$(sha256sum "${restore_evidence_path}" | awk '{print $1}')"
 recovery_hash="$(sha256sum "${recovery_path}" | awk '{print $1}')"
 log_hash="$(sha256sum "${log_path}" | awk '{print $1}')"
-completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+completed_at="$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)"
 candidate_path="$(mktemp "${evidence_dir}/.${timestamp}-${PLATFORM_RELEASE_ID}.XXXXXX")"
 trap 'rm -f -- "${candidate_path}"' EXIT
 PLATFORM_EVIDENCE_LOG_PATH="${log_path}" \

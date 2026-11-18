@@ -30,13 +30,29 @@ def production_python_files() -> list[Path]:
     )
 
 
-def direct_file_read(node: ast.Call, path: Path) -> bool:
+def network_openers(document):
+    """Recognize urllib factories, rather than ignoring every `.opener.open`."""
+    factories = {item.asname or item.name for node in ast.walk(document) if isinstance(node, ast.ImportFrom) and node.module == "urllib.request" for item in node.names if item.name == "build_opener"}
+    assigned = {}
+    for node in ast.walk(document):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)): continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        value = node.value
+        is_factory = isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id in factories
+        for target in targets:
+            assigned.setdefault(ast.unparse(target), []).append(is_factory)
+    return {name for name, values in assigned.items() if values and all(values)}
+
+
+def direct_file_read(node: ast.Call, path: Path, *, http_openers=()) -> bool:
     if isinstance(node.func, ast.Attribute) and node.func.attr in {
         "read_text",
         "read_bytes",
     }:
         return True
     if path.name == "bounded_file.py":
+        return False
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "open" and ast.unparse(node.func.value) in http_openers:
         return False
     if (
         isinstance(node.func, ast.Attribute)
@@ -75,6 +91,8 @@ def direct_file_read(node: ast.Call, path: Path) -> bool:
     elif isinstance(mode_node, ast.Constant) and isinstance(mode_node.value, str):
         mode = mode_node.value
     else:
+        return True
+    if not mode or any(c not in "rwaxbt+" for c in mode) or sum(c in "rwax" for c in mode) != 1 or len(mode) != len(set(mode)):
         return True
     return not any(flag in mode for flag in "wax")
 
@@ -202,15 +220,18 @@ def test_production_reads_use_shared_policy() -> None:
     bounded_reads = 0
     for path in production_python_files():
         document = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        http_openers = network_openers(document)
         for node in ast.walk(document):
             if not isinstance(node, ast.Call):
                 continue
-            if direct_file_read(node, path):
+            if direct_file_read(node, path, http_openers=http_openers):
                 direct_reads.append(f"{path.relative_to(ROOT)}:{node.lineno}")
             if isinstance(node.func, ast.Name) and node.func.id in {
                 "read_bounded_text",
                 "read_bounded_bytes",
                 "read_bounded_stream",
+                "read_bootstrap_bytes",
+                "open_bounded_file",
             }:
                 bounded_reads += 1
 
@@ -244,6 +265,61 @@ def test_direct_read_detection() -> None:
     if direct_file_read(call, synthetic_path):
         raise AssertionError("an in-memory tar stream was classified as a local file read")
 
+    for source, expected in ((
+        'from urllib.request import build_opener\nself.opener = build_opener()\nself.opener.open(request, timeout=15)', False), (
+        'self.opener.open("local-file")', True), (
+        'from urllib.request import build_opener\nself.opener = build_opener()\nself.opener = Path("input")\nself.opener.open()', True)):
+        document = ast.parse(source)
+        calls = [n for n in ast.walk(document) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "open"]
+        if len(calls) != 1 or direct_file_read(calls[0], synthetic_path, http_openers=network_openers(document)) is not expected:
+            raise AssertionError("HTTP versus local opener classification is incorrect")
+
+
+def test_streaming_file_limits_and_growth():
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "input"; path.write_bytes(b"1234")
+        with bounded_file.open_bounded_file(path, max_bytes=4) as stream:
+            if stream.read(2) + stream.read(2) != b"1234" or stream.read(1) != b"" or stream.tell() != 4:
+                raise AssertionError("Streaming input changed or lost its byte count")
+        with bounded_file.open_bounded_file(path, max_bytes=2 ** 63 - 1) as stream:
+            for size in (-1, True, bounded_file.MAX_FILE_INPUT_BYTES + 1):
+                try: stream.read(size)
+                except ValueError: pass
+                else: raise AssertionError("An unbounded streaming allocation was accepted")
+        with bounded_file.open_bounded_file(path, max_bytes=4) as stream:
+            with path.open("ab") as writer: writer.write(b"5")
+            for _ in range(2):
+                try: stream.read(16)
+                except bounded_file.FileInputTooLarge: pass
+                else: raise AssertionError("Growth past the original budget was accepted or its error was not retained")
+        path.write_bytes(b"")
+        with bounded_file.open_bounded_file(path, max_bytes=0) as stream:
+            if stream.read(1) != b"": raise AssertionError("An empty sealed file changed")
+        if hasattr(os, "mkfifo"):
+            fifo = Path(temporary) / "fifo"; os.mkfifo(fifo)
+            try:
+                with bounded_file.open_bounded_file(fifo, max_bytes=4): pass
+            except bounded_file.FileInputNotRegular: pass
+            else: raise AssertionError("A streaming FIFO was accepted")
+
+
+def test_embedded_bootstrap_readers_share_the_exact_policy():
+    core = ast.parse((SCRIPTS / "bounded_file.py").read_text())
+    definition = next(n for n in core.body if isinstance(n, ast.FunctionDef) and n.name == "read_bootstrap_bytes")
+    expected = ast.dump(definition, include_attributes=False)
+    for filename in ("ceph_client_io.py", "ceph_device_probe.py", "gerrit_storage.py", "gateway_edge_pair_staging.py"):
+        document = ast.parse((SCRIPTS / filename).read_text())
+        definitions = [n for n in document.body if isinstance(n, ast.FunctionDef) and n.name == "read_bootstrap_bytes"]
+        if len(definitions) != 1 or ast.dump(definitions[0], include_attributes=False) != expected:
+            raise AssertionError("Standalone reader drifted from the shared bounded policy: " + filename)
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "input"; path.write_bytes(b"1234")
+        if bounded_file.read_bootstrap_bytes(path, 4) != b"1234": raise AssertionError("Bootstrap bytes changed")
+        for value in (3, 0, True, 512 * 1024 * 1024 + 1):
+            try: bounded_file.read_bootstrap_bytes(path, value)
+            except ValueError: pass
+            else: raise AssertionError("Bootstrap reader accepted an invalid or exceeded limit")
+
 
 def main() -> int:
     test_limit_validation()
@@ -252,6 +328,8 @@ def main() -> int:
     test_binary_stream_boundaries()
     test_non_regular_inputs_are_rejected()
     test_direct_read_detection()
+    test_streaming_file_limits_and_growth()
+    test_embedded_bootstrap_readers_share_the_exact_policy()
     test_production_reads_use_shared_policy()
     print("First-party bounded file input contract passed.")
     return 0

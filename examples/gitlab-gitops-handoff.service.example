@@ -1,0 +1,20 @@
+[Unit]
+Description=Check the latest reviewed GitLab pipeline and GitOps handoff
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=platform-gitops
+Group=platform-gitops
+WorkingDirectory=/opt/platform/platform-gitops
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/platform/platform-gitops/private
+TimeoutStartSec=45min
+# Replace the digest and private policy path after review. The default is read-only.
+# Add --apply only when automatic promotion is intentionally enabled.
+ExecStart=/usr/bin/python3 -B /opt/platform/platform-gitops/scripts/gitlab_gitops_schedule.py --plan /etc/platform-gitops/gitlab-handoff.json --plan-sha256 REPLACE_WITH_REVIEWED_PLAN_SHA256 --wait-seconds 900

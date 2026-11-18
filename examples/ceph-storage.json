@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "target": {
+    "kubeconfig_env": "STORAGE_KUBECONFIG",
+    "context": "storage-provider",
+    "cluster_uid": "<LIVE_KUBE_SYSTEM_NAMESPACE_UID>"
+  },
+  "provider": {
+    "namespace": "rook-ceph",
+    "namespace_uid": "<LIVE_ROOK_NAMESPACE_UID>",
+    "cluster": "rook-ceph",
+    "cluster_uid": "<LIVE_CEPH_CLUSTER_RESOURCE_UID>",
+    "fsid": "<LIVE_CEPH_FSID>",
+    "spec_sha256": "<REVIEWED_CANONICAL_CEPH_CLUSTER_SPEC_SHA256>",
+    "image": "registry.example.com/platform/ceph@sha256:<REVIEWED_CEPH_IMAGE_DIGEST>",
+    "ceph_version": "20.2.4",
+    "domain_label": "topology.kubernetes.io/zone",
+    "operator": {
+      "namespace": "rook-system",
+      "namespace_uid": "<LIVE_OPERATOR_NAMESPACE_UID>",
+      "deployment": "rook-ceph-operator",
+      "uid": "<LIVE_OPERATOR_DEPLOYMENT_UID>",
+      "image": "registry.example.com/platform/rook@sha256:<REVIEWED_ROOK_IMAGE_DIGEST>",
+      "cluster_crd_uid": "<LIVE_OPERATOR_CLUSTER_CRD_UID>",
+      "configmaps": {
+        "rook-ceph-operator-config": {"uid": "<LIVE_OPERATOR_CONFIG_UID>", "data_sha256": "<LIVE_OPERATOR_CONFIG_DATA_SHA256>"},
+        "rook-csi-operator-image-set-configmap": {"uid": "<LIVE_CSI_IMAGE_CONFIG_UID>", "data_sha256": "<LIVE_CSI_IMAGE_CONFIG_DATA_SHA256>"}
+      }
+    },
+    "toolbox": {
+      "deployment": "rook-ceph-tools",
+      "uid": "<LIVE_TOOLBOX_DEPLOYMENT_UID>",
+      "pod": "rook-ceph-tools-reviewed-pod",
+      "pod_uid": "<LIVE_TOOLBOX_POD_UID>",
+      "container": "toolbox",
+      "image": "registry.example.com/platform/ceph@sha256:<REVIEWED_CEPH_IMAGE_DIGEST>"
+    },
+    "crds": {
+      "cephblockpools.ceph.rook.io": "<LIVE_BLOCK_POOL_CRD_UID>",
+      "cephfilesystems.ceph.rook.io": "<LIVE_FILESYSTEM_CRD_UID>"
+    }
+  },
+  "nodes": [
+    {"name": "storage-1", "uid": "<LIVE_STORAGE_NODE_1_UID>", "failure_domain": "rack-1", "crush_host": "storage-1"},
+    {"name": "storage-2", "uid": "<LIVE_STORAGE_NODE_2_UID>", "failure_domain": "rack-2", "crush_host": "storage-2"},
+    {"name": "storage-3", "uid": "<LIVE_STORAGE_NODE_3_UID>", "failure_domain": "rack-3", "crush_host": "storage-3"},
+    {"name": "storage-4", "uid": "<LIVE_STORAGE_NODE_4_UID>", "failure_domain": "rack-4", "crush_host": "storage-4"}
+  ],
+  "access_nodes": [
+    {"name": "storage-1", "uid": "<LIVE_STORAGE_NODE_1_UID>", "failure_domain": "rack-1"},
+    {"name": "storage-2", "uid": "<LIVE_STORAGE_NODE_2_UID>", "failure_domain": "rack-2"},
+    {"name": "storage-3", "uid": "<LIVE_STORAGE_NODE_3_UID>", "failure_domain": "rack-3"},
+    {"name": "storage-4", "uid": "<LIVE_STORAGE_NODE_4_UID>", "failure_domain": "rack-4"},
+    {"name": "client-1", "uid": "<LIVE_CLIENT_NODE_1_UID>", "failure_domain": "rack-1"},
+    {"name": "client-2", "uid": "<LIVE_CLIENT_NODE_2_UID>", "failure_domain": "rack-2"}
+  ],
+  "csi": {
+    "rbd": {
+      "namespace": "rook-system",
+      "namespace_uid": "<LIVE_OPERATOR_NAMESPACE_UID>",
+      "driver": "rook-system.rbd.csi.ceph.com",
+      "controller": {"name": "rook-system.rbd.csi.ceph.com-ctrlplugin", "uid": "<LIVE_RBD_CONTROLLER_UID>", "images": ["registry.example.com/platform/csi-rbd@sha256:<REPLACE_WITH_COMPLETE_OBSERVED_IMAGE_INVENTORY>"]},
+      "node_plugin": {"name": "rook-system.rbd.csi.ceph.com-nodeplugin", "uid": "<LIVE_RBD_NODE_DAEMONSET_UID>", "images": ["registry.example.com/platform/csi-rbd@sha256:<REPLACE_WITH_COMPLETE_OBSERVED_IMAGE_INVENTORY>"]},
+      "driver_uid": "<LIVE_RBD_CSI_DRIVER_UID>"
+    },
+    "cephfs": {
+      "namespace": "rook-system",
+      "namespace_uid": "<LIVE_OPERATOR_NAMESPACE_UID>",
+      "driver": "rook-system.cephfs.csi.ceph.com",
+      "controller": {"name": "rook-system.cephfs.csi.ceph.com-ctrlplugin", "uid": "<LIVE_CEPHFS_CONTROLLER_UID>", "images": ["registry.example.com/platform/csi-cephfs@sha256:<REPLACE_WITH_COMPLETE_OBSERVED_IMAGE_INVENTORY>"]},
+      "node_plugin": {"name": "rook-system.cephfs.csi.ceph.com-nodeplugin", "uid": "<LIVE_CEPHFS_NODE_DAEMONSET_UID>", "images": ["registry.example.com/platform/csi-cephfs@sha256:<REPLACE_WITH_COMPLETE_OBSERVED_IMAGE_INVENTORY>"]},
+      "driver_uid": "<LIVE_CEPHFS_CSI_DRIVER_UID>"
+    }
+  },
+  "capacity": {
+    "rbd_bytes": 107374182400,
+    "cephfs_data_bytes": 214748364800,
+    "cephfs_metadata_bytes": 8589934592,
+    "recovery_reserve_percent": 25
+  },
+  "mds_resources": {
+    "requests": {"cpu": "500m", "memory": "1Gi"},
+    "limits": {"cpu": "2", "memory": "2Gi"}
+  },
+  "names": {
+    "block_pool": "platform-rbd",
+    "filesystem": "platform-shared",
+    "rbd_class": "ceph-rbd",
+    "cephfs_class": "cephfs"
+  },
+  "admitted_sha256": null
+}

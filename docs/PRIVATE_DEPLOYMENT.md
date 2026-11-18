@@ -194,7 +194,7 @@ as `FORGEJO_DATABASE_PASSWORD`, `FORGEJO_REDIS_URL`,
 `CNPG_S3_ACCESS_KEY_ID`, `CNPG_S3_SECRET_ACCESS_KEY`, or
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. Keep
 `PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` for the premium
-Woodpecker HA default so a missing datasource secret fails before rollout. Set
+Woodpecker PostgreSQL default so a missing datasource secret fails before rollout. Set
 `PLATFORM_APP_SECRET_REQUIRE_OBJECT_STORAGE=true` for production so missing
 Loki, Velero, or CloudNativePG object-storage credential secrets fail before app sync.
 Production strict mode also requires `ALERTMANAGER_WEBHOOK_URL` or a complete
@@ -247,12 +247,12 @@ PVC only after retained backup and rollback evidence exist. Production capacity
 verification reports every remaining bound Longhorn PVC that still uses a
 legacy plaintext class.
 
-For production Woodpecker HA, use the shared `platform-postgres` CloudNativePG
+The active Woodpecker server uses the shared `platform-postgres` CloudNativePG
 cluster by default. `platform-app-secrets` generates the datasource and the
 matching `platform-databases/woodpecker-database` role password secret unless
 you provide `WOODPECKER_DATABASE_PASSWORD` or a full
 `WOODPECKER_DATABASE_DATASOURCE`. It also generates the stable
-`woodpecker/woodpecker-agent-secret` used by both servers and agents. Set
+`woodpecker/woodpecker-agent-secret` used by the server and agents. Set
 `WOODPECKER_AGENT_SECRET_NAME` consistently in the renderer and secret
 automation when overriding its name:
 

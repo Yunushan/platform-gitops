@@ -36,7 +36,7 @@ def version_tuple(component: str, value: str) -> tuple[int, int, int]:
 def normalize_tag(component: str, value: str) -> str:
     version_tuple(component, value)
     bare = value.removeprefix("v")
-    return bare if component == "forgejo" else f"v{bare}"
+    return bare if component in {"forgejo", "gitea"} else f"v{bare}"
 
 
 def load_catalog(path: Path = CATALOG) -> dict:

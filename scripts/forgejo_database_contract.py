@@ -6,6 +6,12 @@ import re
 
 
 FORGEJO_NON_POSTGRES_DATABASE_TYPES = frozenset({"mysql", "mssql", "sqlite3"})
+FORGEJO_CA_MOUNT_PATH = "/etc/ssl/platform"
+FORGEJO_LEGACY_POSTGRES_CA_MOUNT_PATH = "/data/gitea/git/.postgresql"
+FORGEJO_POSTGRES_CA_ENV = {
+    "SSL_CERT_FILE": f"{FORGEJO_CA_MOUNT_PATH}/ca-certificates.crt",
+    "PGSSLROOTCERT": f"{FORGEJO_CA_MOUNT_PATH}/root.crt",
+}
 
 
 def _literal_scalar(raw: str) -> str | None:

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "tenant": "platform",
+  "config_project": "platform/ci-config",
+  "canary_project": "platform/ci-canary",
+  "canary_branch": "main",
+  "worker_label": "platform-linux"
+}

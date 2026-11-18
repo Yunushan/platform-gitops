@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 from datetime import datetime, timezone
+from functools import partial
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ from urllib.request import Request
 
 from atomic_file import atomic_write_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from github_release_policy import GitHubPolicyError, covers_release_tags, deployment_tag_policy, fetch_github_objects
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
@@ -252,29 +254,18 @@ def validate_governance(
 
     if not isinstance(rulesets_document, list):
         raise GovernanceError("repository rulesets must be a JSON array")
-    matching_rulesets: list[dict[str, Any]] = []
-    for ruleset in rulesets_document:
-        if not isinstance(ruleset, dict):
-            continue
-        conditions = ruleset.get("conditions")
-        ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
-        includes = ref_name.get("include", []) if isinstance(ref_name, dict) else []
-        if (
-            ruleset.get("target") == "tag"
-            and ruleset.get("enforcement") == "active"
-            and tag_ref_pattern in includes
-        ):
-            matching_rulesets.append(ruleset)
+    matching_rulesets = [rule for rule in rulesets_document if covers_release_tags(rule, tag_ref_pattern)]
     require(bool(matching_rulesets), f"no active tag ruleset covers {tag_ref_pattern}")
-    if matching_rulesets:
+    release_authority_member_ids: set[int] = set()
+    for ruleset in matching_rulesets:
         rule_types = {
             str(rule.get("type"))
-            for rule in matching_rulesets[0].get("rules", [])
+            for rule in ruleset.get("rules", [])
             if isinstance(rule, dict)
         }
         missing_rules = sorted(REQUIRED_TAG_RULES - rule_types)
         require(not missing_rules, "tag ruleset is missing rules: " + ", ".join(missing_rules))
-        bypass = matching_rulesets[0].get("bypass_actors", [])
+        bypass = ruleset.get("bypass_actors", [])
         explicit_bypass = [
             actor
             for actor in bypass
@@ -291,7 +282,6 @@ def validate_governance(
             isinstance(bypass, list) and len(explicit_bypass) == len(bypass),
             "tag ruleset contains an unscoped release bypass actor",
         )
-        release_authority_member_ids: set[int] = set()
         for actor in explicit_bypass:
             actor_id = actor["actor_id"]
             if actor.get("actor_type") == "User":
@@ -312,8 +302,6 @@ def validate_governance(
                 f"release authority Team:{actor_id} has no verified members",
             )
             release_authority_member_ids.update(team_member_ids)
-    else:
-        release_authority_member_ids = set()
 
     environment = require_object(environment_document, "release environment")
     require(environment.get("name") == environment_name, "release environment identity does not match")
@@ -374,16 +362,8 @@ def validate_governance(
     require(branch_policy.get("custom_branch_policies") is True, "custom release ref policies are disabled")
 
     policies = require_object(environment_policies_document, "environment deployment policies")
-    policy_items = policies.get("branch_policies")
-    if not isinstance(policy_items, list):
-        raise GovernanceError("environment branch_policies must be an array")
     require(
-        any(
-            isinstance(policy, dict)
-            and policy.get("type") in (None, "tag")
-            and policy.get("name") == environment_tag_pattern
-            for policy in policy_items
-        ),
+        deployment_tag_policy(policies, environment_tag_pattern) == "current",
         f"release environment does not allow only the intended tag pattern: {environment_tag_pattern}",
     )
 
@@ -557,6 +537,7 @@ def main() -> int:
     repository_path = quote(args.repository, safe="/")
     branch_path = quote(args.default_branch, safe="")
     environment_path = quote(args.environment, safe="")
+    get = partial(api_get, args.api_url, token=token)
     try:
         repository_document = api_get(args.api_url, f"repos/{repository_path}", token)
         codeowners_document = api_get(
@@ -565,10 +546,8 @@ def main() -> int:
             token,
             not_found={},
         )
-        collaborators_document = api_get(
-            args.api_url,
-            f"repos/{repository_path}/collaborators?affiliation=all&per_page=100",
-            token,
+        collaborators_document = fetch_github_objects(
+            f"repos/{repository_path}/collaborators?affiliation=all", get
         )
         private_vulnerability_reporting_document = api_get(
             args.api_url,
@@ -592,13 +571,9 @@ def main() -> int:
             f"repos/{repository_path}/branches/{branch_path}/protection",
             token,
         )
-        ruleset_summaries = api_get(
-            args.api_url,
-            f"repos/{repository_path}/rulesets?includes_parents=true&per_page=100",
-            token,
+        ruleset_summaries = fetch_github_objects(
+            f"repos/{repository_path}/rulesets?includes_parents=true", get
         )
-        if not isinstance(ruleset_summaries, list):
-            raise GovernanceError("GitHub rulesets response must be an array")
         rulesets_document = []
         for summary in ruleset_summaries:
             if isinstance(summary, dict) and summary.get("target") == "tag" and summary.get("id"):
@@ -650,10 +625,8 @@ def main() -> int:
                     raise GovernanceError(
                         f"release authority Team:{reviewer_id} slug is missing"
                     )
-                reviewer_members_document[key] = api_get(
-                    args.api_url,
-                    f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all&per_page=100",
-                    token,
+                reviewer_members_document[key] = fetch_github_objects(
+                    f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all", get
                 )
         for rule in environment_document.get("protection_rules", []):
             if not isinstance(rule, dict) or rule.get("type") != "required_reviewers":
@@ -667,10 +640,8 @@ def main() -> int:
                 if isinstance(reviewer_id, int) and slug:
                     key = f"Team:{reviewer_id}"
                     if key not in reviewer_members_document:
-                        reviewer_members_document[key] = api_get(
-                            args.api_url,
-                            f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all&per_page=100",
-                            token,
+                        reviewer_members_document[key] = fetch_github_objects(
+                            f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all", get
                         )
         environment_policies_document = api_get(
             args.api_url,
@@ -710,7 +681,7 @@ def main() -> int:
             actions_permissions_document=actions_permissions_document,
         )
         atomic_write_text(args.output, json.dumps(evidence, indent=2) + "\n")
-    except (OSError, GovernanceError) as exc:
+    except (OSError, GovernanceError, GitHubPolicyError) as exc:
         print(f"GitHub governance verification failed: {exc}", file=sys.stderr)
         return 1
     print(

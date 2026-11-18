@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "name": "platform-entry",
+  "namespace": "platform-entry",
+  "gateway_contract_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "vip": "192.0.2.50/24",
+  "vrid": 77,
+  "https_port": 443,
+  "health_port": 8404,
+  "minimum_ready_routes": 1,
+  "client_cidrs": ["198.51.100.0/24"],
+  "entry_hosts": [
+    {
+      "name": "edge-a",
+      "address": "192.0.2.10",
+      "interface": "eth0",
+      "failure_domain": "zone-a",
+      "node_name": "edge-a",
+      "node_uid": "55555555-5555-4555-8555-555555555555"
+    },
+    {
+      "name": "edge-b",
+      "address": "192.0.2.11",
+      "interface": "eth0",
+      "failure_domain": "zone-b",
+      "node_name": "edge-b",
+      "node_uid": "66666666-6666-4666-8666-666666666666"
+    }
+  ],
+  "backends": [
+    {
+      "node_name": "worker-a",
+      "node_uid": "33333333-3333-4333-8333-333333333333",
+      "address": "192.0.2.30"
+    },
+    {
+      "node_name": "worker-b",
+      "node_uid": "44444444-4444-4444-8444-444444444444",
+      "address": "192.0.2.31"
+    }
+  ],
+  "routes": [
+    {"hostname": "forge.example.com", "health_path": "/healthz", "health_status": 200}
+  ],
+  "images": {
+    "haproxy": "registry.example.com/platform/haproxy@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "keepalived": "registry.example.com/platform/keepalived@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "binaries": {
+    "haproxy": {"path": "/usr/sbin/haproxy", "version": "3.2.26", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+    "keepalived": {"path": "/usr/sbin/keepalived", "version": "2.3.4", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  },
+  "ca_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "ca_secret": "entry-backend-ca"
+}

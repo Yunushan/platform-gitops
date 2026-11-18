@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "identity_plan": {
+    "path": "/srv/platform/private/keycloak-argocd.json",
+    "sha256": "<REVIEWED_ORIGINAL_IDENTITY_PLAN_SHA256>"
+  },
+  "identity_proof": {
+    "path": "/srv/platform/private/argocd-identity-operation/keycloak-argocd-proof.json",
+    "sha256": "<COMPLETED_ORIGINAL_CLIENT_PROOF_SHA256>"
+  },
+  "target": {
+    "kubeconfig_env": "ARGOCD_MANAGEMENT_CONFIG",
+    "context": "platform-management",
+    "cluster_uid": "<ORIGINAL_KUBE_SYSTEM_NAMESPACE_UUID>"
+  },
+  "namespace_uid": "<ORIGINAL_ARGOCD_NAMESPACE_UUID>",
+  "server": {
+    "deployment": "argo-cd-argocd-server",
+    "uid": "<ORIGINAL_SERVER_DEPLOYMENT_UUID>",
+    "pod_template_sha256": "<REVIEWED_COMPLETE_POD_TEMPLATE_SHA256>",
+    "spec_sha256": "<REVIEWED_COMPLETE_DEPLOYMENT_SPEC_SHA256>",
+    "image": "registry.example.com/platform/argocd@sha256:<REVIEWED_ARGOCD_IMAGE_DIGEST>"
+  },
+  "rollout_id": "<FRESH_REVIEWED_RESTART_UUID>",
+  "configmaps": {
+    "argocd-cm": {
+      "uid": "<ORIGINAL_SETTINGS_CONFIGMAP_UUID>",
+      "sha256": "<REVIEWED_SETTINGS_CONFIGMAP_MATERIAL_SHA256>"
+    },
+    "argocd-rbac-cm": {
+      "uid": "<ORIGINAL_RBAC_CONFIGMAP_UUID>",
+      "sha256": "<REVIEWED_RBAC_CONFIGMAP_MATERIAL_SHA256>"
+    }
+  },
+  "projects_sha256": "<REVIEWED_PROJECT_ROLE_INVENTORY_SHA256>",
+  "argo_ca_file": "/etc/platform-bootstrap/argocd-ca.crt",
+  "argo_ca_sha256": "<REVIEWED_APPLICATION_CA_FILE_SHA256>",
+  "admitted_sha256": null
+}

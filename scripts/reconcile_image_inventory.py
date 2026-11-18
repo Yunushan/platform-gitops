@@ -67,24 +67,34 @@ def manifest_documents(path: Path) -> Iterable[Any]:
     return loads_strict_yaml_all(text)
 
 
-def image_values(value: Any, *, path: str = "") -> Iterable[tuple[str, str]]:
+def image_values(value: Any) -> Iterable[str]:
     if isinstance(value, dict):
+        if value.get("kind") == "Secret":
+            return
         for key, child in value.items():
-            child_path = f"{path}/{key}"
             key_normalized = str(key).lower()
             if (
                 isinstance(child, str)
                 and (key_normalized in IMAGE_KEYS or key_normalized.endswith("imagename"))
                 and child.strip()
             ):
-                yield child_path, child.strip()
-            yield from image_values(child, path=child_path)
+                yield child.strip()
+            yield from image_values(child)
     elif isinstance(value, list):
-        for index, child in enumerate(value):
-            yield from image_values(child, path=f"{path}/{index}")
+        for child in value:
+            yield from image_values(child)
 
 
-def rendered_images(summary_path: Path, profile: str, root: Path) -> list[dict[str, str]]:
+def manifest_image_references(path: Path) -> list[str]:
+    return sorted(
+        normalized_source(image)
+        for document in manifest_documents(path)
+        if isinstance(document, dict)
+        for image in image_values(document)
+    )
+
+
+def rendered_images(summary_path: Path, profile: str, root: Path) -> list[str]:
     summary = load_json(summary_path, "rendered schema summary")
     if not isinstance(summary, dict):
         raise ValueError("rendered schema summary must be an object")
@@ -96,49 +106,36 @@ def rendered_images(summary_path: Path, profile: str, root: Path) -> list[dict[s
     if not isinstance(records, list) or not records:
         raise ValueError("rendered schema summary contains no applications")
 
-    results: list[dict[str, str]] = []
+    results: list[str] = []
     profile_records = 0
     for record in records:
         if not isinstance(record, dict) or record.get("profile") != profile:
             continue
         profile_records += 1
+        if "imageReferences" in record:
+            references = record["imageReferences"]
+            if not isinstance(references, list) or any(
+                not isinstance(image, str) or not image.strip() for image in references
+            ):
+                raise ValueError("rendered application has invalid image references")
+            results.extend(normalized_source(image) for image in references)
+            continue
         manifest_value = record.get("manifest")
-        application = str(record.get("application", ""))
         if not isinstance(manifest_value, str) or not manifest_value:
-            raise ValueError("rendered application record is missing manifest")
+            raise ValueError(
+                "rendered application record is missing image references; run the image inventory gate"
+            )
         manifest = Path(manifest_value)
         if not manifest.is_absolute():
             manifest = root / manifest
         if not manifest.is_file():
             raise ValueError(f"rendered manifest is missing: {manifest}")
-        for document_index, document in enumerate(manifest_documents(manifest)):
-            if not isinstance(document, dict):
-                continue
-            metadata = document.get("metadata", {}) if isinstance(document.get("metadata"), dict) else {}
-            object_ref = "/".join(
-                part
-                for part in (
-                    str(document.get("kind", "Unknown")),
-                    str(metadata.get("namespace", "default")),
-                    str(metadata.get("name", "unnamed")),
-                )
-            )
-            for field, image in image_values(document):
-                results.append(
-                    {
-                        "application": application,
-                        "object": object_ref,
-                        "document": str(document_index),
-                        "field": field,
-                        "sourceImage": normalized_source(image),
-                    }
-                )
+        results.extend(manifest_image_references(manifest))
     if profile_records == 0:
         raise ValueError(f"rendered schema summary has no records for profile {profile}")
     if not results:
         raise ValueError(f"rendered profile {profile} contains no discoverable image fields")
-    results.sort(key=lambda item: tuple(item.values()))
-    return results
+    return sorted(results)
 
 
 def signature_images(path: Path) -> set[str]:
@@ -280,8 +277,7 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
     }
     unresolved_rendered: list[str] = []
     rendered_digests: set[str] = set()
-    for item in rendered:
-        source = item["sourceImage"]
+    for source in rendered:
         if DIGEST_RE.search(source):
             rendered_digests.add(source)
         elif source in live_resolutions:

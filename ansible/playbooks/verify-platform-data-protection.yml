@@ -19,18 +19,23 @@
       run_once: true
 
     - name: Verify live production data protection
-      ansible.builtin.script:
-        cmd: >-
-          {{ playbook_dir }}/../../scripts/verify_platform_data_protection.py
-          --max-backup-age-hours {{ platform_data_protection_max_backup_age_hours }}
-          --max-etcd-age-hours {{ platform_data_protection_max_etcd_age_hours }}
-        executable: /usr/bin/python3
-      register: platform_data_protection_result
-      changed_when: false
-      run_once: true
-      delegate_to: "{{ rke2_first_server }}"
+      ansible.builtin.import_tasks: ../tasks/run-recovery-python.yml
+      vars:
+        recovery_python_entrypoint: verify_platform_data_protection.py
+        recovery_python_modules:
+          - bounded_file.py
+          - bounded_subprocess.py
+          - cnpg_schedule.py
+          - strict_json.py
+          - subprocess_timeout.py
+        recovery_python_args:
+          - --max-backup-age-hours
+          - "{{ platform_data_protection_max_backup_age_hours }}"
+          - --max-etcd-age-hours
+          - "{{ platform_data_protection_max_etcd_age_hours }}"
+        recovery_python_changes_cluster: false
 
     - name: Show successful production data-protection verification
       ansible.builtin.debug:
-        msg: "{{ platform_data_protection_result.stdout_lines }}"
+        msg: "{{ recovery_python_result.stdout_lines }}"
       run_once: true

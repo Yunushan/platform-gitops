@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "<REVIEWED_KEYCLOAK_CONTRACT_FILE_SHA256>",
+  "target": {
+    "kubeconfig_env": "IDENTITY_KUBECONFIG",
+    "context": "<EXPLICIT_KUBERNETES_CONTEXT>",
+    "cluster_uid": "<REVIEWED_KUBE_SYSTEM_NAMESPACE_UID>"
+  },
+  "namespace_uid": "<REVIEWED_IDENTITY_NAMESPACE_UID>",
+  "node_uids": {
+    "identity-a": "<REVIEWED_NODE_A_UID>",
+    "identity-b": "<REVIEWED_NODE_B_UID>",
+    "identity-c": "<REVIEWED_NODE_C_UID>"
+  },
+  "secrets": {
+    "keycloak-tls": {"uid": "<REVIEWED_TLS_SECRET_UID>", "type": "kubernetes.io/tls"},
+    "keycloak-db-ca": {"uid": "<REVIEWED_DATABASE_CA_SECRET_UID>", "type": "Opaque"},
+    "keycloak-database": {"uid": "<REVIEWED_DATABASE_CREDENTIAL_SECRET_UID>", "type": "Opaque"}
+  },
+  "cilium": {
+    "namespace": "kube-system",
+    "namespace_uid": "<REVIEWED_KUBE_SYSTEM_NAMESPACE_UID>",
+    "daemonset": "cilium",
+    "uid": "<REVIEWED_CILIUM_DAEMONSET_UID>",
+    "image": "quay.io/cilium/cilium@sha256:<REVIEWED_AGENT_IMAGE_DIGEST>",
+    "pod_template_sha256": "<REVIEWED_FULL_AGENT_POD_TEMPLATE_SHA256>",
+    "configmap": "cilium-config",
+    "config_uid": "<REVIEWED_CILIUM_CONFIGMAP_UID>",
+    "config_data_sha256": "<REVIEWED_CILIUM_CONFIG_DATA_SHA256>"
+  },
+  "admitted_sha256": null
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "runtime": "rke2",
+  "bridge_contract_sha256": "<REVIEWED_GERRIT_SUBMISSION_CONTRACT_SHA256>",
+  "reporter_contract_sha256": "<REVIEWED_GERRIT_REPORTER_CONTRACT_SHA256>",
+  "source_read_username": "ci-promotion-read",
+  "source_read_account_id": 0,
+  "deployment_branch": "deploy/staging",
+  "allow_create_branch": false,
+  "allow_prune": false,
+  "git_username": "cd-writer",
+  "timeout_seconds": 600,
+  "cd": {
+    "kind": "argocd",
+    "management_target": {
+      "kubeconfig_env": "PLATFORM_CD_KUBECONFIG",
+      "context": "cd",
+      "cluster_uid": "<REVIEWED_CD_KUBE_SYSTEM_NAMESPACE_UID>"
+    },
+    "namespace": "argocd",
+    "name": "application",
+    "uid": "<REVIEWED_APPLICATION_UID>",
+    "spec_sha256": "<REVIEWED_APPLICATION_SPEC_SHA256>",
+    "path": "deploy/staging"
+  }
+}

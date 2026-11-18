@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 from unittest import mock
 
@@ -220,6 +221,53 @@ def test_stdout_callback_stops_and_reaps_child() -> None:
         raise AssertionError("silent streaming child escaped its deadline")
 
 
+def reviewed_restore_file_launch(path: Path, document: ast.Module, call: ast.Call) -> bool:
+    """Allow only the existing foreground restore supervisor, not direct capture.
+
+    This child outlives an individual SQL command: the restore helper owns its
+    PID/session, checks startup/log limits and stops that original process in
+    finally. Its pinned exec guard supplies parent-death/no-new-privileges and
+    memory limits. It writes a fresh private regular log rather than PIPEs.
+    """
+    if path != SCRIPTS / "restore_postgres_backup.py": return False
+    functions = [n for n in document.body if isinstance(n, ast.FunctionDef) and n.name == "launch"]
+    if len(functions) != 1 or not any(n is call for n in ast.walk(functions[0])): return False
+    function = functions[0]; keywords = {k.arg: k.value for k in call.keywords}
+    expected = {"stdin": "subprocess.DEVNULL", "stdout": "stream", "stderr": "subprocess.STDOUT", "start_new_session": "True", "umask": "0o077",
+                "env": "backup.environment(tool_plan(original, plan))"}
+    if set(keywords) != set(expected) or any(ast.dump(keywords[k], include_attributes=False) != ast.dump(ast.parse(v, mode="eval").body, include_attributes=False) for k, v in expected.items()): return False
+    if len(call.args) != 1 or not isinstance(call.args[0], ast.Name) or call.args[0].id != "argv": return False
+    expressions = {ast.dump(n, include_attributes=False) for n in ast.walk(function)}
+    required = ("os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)", "os.fdopen(descriptor, 'ab', buffering=0)", "str(Path(child.__file__).resolve())")
+    if any(ast.dump(ast.parse(value, mode="eval").body, include_attributes=False) not in expressions for value in required): return False
+    argv = [n.value for n in function.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "argv" for t in n.targets)]
+    if len(argv) != 1 or not isinstance(argv[0], ast.List): return False
+    guard_prefix = ast.parse("[sys.executable, '-E', '-s', '-B', str(Path(child.__file__).resolve())]", mode="eval").body.elts
+    if [ast.dump(n, include_attributes=False) for n in argv[0].elts[:5]] != [ast.dump(n, include_attributes=False) for n in guard_prefix]: return False
+    constants = {n.value for n in argv[0].elts if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    return {"-E", "-s", "-B", "--parent", "--uid", "--executable", "--sha256", "--memory-bytes", "--"}.issubset(constants)
+
+
+def test_reviewed_restore_launch_exception_is_narrow() -> None:
+    import copy
+    path = SCRIPTS / "restore_postgres_backup.py"
+    document = ast.parse(path.read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(document) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name) and n.func.value.id == "subprocess" and n.func.attr == "Popen"]
+    if len(calls) != 1 or not reviewed_restore_file_launch(path, document, calls[0]): raise AssertionError("The reviewed restore supervisor shape changed")
+    if reviewed_restore_file_launch(SCRIPTS / "other.py", document, calls[0]): raise AssertionError("A different module gained a direct-launch exception")
+    for keyword in ("stdin", "stdout", "stderr", "env", "start_new_session", "umask"):
+        changed = copy.deepcopy(document)
+        call = next(n for n in ast.walk(changed) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "Popen")
+        next(k for k in call.keywords if k.arg == keyword).value = ast.parse("subprocess.PIPE" if keyword in {"stdin", "stdout", "stderr"} else "None", mode="eval").body
+        if reviewed_restore_file_launch(path, changed, call): raise AssertionError("The file-launch exception accepted altered capture/supervision policy")
+    changed = copy.deepcopy(document)
+    function = next(n for n in changed.body if isinstance(n, ast.FunctionDef) and n.name == "launch")
+    argv = next(n.value for n in function.body if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "argv" for t in n.targets))
+    argv.elts[0] = ast.Constant(value="unreviewed-executable")
+    call = next(n for n in ast.walk(function) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "Popen")
+    if reviewed_restore_file_launch(path, changed, call): raise AssertionError("The file-launch exception accepted a bypass of the pinned child guard")
+
+
 def test_production_capture_uses_shared_runner() -> None:
     direct_capture: list[str] = []
     unbounded_runner: list[str] = []
@@ -236,6 +284,7 @@ def test_production_capture_uses_shared_runner() -> None:
                 and node.func.value.id == "subprocess"
                 and node.func.attr == "Popen"
                 and path.name != "bounded_subprocess.py"
+                and not reviewed_restore_file_launch(path, document, node)
             ):
                 popen_calls.append(f"{path.relative_to(ROOT)}:{node.lineno}")
             if (
@@ -304,8 +353,57 @@ def test_injected_runner_defaults_to_bounded_capture() -> None:
         raise AssertionError("injected production-readiness runner bypasses bounded capture")
 
 
+def test_capture_closes_owned_pipes() -> None:
+    created = []
+    real_popen = subprocess.Popen
+
+    def record_process(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        created.append(process)
+        return process
+
+    with mock.patch.object(bounded_subprocess.subprocess, "Popen", side_effect=record_process):
+        bounded_subprocess.run_bounded(
+            [sys.executable, "-c", "import sys; print(sys.stdin.read())"],
+            input="fixture", text=True, timeout=10, output_max_bytes=4096,
+        )
+    if not created or any(not stream.closed for process in created
+                          for stream in (process.stdin, process.stdout, process.stderr) if stream is not None):
+        raise AssertionError("bounded subprocess capture left owned pipes open")
+
+
+def test_streaming_uses_file_input_and_reaps_on_timeout() -> None:
+    if os.name != "posix":
+        return
+    with tempfile.TemporaryFile() as body:
+        body.write(b"fixture\x00body")
+        body.seek(0)
+        with bounded_subprocess.stream_stdout(
+            [sys.executable, "-c", "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"],
+            stdin=body, env=os.environ, timeout=10,
+        ) as stream:
+            assert stream.read() == b"fixture\x00body"
+        assert stream.closed
+
+        started = time.monotonic()
+        try:
+            with bounded_subprocess.stream_stdout(
+                [sys.executable, "-c", "import time; time.sleep(15)"],
+                stdin=body, env=os.environ, timeout=0.5,
+            ) as stream:
+                assert stream.read() == b""
+        except subprocess.TimeoutExpired:
+            assert time.monotonic() - started < 8
+            assert stream.closed
+        else:
+            raise AssertionError("streaming backend ignored its timeout")
+
+
 def main() -> int:
+    test_reviewed_restore_launch_exception_is_narrow()
+    test_capture_closes_owned_pipes()
     test_stdout_callback_stops_and_reaps_child()
+    test_streaming_uses_file_input_and_reaps_on_timeout()
     test_limit_validation()
     test_text_and_binary_capture()
     test_combined_output_limit()

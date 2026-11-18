@@ -7,12 +7,13 @@ platform can recover useful service, data, and GitOps control.
 
 | Area | Required protection |
 |---|---|
-| RKE2 control plane | Etcd snapshots copied off the cluster |
+| RKE2 control plane | Etcd snapshots and [verified offline RKE2 install artifacts](#stage-the-rke2-release-for-offline-recovery) copied off the cluster |
 | Kubernetes objects | Velero with an available BackupStorageLocation |
 | PostgreSQL | CloudNativePG backup plus WAL archive |
 | Volumes | Longhorn backup target or the selected storage backend backup |
 | Object storage | Provider replication plus off-cluster copy |
 | Git repositories | Forgejo, Gitea, or GitLab repository backup/export |
+| GitOps bootstrap source | Verified [GitOps branch bundle](MULTI_RUNTIME_STACKS.md#keep-a-gitops-source-copy-outside-the-platform) and the offline manifest and image cache for [Argo CD](MULTI_RUNTIME_STACKS.md#assemble-and-verify-the-argo-cd-recovery-directory) or [Flux](FLUX.md#prepare-an-offline-controller-cache), stored off-platform |
 | Registry | Harbor registry object storage backup plus metadata database backup |
 | Secrets | SOPS, External Secrets, Sealed Secrets, Vault/OpenBao, or equivalent private secret recovery |
 | PKI | cert-manager issuer state, trust-manager bundles, and any step-ca persistent data or CA material |
@@ -37,7 +38,133 @@ Keep the following outside the cluster and outside plaintext Git:
   `LONGHORN_ENCRYPTION_RECOVERY_FILE`; replicate it into a separate encrypted
   failure domain.
 - CA private keys and step-ca passwords when step-ca is enabled.
-- RKE2 etcd snapshot decryption material if snapshot encryption is enabled.
+- The RKE2 server token from `/var/lib/rancher/rke2/server/token`. RKE2
+  needs the original token to decrypt bootstrap data when restoring an
+  etcd snapshot onto replacement servers. [RKE2 snapshot restore](https://docs.rke2.io/datastore/backup_restore#restoring-to-new-hosts)
+
+### Stage the RKE2 release for offline recovery
+
+On a connected machine, obtain `install.sh` from the selected release tag
+and the binary tarball, base image archive and checksum list from that
+release. Use files for the target architecture. For example, Linux amd64
+with Cilium needs the following cache entries.
+[RKE2 air-gap installation](https://docs.rke2.io/install/airgap)
+
+- `install.sh`
+- `sha256sum-amd64.txt`
+- `rke2.linux-amd64.tar.gz`
+- `rke2-images.linux-amd64.tar.zst`
+- `rke2-images-cilium.linux-amd64.tar.zst`
+
+Record the installer and checksum-list SHA-256 values independently of
+the copied cache. Put the cache at an absolute path on each target node.
+From the controller, use the normal installer playbook after host
+preparation. The target nodes need Python 3 and any OS and SELinux
+prerequisites already provisioned from a local source.
+
+```bash
+export RKE2_OFFLINE_CACHE=/private/recovery/rke2-release
+export RKE2_OFFLINE_CHECKSUMS_SHA256="$REVIEWED_CHECKSUM_LIST_SHA256"
+export RKE2_INSTALL_SCRIPT_SHA256="$REVIEWED_INSTALLER_SHA256"
+export RKE2_VERSION="$REVIEWED_RKE2_VERSION"
+ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/install-rke2.yml
+```
+
+The two manual server bootstrap scripts also accept these environment
+variables. The offline installer checks every selected tarball, stages
+only those assets, and runs the pinned installer in tar mode without
+downloading it or its release artifacts. This tar path is for fresh
+recovery hosts or installations already using tar. Keep matching
+registry mirrors or locally loaded images for other services such as
+kube-vip and GitOps-managed applications.
+
+An isolated Linux test installed the pinned v1.36.2+rke2r1 Linux amd64 tar
+release and staged its base and Cilium image archives without an upstream
+network interface. The generated service unit and installed binary
+version were checked. The replacement-host drill below tested a local
+snapshot restore using that same RKE2 release.
+
+### Recover the first RKE2 server from a local snapshot
+
+Use a replacement host in the recovery network. Stop the source control
+plane or isolate it before making the restored cluster reachable to clients.
+Install the reviewed RKE2 release, restore the cluster's network and
+critical server configuration, and leave the service stopped. The first
+replacement server starts without a join URL. Restore the original server
+token as a root-only file at `server/token` under the selected RKE2 data
+directory. Keep any token settings in the server config consistent with
+that saved token. Verify the snapshot digest against the recovery record
+before restoring. [RKE2 restore procedure](https://docs.rke2.io/datastore/backup_restore#restoring-to-new-hosts)
+
+```bash
+sudo install -d -m 0700 /var/lib/rancher/rke2/server
+sudo install -o root -g root -m 0600 "$SAVED_RKE2_TOKEN_FILE" /var/lib/rancher/rke2/server/token
+printf '%s  %s\n' "$REVIEWED_SNAPSHOT_SHA256" "$RECOVERY_SNAPSHOT" | sha256sum --check --strict
+sudo "$RKE2_BIN" server --cluster-reset --cluster-reset-restore-path="$RECOVERY_SNAPSHOT" --etcd-s3=false
+sudo systemctl start rke2-server
+```
+
+Confirm the API is ready, that it returns the expected cluster identity and
+a known object from the snapshot, and that a write succeeds in the recovery
+environment. On each stopped peer, move the old `server/db` directory
+aside before rejoining with the restored server's registration endpoint
+and the saved token. Start peers one at a time and check that each
+becomes a voting member before continuing. Compare the member list and
+endpoint status across all three servers. Review old member and Node
+identities before reconnecting workloads.
+[RKE2 multi-server restore](https://docs.rke2.io/datastore/backup_restore#snapshot-restore-steps) · [RKE2 etcd checks](https://github.com/rancher/rancher-docs/blob/main/docs/troubleshooting/kubernetes-components/troubleshooting-etcd-nodes.md)
+
+The isolated Linux amd64 drill saved a live embedded-etcd snapshot on a
+two-server RKE2 v1.36.2+rke2r1 source using Canal. It copied the snapshot
+outside the source guests, made a post-snapshot change, and stopped both
+source servers. A third guest restored from that copy and the original
+server token. The recovered API returned the original cluster UID and
+pre-snapshot ConfigMap and Secret data, excluded the post-snapshot object,
+and accepted a new write.
+
+The two original servers then rejoined the restored server with their
+previous databases set aside. All three reported the same three etcd
+voters. With the elected leader VM paused, the other two elected a new
+leader and committed an API write that both surviving servers returned.
+After resuming, the original leader returned the same object's UID.
+
+The same drill preloaded kube-vip v0.8.9 on all three servers and deployed
+the rendered DaemonSet with `imagePullPolicy: Never`. After the VIP owner
+was paused, a surviving server acquired the Lease and bound the VIP. An
+authenticated client wrote a ConfigMap through the same TLS-verified API
+address on TCP 6443. While the original owner was still paused, a fourth
+VM registered as a fresh RKE2 agent through that VIP on TCP 9345 using a
+secure token and reached `Ready`. The resumed server returned the same
+ConfigMap and worker Node UIDs, and the VIP converged on a single owner.
+The drill passed on an isolated virtual network with Canal and, in a
+separate run using the same release, with bundled Cilium. In the Cilium
+run all four nodes became Ready. Two worker pods initially reached a
+ClusterIP service on another node. An ingress NetworkPolicy preserved
+access for the labelled client and blocked the other. Removing the
+policy restored its access. Application service failback still needs
+separate acceptance.
+
+To deploy kube-vip during offline recovery, preload the reviewed
+`registry/repository@sha256:…` image under that exact reference on all
+three servers. For a verified OCI archive whose named image already uses
+the full digest reference, import it directly into RKE2's `k8s.io` image
+store with `ctr images import` and omit `--digests`. The latter generates
+additional aliases that can interfere with container startup.
+[containerd import flags](https://github.com/containerd/containerd/blob/main/cmd/ctr/commands/images/import.go)
+
+```bash
+sudo /var/lib/rancher/rke2/bin/ctr \
+  --address /run/k3s/containerd/containerd.sock --namespace k8s.io \
+  images import "$VERIFIED_KUBE_VIP_OCI"
+```
+
+Include the VIP in each API server's TLS SANs. Set
+`KUBE_VIP_IMAGE` to the digest reference and run
+`KUBE_VIP_PRELOADED=true make rke2-api-vip` with the recovery inventory.
+The playbook checks the image in each local container runtime and
+sets `imagePullPolicy: Never` in the DaemonSet. Confirm the Lease holder,
+the VIP on that server's interface, and authenticated readiness through
+the VIP. [RKE2 fixed registration address](https://docs.rke2.io/install/ha) · [kube-vip DaemonSet](https://kube-vip.io/docs/installation/daemonset/)
 
 ## RPO/RTO Targets
 
@@ -111,6 +238,14 @@ Validate the record and live backup state together:
 ```bash
 make platform-data-protection
 ```
+
+For the premium profiles, strict private rendering places at least three
+CloudNativePG instances on separate Kubernetes hosts. The live gate checks the
+Ready database pods and their node placement. The default daily base backup
+runs at 02:00 using CloudNativePG's six-field schedule, `0 0 2 * * *`. The
+renderer adds a leading zero to existing five-field settings. The gate checks
+the controller's last and next scheduled execution and a recent completed
+backup of `platform-postgres` on the configured S3 endpoint and path.
 
 This gate rejects an in-cluster MinIO endpoint as disaster-recovery storage,
 stale or missing etcd/Velero/CloudNativePG/Longhorn backups, unhealthy WAL

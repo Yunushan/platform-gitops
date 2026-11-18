@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "name": "gogs",
+  "state_path": "/srv/gogs/state",
+  "http_port": 3000,
+  "ssh_port": 2222,
+  "environment_file": "/etc/gogs/gogs.env",
+  "https_url": "https://gogs.example.com",
+  "ssh_host": "gogs-ssh.example.com",
+  "ssh_public_port": 22,
+  "database": {"type": "postgres", "host": "postgres.example.com", "port": 5432,
+    "name": "gogs", "user": "gogs", "ca": "/etc/gogs/postgres-ca.crt"}
+}

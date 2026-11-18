@@ -52,6 +52,10 @@ containerSecurityContext:
 
 replicas: 2
 
+migrationJob:
+  enabled: false
+  activeDeadlineSeconds: 1800
+
 resources:
   requests:
     cpu: 100m

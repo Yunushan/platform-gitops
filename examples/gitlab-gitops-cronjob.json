@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "name": "gitlab-handoff",
+  "namespace": "platform-automation",
+  "image": "registry.example.invalid/platform/gitops-scheduler@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "schedule": "*/5 * * * *",
+  "plan_configmap": "gitlab-handoff-policy",
+  "plan_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "credential_secret": "gitlab-handoff-inputs",
+  "proof_pvc": "gitlab-handoff-proofs",
+  "suspend": true,
+  "apply": false,
+  "wait_seconds": 900,
+  "active_deadline_seconds": 2700
+}

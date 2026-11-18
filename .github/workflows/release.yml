@@ -69,6 +69,9 @@ jobs:
           KYVERNO_BIN: ${{ runner.temp }}/platform-tools/kyverno
         run: python scripts/verify_active_kyverno_policies.py
       - name: Validate tagged source
+        env:
+          GITLAB_PIPELINE_HTTPS_FIXTURE: '1'
+          GITLAB_GITOPS_HTTPS_FIXTURE: '1'
         run: python scripts/run_validation.py
       - name: Scan Git history with Gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
@@ -108,6 +111,14 @@ jobs:
           PLATFORM_RENDERED_SCHEMA_PROFILES: base,premium-3node
           PLATFORM_RENDERED_SCHEMA_ALLOW_INCOMPLETE: "true"
         run: make rendered-schema-verify
+      - name: Validate complete synthetic premium schemas
+        env:
+          PLATFORM_PROFILE: premium-3node
+        run: make rendered-private-schema-verify
+      - name: Validate complete synthetic GitLab schemas
+        env:
+          PLATFORM_PROFILE: premium-3node-gitlab-ce
+        run: make rendered-private-schema-verify
       - name: Download Syft
         id: syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
@@ -122,12 +133,11 @@ jobs:
           git archive --format=tar --prefix="${artifact}/" "${GITHUB_SHA}" |
             gzip -n >"dist/${artifact}.tar.gz"
 
-          "${SYFT_CMD}" dir:. \
-            --exclude ./.git \
-            --exclude ./dist \
-            --exclude ./private \
-            --exclude ./rendered \
-            --exclude ./secrets \
+          source_dir="$(mktemp -d "${RUNNER_TEMP}/release-source.XXXXXX")"
+          tar -xzf "dist/${artifact}.tar.gz" -C "${source_dir}"
+          "${SYFT_CMD}" "dir:${source_dir}/${artifact}" \
+            --base-path "${source_dir}/${artifact}" \
+            --source-name "${GITHUB_REPOSITORY}" --source-version "${tag}" \
             -o "spdx-json=dist/${artifact}.spdx.json" \
             -o "cyclonedx-json=dist/${artifact}.cyclonedx.json"
           test -s rendered/governance/github-governance-evidence.json
@@ -181,7 +191,7 @@ jobs:
         run: >-
           python scripts/verify_github_release_approval.py
           --output
-          dist/platform-gitops-${{ github.ref_name }}.github-release-approval.json
+          "dist/platform-gitops-${GITHUB_REF_NAME}.github-release-approval.json"
       - name: Bind release approval to checksum manifest
         working-directory: dist
         run: |
@@ -238,6 +248,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          evidence="dist/platform-gitops-${GITHUB_REF_NAME}.github-release.json"
+          expected_tag="$(jq -er '.tagObjectSha | select(test("^[0-9a-f]{40}$"))' "${evidence}")"
+          current_tag="$(gh api "repos/${GH_REPO}/git/ref/tags/${GITHUB_REF_NAME}" --jq 'select(.object.type == "tag") | .object.sha')"
+          if [[ "${current_tag}" != "${expected_tag}" ]]; then
+            echo "The tag changed after release verification." >&2
+            exit 1
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             "dist/platform-gitops-${GITHUB_REF_NAME}.tar.gz" \
             "dist/platform-gitops-${GITHUB_REF_NAME}.spdx.json" \

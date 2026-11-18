@@ -64,6 +64,7 @@ def parse_helm_charts(lines: list[str]) -> list[tuple[int, dict[str, str]]]:
     charts: list[tuple[int, dict[str, str]]] = []
     in_helm_charts = False
     helm_indent = 0
+    chart_indent: int | None = None
     current_line = 0
     current_fields: dict[str, str] | None = None
 
@@ -76,13 +77,14 @@ def parse_helm_charts(lines: list[str]) -> list[tuple[int, dict[str, str]]]:
 
     for line_number, line in enumerate(lines, start=1):
         stripped = line.strip()
-        if not stripped:
+        if not stripped or stripped.startswith("#"):
             continue
         indent = len(line) - len(line.lstrip(" "))
         if not in_helm_charts:
             if stripped == "helmCharts:":
                 in_helm_charts = True
                 helm_indent = indent
+                chart_indent = None
             continue
         if indent <= helm_indent and not stripped.startswith("- "):
             finish_current()
@@ -90,14 +92,19 @@ def parse_helm_charts(lines: list[str]) -> list[tuple[int, dict[str, str]]]:
             if stripped == "helmCharts:":
                 in_helm_charts = True
                 helm_indent = indent
+                chart_indent = None
             continue
         if stripped.startswith("- "):
+            if chart_indent is None:
+                chart_indent = indent
+            if indent != chart_indent:
+                continue
             finish_current()
             current_line = line_number
             current_fields = {}
             field = stripped[2:]
         else:
-            if current_fields is None:
+            if current_fields is None or indent != chart_indent + 2:
                 continue
             field = stripped
         if ":" not in field:

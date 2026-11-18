@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "allura",
+  "state_path": "/var/lib/allura",
+  "config_dir": "/etc/allura",
+  "http_port": 8080,
+  "image": "registry.example.com/platform/allura@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

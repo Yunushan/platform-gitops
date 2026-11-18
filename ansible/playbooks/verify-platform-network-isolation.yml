@@ -6,8 +6,8 @@
   vars:
     platform_network_gitlab: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') == 'premium-3node-gitlab-ce' }}"
     platform_network_inactive_namespaces: >-
-      {{ ['forgejo', 'woodpecker'] if platform_network_gitlab | bool
-         else ['gitlab', 'gitlab-runner'] }}
+      {{ ['forgejo', 'woodpecker', 'object-storage'] if platform_network_gitlab | bool
+         else ['gitlab', 'gitlab-runner', 'gitlab-jobs'] }}
     platform_network_probe_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NETWORK_PROBE_IMAGE') }}"
     platform_network_probe_image_effective: >-
       {{ platform_network_probe_image
@@ -49,6 +49,8 @@
         name: platform-allow-valkey-egress
       - namespace: gitlab
         name: gitlab-allow-traefik-backends
+      - namespace: gitlab-jobs
+        name: gitlab-jobs-network
       - namespace: harbor
         name: platform-allow-postgres-egress
       - namespace: harbor
@@ -177,7 +179,7 @@
           "$K" --kubeconfig "$C" -n argocd delete pod "$VALKEY_DENIED_POD" \
             --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
           if [ "$PG_CLIENT" = gitlab ]; then
-            "$K" --kubeconfig "$C" -n gitlab-runner delete pod "$PG_JOB_DENIED_POD" "$VALKEY_JOB_DENIED_POD" \
+            "$K" --kubeconfig "$C" -n gitlab-jobs delete pod "$PG_JOB_DENIED_POD" "$VALKEY_JOB_DENIED_POD" \
               --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
           fi
         }
@@ -290,10 +292,10 @@
         wait_probe argocd "$VALKEY_DENIED_POD" denied
 
         if [ "$PG_CLIENT" = gitlab ]; then
-          create_probe gitlab-runner "$PG_JOB_DENIED_POD" deny "$POSTGRES_TARGET" 5432
-          wait_probe gitlab-runner "$PG_JOB_DENIED_POD" denied
-          create_probe gitlab-runner "$VALKEY_JOB_DENIED_POD" deny "$VALKEY_TARGET" 6379
-          wait_probe gitlab-runner "$VALKEY_JOB_DENIED_POD" denied
+          create_probe gitlab-jobs "$PG_JOB_DENIED_POD" deny "$POSTGRES_TARGET" 5432
+          wait_probe gitlab-jobs "$PG_JOB_DENIED_POD" denied
+          create_probe gitlab-jobs "$VALKEY_JOB_DENIED_POD" deny "$VALKEY_TARGET" 6379
+          wait_probe gitlab-jobs "$VALKEY_JOB_DENIED_POD" denied
           echo "gitlab_runner_job_data_services=denied postgres=5432 valkey=6379"
         fi
         echo "platform_network_isolation=verified postgres_allowed=${PG_CLIENT} postgres_denied=argocd valkey_allowed=harbor,${VALKEY_CLIENT} valkey_denied=argocd"

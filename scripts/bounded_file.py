@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import stat
@@ -12,6 +13,28 @@ from typing import BinaryIO
 FILE_INPUT_LIMIT_ENV = "PLATFORM_FILE_INPUT_MAX_BYTES"
 DEFAULT_FILE_INPUT_MAX_BYTES = 64 * 1024 * 1024
 MAX_FILE_INPUT_BYTES = 512 * 1024 * 1024
+
+
+def read_bootstrap_bytes(path, max_bytes, *, follow_symlinks=True):
+    """Self-contained primitive mirrored by the pre-import SSH staging agent."""
+    import os
+    import stat
+    if type(max_bytes) is not int or not 0 < max_bytes <= 512 * 1024 * 1024:
+        raise ValueError("Invalid bootstrap file limit")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    if not follow_symlinks: flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+            raise ValueError("Invalid or excessive bootstrap file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            value = stream.read(max_bytes + 1)
+        if len(value) > max_bytes:
+            raise ValueError("Bootstrap file grew beyond its limit")
+        return value
+    finally:
+        os.close(descriptor)
 
 
 class FileInputTooLarge(ValueError):
@@ -129,6 +152,51 @@ def read_bounded_stream(
         if total > limit:
             raise StreamInputTooLarge(label, limit)
     return b"".join(chunks)
+
+
+class BoundedFileReader:
+    """Forward-only reads with a total budget and bounded per-call allocation."""
+    def __init__(self, stream, path, limit):
+        self._stream, self.path, self.limit, self.total = stream, path, limit, 0
+
+    def read(self, size=-1):
+        if type(size) is not int or size < 0 or size > MAX_FILE_INPUT_BYTES:
+            raise ValueError("Streaming file reads require an explicit bounded chunk")
+        if self.total > self.limit: raise FileInputTooLarge(self.path, self.limit)
+        if size == 0: return b""
+        value = self._stream.read(min(size, self.limit - self.total + 1))
+        self.total += len(value)
+        if self.total > self.limit: raise FileInputTooLarge(self.path, self.limit)
+        return value
+
+    def tell(self): return self.total
+    def readable(self): return True
+    def seekable(self): return False
+    @property
+    def closed(self): return self._stream.closed
+
+
+@contextmanager
+def open_bounded_file(path, *, max_bytes):
+    """Stream a regular file, including large backups, without loading it whole.
+
+    The total limit is explicit (up to signed 64-bit file size), independent of
+    the whole-file allocation ceiling. Each read must specify a bounded chunk.
+    Symlinks and special files are refused before reading; growth is bounded.
+    """
+    if type(max_bytes) is not int or not 0 <= max_bytes <= 2 ** 63 - 1:
+        raise ValueError("Streaming files require an explicit nonnegative byte budget")
+    target = Path(path)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    descriptor = os.open(target, flags)
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode): raise FileInputNotRegular(target)
+        if info.st_size > max_bytes: raise FileInputTooLarge(target, max_bytes)
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            yield BoundedFileReader(stream, target, max_bytes)
+    finally:
+        os.close(descriptor)
 
 
 def read_bounded_text(

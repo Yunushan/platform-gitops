@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "operation_id": "<NEW_INDEPENDENT_NATIVE_CANARY_UUID>",
+  "storage_runtime": "rke2",
+  "storage_plan_sha256": "<CANONICAL_STORAGE_PLAN_SHA256>",
+  "storage_proof_sha256": "<ORIGINAL_STORAGE_PROOF_FILE_SHA256>",
+  "cephfs_path": "/platform-canaries",
+  "hosts": [
+    {
+      "name": "client-1",
+      "machine_id_sha256": "<SHA256_OF_CLIENT_1_MACHINE_ID_WITHOUT_NEWLINE>",
+      "boot_id": "<CURRENT_CLIENT_1_BOOT_UUID>",
+      "failure_domain": "rack-1",
+      "mount_path": "/srv/platform-canary",
+      "package_path": "/opt/platform/ceph-canary",
+      "client": "native-canary-1"
+    },
+    {
+      "name": "client-2",
+      "machine_id_sha256": "<SHA256_OF_CLIENT_2_MACHINE_ID_WITHOUT_NEWLINE>",
+      "boot_id": "<CURRENT_CLIENT_2_BOOT_UUID>",
+      "failure_domain": "rack-2",
+      "mount_path": "/srv/platform-canary",
+      "package_path": "/opt/platform/ceph-canary",
+      "client": "native-canary-2"
+    }
+  ],
+  "uid": 1000,
+  "gid": 1000,
+  "image": "registry.example.com/platform/python@sha256:<REVIEWED_PYTHON_3_12_OR_NEWER_IMAGE_DIGEST>",
+  "payload_bytes": 1048576,
+  "timeout_seconds": 120
+}

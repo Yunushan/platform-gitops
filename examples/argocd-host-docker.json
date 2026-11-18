@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "image": "quay.io/argoproj/argocd@sha256:521d6b62ecd0434c9cc6e9242a74f0e1137bb8fc0026b2c483ea88f3f17e725d",
+  "management_target": {
+    "kubeconfig_env": "PLATFORM_ARGOCD_KUBECONFIG",
+    "context": "reviewed-management",
+    "cluster_uid": "11111111-1111-1111-1111-111111111111"
+  },
+  "namespace": "argocd",
+  "repository_inputs": "/etc/platform/argocd-repository",
+  "controller_inputs": "/etc/platform/argocd-controller",
+  "cache_host": "cache.example.invalid",
+  "cache_port": 6380,
+  "resync_seconds": 120
+}

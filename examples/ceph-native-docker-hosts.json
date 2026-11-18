@@ -1,0 +1,16 @@
+{
+  "docker_hosts": {
+    "client-1": {
+      "binary_sha256": "<REVIEWED_CLIENT_1_DOCKER_BINARY_SHA256>",
+      "daemon_id": "<REVIEWED_CLIENT_1_DOCKER_ENGINE_ID>",
+      "server_version": "<REVIEWED_EXACT_DOCKER_SERVER_VERSION>",
+      "image_id": "sha256:<REVIEWED_CLIENT_1_LOCAL_IMAGE_ID>"
+    },
+    "client-2": {
+      "binary_sha256": "<REVIEWED_CLIENT_2_DOCKER_BINARY_SHA256>",
+      "daemon_id": "<REVIEWED_CLIENT_2_DOCKER_ENGINE_ID>",
+      "server_version": "<REVIEWED_EXACT_DOCKER_SERVER_VERSION>",
+      "image_id": "sha256:<REVIEWED_CLIENT_2_LOCAL_IMAGE_ID>"
+    }
+  }
+}

@@ -63,7 +63,7 @@
       - overlay
       - nf_conntrack
     rke2_fatal_startup_pattern: 'encrypted with different token|failed to validate token|failed to get CA certs|x509:|certificate signed by unknown authority'
-    rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
+    rke2_installer_process_pattern: '(/tmp/install-rke2[.]sh|platform-rke2-offline[.]py|y[u]m -q --refresh list container-selinux --upgrades|d[n]f -q --refresh list container-selinux --upgrades|INSTALL_RKE2_TYPE=server .*AnsiballZ_command[.]py)'
     rke2_runtime_process_pattern: '([r]ke2 server|[c]ontainerd.*rancher/rke2|[c]ontainerd-shim.*rancher/rke2|[k]ubelet.*rancher/rke2)'
   handlers:
     - name: Reload firewalld
@@ -753,15 +753,14 @@
           ansible.builtin.fail:
             msg: "{{ inventory_hostname }} did not become active within {{ rke2_start_timeout_effective }} seconds. Review diagnostics above, or run: make rke2-diagnose HOST={{ inventory_hostname }}"
 
-    - name: Wait for all RKE2 nodes to report Ready
+    - name: Wait for all RKE2 servers to report Ready
       block:
-        - name: Poll all RKE2 nodes Ready
-          ansible.builtin.shell: |
-            set -o pipefail
-            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get nodes --no-headers |
-              awk '$2 == "Ready" { ready++ } END { expected={{ groups["rke2_servers"] | length }}; exit(ready == expected ? 0 : 1) }'
-          args:
-            executable: /bin/bash
+        - name: Poll all RKE2 servers Ready
+          ansible.builtin.command:
+            argv: >-
+              {{ ['/var/lib/rancher/rke2/bin/kubectl', '--kubeconfig', '/etc/rancher/rke2/rke2.yaml',
+                  '--request-timeout=8s', 'wait', '--for=condition=Ready', '--timeout=0s']
+                 + (groups['rke2_servers'] | map('regex_replace', '^', 'node/') | list) }}
           register: rke2_all_nodes_ready
           retries: "{{ (((rke2_node_ready_timeout_effective | int) / (rke2_start_poll_interval_effective | int)) | round(0, 'ceil') | int) + 1 }}"
           delay: "{{ rke2_start_poll_interval_effective }}"

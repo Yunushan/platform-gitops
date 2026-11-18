@@ -3,7 +3,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import yaml
+
+import render_host_log_collector as host_logs
+import render_loki_receiver as loki_receiver
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +31,33 @@ def require(text: str, needle: str, label: str) -> None:
 def forbid(text: str, needle: str, label: str) -> None:
     if needle in text:
         raise AssertionError(f"{label} must not contain {needle!r}")
+
+
+def verify_host_collector() -> None:
+    plan = json.loads(read(ROOT / "examples/host-log-collector.json"))
+    docker = host_logs.render(plan, "docker")
+    require(docker["compose.logging.yaml"], "logging: !override", "Compose driver replacement")
+    require(docker["config.alloy"], "CONTAINER_TAG=platform.platform.forge", "Docker journal filter")
+    raw = {**plan, "services": {"forge": "forge.service"}, "files": {"ci": "/var/log/ci/jobs.log"}}
+    bundle = host_logs.render(raw, "raw")
+    require(bundle["config.alloy"], "matches = \"_SYSTEMD_UNIT=forge.service\"", "native journal filter")
+    require(bundle["config.alloy"], 'regex = "filename"', "log filename label removal")
+    require(bundle["config.alloy"], "follow_redirects = false", "Loki gateway client")
+    require(bundle[host_logs.UNIT_NAME], "LoadCredential=loki-password:", "host collector credentials")
+    for changes in (
+        {"gateway": "https://writer:secret@logs.example.invalid/loki/api/v1/push"},
+        {"gateway": "https://logs.example.invalid/loki/api/v1/push?token=secret"},
+        {"gateway": "http://logs.example.invalid/loki/api/v1/push"},
+        {"services": {"forge": "forge.service + _SYSTEMD_UNIT=ssh.service"}},
+        {"services": {"collector": host_logs.UNIT_NAME}},
+        {"files": {"ci": "/var/log/**/*.log"}},
+        {"files": {"ci": "/var/log/../../etc/shadow"}},
+    ):
+        try:
+            host_logs.render({**raw, **changes}, "raw")
+        except ValueError:
+            continue
+        raise AssertionError("Host collector accepted an unsafe log source or push URL")
 
 
 def main() -> int:
@@ -142,7 +175,12 @@ def main() -> int:
     )
     require(readiness, "make platform-observability-verify", "production readiness documentation")
 
-    print("Production observability contract passed for Loki, Alloy, Grafana, and Alertmanager.")
+    verify_host_collector()
+    receiver_plan = json.loads(read(ROOT / "examples/loki-receiver.json"))
+    receiver = yaml.safe_load(loki_receiver.render(receiver_plan, "k3s")["loki-values.yaml"])
+    if receiver["loki"]["ingester"]["lifecycler"]["readiness_check_ring_health"] is not False:
+        raise AssertionError("Healthy Loki replicas must stay ready when a peer loses heartbeats")
+    print("Observability contracts passed for Loki, Alloy, Grafana, Alertmanager, and the host collector.")
     return 0
 
 

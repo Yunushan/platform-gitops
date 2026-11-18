@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "cache_contract_sha256": "ee459fedb5dc1e1c3fb0dad6d5e048412598f09e74cf8b3b0a6a886f6a4d1c0b",
+  "application": {
+    "kind": "argocd",
+    "version": "3.5.0",
+    "namespace": "argocd",
+    "private_dir": "/run/platform-argocd-cache",
+    "credential_secret": "argocd-cache-credentials",
+    "tls_secret": "argocd-cache-tls"
+  }
+}

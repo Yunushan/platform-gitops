@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "name": "application-cache",
+  "namespace": "cache-gateway",
+  "image": "registry.example.com/platform/haproxy-python@sha256:<REVIEWED_IMAGE_DIGEST>",
+  "native_binary": "/usr/local/libexec/platform-haproxy",
+  "native_binary_sha256": "<REVIEWED_NATIVE_HAPROXY_SHA256>",
+  "private_dir": "/etc/platform-valkey-gateway",
+  "tls_secret": "application-cache-private",
+  "frontend": {"hostname": "cache.example.com", "port": 6381},
+  "tls_names": {
+    "cache-a": "cache-a.example.com",
+    "cache-b": "cache-b.example.com",
+    "cache-c": "cache-c.example.com"
+  },
+  "private_sha256": {
+    "frontend.pem": "<PRIVATE_FRONTEND_CERTIFICATE_AND_KEY_PEM_SHA256>",
+    "upstream.pem": "<PRIVATE_UPSTREAM_CLIENT_CERTIFICATE_AND_KEY_PEM_SHA256>"
+  },
+  "instances": [
+    {"name": "gateway-a", "address": "192.0.2.71"},
+    {"name": "gateway-b", "address": "192.0.2.72"}
+  ],
+  "node_selector": {"kubernetes.io/os": "linux"},
+  "failure_domain_key": "topology.kubernetes.io/zone",
+  "client_namespaces": ["harbor"],
+  "observer": {"replace_with_original_pinned_runtime_scope_from": "examples/valkey-runtime.json"}
+}

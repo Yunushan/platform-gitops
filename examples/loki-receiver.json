@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "namespace": "platform-log-receiver",
+  "dns_domain": "cluster.local",
+  "dns_namespace": "kube-system",
+  "dns_service": "kube-dns",
+  "loki_image": "docker.io/grafana/loki@sha256:b43c257ccfc925d4a50b8717cac61a3b51df8c48d01847936057e5c4075a24a7",
+  "gateway_image": "docker.io/nginxinc/nginx-unprivileged@sha256:0c79d56aee561a1d81c63f00eee5fb5fe29279560cdc55e91425133104c7fbe6",
+  "gateway_secret": "loki-gateway-auth",
+  "tenant": "platform",
+  "s3": {
+    "endpoint": "https://objects.example.invalid",
+    "bucket": "platform-logs",
+    "region": "us-east-1",
+    "credentials": "loki-s3-credentials",
+    "ca_secret": "loki-s3-ca"
+  },
+  "wal_storage_class": "ceph-block",
+  "wal_size_gib": 20,
+  "retention_days": 30,
+  "ingress": {
+    "host": "logs.example.invalid",
+    "class": "traefik",
+    "namespace": "ingress-system",
+    "tls_secret": "loki-gateway-tls"
+  }
+}

@@ -120,6 +120,18 @@ optional: null
     )
     if provider_documents != [{"on": {"push": {}}, "enabled": True, "legacy": "on"}]:
         raise AssertionError("YAML 1.2 provider mode did not preserve GitHub keys and values")
+    if loads_strict_yaml_all("operator: =\ndate: 2026-07-31\n", yaml_12=True) != [
+        {"operator": "=", "date": "2026-07-31"},
+    ]:
+        raise AssertionError("YAML 1.2 changed a Kubernetes enum or date-shaped string")
+    for tagged in ("value: !!timestamp 2026-07-31", "value: !!value =", "value: !!binary SGVsbG8="):
+        for yaml_12 in (False, True):
+            try:
+                loads_strict_yaml_all(tagged, yaml_12=yaml_12)
+            except StrictYamlError:
+                pass
+            else:
+                raise AssertionError("explicit non-JSON YAML tag was accepted")
 
 
 def test_duplicate_keys_are_rejected() -> None:

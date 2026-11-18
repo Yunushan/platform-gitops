@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "kallithea",
+  "state_path": "/srv/kallithea/state",
+  "config_file": "/etc/kallithea/kallithea.ini",
+  "http_port": 5000,
+  "image": "registry.example.com/platform/kallithea@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

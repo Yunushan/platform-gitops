@@ -1,0 +1,33 @@
+---
+- name: Run the recovery helper with its Python dependencies
+  delegate_to: "{{ rke2_first_server }}"
+  run_once: true
+  block:
+    - name: Allocate a private workspace for this invocation
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: platform-recovery-
+      register: recovery_python_workspace
+      changed_when: false
+
+    - name: Copy the helper and its local imports
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+        dest: "{{ recovery_python_workspace.path }}/{{ item }}"
+        mode: "0600"
+      loop: "{{ [recovery_python_entrypoint] + recovery_python_modules }}"
+      changed_when: false
+
+    - name: Execute the staged helper
+      ansible.builtin.command:
+        argv: "{{ ['/usr/bin/python3', recovery_python_workspace.path ~ '/' ~ recovery_python_entrypoint] + recovery_python_args }}"
+      register: recovery_python_result
+      changed_when: recovery_python_changes_cluster
+
+  always:
+    - name: Remove the temporary recovery workspace
+      ansible.builtin.file:
+        path: "{{ recovery_python_workspace.path }}"
+        state: absent
+      when: recovery_python_workspace.path is defined
+      changed_when: false

@@ -1,0 +1,51 @@
+--- a/src/common/dao/pgsql.go
++++ b/src/common/dao/pgsql.go
+@@ -15,6 +15,8 @@
+ package dao
+ 
+ import (
++	"context"
++	"database/sql/driver"
+ 	"fmt"
+ 	"net"
+ 	"net/url"
+@@ -26,7 +28,8 @@
+ 	migrate "github.com/golang-migrate/migrate/v4"
+ 	_ "github.com/golang-migrate/migrate/v4/database/pgx" // import pgx driver for migrator
+ 	_ "github.com/golang-migrate/migrate/v4/source/file"  // import local file driver for migrator
+-	_ "github.com/jackc/pgx/v4/stdlib"                    // registry pgx driver
++	"github.com/jackc/pgx/v4"
++	"github.com/jackc/pgx/v4/stdlib"
+ 
+ 	"github.com/goharbor/harbor/src/common/models"
+ 	"github.com/goharbor/harbor/src/common/utils"
+@@ -95,13 +98,24 @@
+ 	info := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s timezone=UTC",
+ 		p.host, p.port, p.usr, p.pwd, p.database, p.sslmode)
+ 
+-	if err := orm.RegisterDataBase(an, "pgx", info, orm.MaxIdleConnections(p.maxIdleConns),
+-		orm.MaxOpenConnections(p.maxOpenConns), orm.ConnMaxLifetime(p.connMaxLifetime)); err != nil {
++	config, err := pgx.ParseConfig(info)
++	if err != nil {
+ 		return err
+ 	}
+-
+-	db, err := orm.GetDB(an)
+-	if err != nil {
++	// Check a reused idle connection before application SQL can be sent.
++	// Returning ErrBadConn here lets database/sql discard only that connection;
++	// this does not replay a query whose execution outcome may be unknown.
++	db := stdlib.OpenDB(*config, stdlib.OptionResetSession(func(ctx context.Context, conn *pgx.Conn) error {
++		bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
++		defer cancel()
++		if err := conn.Ping(bounded); err != nil {
++			return driver.ErrBadConn
++		}
++		return nil
++	}))
++	if err := orm.AddAliasWthDB(an, "pgx", db, orm.MaxIdleConnections(p.maxIdleConns),
++		orm.MaxOpenConnections(p.maxOpenConns), orm.ConnMaxLifetime(p.connMaxLifetime)); err != nil {
++		db.Close()
+ 		return err
+ 	}
+ 	db.SetConnMaxIdleTime(p.connMaxIdleTime)

@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "gerrit_version": "<REVIEWED_GERRIT_VERSION>",
+  "java_image": "registry.example.com/platform/gerrit-java-python-git@sha256:<REVIEWED_JAVA_PYTHON_AND_GIT_IMAGE_DIGEST>",
+  "namespace": "gerrit",
+  "shared_claim": "gerrit-shared",
+  "shared_host_path": "/srv/gerrit-shared",
+  "shared_storage": {
+    "schema_version": 1,
+    "fsid": "<REVIEWED_CEPH_CLUSTER_FSID>",
+    "filesystem": "platform-shared",
+    "path": "/gerrit-shared"
+  },
+  "ssh_public_key_sha256": "<SHARED_ED25519_PUBLIC_KEY_FILE_SHA256>",
+  "artifacts": {
+    "bin/gerrit.war": "<REVIEWED_GERRIT_WAR_SHA256>",
+    "plugins/high-availability.jar": "<REVIEWED_HIGH_AVAILABILITY_PLUGIN_SHA256>",
+    "plugins/healthcheck.jar": "<REVIEWED_HEALTHCHECK_PLUGIN_SHA256>",
+    "lib/global-refdb.jar": "<REVIEWED_GLOBAL_REFDB_LIBRARY_SHA256>"
+  },
+  "sites": [
+    {
+      "name": "gerrit-a",
+      "claim": "gerrit-a-site",
+      "host_path": "/srv/gerrit-a",
+      "config_hashes": {
+        "etc/gerrit.config": "<REVIEWED_PRIMARY_A_GERRIT_CONFIG_SHA256>",
+        "etc/high-availability.config": "<REVIEWED_PRIMARY_A_HA_CONFIG_SHA256>",
+        "etc/healthcheck.config": "<REVIEWED_PRIMARY_A_HEALTHCHECK_CONFIG_SHA256>"
+      }
+    },
+    {
+      "name": "gerrit-b",
+      "claim": "gerrit-b-site",
+      "host_path": "/srv/gerrit-b",
+      "config_hashes": {
+        "etc/gerrit.config": "<REVIEWED_PRIMARY_B_GERRIT_CONFIG_SHA256>",
+        "etc/high-availability.config": "<REVIEWED_PRIMARY_B_HA_CONFIG_SHA256>",
+        "etc/healthcheck.config": "<REVIEWED_PRIMARY_B_HEALTHCHECK_CONFIG_SHA256>"
+      }
+    }
+  ]
+}

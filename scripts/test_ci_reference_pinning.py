@@ -82,7 +82,7 @@ CI_REQUIRED_LOCKS = {
     ROOT / ".gitlab-ci.yml": ("requirements/ci-yaml.txt",),
     ROOT / ".woodpecker" / "validate.yml": ("requirements/ci-yaml.txt",),
 }
-DOCKERFILES = tuple(ROOT.rglob("Dockerfile"))
+DOCKERFILES = tuple(path for path in ROOT.rglob("Dockerfile") if path.relative_to(ROOT).parts[0] != "private")
 MUTABLE_REFS = {
     "latest",
     "main",

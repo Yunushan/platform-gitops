@@ -7,6 +7,24 @@ strategy:
 
 image:
   rootless: true
+  tag: "28.3.0"
+  digest: sha256:40c5a68a0463c0940e1ae32626c8300dd0572f3558e390073ad8379ca67c0e1d
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+test:
+  enabled: false
 
 ingress:
   enabled: true
@@ -24,7 +42,13 @@ ingress:
 postgresql:
   enabled: false
 
-redis-cluster:
+postgresql-ha:
+  enabled: false
+
+valkey:
+  enabled: false
+
+valkey-cluster:
   enabled: false
 
 persistence:
@@ -33,6 +57,9 @@ persistence:
   storageClass: <GITEA_STORAGE_CLASS>
 
 gitea:
+  admin:
+    existingSecret: gitea-bootstrap-admin
+    passwordMode: initialOnlyRequireReset
   config:
     server:
       DOMAIN: gitea.<PLATFORM_DOMAIN>

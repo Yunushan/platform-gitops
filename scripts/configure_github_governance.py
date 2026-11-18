@@ -20,6 +20,7 @@ from urllib.request import Request
 
 from atomic_file import atomic_write_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from github_release_policy import covers_release_tags, deployment_tag_policy, fetch_github_objects
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
@@ -259,11 +260,56 @@ def principal_repository_permission(
 def principal_team_members(api: GitHubApi, principal: dict[str, Any]) -> Any:
     if principal.get("type") != "Team":
         return None
-    return api.get(
+    return fetch_github_objects(
         "orgs/"
         f"{quote(str(principal.get('organization') or ''), safe='')}/teams/"
-        f"{quote(str(principal.get('slug') or ''), safe='')}/members?role=all&per_page=100",
+        f"{quote(str(principal.get('slug') or ''), safe='')}/members?role=all", api.get,
     )
+
+
+def additional_release_authority_members(
+    api: GitHubApi, *, repository_path: str, owner: dict[str, Any],
+    desired_ruleset: dict[str, Any], managed_id: int | None, tag_ref_pattern: str,
+    selected_authority: dict[str, Any],
+) -> set[int]:
+    """Include preserved and inherited release authorities in the reviewer's independence check."""
+    covering = [desired_ruleset]
+    for summary in fetch_github_objects(f"repos/{repository_path}/rulesets?includes_parents=true", api.get):
+        if summary["id"] == managed_id or summary.get("target") != "tag":
+            continue
+        rule = api.get(f"repos/{repository_path}/rulesets/{summary['id']}")
+        if covers_release_tags(rule, tag_ref_pattern):
+            covering.append(rule)
+
+    actors: set[tuple[str, int]] = set()
+    for rule in covering:
+        bypass = rule.get("bypass_actors")
+        if not isinstance(bypass, list):
+            raise ConfigurationError("unable to verify all release ruleset bypass actors")
+        for actor in bypass:
+            if (not isinstance(actor, dict) or actor.get("actor_type") not in {"User", "Team"}
+                    or type(actor.get("actor_id")) is not int or actor["actor_id"] <= 0
+                    or actor.get("bypass_mode") != "always"):
+                raise ConfigurationError("unable to verify a scoped release ruleset bypass actor")
+            actors.add((actor["actor_type"], actor["actor_id"]))
+    actors.discard((selected_authority["type"], selected_authority["id"]))
+
+    member_ids: set[int] = set()
+    for actor_type, actor_id in sorted(actors):
+        if actor_type == "User":
+            member_ids.add(actor_id)
+            continue
+        if type(owner.get("id")) is not int or not owner.get("login"):
+            raise ConfigurationError("organization identity is required to verify release authority teams")
+        team = require_object(api.get(f"organizations/{owner['id']}/team/{actor_id}"), "release authority team")
+        if team.get("id") != actor_id or not isinstance(team.get("slug"), str) or not team["slug"]:
+            raise ConfigurationError(f"release authority Team:{actor_id} could not be identified")
+        principal = {"type": "Team", "id": actor_id, "slug": team["slug"], "organization": owner["login"]}
+        members = principal_team_members(api, principal)
+        if not members:
+            raise ConfigurationError(f"release authority Team:{actor_id} has no verified members")
+        member_ids.update(member["id"] for member in members)
+    return member_ids
 
 
 def repository_permission(document: Any) -> str:
@@ -371,12 +417,16 @@ def merge_tag_ruleset(
 
     conditions = deepcopy(current.get("conditions")) if isinstance(current.get("conditions"), dict) else {}
     ref_name = deepcopy(conditions.get("ref_name")) if isinstance(conditions.get("ref_name"), dict) else {}
-    includes = [str(value) for value in ref_name.get("include", []) if value]
+    includes = ref_name.get("include", [])
+    excludes = ref_name.get("exclude", [])
+    if any(not isinstance(patterns, list) or not all(isinstance(item, str) and item for item in patterns)
+           for patterns in (includes, excludes)):
+        raise ConfigurationError("managed ruleset contains invalid ref patterns")
     if tag_ref_pattern not in includes:
         includes.append(tag_ref_pattern)
     conditions["ref_name"] = {
         "include": includes,
-        "exclude": [str(value) for value in ref_name.get("exclude", []) if value],
+        "exclude": excludes,
     }
 
     rules = [deepcopy(rule) for rule in current.get("rules", []) if isinstance(rule, dict)]
@@ -501,6 +551,7 @@ def validate_independent_reviewer(
     permission_document: Any,
     team_members_document: Any = None,
     release_authority_members_document: Any = None,
+    additional_authority_ids: set[int] | None = None,
 ) -> None:
     reviewer_id = reviewer.get("id")
     if not isinstance(reviewer_id, int):
@@ -519,6 +570,8 @@ def validate_independent_reviewer(
         release_authority,
         release_authority_members_document,
     )
+    if additional_authority_ids:
+        authority_member_ids.update(additional_authority_ids)
     if reviewer_member_ids & authority_member_ids:
         raise ConfigurationError("release reviewer and release authority must not share members")
     if reviewer_type == "Team" and len(reviewer_member_ids) < 2:
@@ -532,19 +585,6 @@ def find_managed_ruleset(rulesets: Any, name: str) -> dict[str, Any] | None:
     if len(matches) > 1:
         raise ConfigurationError(f"multiple rulesets use the managed name: {name}")
     return matches[0] if matches else None
-
-
-def has_tag_policy(policies: Any, pattern: str) -> bool:
-    document = require_object(policies, "deployment policies")
-    items = document.get("branch_policies")
-    if not isinstance(items, list):
-        raise ConfigurationError("deployment policy list is invalid")
-    return any(
-        isinstance(item, dict)
-        and item.get("name") == pattern
-        and item.get("type") in (None, "tag")
-        for item in items
-    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -656,8 +696,8 @@ def main() -> int:
             print("GitHub security controls applied." if applied else "GitHub security controls already current.")
             return 0
 
-        summaries = api.get(
-            f"repos/{repository_path}/rulesets?includes_parents=false&per_page=100"
+        summaries = fetch_github_objects(
+            f"repos/{repository_path}/rulesets?includes_parents=false", api.get
         )
         managed_summary = find_managed_ruleset(summaries, args.ruleset_name)
         managed = None
@@ -676,11 +716,18 @@ def main() -> int:
             release_authority_id=int(authority["id"]),
             release_authority_type=str(authority["type"]),
         )
-        if ruleset_is_current(managed, desired_ruleset):
+        if not covers_release_tags(desired_ruleset, args.tag_ref_pattern):
+            blockers.append("review managed tag-ruleset exclusions that can overlap the release tag pattern")
+        elif ruleset_is_current(managed, desired_ruleset):
             actions.append("release tag ruleset already current")
         else:
             actions.append("create release tag ruleset" if managed is None else "update release tag ruleset")
 
+        additional_authority_ids = additional_release_authority_members(
+            api, repository_path=repository_path, owner=owner, desired_ruleset=desired_ruleset,
+            managed_id=managed_summary["id"] if managed_summary else None,
+            tag_ref_pattern=args.tag_ref_pattern, selected_authority=authority,
+        )
         environment = api.get(
             f"repos/{repository_path}/environments/{environment_path}",
             not_found={},
@@ -704,6 +751,7 @@ def main() -> int:
                 ),
                 team_members_document=principal_team_members(api, reviewer),
                 release_authority_members_document=authority_members,
+                additional_authority_ids=additional_authority_ids,
             )
         else:
             existing_reviewers = extract_environment_reviewers(environment)
@@ -724,6 +772,7 @@ def main() -> int:
                         ),
                         team_members_document=principal_team_members(api, candidate),
                         release_authority_members_document=authority_members,
+                        additional_authority_ids=additional_authority_ids,
                     )
                 except ConfigurationError:
                     continue
@@ -742,7 +791,10 @@ def main() -> int:
             f"repos/{repository_path}/environments/{environment_path}/deployment-branch-policies?per_page=100",
             not_found={"total_count": 0, "branch_policies": []},
         )
-        if has_tag_policy(policies, args.environment_tag_pattern):
+        policy_status = deployment_tag_policy(policies, args.environment_tag_pattern)
+        if policy_status == "conflict":
+            blockers.append("reconcile the release environment deployment policies to the intended tag-only pattern")
+        elif policy_status == "current":
             actions.append("release environment tag policy already current")
         else:
             actions.append("create release environment tag-only policy")
@@ -770,7 +822,7 @@ def main() -> int:
                 desired_environment,
             )
             applied.append("release environment reviewer gate")
-            if not has_tag_policy(policies, args.environment_tag_pattern):
+            if policy_status == "missing":
                 api.post(
                     f"repos/{repository_path}/environments/{environment_path}/deployment-branch-policies",
                     {"name": args.environment_tag_pattern, "type": "tag"},

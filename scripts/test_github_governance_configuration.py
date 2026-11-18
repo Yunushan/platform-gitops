@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from configure_github_governance import (
     ConfigurationError,
+    additional_release_authority_members,
     environment_payload,
     extract_environment_reviewers,
-    has_tag_policy,
     merge_tag_ruleset,
     principal_repository_permission,
     principal_team_members,
@@ -20,6 +20,7 @@ from configure_github_governance import (
     validate_independent_reviewer,
     validate_release_authority,
 )
+from github_release_policy import GitHubPolicyError, covers_release_tags, deployment_tag_policy, fetch_github_objects
 
 
 class FakeApi:
@@ -97,6 +98,38 @@ def main() -> int:
         raise AssertionError("ruleset merge omitted the release authority")
     if any(actor.get("actor_type") == "OrganizationAdmin" for actor in desired["bypass_actors"]):
         raise AssertionError("ruleset merge retained an unscoped bypass actor")
+    inherited = {
+        **desired,
+        "bypass_actors": [{"actor_type": "User", "actor_id": 101, "bypass_mode": "always"}],
+    }
+    authority_api = FakeApi({
+        "repos/example/project/rulesets?includes_parents=true&per_page=100&page=1":
+            [{"id": 7, "target": "tag"}, {"id": 8, "target": "tag"}],
+        "repos/example/project/rulesets/8": inherited,
+        "organizations/12/team/9": {"id": 9, "slug": "preserved"},
+        "orgs/example/teams/preserved/members?role=all&per_page=100&page=1": [{"id": 102}],
+    })
+    authority_args = dict(
+        repository_path="example/project", owner={"id": 12, "login": "example"},
+        desired_ruleset=desired, managed_id=7, tag_ref_pattern="refs/tags/v*.*.*",
+        selected_authority={"type": "User", "id": 42},
+    )
+    additional_ids = additional_release_authority_members(authority_api, **authority_args)
+    if additional_ids != {101, 102}:
+        raise AssertionError("inherited and preserved bypass actors must both be considered")
+    for reviewer_id in additional_ids:
+        expect_rejection(
+            lambda: validate_independent_reviewer(
+                reviewer={"type": "User", "id": reviewer_id},
+                release_authority=authority_args["selected_authority"],
+                permission_document={"permission": "write"},
+                additional_authority_ids=additional_ids,
+            ),
+            "must not share members",
+        )
+    authority_api.documents["orgs/example/teams/preserved/members?role=all&per_page=100&page=1"] = []
+    expect_rejection(lambda: additional_release_authority_members(authority_api, **authority_args),
+                     "has no verified members")
     if ruleset_is_current(existing, desired):
         raise AssertionError("drifted ruleset was reported current")
     if not ruleset_is_current(desired, desired):
@@ -220,7 +253,7 @@ def main() -> int:
             "orgs/example/teams/release-security/repos/example/platform-gitops": {
                 "permissions": {"pull": True, "push": True},
             },
-            "orgs/example/teams/release-security/members?role=all&per_page=100": [
+            "orgs/example/teams/release-security/members?role=all&per_page=100&page=1": [
                 {"id": 101, "login": "one"},
                 {"id": 102, "login": "two"},
             ],
@@ -303,16 +336,55 @@ def main() -> int:
         "either a user or a team",
     )
 
-    if not has_tag_policy(
-        {"branch_policies": [{"name": "v*.*.*", "type": "tag"}]},
+    if deployment_tag_policy(
+        {"total_count": 1, "branch_policies": [{"name": "v*.*.*", "type": "tag"}]},
         "v*.*.*",
-    ):
+    ) != "current":
         raise AssertionError("tag deployment policy was not recognized")
-    if has_tag_policy(
-        {"branch_policies": [{"name": "release/*", "type": "branch"}]},
-        "v*.*.*",
+    if deployment_tag_policy({"total_count": 0, "branch_policies": []}, "v*.*.*") != "missing":
+        raise AssertionError("missing policy should be created")
+    extra_policies = [{"name": "v*.*.*", "type": "tag"}, {"name": "release/*", "type": "branch"}]
+    for policies in (
+        {"total_count": 2, "branch_policies": extra_policies},
+        {"total_count": 2, "branch_policies": extra_policies[:1]},
     ):
-        raise AssertionError("branch deployment policy was accepted as the release tag policy")
+        if deployment_tag_policy(policies, "v*.*.*") != "conflict":
+            raise AssertionError("conflicting or truncated policies should block apply")
+    existing["conditions"]["ref_name"]["exclude"] = ["refs/tags/v1.2.3"]
+    blocked = merge_tag_ruleset(existing, name="release tags", tag_ref_pattern="refs/tags/v*.*.*",
+                                release_authority_id=42)
+    if covers_release_tags(blocked, "refs/tags/v*.*.*") or not blocked["conditions"]["ref_name"]["exclude"]:
+        raise AssertionError("managed exceptions must be preserved and reported as conflicts")
+
+    first_page = [{"id": i} for i in range(1, 101)]
+    pages = {"members?role=all&per_page=100&page=1": first_page,
+             "members?role=all&per_page=100&page=2": [{"id": 101}]}
+    if len(fetch_github_objects("members?role=all", pages.__getitem__)) != 101:
+        raise AssertionError("second page of release authority members was missed")
+    for get, message in (
+        (lambda _: first_page, "repeated ID"),
+        (lambda _: first_page + [{"id": 101}], "invalid paginated"),
+        (lambda _: [{"id": True}], "invalid or repeated ID"),
+    ):
+        try:
+            fetch_github_objects("members", get)
+        except GitHubPolicyError as exc:
+            if message not in str(exc):
+                raise
+        else:
+            raise AssertionError("malformed pagination passed")
+
+    def full_page(path: str) -> list[dict[str, int]]:
+        page = int(path.rsplit("=", 1)[1])
+        return [{"id": (page - 1) * 100 + item["id"]} for item in first_page]
+
+    try:
+        fetch_github_objects("members", full_page)
+    except GitHubPolicyError as exc:
+        if "exceeded 100 pages" not in str(exc):
+            raise
+    else:
+        raise AssertionError("pagination limit was ignored")
 
     print("GitHub governance configurator self-test passed.")
     return 0

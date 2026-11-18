@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitlab-gitlab-upgrade-check
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/sync-wave: "-10"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  template:
+    metadata:
+      labels:
+        platform.gitops/gitlab-bootstrap: "true"
+    spec:
+      serviceAccountName: gitlab-upgrade-check
+      initContainers:
+        - name: detect-fresh-install
+          # Use the same kubectl image as the pinned chart's shared-secrets Job.
+          image: registry.gitlab.com/gitlab-org/build/cng/kubectl:v19.1.1
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              chart_info=$(kubectl get configmap/gitlab-gitlab-chart-info --ignore-not-found -o name)
+              if [ -n "$chart_info" ]; then
+                exit 0
+              fi
+              for resource in \
+                deployment/gitlab-webservice-default deployment/gitlab-sidekiq-all-in-1-v2 \
+                statefulset/gitlab-praefect statefulset/gitlab-gitaly statefulset/gitlab-gitaly-default \
+                pvc/repo-data-gitlab-gitaly-0 pvc/repo-data-gitlab-gitaly-default-0 \
+                pvc/repo-data-gitlab-gitaly-default-1 pvc/repo-data-gitlab-gitaly-default-2; do
+                existing=$(kubectl get "$resource" --ignore-not-found -o name)
+                if [ -n "$existing" ]; then
+                  echo "GitLab release metadata is missing for an existing installation." >&2
+                  exit 1
+                fi
+              done
+              touch /bootstrap/fresh
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+      containers:
+        - name: run-check
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              if [ -f /bootstrap/fresh ]; then
+                echo "Fresh GitLab installation confirmed."
+                exit 0
+              fi
+              exec /bin/sh /scripts/runcheck
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /bootstrap
+              readOnly: true
+      volumes:
+        - name: bootstrap
+          emptyDir: {}

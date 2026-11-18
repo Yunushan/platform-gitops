@@ -92,7 +92,11 @@ def retained_path(value: str, root: Path, label: str) -> Path:
         raise EvidenceError(f"{label} must be a relative path below private/production-evidence")
     if relative.parts[:2] != ("private", "production-evidence"):
         raise EvidenceError(f"{label} must be below private/production-evidence")
-    return root / relative
+    directory = (root / "private" / "production-evidence").resolve()
+    resolved = (root / relative).resolve()
+    if directory not in resolved.parents:
+        raise EvidenceError(f"{label} resolves outside private/production-evidence")
+    return resolved
 
 
 def validate_evidence(
@@ -112,6 +116,8 @@ def validate_evidence(
         raise EvidenceError("production evidence must be a JSON object")
     release_id = nonempty(document, "releaseId")
     profile = nonempty(document, "profile")
+    if profile == "premium-3node-lab":
+        raise EvidenceError("the lab profile is ineligible for production acceptance")
     gitlab = profile == GITLAB_PROFILE
     version = 8 if gitlab else 7
     if type(document.get("schemaVersion")) is not int or document["schemaVersion"] != version:
@@ -195,11 +201,15 @@ def validate_evidence(
         f"source_branch={branch}",
         f"source_expected_ref={expected_ref}",
         f"source_tree={tree}",
+        f"source_remote_url_sha256={remote_url_sha256}",
     ):
         if marker not in text:
             raise EvidenceError(f"retained production log is missing marker: {marker}")
-    revision_marker = rf"\bargocd_revision=verified profile={re.escape(profile)} commit={commit} applications=[1-9][0-9]*\b"
-    if gitlab and not re.search(revision_marker, text):
+    revision_marker = (
+        rf"\bargocd_revision=verified profile={re.escape(profile)} commit={commit} "
+        r"applications=[1-9][0-9]* repository_sha256=[0-9a-f]{64}\b"
+    )
+    if not re.search(revision_marker, text):
         raise EvidenceError("retained production log is missing the verified Argo CD release revision")
     openbao_cluster_ids = sorted(set(OPENBAO_CLUSTER_ID_RE.findall(text)))
     if len(openbao_cluster_ids) != 1:
@@ -318,8 +328,6 @@ def validate_evidence(
                 recovery_document, now=now, max_age_days=gitlab_recovery_max_age_days,
                 expected_commit=commit, expected_cluster_uid=inventory_document["live"]["clusterUid"],
             )
-            if recovery_summary["completed_at"] > completed_at:
-                raise EvidenceError("GitLab recovery evidence postdates production acceptance")
         else:
             recovery_summary = validate_forgejo_recovery(
                 recovery_document, now=now, max_age_days=forgejo_recovery_max_age_days,
@@ -327,6 +335,15 @@ def validate_evidence(
             )
     except (OSError, ValueError) as exc:
         raise EvidenceError(f"retained {recovery_key} evidence is invalid: {exc}") from exc
+
+    for label, observed in (
+        ("image inventory", inventory_summary["generated_at"]),
+        ("OpenBao recovery", ceremony_summary["recovery_tested_at"]),
+        ("restore drill", restore_summary["completed_at"]),
+        ("GitLab recovery" if gitlab else "Forgejo recovery", recovery_summary["completed_at"]),
+    ):
+        if observed > completed_at:
+            raise EvidenceError(f"{label} evidence postdates production acceptance")
 
     forge = "gitlab" if gitlab else "forgejo"
     return {

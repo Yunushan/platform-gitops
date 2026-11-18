@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "name": "platform-entry",
+  "edge_contract_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "toolset_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "ssh_binary_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "peers": [
+    {
+      "host": "edge-a",
+      "address": "192.0.2.10",
+      "port": 22,
+      "machine_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "identity_env": "ENTRY_A_SSH_KEY",
+      "known_hosts_env": "ENTRY_A_HOST_KEYS",
+      "remote_root": "/opt/platform/entry-tools",
+      "paths": {
+        "bundle": "/opt/platform/entry-bundle",
+        "gateway": "/opt/platform/gateway-bundle",
+        "ca": "/opt/platform/entry-ca.crt",
+        "artifacts": null
+      },
+      "expected_current": "absent"
+    },
+    {
+      "host": "edge-b",
+      "address": "192.0.2.11",
+      "port": 22,
+      "machine_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "identity_env": "ENTRY_B_SSH_KEY",
+      "known_hosts_env": "ENTRY_B_HOST_KEYS",
+      "remote_root": "/opt/platform/entry-tools",
+      "paths": {
+        "bundle": "/opt/platform/entry-bundle",
+        "gateway": "/opt/platform/gateway-bundle",
+        "ca": "/opt/platform/entry-ca.crt",
+        "artifacts": null
+      },
+      "expected_current": "absent"
+    }
+  ]
+}

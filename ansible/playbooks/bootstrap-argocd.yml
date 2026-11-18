@@ -7,6 +7,7 @@
   vars:
     rke2_first_server: "{{ groups['rke2_servers'][0] }}"
     platform_repo_url_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_URL') }}"
+    platform_recovery_commit_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_GITOPS_RECOVERY_COMMIT') }}"
     platform_repo_username_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_USERNAME') }}"
     platform_repo_token_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_TOKEN') }}"
     platform_repo_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_REPO_SECRET_NAME') }}"
@@ -15,6 +16,8 @@
     platform_gitops_placeholder_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_GITOPS_PLACEHOLDER_MODE') }}"
     platform_python_from_env: "{{ lookup('ansible.builtin.env', 'PYTHON') }}"
     platform_argocd_bootstrap_mode_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_BOOTSTRAP_MODE') }}"
+    platform_argocd_manifest_dir_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_MANIFEST_DIR') }}"
+    platform_argocd_offline_image_lock_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_OFFLINE_IMAGE_LOCK') }}"
     platform_argocd_auto_core_fallback_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_AUTO_CORE_FALLBACK') }}"
     platform_argocd_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_ROLLOUT_TIMEOUT') }}"
     platform_argocd_poll_interval_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_POLL_INTERVAL') }}"
@@ -22,6 +25,7 @@
     platform_argocd_controller_readiness_timeout_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_TIMEOUT') }}"
     platform_argocd_controller_readiness_failure_threshold_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_ARGOCD_CONTROLLER_READINESS_FAILURE_THRESHOLD') }}"
     platform_repo_url_effective: "{{ platform_repo_url | default(platform_repo_url_from_env, true) }}"
+    platform_recovery_commit_effective: "{{ platform_recovery_commit | default(platform_recovery_commit_from_env, true) }}"
     platform_repo_username_effective: "{{ platform_repo_username | default(platform_repo_username_from_env, true) | default('x-access-token', true) }}"
     platform_repo_token_effective: "{{ platform_repo_token | default(platform_repo_token_from_env, true) | default('', true) }}"
     platform_repo_secret_name_effective: "{{ platform_repo_secret_name | default(platform_repo_secret_name_from_env, true) | default('platform-gitops-repo', true) }}"
@@ -30,6 +34,12 @@
     platform_gitops_placeholder_mode_effective: "{{ platform_gitops_placeholder_mode | default(platform_gitops_placeholder_mode_from_env, true) | default('strict', true) }}"
     platform_python_effective: "{{ platform_python | default(platform_python_from_env, true) | default('', true) }}"
     platform_argocd_bootstrap_mode_effective: "{{ platform_argocd_bootstrap_mode | default(platform_argocd_bootstrap_mode_from_env, true) | default('ha', true) }}"
+    platform_argocd_manifest_dir_effective: "{{ platform_argocd_manifest_dir | default(platform_argocd_manifest_dir_from_env, true) }}"
+    platform_argocd_offline_image_lock_effective: "{{ platform_argocd_offline_image_lock | default(platform_argocd_offline_image_lock_from_env, true) }}"
+    platform_argocd_offline_image_renderer: >-
+      {{ lookup('ansible.builtin.pipe', (ansible_playbook_python | quote) ~ ' ' ~
+      ((playbook_dir ~ '/../../scripts/standalone_python.py') | quote) ~ ' render_argocd_offline_images.py')
+      if platform_argocd_offline_image_lock_effective else '' }}
     platform_argocd_auto_core_fallback_effective: "{{ platform_argocd_auto_core_fallback | default(platform_argocd_auto_core_fallback_from_env, true) | default(true, true) | bool }}"
     platform_argocd_vendored_chart_path: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/premium-3node/apps/argocd-ha/charts/argo-cd-10.3.2/argo-cd"
     platform_argocd_vendored_chart_metadata: "{{ lookup('ansible.builtin.file', platform_argocd_vendored_chart_path ~ '/Chart.yaml') | from_yaml }}"
@@ -40,6 +50,7 @@
     platform_argocd_ha_manifest_sha256: "65d9d4ff520ddb40bad2c39b1f44188ceecfe96b5dd29c8ead569b52d6c6b8c6"
     platform_argocd_manifest_url_effective: "{{ (platform_argocd_bootstrap_mode_effective == 'core') | ternary(platform_argocd_core_manifest_url, platform_argocd_ha_manifest_url) }}"
     platform_argocd_manifest_sha256_effective: "{{ (platform_argocd_bootstrap_mode_effective == 'core') | ternary(platform_argocd_core_manifest_sha256, platform_argocd_ha_manifest_sha256) }}"
+    platform_argocd_manifest_name_effective: "{{ (platform_argocd_bootstrap_mode_effective == 'core') | ternary('install.yaml', 'install-ha.yaml') }}"
     platform_argocd_manifest_max_bytes: 3145728
     platform_argocd_manifest_connect_timeout: 10
     platform_argocd_manifest_max_time: 120
@@ -76,6 +87,14 @@
     platform_project_file: "{{ playbook_dir }}/../../gitops/clusters/rke2-main/projects/platform-project.yaml"
     platform_rendered_applications_file: "/tmp/platform-gitops-{{ platform_profile_effective }}-applications.rendered.yaml"
   tasks:
+    - name: Validate the optional GitOps recovery commit
+      ansible.builtin.assert:
+        that:
+          - (platform_recovery_commit_effective | length == 0) or (platform_recovery_commit_effective is match('^[0-9a-f]{40}$'))
+        fail_msg: "Set PLATFORM_GITOPS_RECOVERY_COMMIT to the full lowercase SHA-1 recorded for this deployment."
+      when: platform_apply_gitops_effective
+      run_once: true
+
     - name: Check selected platform profile catalog file
       ansible.builtin.stat:
         path: "{{ playbook_dir }}/../../profiles/{{ platform_profile_effective }}.yaml"
@@ -126,6 +145,51 @@
         that:
           - platform_gitops_placeholder_mode_effective in ['strict', 'skip-incomplete']
         fail_msg: "PLATFORM_GITOPS_PLACEHOLDER_MODE must be strict or skip-incomplete."
+      run_once: true
+
+    - name: Verify cached Argo CD manifests before changing the cluster
+      ansible.builtin.shell: |
+        set -euo pipefail
+        manifest_dir={{ platform_argocd_manifest_dir_effective | quote }}
+        image_lock={{ platform_argocd_offline_image_lock_effective | quote }}
+        max_bytes={{ platform_argocd_manifest_max_bytes | int }}
+        if [[ "${manifest_dir}" != /* ]]; then
+          echo "PLATFORM_ARGOCD_MANIFEST_DIR must be an absolute path on the first RKE2 server." >&2
+          exit 1
+        fi
+
+        verify_cached() {
+          local path="${manifest_dir}/$1" expected="$2" actual
+          if [ -f "${path}" ] && [ "$(stat --format=%s --dereference -- "${path}")" -le "${max_bytes}" ]; then
+            actual="$(head -c "$((max_bytes + 1))" -- "${path}" | sha256sum)"
+            if [ "${actual%% *}" = "${expected}" ]; then
+              return
+            fi
+          fi
+          echo "Cached Argo CD manifest $1 is missing or does not match the pinned SHA-256." >&2
+          return 1
+        }
+
+        primary={{ platform_argocd_manifest_name_effective | quote }}
+        verify_cached "${primary}" {{ platform_argocd_manifest_sha256_effective | quote }}
+        paths=("${manifest_dir}/${primary}")
+        if [ {{ (platform_argocd_bootstrap_mode_effective == 'ha' and platform_argocd_auto_core_fallback_effective) | ternary('1', '0') }} = 1 ]; then
+          verify_cached install.yaml {{ platform_argocd_core_manifest_sha256 | quote }}
+          paths+=("${manifest_dir}/install.yaml")
+        fi
+        if [ -n "${image_lock}" ]; then
+          if [[ "${image_lock}" != /* ]]; then
+            echo "PLATFORM_ARGOCD_OFFLINE_IMAGE_LOCK must be an absolute path on the first RKE2 server." >&2
+            exit 1
+          fi
+          python3 - --check --lock "${image_lock}" "${paths[@]}"
+        fi
+      args:
+        executable: /bin/bash
+        stdin: "{{ platform_argocd_offline_image_renderer }}"
+      changed_when: false
+      delegate_to: "{{ rke2_first_server }}"
+      when: platform_argocd_manifest_dir_effective | length > 0 or platform_argocd_offline_image_lock_effective | length > 0
       run_once: true
 
     - name: Show Argo CD bootstrap mode
@@ -189,27 +253,39 @@
             umask 077
             K=/var/lib/rancher/rke2/bin/kubectl
             C=/etc/rancher/rke2/rke2.yaml
+            manifest_dir={{ platform_argocd_manifest_dir_effective | quote }}
+            image_lock={{ platform_argocd_offline_image_lock_effective | quote }}
             url={{ platform_argocd_manifest_url_effective | quote }}
             expected_sha256={{ platform_argocd_manifest_sha256_effective | quote }}
             max_bytes={{ platform_argocd_manifest_max_bytes | int }}
             manifest="$(mktemp)"
             cleanup() {
-              rm -f "${manifest}"
+              rm -f "${manifest}" "${manifest}.offline"
             }
             trap cleanup EXIT
 
-            command -v curl >/dev/null 2>&1
-            curl --fail --show-error --silent \
-              --proto '=https' \
-              --connect-timeout {{ platform_argocd_manifest_connect_timeout | int }} \
-              --max-time {{ platform_argocd_manifest_max_time | int }} \
-              --max-filesize "${max_bytes}" \
-              --output "${manifest}" \
-              "${url}"
+            if [ -n "${manifest_dir}" ]; then
+              cached="${manifest_dir}/"{{ platform_argocd_manifest_name_effective | quote }}
+              test -f "${cached}"
+              head -c "$((max_bytes + 1))" -- "${cached}" >"${manifest}"
+            else
+              command -v curl >/dev/null 2>&1
+              curl --fail --show-error --silent \
+                --proto '=https' \
+                --connect-timeout {{ platform_argocd_manifest_connect_timeout | int }} \
+                --max-time {{ platform_argocd_manifest_max_time | int }} \
+                --max-filesize "${max_bytes}" \
+                --output "${manifest}" \
+                "${url}"
+            fi
             test -s "${manifest}"
             test "$(wc -c <"${manifest}")" -le "${max_bytes}"
             printf '%s  %s\n' "${expected_sha256}" "${manifest}" |
               sha256sum --check --strict
+            if [ -n "${image_lock}" ]; then
+              python3 - --lock "${image_lock}" "${manifest}" >"${manifest}.offline"
+              mv -- "${manifest}.offline" "${manifest}"
+            fi
 
             "${K}" --kubeconfig "${C}" apply \
               --server-side \
@@ -219,6 +295,7 @@
               -f "${manifest}"
           args:
             executable: /bin/bash
+            stdin: "{{ platform_argocd_offline_image_renderer }}"
           register: platform_argocd_apply
           changed_when: >-
             'created' in platform_argocd_apply.stdout or
@@ -548,27 +625,39 @@
                 umask 077
                 K=/var/lib/rancher/rke2/bin/kubectl
                 C=/etc/rancher/rke2/rke2.yaml
+                manifest_dir={{ platform_argocd_manifest_dir_effective | quote }}
+                image_lock={{ platform_argocd_offline_image_lock_effective | quote }}
                 url={{ platform_argocd_core_manifest_url | quote }}
                 expected_sha256={{ platform_argocd_core_manifest_sha256 | quote }}
                 max_bytes={{ platform_argocd_manifest_max_bytes | int }}
                 manifest="$(mktemp)"
                 cleanup() {
-                  rm -f "${manifest}"
+                  rm -f "${manifest}" "${manifest}.offline"
                 }
                 trap cleanup EXIT
 
-                command -v curl >/dev/null 2>&1
-                curl --fail --show-error --silent \
-                  --proto '=https' \
-                  --connect-timeout {{ platform_argocd_manifest_connect_timeout | int }} \
-                  --max-time {{ platform_argocd_manifest_max_time | int }} \
-                  --max-filesize "${max_bytes}" \
-                  --output "${manifest}" \
-                  "${url}"
+                if [ -n "${manifest_dir}" ]; then
+                  cached="${manifest_dir}/install.yaml"
+                  test -f "${cached}"
+                  head -c "$((max_bytes + 1))" -- "${cached}" >"${manifest}"
+                else
+                  command -v curl >/dev/null 2>&1
+                  curl --fail --show-error --silent \
+                    --proto '=https' \
+                    --connect-timeout {{ platform_argocd_manifest_connect_timeout | int }} \
+                    --max-time {{ platform_argocd_manifest_max_time | int }} \
+                    --max-filesize "${max_bytes}" \
+                    --output "${manifest}" \
+                    "${url}"
+                fi
                 test -s "${manifest}"
                 test "$(wc -c <"${manifest}")" -le "${max_bytes}"
                 printf '%s  %s\n' "${expected_sha256}" "${manifest}" |
                   sha256sum --check --strict
+                if [ -n "${image_lock}" ]; then
+                  python3 - --lock "${image_lock}" "${manifest}" >"${manifest}.offline"
+                  mv -- "${manifest}.offline" "${manifest}"
+                fi
 
                 "${K}" --kubeconfig "${C}" apply \
                   --server-side \
@@ -578,6 +667,7 @@
                   -f "${manifest}"
               args:
                 executable: /bin/bash
+                stdin: "{{ platform_argocd_offline_image_renderer }}"
               register: platform_argocd_fallback_apply
               changed_when: >-
                 'created' in platform_argocd_fallback_apply.stdout or
@@ -858,10 +948,16 @@
             exit 127
           fi
         fi
+        recovery_args=()
+        recovery_commit={{ platform_recovery_commit_effective | quote }}
+        if [ -n "${recovery_commit}" ]; then
+          recovery_args+=(--recovery-commit "${recovery_commit}")
+        fi
         "${python_bin}" scripts/render_deployable_gitops_apps.py \
           --repo-root "$PWD" \
           --profile {{ platform_profile_effective | quote }} \
-          --repo-url "{{ platform_repo_url_effective }}" \
+          --repo-url {{ platform_repo_url_effective | quote }} \
+          "${recovery_args[@]}" \
           --output "{{ platform_rendered_applications_file }}" \
           --required-path gitops/clusters/rke2-main/projects
       args:

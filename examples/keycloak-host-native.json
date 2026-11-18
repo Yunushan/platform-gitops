@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "<REVIEWED_RAW_KEYCLOAK_CONTRACT_SHA256>",
+  "member": "keycloak-a",
+  "machine_id_sha256": "<SHA256_OF_STRIPPED_MACHINE_ID>",
+  "boot_id": "<CURRENT_HOST_BOOT_UUID>",
+  "service_uid": 1000,
+  "service_gid": 1000,
+  "bind_addresses": {
+    "https": "192.0.2.31",
+    "management": "127.0.0.1"
+  },
+  "files_sha256": {
+    "database.env": "<PRIVATE_CREDENTIAL_FILE_SHA256>",
+    "tls/tls.crt": "<TLS_CERTIFICATE_FILE_SHA256>",
+    "tls/tls.key": "<PRIVATE_TLS_KEY_FILE_SHA256>",
+    "db-ca/ca.crt": "<DATABASE_CA_FILE_SHA256>",
+    "health-ca.crt": "<HEALTH_ENDPOINT_CA_FILE_SHA256>"
+  },
+  "docker": null,
+  "native": {
+    "user": "keycloak",
+    "group": "keycloak",
+    "java_home": "/opt/keycloak-java",
+    "java_manifest_sha256": "<REVIEWED_JAVA_FILE_MANIFEST_SHA256>",
+    "systemctl_sha256": "<REVIEWED_SYSTEMCTL_BINARY_SHA256>",
+    "max_runtime_seconds": null
+  }
+}

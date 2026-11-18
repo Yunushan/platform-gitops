@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "pipeline_run": "reviewed-tekton-run",
+  "source_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "handoff": {
+    "schema_version": 1,
+    "runtime": "rke2",
+    "bridge_contract_sha256": "REVIEWED_BRIDGE_CONTRACT_SHA256",
+    "deployment_branch": "deploy/staging",
+    "allow_create_branch": false,
+    "allow_prune": false,
+    "git_username": "promotion-writer",
+    "timeout_seconds": 120,
+    "cd": {
+      "kind": "argocd",
+      "management_target": {
+        "kubeconfig_env": "PLATFORM_PROMOTER_KUBECONFIG",
+        "context": "reviewed-context",
+        "cluster_uid": "11111111-1111-4111-8111-111111111111"
+      },
+      "namespace": "argocd",
+      "name": "example",
+      "uid": "22222222-2222-4222-8222-222222222222",
+      "spec_sha256": "APPLICATION_SPEC_SHA256",
+      "path": "deploy/staging"
+    }
+  },
+  "artifact_policy": {
+    "manifest": "deploy/staging/workload.json",
+    "namespace": "example-app",
+    "deployment": "example-web",
+    "deployment_uid": "55555555-5555-4555-8555-555555555555",
+    "container": "web",
+    "expected_image": "registry.example.invalid/applications/example@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "expected_deployment_revision": "cccccccccccccccccccccccccccccccccccccccc",
+    "commit_name": "Promotion Writer",
+    "commit_email": "promotion-writer@example.invalid",
+    "destination_server": "https://kubernetes.example.invalid:6443"
+  },
+  "signature_policy": {
+    "cosign_binary": {
+      "path": "/usr/local/bin/cosign",
+      "sha256": "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa"
+    },
+    "registry_ca": {
+      "path": "/run/platform/promoter/registry-ca.crt",
+      "sha256": "REVIEWED_HARBOR_CA_SHA256"
+    },
+    "public_key": {
+      "path": "/run/platform/promoter/release.pub",
+      "sha256": "REVIEWED_RELEASE_PUBLIC_KEY_SHA256"
+    },
+    "trusted_root": {
+      "path": "/run/platform/promoter/trusted-root.json",
+      "sha256": "REVIEWED_TRANSPARENCY_LOG_TRUST_SHA256"
+    },
+    "credential": {
+      "path": "/run/platform/promoter/registry-pull.json",
+      "sha256": "REVIEWED_PULL_CREDENTIAL_SHA256"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "jenkins",
+  "namespace": "ci-system",
+  "image": "jenkins/jenkins@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "home_pvc": "jenkins-home",
+  "node_selector": {"kubernetes.io/os": "linux"}
+}

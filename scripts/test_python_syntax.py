@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import sys
 from pathlib import Path
 
@@ -25,16 +26,20 @@ EXCLUDE_DIRS = {
 }
 
 
-def should_skip(path: Path) -> bool:
-    return any(part in EXCLUDE_DIRS or part.startswith(".shell-syntax-") for part in path.parts)
+def should_skip(name: str) -> bool:
+    return name in EXCLUDE_DIRS or name.startswith(".shell-syntax-")
 
 
 def python_files() -> list[Path]:
-    return sorted(
-        path.relative_to(ROOT)
-        for path in ROOT.rglob("*.py")
-        if path.is_file() and not should_skip(path)
-    )
+    paths = []
+    for directory, directories, files in os.walk(ROOT):
+        directories[:] = [name for name in directories if not should_skip(name)]
+        parent = Path(directory)
+        for name in files:
+            path = parent / name
+            if not should_skip(name) and path.match("*.py") and path.is_file():
+                paths.append(path.relative_to(ROOT))
+    return sorted(paths)
 
 
 def main() -> int:

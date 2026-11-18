@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "ci": {
+    "account": "gerrit-promotion-ci-reader",
+    "namespace": "ci-control",
+    "workers": ["ci-worker-a", "ci-worker-b"]
+  },
+  "cd": {
+    "account": "gerrit-promotion-cd-reader",
+    "namespace": "argocd"
+  }
+}

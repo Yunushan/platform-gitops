@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "gitbucket",
+  "image": "registry.example.com/platform/gitbucket@sha256:<DERIVED_IMAGE_DIGEST>",
+  "state_path": "/srv/gitbucket/state",
+  "http_port": 8080,
+  "ssh_port": 29418,
+  "https_url": "https://gitbucket.example.com",
+  "ssh_host": "gitbucket-ssh.example.com",
+  "ssh_public_port": 22
+}

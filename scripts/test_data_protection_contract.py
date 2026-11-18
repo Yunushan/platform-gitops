@@ -5,10 +5,15 @@ from __future__ import annotations
 
 import json
 import hashlib
+import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import Mock, patch
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -341,6 +346,86 @@ def test_endpoint_classification() -> None:
             fail(f"external endpoint was rejected: {endpoint}")
 
 
+def test_cnpg_backup_observations() -> None:
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(hours=1)).isoformat()
+    stale = (now - timedelta(days=2)).isoformat()
+    target = "s3://example-backups/platform-postgres"
+    endpoint = "https://s3.example.test"
+    members = ["platform-postgres-1", "platform-postgres-2", "platform-postgres-3"]
+    cluster = {
+        "metadata": {"uid": "cluster-uid"},
+        "spec": {"instances": 3, "backup": {"barmanObjectStore": {"destinationPath": target, "endpointURL": endpoint}}},
+        "status": {"readyInstances": 3, "instanceNames": members, "conditions": [{"type": "ContinuousArchiving", "status": "True"}]},
+    }
+    pods = [
+        {
+            "metadata": {"name": member, "ownerReferences": [{"kind": "Cluster", "uid": "cluster-uid", "controller": True}]},
+            "spec": {"nodeName": f"worker-{index}"},
+            "status": {"phase": "Running", "conditions": [{"type": "Ready", "status": "True"}]},
+        }
+        for index, member in enumerate(members)
+    ]
+    schedule = {
+        "metadata": {"name": "daily"},
+        "spec": {"cluster": {"name": "platform-postgres"}, "schedule": "0 0 2 * * *"},
+        "status": {"lastScheduleTime": recent, "nextScheduleTime": (now + timedelta(hours=23)).isoformat()},
+    }
+    backup = {
+        "metadata": {"name": "daily-backup", "creationTimestamp": recent},
+        "spec": {"cluster": {"name": "platform-postgres"}},
+        "status": {"phase": "completed", "stoppedAt": recent, "destinationPath": target, "endpointURL": endpoint},
+    }
+
+    def check():
+        kube = Mock()
+        kube.json.side_effect = [cluster, {"items": pods}, {"items": [schedule]}, {"items": [backup]}]
+        return protection.verify_cnpg(kube, now, timedelta(hours=26))
+
+    if "backup=daily-backup" not in check():
+        fail("expected a recent CloudNativePG backup at the configured destination")
+    for fields, change in (
+        (cluster["spec"], {"instances": 1}),
+        (cluster["status"], {"instanceNames": members[:2]}),
+        (pods[0]["spec"], {"nodeName": "worker-1"}),
+        (pods[0]["metadata"], {"ownerReferences": []}),
+        (pods[0]["metadata"], {"deletionTimestamp": recent}),
+        (pods[0]["status"], {"conditions": [{"type": "Ready", "status": "False"}]}),
+        (schedule["spec"], {"schedule": "0 2 * * *"}),
+        (schedule["spec"], {"cluster": {"name": "unrelated"}}),
+        (schedule["spec"], {"suspend": True}),
+        (schedule["status"], {"error": "invalid schedule"}),
+        (schedule["status"], {"lastScheduleTime": stale}),
+        (schedule["status"], {"nextScheduleTime": stale}),
+        (backup["spec"], {"cluster": {"name": "unrelated"}}),
+        (backup["status"], {"destinationPath": "s3://wrong-bucket"}),
+        (backup["status"], {"endpointURL": "https://wrong.example.test"}),
+        (backup["status"], {"stoppedAt": None}),
+    ):
+        with patch.dict(fields, change):
+            try:
+                check()
+            except protection.ProtectionError:
+                pass
+            else:
+                fail(f"CloudNativePG accepted an invalid {next(iter(change))}")
+
+
+def test_remote_python_dependencies() -> None:
+    for name in ("run-forgejo-recovery-drill", "verify-platform-data-protection"):
+        playbook = ROOT / "ansible" / "playbooks" / (name + ".yml")
+        tasks = yaml.safe_load(playbook.read_text(encoding="utf-8"))[0]["tasks"]
+        bundle = next(task["vars"] for task in tasks if "recovery_python_entrypoint" in task.get("vars", {}))
+        with tempfile.TemporaryDirectory() as directory:
+            entrypoint = bundle["recovery_python_entrypoint"]
+            for filename in [entrypoint, *bundle["recovery_python_modules"]]:
+                shutil.copyfile(ROOT / "scripts" / filename, Path(directory) / filename)
+            subprocess.run(
+                [sys.executable, "-E", "-S", entrypoint, "--help"],
+                cwd=directory, capture_output=True, check=True, timeout=15,
+            )
+
+
 def test_contract_wiring() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     wrapper = ROOT / "scripts" / "bootstrap" / "run-platform-data-protection.sh"
@@ -406,6 +491,8 @@ def main() -> int:
     test_restore_evidence()
     test_forgejo_recovery_evidence()
     test_endpoint_classification()
+    test_cnpg_backup_observations()
+    test_remote_python_dependencies()
     test_contract_wiring()
     print("Production data-protection contract self-test passed.")
     return 0

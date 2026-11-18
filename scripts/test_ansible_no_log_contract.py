@@ -18,6 +18,7 @@ NO_LOG_RE = re.compile(r"^(?P<indent>\s*)no_log:\s*(?P<value>.+?)\s*(?:#.*)?$")
 
 ALLOWED_NO_LOG_TASKS = {
     ("ansible/playbooks/bootstrap-argocd.yml", "Register private Git repository credentials when provided"),
+    ("ansible/playbooks/configure-platform-app-secrets.yml", "Require pre-provisioned Gitea OAuth Secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve shared platform Valkey auth secret"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Generate or preserve Longhorn volume encryption key"),
     ("ansible/playbooks/configure-platform-app-secrets.yml", "Fetch Longhorn encryption key into ignored controller comparison file"),

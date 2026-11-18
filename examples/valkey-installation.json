@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "target": {
+    "kubeconfig_env": "VALKEY_KUBECONFIG",
+    "context": "valkey",
+    "cluster_uid": "00000000-0000-0000-0000-000000000001"
+  },
+  "namespace_uid": "00000000-0000-0000-0000-000000000002",
+  "node_uids": {
+    "worker-a.example.com": "00000000-0000-0000-0000-000000000010",
+    "worker-b.example.com": "00000000-0000-0000-0000-000000000011",
+    "worker-c.example.com": "00000000-0000-0000-0000-000000000012"
+  },
+  "claims": {
+    "cache-a-data": {
+      "uid": "00000000-0000-0000-0000-000000000070",
+      "spec_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "volume": "fixture-volume-0",
+      "volume_uid": "00000000-0000-0000-0000-000000000080",
+      "volume_spec_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "storage_class": "fixture-ceph-rbd"
+    },
+    "cache-a-sentinel": {
+      "uid": "00000000-0000-0000-0000-000000000071",
+      "spec_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "volume": "fixture-volume-1",
+      "volume_uid": "00000000-0000-0000-0000-000000000081",
+      "volume_spec_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "storage_class": "fixture-ceph-rbd"
+    },
+    "cache-b-data": {
+      "uid": "00000000-0000-0000-0000-000000000072",
+      "spec_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "volume": "fixture-volume-2",
+      "volume_uid": "00000000-0000-0000-0000-000000000082",
+      "volume_spec_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "storage_class": "fixture-ceph-rbd"
+    },
+    "cache-b-sentinel": {
+      "uid": "00000000-0000-0000-0000-000000000073",
+      "spec_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "volume": "fixture-volume-3",
+      "volume_uid": "00000000-0000-0000-0000-000000000083",
+      "volume_spec_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "storage_class": "fixture-ceph-rbd"
+    },
+    "cache-c-data": {
+      "uid": "00000000-0000-0000-0000-000000000074",
+      "spec_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "volume": "fixture-volume-4",
+      "volume_uid": "00000000-0000-0000-0000-000000000084",
+      "volume_spec_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "storage_class": "fixture-ceph-rbd"
+    },
+    "cache-c-sentinel": {
+      "uid": "00000000-0000-0000-0000-000000000075",
+      "spec_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "volume": "fixture-volume-5",
+      "volume_uid": "00000000-0000-0000-0000-000000000085",
+      "volume_spec_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "storage_class": "fixture-ceph-rbd"
+    }
+  },
+  "storage_classes": {
+    "fixture-ceph-rbd": {
+      "uid": "00000000-0000-0000-0000-000000000060",
+      "configuration_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "cilium": {
+    "namespace": "kube-system",
+    "namespace_uid": "00000000-0000-0000-0000-000000000001",
+    "daemonset": "cilium",
+    "uid": "00000000-0000-0000-0000-000000000040",
+    "image": "registry.example.com/cilium@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "pod_template_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "configmap": "cilium-config",
+    "config_uid": "00000000-0000-0000-0000-000000000041",
+    "config_data_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "admitted_sha256": null,
+  "tls_secrets": {
+    "cache-a-tls": "00000000-0000-0000-0000-000000000030",
+    "cache-b-tls": "00000000-0000-0000-0000-000000000031",
+    "cache-c-tls": "00000000-0000-0000-0000-000000000032"
+  },
+  "auth_secrets": {
+    "cache-a-auth": "00000000-0000-0000-0000-000000000050",
+    "cache-b-auth": "00000000-0000-0000-0000-000000000051",
+    "cache-c-auth": "00000000-0000-0000-0000-000000000052"
+  }
+}

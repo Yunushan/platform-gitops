@@ -45,7 +45,7 @@ REQUIRED_POLICY_NAMES = {
     "platform-allow-egress",
 }
 POSTGRES_CLIENT_APPS = {"forgejo", "harbor", "keycloak", "monitoring", "woodpecker"}
-POSTGRES_CLIENT_NAMESPACES = {"forgejo", "harbor", "keycloak", "monitoring", "woodpecker", "cnpg-system"}
+POSTGRES_CLIENT_NAMESPACES = {"forgejo", "gitlab", "harbor", "keycloak", "monitoring", "woodpecker", "cnpg-system"}
 VALKEY_CLIENT_APPS = {"forgejo", "harbor"}
 REQUIRED_INTERNAL_PORTS = {22, 80, 443, 3000, 3100, 8200, 9000, 9090, 9187}
 SENSITIVE_DATA_PORTS = {5432, 6379, 6380, 26379}
@@ -181,7 +181,7 @@ def main() -> int:
     require(valkey_client, "port: 6379", "Valkey client policy")
     require(valkey_client, "port: 6380", "Valkey client policy")
     require(valkey_server, "name: platform-allow-valkey-clients", "Valkey server policy")
-    for namespace in ("forgejo", "harbor", "monitoring", "platform-cache"):
+    for namespace in ("forgejo", "gitlab", "harbor", "monitoring", "platform-cache"):
         require(
             valkey_server,
             f"kubernetes.io/metadata.name: {namespace}",
@@ -220,11 +220,12 @@ def main() -> int:
 
     require(verifier, "platform-postgres-rw.platform-databases.svc.cluster.local", "live network verifier")
     require(verifier, "platform-valkey-primary.platform-cache.svc.cluster.local", "live network verifier")
-    require(verifier, "ternary('gitlab', 'woodpecker')", "profile-specific PostgreSQL client")
-    require(verifier, 'create_probe "$PG_CLIENT"', "live network verifier")
-    require(verifier, "ternary('gitlab', 'forgejo')", "profile-specific Valkey client")
-    require(verifier, 'create_probe "$VALKEY_CLIENT"', "live network verifier")
-    require(verifier, "create_probe gitlab-runner", "GitLab Runner data-service isolation")
+    require(verifier, "ternary('gitlab', 'woodpecker')", "live network verifier")
+    require(verifier, "ternary('gitlab', 'forgejo')", "live network verifier")
+    require(verifier, 'create_probe "$PG_CLIENT" "$PG_ALLOWED_POD" allow', "live network verifier")
+    require(verifier, 'create_probe "$VALKEY_CLIENT" "$VALKEY_FORGE_ALLOWED_POD" allow', "live network verifier")
+    require(verifier, 'wait_probe gitlab-jobs "$PG_JOB_DENIED_POD" denied', "GitLab job isolation")
+    require(verifier, 'wait_probe gitlab-jobs "$VALKEY_JOB_DENIED_POD" denied', "GitLab job isolation")
     require(verifier, "create_probe harbor", "live network verifier")
     require(verifier, "create_probe argocd", "live network verifier")
     require(verifier, "result=denied", "live network verifier")

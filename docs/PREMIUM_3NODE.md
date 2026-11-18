@@ -14,7 +14,7 @@ The premium profile keeps the compact 3-node RKE2 footprint, but uses stricter d
 | Registry | Basic Harbor values | Harbor HA values with external PostgreSQL, Redis, and object storage placeholders |
 | Database | CloudNativePG operator only | CloudNativePG operator plus a 3-instance cluster example with WAL archive |
 | Shared cache | App-local cache defaults | Shared Valkey HA for platform apps, separate from Argo CD Redis |
-| CI | Woodpecker CI | Woodpecker server replicas plus 3 Kubernetes agents |
+| CI | Woodpecker CI | One active PostgreSQL-backed server and 3 Kubernetes agents |
 | CD / GitOps | Argo CD HA | Argo CD HA with multi-replica server, repo server, ApplicationSet, and Redis HA |
 | Identity | Local app credentials | Keycloak SSO on `sso.<PLATFORM_DOMAIN>` backed by CloudNativePG |
 | Backups | Velero placeholders | Velero schedule, CSI snapshot, and off-cluster object storage placeholders |
@@ -174,15 +174,17 @@ The premium profile keeps Forgejo as the Git forge and uses Woodpecker plus Argo
 
 Woodpecker is configured for the 3-node cluster with:
 
-- `server.statefulSet.replicaCount: 3` for the Woodpecker web/API service.
+- `server.statefulSet.replicaCount: 1` for the Woodpecker web/API and scheduler.
 - `agent.replicas: 3` for Kubernetes-backed build agents.
 - Explicit server and agent image repositories plus `WOODPECKER_IMAGE_TAG`, defaulting to `v3.16.0`.
 - PostgreSQL-backed state through `WOODPECKER_DATABASE_DRIVER=postgres`.
 - A 60-minute default and 120-minute maximum pipeline timeout, enforced by the Woodpecker server.
 - Traefik ingress at the effective CI hostname, defaulting to `woodpecker.<PLATFORM_DOMAIN>` unless `platform_ci_host` or `platform_woodpecker_host` is set.
 
-The first-deploy renderer defaults Woodpecker to PostgreSQL HA against the
-shared `platform-postgres` CloudNativePG cluster. `platform-app-secrets`
+The first-deploy renderer uses the shared `platform-postgres` CloudNativePG
+cluster. The active scheduler needs time to restart if its Pod goes down.
+See the [server scheduling and recovery test](CI_GITOPS_HANDOFF.md#woodpecker-server-scheduling-and-recovery).
+`platform-app-secrets`
 generates `woodpecker/woodpecker-database` and the matching
 `platform-databases/woodpecker-database` role password secret unless you provide
 `WOODPECKER_DATABASE_PASSWORD` or a full `WOODPECKER_DATABASE_DATASOURCE`. It
@@ -207,12 +209,12 @@ WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
 WOODPECKER_AGENT_SECRET_NAME=woodpecker-agent-secret \
 WOODPECKER_IMAGE_TAG=v3.16.0 \
-WOODPECKER_SERVER_REPLICAS=3 \
+WOODPECKER_SERVER_REPLICAS=1 \
 WOODPECKER_AGENT_REPLICAS=3 \
 make platform-render-private-values
 ```
 
-For a small non-HA bootstrap, set `WOODPECKER_DATABASE_MODE=sqlite` and keep
+For a small SQLite bootstrap, set `WOODPECKER_DATABASE_MODE=sqlite` and keep
 `WOODPECKER_SERVER_REPLICAS=1`.
 
 Harbor also has a bootstrap-first default: internal PostgreSQL, shared
@@ -492,8 +494,8 @@ make platform-ci-health
 ```
 
 It verifies Argo CD runtime pods, configured repo-server/Redis service
-endpoints, URL routing, Traefik, Woodpecker server and agent HA replica
-coverage, generated Woodpecker secrets, the running Woodpecker image tag, and
+endpoints, URL routing, Traefik, Woodpecker server and agent replica
+counts, generated Woodpecker secrets, the running Woodpecker image tag, and
 Argo CD / Woodpecker ClusterIP service paths without requiring Harbor, Grafana,
 Prometheus, Loki, Velero, CloudNativePG, or Longhorn runtime checks to pass in
 the same run. It sets `PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS=false`, so

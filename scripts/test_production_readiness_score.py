@@ -187,9 +187,10 @@ def governance_evidence(now: datetime) -> dict[str, object]:
 
 def release_approval_evidence(now: datetime) -> dict[str, object]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedAt": (now - timedelta(minutes=2)).isoformat().replace("+00:00", "Z"),
         "repository": REPOSITORY,
+        "tag": TAG,
         "runId": 1234,
         "runAttempt": 1,
         "commit": COMMIT,
@@ -350,6 +351,14 @@ def main() -> int:
         if report["score"] != 90:
             raise AssertionError("stale governance evidence retained governance points")
 
+        for change in ({"tag": "v99.0.0"}, {"runAttempt": 2}, {"runAttempt": True}, {"runId": True}):
+            report, _ = evaluate(
+                production, production_approval, governance, release,
+                {**release_approval, **change}, root=root, now=now,
+            )
+            if report["score"] != 90:
+                raise AssertionError(f"invalid release approval earned points: {change}")
+
         incomplete_release = deepcopy(release)
         del incomplete_release["inputSha256"]["annotatedTag"]
         report, _ = evaluate(
@@ -460,6 +469,11 @@ def main() -> int:
 
         def successful_cosign(command: list[str], **_kwargs):  # type: ignore[no-untyped-def]
             runner_calls.append(command)
+            checksum_snapshot = Path(command[-1])
+            bundle_snapshot = Path(command[command.index("--bundle") + 1])
+            for snapshot, original in ((checksum_snapshot, checksums_path), (bundle_snapshot, bundle_path)):
+                if snapshot == original or snapshot.read_bytes() != original.read_bytes():
+                    raise AssertionError("Cosign must verify the captured release inputs")
             return type("Result", (), {"returncode": 0})()
 
         approval_runner_calls: list[list[str]] = []
@@ -468,6 +482,14 @@ def main() -> int:
             command: list[str], **_kwargs
         ):  # type: ignore[no-untyped-def]
             approval_runner_calls.append(command)
+            snapshots = (
+                (Path(command[-1]), production_approval_path),
+                (Path(command[command.index("--bundle") + 1]), production_approval_bundle_path),
+                (Path(command[command.index("--key") + 1]), production_approval_key_path),
+            )
+            for snapshot, original in snapshots:
+                if snapshot == original or snapshot.read_bytes() != original.read_bytes():
+                    raise AssertionError("Cosign must verify the captured approval inputs")
             return type("Result", (), {"returncode": 0})()
 
         approval_hashes = approval_verifier.verify_signature(
@@ -485,6 +507,22 @@ def main() -> int:
             raise AssertionError("production approval did not retain signature trust hashes")
         if not approval_runner_calls or "--key" not in approval_runner_calls[0]:
             raise AssertionError("production approval did not use its pinned public key")
+
+        try:
+            approval_verifier.verify_signature(
+                approval_path=production_approval_path,
+                bundle_path=production_approval_bundle_path,
+                public_key_path=production_approval_key_path,
+                expected_key_sha256=actual_approval_key_sha256,
+                expected_approval_sha256="0" * 64,
+                cosign_bin=sys.executable,
+                runner=successful_approval_cosign,
+            )
+        except approval_verifier.ApprovalError as exc:
+            if "changed after loading" not in str(exc):
+                raise
+        else:
+            raise AssertionError("Cosign verified a different approval than the one loaded")
 
         try:
             approval_verifier.verify_signature(
@@ -542,6 +580,29 @@ def main() -> int:
             raise AssertionError("release bundle verification used the wrong workflow identity")
         if runner_calls[0][issuer_index] != readiness.GITHUB_ACTIONS_OIDC_ISSUER:
             raise AssertionError("release bundle verification used the wrong OIDC issuer")
+
+        try:
+            readiness.verify_release_bundle(
+                checksums_path=checksums_path,
+                bundle_path=bundle_path,
+                governance_path=governance_path,
+                release_path=release_path,
+                release_approval_path=release_approval_path,
+                repository=REPOSITORY,
+                tag=TAG,
+                cosign_bin=sys.executable,
+                loaded_evidence_hashes={
+                    "governance": readiness.artifact_sha256(governance_path),
+                    "release": "0" * 64,
+                    "releaseApproval": readiness.artifact_sha256(release_approval_path),
+                },
+                runner=successful_cosign,
+            )
+        except readiness.ReadinessError as exc:
+            if "does not match signed checksums" not in str(exc):
+                raise
+        else:
+            raise AssertionError("release checksums did not bind the loaded evidence bytes")
 
         def rejected_cosign(_command: list[str], **_kwargs):  # type: ignore[no-untyped-def]
             return type("Result", (), {"returncode": 1})()
@@ -656,6 +717,24 @@ def main() -> int:
             != actual_approval_key_sha256
         ):
             raise AssertionError("CLI score report did not retain the approval trust root")
+
+        for missing in (governance_path, release_path, release_approval_path):
+            saved = missing.read_bytes()
+            missing.unlink()
+            try:
+                with (
+                    patch.object(readiness, "ROOT", root),
+                    patch.object(approval_verifier, "verify_signature", return_value=approval_hashes),
+                    patch.object(sys, "argv", argv),
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()),
+                ):
+                    if readiness.main() != 1:
+                        raise AssertionError("incomplete release evidence passed the CLI gate")
+                partial = json.loads(score_path.read_bytes())
+                if [item["earned"] for item in partial["categories"]] != [80, 0, 0]:
+                    raise AssertionError("unverified release records earned partial credit")
+            finally:
+                missing.write_bytes(saved)
 
         with (
             patch.dict(os.environ, {}, clear=True),

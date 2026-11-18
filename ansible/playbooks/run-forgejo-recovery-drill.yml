@@ -54,23 +54,34 @@
       run_once: true
 
     - name: Run measured Forgejo singleton recovery drill
-      ansible.builtin.script:
-        cmd: >-
-          {{ playbook_dir }}/../../scripts/run_forgejo_recovery_drill.py
-          --confirmation {{ platform_forgejo_recovery_confirmation_effective | quote }}
-          --drill-id {{ platform_forgejo_recovery_drill_id_effective | quote }}
-          --operator {{ platform_forgejo_recovery_operator_effective | quote }}
-          --approver {{ platform_forgejo_recovery_approver_effective | quote }}
-          --profile {{ platform_forgejo_recovery_profile_effective | quote }}
-          --source-commit {{ platform_forgejo_recovery_source_commit_effective | quote }}
-          --encryption-secret-name {{ platform_longhorn_encryption_secret_name_effective | quote }}
-          --max-rto-seconds {{ platform_forgejo_recovery_max_rto_seconds_effective }}
-          --http-timeout-seconds {{ platform_forgejo_recovery_http_timeout_seconds_effective }}
-        executable: /usr/bin/python3
-      register: platform_forgejo_recovery_drill_result
-      changed_when: true
-      delegate_to: "{{ rke2_first_server }}"
-      run_once: true
+      ansible.builtin.import_tasks: ../tasks/run-recovery-python.yml
+      vars:
+        recovery_python_entrypoint: run_forgejo_recovery_drill.py
+        recovery_python_modules:
+          - bounded_subprocess.py
+          - http_transport.py
+          - strict_json.py
+          - subprocess_timeout.py
+        recovery_python_args:
+          - --confirmation
+          - "{{ platform_forgejo_recovery_confirmation_effective }}"
+          - --drill-id
+          - "{{ platform_forgejo_recovery_drill_id_effective }}"
+          - --operator
+          - "{{ platform_forgejo_recovery_operator_effective }}"
+          - --approver
+          - "{{ platform_forgejo_recovery_approver_effective }}"
+          - --profile
+          - "{{ platform_forgejo_recovery_profile_effective }}"
+          - --source-commit
+          - "{{ platform_forgejo_recovery_source_commit_effective }}"
+          - --encryption-secret-name
+          - "{{ platform_longhorn_encryption_secret_name_effective }}"
+          - --max-rto-seconds
+          - "{{ platform_forgejo_recovery_max_rto_seconds_effective }}"
+          - --http-timeout-seconds
+          - "{{ platform_forgejo_recovery_http_timeout_seconds_effective }}"
+        recovery_python_changes_cluster: true
 
     - name: Create private Forgejo recovery evidence directory
       ansible.builtin.file:
@@ -83,7 +94,7 @@
 
     - name: Retain private Forgejo recovery evidence
       ansible.builtin.copy:
-        content: "{{ (platform_forgejo_recovery_drill_result.stdout | from_json) | to_nice_json }}\n"
+        content: "{{ (recovery_python_result.stdout | from_json) | to_nice_json }}\n"
         dest: "{{ platform_forgejo_recovery_evidence_absolute_path }}"
         mode: "0600"
       delegate_to: localhost

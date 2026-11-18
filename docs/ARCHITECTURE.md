@@ -13,7 +13,7 @@ Provide a zero-subscription, private-first CI/CD and GitOps platform for individ
 | CNI | Cilium |
 | API VIP | kube-vip default, HAProxy/Keepalived alternative |
 | Git forge | Forgejo |
-| CI | Woodpecker CI with HA server replicas and distributed Kubernetes agents |
+| CI | Woodpecker CI with one active PostgreSQL-backed server and distributed Kubernetes agents |
 | CD | Argo CD HA |
 | Identity | Keycloak SSO for central identity and RBAC integration |
 | Registry | Harbor |
@@ -66,7 +66,10 @@ The recommended platform keeps CI and CD separate:
 - Woodpecker CI runs build, test, scan, sign, and image-publish workflows.
 - Argo CD deploys the desired Kubernetes state from GitOps repositories.
 
-In the 3-node profiles, Woodpecker is not intended to run as a single-node-only CI service. The chart values run multiple Woodpecker server replicas behind Kubernetes Service/Ingress and three Kubernetes agents so jobs can continue when one worker node is unavailable. Woodpecker HA requires shared PostgreSQL state and identical server secrets across replicas.
+In the 3-node profile, Woodpecker runs one active scheduler and three
+Kubernetes agents. PostgreSQL persists CI state and pending tasks across a
+server restart. The [local scheduling test](CI_GITOPS_HANDOFF.md#woodpecker-server-scheduling-and-recovery)
+reproduced a stalled pipeline when webhook and agent traffic went to different servers.
 
 Argo CD uses the HA profile. The premium profile runs multiple `argocd-server`, `argocd-repo-server`, and `argocd-applicationset-controller` replicas, with Redis HA enabled. Argo CD stores desired state in Kubernetes objects backed by RKE2 etcd, so the cluster's 3 server nodes provide the control-plane quorum.
 

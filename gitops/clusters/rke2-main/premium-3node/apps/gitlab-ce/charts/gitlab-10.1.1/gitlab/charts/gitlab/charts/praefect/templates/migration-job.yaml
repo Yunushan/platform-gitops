@@ -1,0 +1,30 @@
+{{- if .Values.migrationJob.enabled }}
+{{- if .Values.global.praefect.autoMigrate }}
+{{- fail "The Praefect migration Job requires global.praefect.autoMigrate=false" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "platform.praefect.migrationName" . }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  labels:
+    app: praefect-migration
+    release: {{ .Release.Name }}
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 0
+  {{- if semverCompare ">=1.34-0" .Capabilities.KubeVersion.Version }}
+  podReplacementPolicy: Failed
+  {{- end }}
+  activeDeadlineSeconds: {{ .Values.migrationJob.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        app: praefect-migration
+        release: {{ .Release.Name }}
+    spec:
+      {{- include "platform.praefect.migrationPod" . | nindent 6 }}
+{{- end }}

@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "runtime": "raw",
+  "name": "jenkins",
+  "home": "/var/lib/platform-jenkins",
+  "port": 8080,
+  "image": null,
+  "java": "/opt/platform-java/bin/java",
+  "war": "/opt/platform-jenkins/jenkins.war",
+  "war_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "checksum_file": "/etc/platform-jenkins/jenkins.war.sha256",
+  "user": "jenkins",
+  "group": "jenkins"
+}

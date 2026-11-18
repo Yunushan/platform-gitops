@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 from pathlib import Path
 import re
 import sys
@@ -214,29 +215,29 @@ for required_attr in (
         sys.exit(1)
 
 
-def should_skip(path: Path) -> bool:
-    return any(
-        part in exclude_dirs
-        or part.startswith('.shell-syntax-')
-        or part.startswith('.ansible-shell-syntax-')
-        for part in path.parts
-    )
+def should_skip(name: str) -> bool:
+    return name in exclude_dirs or name.startswith(('.shell-syntax-', '.ansible-shell-syntax-'))
 
 
 conflicted = []
-for path in root.rglob('*'):
-    if path.is_dir():
-        continue
-    if should_skip(path):
-        continue
-    try:
-        text = read_bounded_text(path)
-    except UnicodeDecodeError:
-        continue
-    except OSError:
-        continue
-    if conflict_marker_re.search(text):
-        conflicted.append(path.relative_to(root))
+local_patterns = ('*.local.yaml', '*.local.yml', '*.local.ini', '.env')
+local_paths = {pattern: [] for pattern in local_patterns}
+for directory, directories, files in os.walk(root):
+    directories[:] = [name for name in directories if not should_skip(name)]
+    files = [name for name in files if not should_skip(name)]
+    parent = Path(directory)
+    for name in directories + files:
+        for pattern in local_patterns:
+            if Path(name).match(pattern):
+                local_paths[pattern].append((parent / name).relative_to(root))
+    for name in files:
+        path = parent / name
+        try:
+            text = read_bounded_text(path)
+        except (UnicodeDecodeError, OSError):
+            continue
+        if conflict_marker_re.search(text):
+            conflicted.append(path.relative_to(root))
 
 if conflicted:
     print('Git conflict markers found:')
@@ -245,11 +246,10 @@ if conflicted:
     sys.exit(1)
 
 # Ensure local files are not accidentally committed.
-for pattern in ('*.local.yaml', '*.local.yml', '*.local.ini', '.env'):
-    committed_like = [p for p in root.rglob(pattern) if not should_skip(p)]
+for committed_like in local_paths.values():
     if committed_like:
         print('Local/private files exist in working tree. They are ignored, but verify before pushing:')
         for p in committed_like:
-            print(f' - {p.relative_to(root)}')
+            print(f' - {p}')
 
 print('Project structure validation passed.')

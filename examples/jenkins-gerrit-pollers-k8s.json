@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "name": "jenkins-pollers",
+  "namespace": "ci-integration",
+  "image": "example.invalid/platform/pollers@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "state_pvc": "poller-state",
+  "trigger_secret": "trigger-credentials",
+  "result_secret": "result-credentials",
+  "trigger_configmap": "trigger-policy",
+  "result_configmap": "result-policy",
+  "trigger_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "result_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "interval_seconds": 60,
+  "node_selector": {"kubernetes.io/os": "linux", "kubernetes.io/hostname": "worker-a"}
+}

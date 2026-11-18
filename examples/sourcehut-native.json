@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "name": "sourcehut",
+  "meta_host": "meta.forge.example.com",
+  "git_host": "git.forge.example.com",
+  "http_port": 8080
+}

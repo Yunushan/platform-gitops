@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "server": {
+    "origin": "https://harbor.example.invalid",
+    "harbor_version": "v2.15.1-335c05f2",
+    "ca_file": "/etc/platform/harbor/ca.crt",
+    "ca_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "leaf_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "admin_username": "project-operator",
+    "password_env": "HARBOR_OPERATOR_PASSWORD"
+  },
+  "project": {
+    "name": "application-ci",
+    "id": 101
+  },
+  "robot": {
+    "name": "ci-publisher",
+    "username": "robot$application-ci+ci-publisher",
+    "duration_days": 7
+  }
+}

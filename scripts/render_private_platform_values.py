@@ -17,13 +17,18 @@ import yaml
 
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
+from cnpg_schedule import cnpg_backup_schedule
 from forgejo_config_env import ConfigEnvironmentError, normalize_config_env
-from forgejo_database_contract import FORGEJO_NON_POSTGRES_DATABASE_TYPES
+from forgejo_database_contract import (
+    FORGEJO_CA_MOUNT_PATH, FORGEJO_LEGACY_POSTGRES_CA_MOUNT_PATH,
+    FORGEJO_NON_POSTGRES_DATABASE_TYPES, FORGEJO_POSTGRES_CA_ENV,
+)
 from forgejo_storage_contract import (
     FILESYSTEM_MODES, OBJECT_MODES, StorageContractError, repair_minio_inheritance,
     select_filesystem_storage,
 )
 from strict_yaml import StrictYamlError, loads_strict_yaml_all
+import render_private_gitlab_values as gitlab
 from platform_release_policy import ReleasePolicyError, release_from_environment, version_tuple
 from update_platform_versions import current_tags, load_catalog, update_values_text, values_document
 
@@ -254,6 +259,60 @@ def platform_host(
         return host
     domain = platform_domain(inventory)
     return f"{default_prefix}.{domain}" if domain else ""
+
+
+def render_gitea_values(
+    path: Path, inventory: dict[str, str], *, woodpecker_host: str = "",
+) -> bool:
+    original = read_bounded_text(path, encoding="utf-8")
+    rendered = original
+    if "gitea.<PLATFORM_DOMAIN>" in original:
+        host = require("PLATFORM_GITEA_HOST or PLATFORM_DOMAIN", platform_host(
+            "PLATFORM_GITEA_HOST", inventory, ("platform_gitea_host",), "gitea",
+        )).lower()
+        if len(host) > 253 or any(
+            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+            for label in host.split(".")
+        ):
+            raise SystemExit("The Gitea hostname must be a DNS name")
+        rendered = rendered.replace("gitea.<PLATFORM_DOMAIN>", host)
+    for name in ("GITEA_DATA_SIZE", "GITEA_STORAGE_CLASS"):
+        if f"<{name}>" in original:
+            value = require(name, os.environ.get(name, "").strip())
+            if name == "GITEA_STORAGE_CLASS" and not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", value):
+                raise SystemExit("GITEA_STORAGE_CLASS must be a storage class name")
+            if name == "GITEA_DATA_SIZE" and not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+|[KMGTPE]i|[kMGTPE]|[mun])?", value):
+                raise SystemExit("GITEA_DATA_SIZE must be a Kubernetes storage quantity")
+            rendered = rendered.replace(f"<{name}>", yaml_string(value))
+    if woodpecker_host:
+        host = woodpecker_host.lower()
+        if len(host) > 253 or any(
+            not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+            for label in host.split(".")
+        ):
+            raise SystemExit("The Woodpecker webhook hostname must be a DNS name")
+        documents = loads_strict_yaml_all(rendered)
+        if len(documents) != 1 or not isinstance(documents[0], dict):
+            raise SystemExit("Expected one Gitea values mapping")
+        values = documents[0]
+        security = values.setdefault("gitea", {}).setdefault("config", {}).setdefault("security", {})
+        current = security.get("ALLOWED_HOST_LIST", "")
+        if not isinstance(current, str):
+            raise SystemExit("Gitea security.ALLOWED_HOST_LIST must be a comma-separated string")
+        destination = f"{host}:443"
+        if destination not in split_csv(current):
+            security["ALLOWED_HOST_LIST"] = ", ".join([*split_csv(current), destination])
+            header = []
+            for line in rendered.splitlines(keepends=True):
+                if line.strip() and not line.lstrip().startswith("#"):
+                    break
+                header.append(line)
+            rendered = "".join(header) + yaml.safe_dump(values, sort_keys=False)
+    if rendered == original:
+        return False
+    loads_strict_yaml_all(rendered)
+    atomic_write_text(path, rendered)
+    return True
 
 
 def normalize_forgejo_public_host(value: object, source: str, *, url: bool = False) -> str:
@@ -1824,15 +1883,8 @@ def refresh_forgejo_postgres_tls(path: Path) -> bool:
         changed = True
 
     deployment = mapping(values, "deployment", "deployment", create=True)
-    changed |= upsert_list_entry(
-        "env",
-        {"name": "SSL_CERT_FILE"},
-        {
-            "name": "SSL_CERT_FILE",
-            "value": "/data/gitea/git/.postgresql/ca-certificates.crt",
-        },
-        parent=deployment,
-    )
+    for name, value in FORGEJO_POSTGRES_CA_ENV.items():
+        changed |= upsert_list_entry("env", {"name": name}, {"name": name, "value": value}, parent=deployment)
     changed |= upsert_list_entry(
         "extraVolumes",
         {"name": "platform-postgres-ca"},
@@ -1847,32 +1899,29 @@ def refresh_forgejo_postgres_tls(path: Path) -> bool:
             },
         },
     )
-    for mount_path in ("/data/gitea/git/.postgresql", "/etc/ssl/platform"):
+    mount = {"name": "platform-postgres-ca", "mountPath": FORGEJO_CA_MOUNT_PATH, "readOnly": True}
+    for field in ("extraContainerVolumeMounts", "extraInitVolumeMounts"):
         changed |= upsert_list_entry(
-            "extraContainerVolumeMounts",
-            {"name": "platform-postgres-ca", "mountPath": mount_path},
-            {
-                "name": "platform-postgres-ca",
-                "mountPath": mount_path,
-                "readOnly": True,
-            },
+            field, {"name": mount["name"], "mountPath": mount["mountPath"]}, mount.copy(),
         )
-    changed |= upsert_list_entry(
-        "extraInitVolumeMounts",
-        {"name": "platform-postgres-ca", "mountPath": "/data/gitea/git/.postgresql"},
-        {
-            "name": "platform-postgres-ca",
-            "mountPath": "/data/gitea/git/.postgresql",
-            "readOnly": True,
-        },
-    )
+        if any(isinstance(entry, dict) and entry.get("mountPath") == mount["mountPath"]
+               and entry.get("name") != mount["name"] for entry in values[field]):
+            raise SystemExit(f"Forgejo trust path already uses another volume in {path}")
+        remaining = [
+            entry for entry in values[field]
+            if not (isinstance(entry, dict) and entry.get("name") == mount["name"]
+                    and entry.get("mountPath") == FORGEJO_LEGACY_POSTGRES_CA_MOUNT_PATH)
+        ]
+        if len(remaining) != len(values[field]):
+            values[field] = remaining
+            changed = True
 
     canonical_needles = (
         "SSL_MODE: verify-full",
         "name: platform-internal-roots",
-        "mountPath: /data/gitea/git/.postgresql",
-        "name: SSL_CERT_FILE",
-        "value: /data/gitea/git/.postgresql/ca-certificates.crt",
+        f"mountPath: {FORGEJO_CA_MOUNT_PATH}",
+        *(f"name: {name}" for name in FORGEJO_POSTGRES_CA_ENV),
+        *(f"value: {value}" for value in FORGEJO_POSTGRES_CA_ENV.values()),
     )
     if not changed and all(needle in text for needle in canonical_needles):
         return False
@@ -1901,6 +1950,7 @@ def forgejo_bootstrap_values(
     mail_from: str,
 ) -> str:
     mailer_enabled, mailer_config = forgejo_mailer_config(mail_from)
+    webhook_config = forgejo_webhook_config()
     return f"""# Forgejo bootstrap profile rendered by scripts/render_private_platform_values.py.
 # This opt-in mode uses SQLite and in-process cache/queue for dependency-light
 # lab bootstrap. The default SQL selector renders PostgreSQL.
@@ -1950,7 +2000,7 @@ gitea:
       REQUIRE_SIGNIN_VIEW: true
       ENABLE_NOTIFY_MAIL: {str(mailer_enabled).lower()}
 {mailer_config}
-    repository:
+{webhook_config}    repository:
       DEFAULT_BRANCH: main
     database:
       DB_TYPE: sqlite3
@@ -1987,6 +2037,7 @@ def forgejo_external_values(
     mail_from: str,
 ) -> str:
     mailer_enabled, mailer_config = forgejo_mailer_config(mail_from)
+    webhook_config = forgejo_webhook_config()
     redis_config_env = ""
     redis_config = """    cache:
       ADAPTER: memory
@@ -2009,7 +2060,9 @@ def forgejo_external_values(
     queue:
       TYPE: redis"""
 
+    postgres_ca_env = ""
     if database_type == "postgres":
+        postgres_ca_env = f"\n    - name: PGSSLROOTCERT\n      value: {FORGEJO_POSTGRES_CA_ENV['PGSSLROOTCERT']}"
         database_trust = """extraVolumes:
   - name: platform-postgres-ca
     configMap:
@@ -2022,15 +2075,12 @@ def forgejo_external_values(
 
 extraContainerVolumeMounts:
   - name: platform-postgres-ca
-    mountPath: /data/gitea/git/.postgresql
-    readOnly: true
-  - name: platform-postgres-ca
     mountPath: /etc/ssl/platform
     readOnly: true
 
 extraInitVolumeMounts:
   - name: platform-postgres-ca
-    mountPath: /data/gitea/git/.postgresql
+    mountPath: /etc/ssl/platform
     readOnly: true
 """
     else:
@@ -2068,7 +2118,7 @@ podDisruptionBudget:
 deployment:
   env:
     - name: SSL_CERT_FILE
-      value: /data/gitea/git/.postgresql/ca-certificates.crt
+      value: {FORGEJO_POSTGRES_CA_ENV['SSL_CERT_FILE']}{postgres_ca_env}
 
 {forgejo_image_block(image_tag)}
 
@@ -2118,7 +2168,7 @@ gitea:
       REQUIRE_SIGNIN_VIEW: true
       ENABLE_NOTIFY_MAIL: {str(mailer_enabled).lower()}
 {mailer_config}
-    repository:
+{webhook_config}    repository:
       DEFAULT_BRANCH: main
     database:
       DB_TYPE: {database_type}
@@ -2138,6 +2188,19 @@ resources:
   limits:
     memory: 2Gi
 """
+
+
+def forgejo_webhook_config() -> str:
+    """Allow an explicitly selected private Woodpecker hostname alongside public webhooks."""
+    host = os.environ.get("FORGEJO_WOODPECKER_WEBHOOK_HOST", "").strip().lower()
+    if not host:
+        return ""
+    if len(host) > 253 or any(
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        for label in host.split(".")
+    ):
+        raise SystemExit("FORGEJO_WOODPECKER_WEBHOOK_HOST must be a DNS hostname")
+    return "    webhook:\n      ALLOWED_HOST_LIST: " + yaml_string("external, " + host) + "\n"
 
 
 def forgejo_mailer_config(default_from: str) -> tuple[bool, str]:
@@ -2502,7 +2565,6 @@ def woodpecker_bootstrap_values(
     oauth_secret_name: str,
     agent_secret_name: str,
     image_tag: str,
-    server_replicas: str,
     agent_replicas: str,
     database_mode: str,
     database_secret_name: str,
@@ -2511,9 +2573,8 @@ def woodpecker_bootstrap_values(
     max_pipeline_timeout: str,
 ) -> str:
     postgres_mode = database_mode in {"postgres", "postgresql", "external"}
-    replica_count = server_replicas if postgres_mode else "1"
     database_comment = (
-        "Uses PostgreSQL-backed state so multiple Woodpecker server replicas can run safely."
+        "Uses PostgreSQL-backed state with a single active Woodpecker server."
         if postgres_mode
         else "Uses single-server SQLite so CI can come online before external PostgreSQL is configured."
     )
@@ -2549,7 +2610,7 @@ def woodpecker_bootstrap_values(
 server:
   enabled: true
   statefulSet:
-    replicaCount: {replica_count}
+    replicaCount: 1
   podSecurityContext:
     runAsNonRoot: true
     fsGroup: 1000
@@ -2713,10 +2774,13 @@ def render_woodpecker(
             "woodpecker",
         ),
     )
-    forgejo_host = forgejo_public_host(
-        inventory,
-        existing_values_path=forgejo_values_path,
-    )
+    forge_provider = os.environ.get("WOODPECKER_FORGE_PROVIDER", "forgejo").strip().lower() or "forgejo"
+    if forge_provider not in {"forgejo", "gitea"}:
+        raise SystemExit("WOODPECKER_FORGE_PROVIDER must be forgejo or gitea")
+    if forge_provider == "forgejo":
+        forge_url = f"https://{forgejo_public_host(inventory, existing_values_path=forgejo_values_path)}"
+    else:
+        forge_url = require("WOODPECKER_GITEA_URL", os.environ.get("WOODPECKER_GITEA_URL", "").strip())
     data_size = os.environ.get("WOODPECKER_DATA_SIZE", "10Gi").strip() or "10Gi"
     storage_class = os.environ.get("WOODPECKER_STORAGE_CLASS", "longhorn-standard-encrypted").strip() or "longhorn-standard-encrypted"
     admin_users = os.environ.get("WOODPECKER_ADMIN_USERS", "admin").strip() or "admin"
@@ -2727,10 +2791,10 @@ def render_woodpecker(
     log_level = os.environ.get("WOODPECKER_LOG_LEVEL", "info").strip().lower() or "info"
     default_pipeline_timeout = os.environ.get("WOODPECKER_DEFAULT_PIPELINE_TIMEOUT", "60").strip() or "60"
     max_pipeline_timeout = os.environ.get("WOODPECKER_MAX_PIPELINE_TIMEOUT", "120").strip() or "120"
-    database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "postgres").strip().lower() or "postgres"
+    default_database_mode = "sqlite" if os.environ.get("PLATFORM_PROFILE") == "gitea-woodpecker-argocd" else "postgres"
+    database_mode = os.environ.get("WOODPECKER_DATABASE_MODE", "").strip().lower() or default_database_mode
     database_secret_name = os.environ.get("WOODPECKER_DATABASE_SECRET_NAME", "woodpecker-database").strip() or "woodpecker-database"
-    default_server_replicas = "3" if database_mode in {"postgres", "postgresql", "external"} else "1"
-    server_replicas = os.environ.get("WOODPECKER_SERVER_REPLICAS", default_server_replicas).strip() or default_server_replicas
+    server_replicas = os.environ.get("WOODPECKER_SERVER_REPLICAS", "1").strip() or "1"
     agent_replicas = os.environ.get("WOODPECKER_AGENT_REPLICAS", "3").strip() or "3"
     if database_mode not in {"sqlite", "postgres", "postgresql", "external"}:
         raise SystemExit("WOODPECKER_DATABASE_MODE must be sqlite, postgres, postgresql, or external")
@@ -2747,10 +2811,8 @@ def render_woodpecker(
             "WOODPECKER_MAX_PIPELINE_TIMEOUT must be greater than or equal to "
             "WOODPECKER_DEFAULT_PIPELINE_TIMEOUT"
         )
-    if database_mode in {"postgres", "postgresql", "external"} and int(server_replicas) < 2:
-        raise SystemExit("WOODPECKER_SERVER_REPLICAS must be at least 2 when WOODPECKER_DATABASE_MODE=postgres")
-    if database_mode == "sqlite" and int(server_replicas) != 1:
-        raise SystemExit("WOODPECKER_SERVER_REPLICAS must be 1 when WOODPECKER_DATABASE_MODE=sqlite")
+    if int(server_replicas) != 1:
+        raise SystemExit("WOODPECKER_SERVER_REPLICAS must be 1 because the Woodpecker scheduler queue is local to each server")
     if image_tag.lower() in {"latest", "next", "nightly", "dev"}:
         raise SystemExit("WOODPECKER_IMAGE_TAG must be a stable release tag, not latest/next/nightly/dev")
     if log_level not in {"trace", "debug", "info", "warn", "error", "fatal", "panic", "disabled"}:
@@ -2760,7 +2822,7 @@ def render_woodpecker(
 
     rendered = woodpecker_bootstrap_values(
         host,
-        f"https://{forgejo_host}",
+        forge_url,
         data_size,
         storage_class,
         admin_users,
@@ -2768,7 +2830,6 @@ def render_woodpecker(
         oauth_secret_name,
         agent_secret_name,
         image_tag,
-        server_replicas,
         agent_replicas,
         database_mode,
         database_secret_name,
@@ -2776,6 +2837,18 @@ def render_woodpecker(
         default_pipeline_timeout,
         max_pipeline_timeout,
     )
+    if forge_provider == "gitea":
+        import yaml
+        from render_woodpecker_forge import render as render_forge
+        gitea_secret = os.environ.get("WOODPECKER_GITEA_OAUTH_SECRET_NAME", "woodpecker-gitea-oauth").strip()
+        try:
+            values, = loads_strict_yaml_all(rendered)
+            rendered = yaml.safe_dump(render_forge(values, {
+                "schema_version": 1, "provider": "gitea", "url": forge_url,
+                "oauth_secret": gitea_secret, "previous_oauth_secret": oauth_secret_name,
+            }), sort_keys=False)
+        except ValueError as error:
+            raise SystemExit("Invalid Gitea forge settings for Woodpecker") from error
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
@@ -4409,10 +4482,30 @@ def cnpg_postgres_cluster_manifest(
     schedule: str,
     backup_enabled: bool,
     image_name: str,
+    synchronous_standbys: int = 0,
+    require_node_separation: bool = False,
 ) -> str:
+    affinity_block = """  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+""" if require_node_separation else ""
+    synchronous_block = ""
+    if synchronous_standbys:
+        synchronous_block = f"""  postgresql:
+    synchronous:
+      method: any
+      number: {synchronous_standbys}
+      dataDurability: required
+      failoverQuorum: true
+"""
     backup_block = ""
     scheduled_backup_block = ""
     if backup_enabled:
+        try:
+            schedule = cnpg_backup_schedule(schedule, allow_five_fields=True)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         backup_block = f"""
   backup:
     retentionPolicy: {yaml_string(retention_policy)}
@@ -4495,9 +4588,9 @@ metadata:
     argocd.argoproj.io/sync-wave: "0"
 spec:
   instances: {instances}
-  imageName: {yaml_string(image_name)}
+{affinity_block}  imageName: {yaml_string(image_name)}
   primaryUpdateStrategy: unsupervised
-  certificates:
+{synchronous_block}  certificates:
     serverCASecret: {yaml_string(name + "-server-tls")}
     serverTLSSecret: {yaml_string(name + "-server-tls")}
   managed:
@@ -4518,7 +4611,7 @@ spec:
 """
 
 
-def render_cnpg_postgres_cluster(path: Path) -> bool:
+def configured_cnpg_postgres_cluster_manifest() -> str:
     bucket_prefix = os.environ.get("OBJECT_STORAGE_BUCKET_PREFIX", "platform").strip() or "platform"
     namespace = os.environ.get("CNPG_CLUSTER_NAMESPACE", "platform-databases").strip() or "platform-databases"
     name = os.environ.get("CNPG_CLUSTER_NAME", "platform-postgres").strip() or "platform-postgres"
@@ -4533,16 +4626,23 @@ def render_cnpg_postgres_cluster(path: Path) -> bool:
         )
     endpoint = backup_object_storage_endpoint() if backup_enabled else ""
     instances = os.environ.get("CNPG_INSTANCES", "3").strip() or "3"
-    if int(instances) < 1:
+    if not re.fullmatch(r"[0-9]+", instances) or int(instances) < 1:
         raise SystemExit("CNPG_INSTANCES must be at least 1")
+    if production_strict and int(instances) < 3:
+        raise SystemExit("CNPG_INSTANCES must be at least 3 when PLATFORM_PRODUCTION_STRICT=true")
+    synchronous_standbys = os.environ.get("CNPG_SYNCHRONOUS_STANDBYS", "0").strip()
+    if synchronous_standbys not in {"0", "1", "2"}:
+        raise SystemExit("CNPG_SYNCHRONOUS_STANDBYS must be 0, 1 or 2")
+    if synchronous_standbys != "0" and int(instances) < 3:
+        raise SystemExit("CNPG synchronous failover quorum requires at least 3 instances")
     backup_destination = os.environ.get(
         "CNPG_BACKUP_DESTINATION",
         f"s3://{bucket_prefix}-cnpg-backups/{name}",
     ).strip()
-    rendered = cnpg_postgres_cluster_manifest(
+    return cnpg_postgres_cluster_manifest(
         namespace=namespace,
         name=name,
-        instances=instances,
+        instances=str(int(instances)),
         data_size=os.environ.get("POSTGRES_DATA_SIZE", "50Gi").strip() or "50Gi",
         storage_class=os.environ.get("CNPG_STORAGE_CLASS", "longhorn-critical-encrypted").strip() or "longhorn-critical-encrypted",
         app_database=os.environ.get("FORGEJO_DATABASE_NAME", "forgejo").strip() or "forgejo",
@@ -4554,14 +4654,20 @@ def render_cnpg_postgres_cluster(path: Path) -> bool:
         secret_name=os.environ.get("CNPG_OBJECT_STORE_SECRET_NAME", "cnpg-object-store").strip()
         or "cnpg-object-store",
         retention_policy=os.environ.get("CNPG_RETENTION_POLICY", "30d").strip() or "30d",
-        schedule=os.environ.get("CNPG_BACKUP_SCHEDULE", "0 2 * * *").strip() or "0 2 * * *",
+        schedule=os.environ.get("CNPG_BACKUP_SCHEDULE", "").strip() or "0 0 2 * * *",
         backup_enabled=backup_enabled,
         image_name=os.environ.get(
             "CNPG_POSTGRES_IMAGE",
             "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie",
         ).strip()
         or "ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie",
+        synchronous_standbys=int(synchronous_standbys),
+        require_node_separation=production_strict,
     )
+
+
+def render_cnpg_postgres_cluster(path: Path, *, manifest: str | None = None) -> bool:
+    rendered = configured_cnpg_postgres_cluster_manifest() if manifest is None else manifest
     old = read_bounded_text(path, encoding="utf-8") if path.exists() else ""
     changed = rendered != old
     if changed:
@@ -4968,7 +5074,12 @@ def main() -> int:
     parser.add_argument(
         "--woodpecker-values",
         type=Path,
-        default=Path("gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml"),
+        help="Override the Woodpecker values path selected by PLATFORM_PROFILE.",
+    )
+    parser.add_argument(
+        "--gitea-values", type=Path,
+        default=Path("gitops/clusters/rke2-main/alternatives/gitea/values.yaml"),
+        help="Gitea values template for the Gitea profile.",
     )
     parser.add_argument(
         "--harbor-values",
@@ -5054,11 +5165,25 @@ def main() -> int:
     parser.add_argument("--skip-platform-image-integrity", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    profile = os.environ.get("PLATFORM_PROFILE")
+    gitea_profile = profile == "gitea-woodpecker-argocd"
+    gitlab_profile = profile == gitlab.PROFILE
+    if gitlab_profile:
+        args.skip_forgejo = True
+        args.skip_woodpecker = True
+    if args.woodpecker_values is None:
+        if gitea_profile:
+            args.woodpecker_values = Path("gitops/clusters/rke2-main/apps/woodpecker/values.yaml")
+        else:
+            args.woodpecker_values = Path("gitops/clusters/rke2-main/premium-3node/apps/woodpecker/values.yaml")
+    if gitea_profile and not args.skip_woodpecker:
+        if os.environ.get("WOODPECKER_FORGE_PROVIDER", "").strip().lower() != "gitea":
+            parser.error("The Gitea profile requires WOODPECKER_FORGE_PROVIDER=gitea when rendering Woodpecker.")
     if args.reconcile_existing_forgejo_host and not args.refresh_forgejo_host:
         parser.error("--reconcile-existing-forgejo-host requires --refresh-forgejo-host")
     # Validate selected version controls before an unrelated app can be written.
     for component, enabled in (
-        ("forgejo", not args.skip_forgejo or args.refresh_forgejo_release_pin),
+        ("forgejo", (not args.skip_forgejo and not gitea_profile) or args.refresh_forgejo_release_pin),
         ("woodpecker", not args.skip_woodpecker),
         ("argocd", not args.skip_argocd),
     ):
@@ -5067,6 +5192,24 @@ def main() -> int:
 
     inventory = read_inventory_vars(args.inventory)
     changed: list[str] = []
+    gitlab_files = {}
+    cnpg_render_mode = os.environ.get("CNPG_RENDER_POSTGRES_CLUSTER", "true").strip().lower()
+    render_cnpg = (not args.skip_cnpg_postgres_cluster and args.cnpg_postgres_cluster.exists()
+                   and cnpg_render_mode in {"1", "true", "yes", "bootstrap"})
+    cnpg_manifest = configured_cnpg_postgres_cluster_manifest() if render_cnpg and not args.dry_run else None
+    if gitlab_profile:
+        try:
+            managed_gitlab = (os.environ.get("GITLAB_CNPG_MANAGED_DATABASES", "").strip().lower() == "true"
+                              or (gitlab.CNPG_APP / gitlab.CNPG_RESOURCES).is_file())
+            if managed_gitlab and cnpg_manifest is not None:
+                if args.cnpg_postgres_cluster.resolve() != (gitlab.CNPG_APP / "postgres-cluster.yaml").resolve():
+                    raise ValueError("GitLab managed databases require the premium platform-postgres manifest")
+            gitlab_files = gitlab.prepare(Path.cwd(), platform_domain(inventory), os.environ,
+                                         cnpg_cluster_manifest=cnpg_manifest if managed_gitlab else None)
+        except (ValueError, OSError, KeyError, TypeError, AttributeError):
+            # The plan and file parser errors may include private paths or content.
+            print("GitLab private render failed. Check the DNS, Secret references, and selected Praefect, SSH or CloudNativePG settings.", file=sys.stderr)
+            return 1
 
     if args.dry_run:
         host = env_or_inventory(
@@ -5212,7 +5355,12 @@ def main() -> int:
         print(f"STEP_CA_DB_SIZE={os.environ.get('STEP_CA_DB_SIZE', '10Gi')}")
         print(f"PLATFORM_POLICY_ENFORCEMENT={os.environ.get('PLATFORM_POLICY_ENFORCEMENT', 'Audit')}")
         print(f"PLATFORM_IMAGE_INTEGRITY_MODE={os.environ.get('PLATFORM_IMAGE_INTEGRITY_MODE', 'disabled')}")
-        return 0 if host else 1
+        return 0 if host or gitlab_profile else 1
+
+    for path, content in gitlab_files.items():
+        if not path.is_file() or read_bounded_text(path) != content:
+            atomic_write_text(path, content)
+            changed.append(str(path))
 
     if (
         args.refresh_argocd_host
@@ -5267,10 +5415,18 @@ def main() -> int:
     ):
         changed.append(str(args.cnpg_postgres_cluster))
 
-    if not args.skip_forgejo and render_forgejo(args.forgejo_values, inventory):
+    if not args.skip_forgejo and not gitea_profile and render_forgejo(args.forgejo_values, inventory):
         if str(args.forgejo_values) in changed:
             changed.remove(str(args.forgejo_values))
         changed.append(str(args.forgejo_values))
+
+    if gitea_profile and args.gitea_values.exists():
+        woodpecker_host = platform_host(
+            "PLATFORM_WOODPECKER_HOST", inventory,
+            ("platform_woodpecker_host", "platform_ci_host"), "woodpecker",
+        )
+        if render_gitea_values(args.gitea_values, inventory, woodpecker_host=woodpecker_host):
+            changed.append(str(args.gitea_values))
 
     if not args.skip_longhorn and args.longhorn_values.exists():
         backup_target = os.environ.get("LONGHORN_BACKUP_TARGET", "").strip()
@@ -5308,13 +5464,7 @@ def main() -> int:
     if not args.skip_velero and args.velero_values.exists() and render_velero(args.velero_values):
         changed.append(str(args.velero_values))
 
-    cnpg_render_mode = os.environ.get("CNPG_RENDER_POSTGRES_CLUSTER", "true").strip().lower()
-    if (
-        not args.skip_cnpg_postgres_cluster
-        and args.cnpg_postgres_cluster.exists()
-        and cnpg_render_mode in {"1", "true", "yes", "bootstrap"}
-        and render_cnpg_postgres_cluster(args.cnpg_postgres_cluster)
-    ):
+    if cnpg_manifest is not None and render_cnpg_postgres_cluster(args.cnpg_postgres_cluster, manifest=cnpg_manifest):
         if str(args.cnpg_postgres_cluster) in changed:
             changed.remove(str(args.cnpg_postgres_cluster))
         changed.append(str(args.cnpg_postgres_cluster))

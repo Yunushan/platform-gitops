@@ -56,7 +56,11 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
-for required_command in chmod chown curl id install mktemp mv rm sed sha256sum systemctl timeout wc; do
+download_command=curl
+if [[ -n "${RKE2_OFFLINE_CACHE:-}" ]]; then
+  download_command=python3
+fi
+for required_command in chmod chown "${download_command}" id install mktemp mv rm sed sha256sum systemctl timeout wc; do
   if ! command -v "${required_command}" >/dev/null 2>&1; then
     printf 'Required RKE2 bootstrap command is unavailable: %s\n' \
       "${required_command}" >&2
@@ -75,26 +79,32 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-installer="$(mktemp)"
-curl --fail --show-error --silent --location --retry 3 \
-  --retry-all-errors \
-  --proto '=https' --proto-redir '=https' --tlsv1.2 \
-  --max-redirs 3 \
-  --connect-timeout 20 --max-time "${RKE2_INSTALL_DOWNLOAD_TIMEOUT}" \
-  --max-filesize "${RKE2_INSTALLER_MAX_BYTES}" \
-  --output "${installer}" https://get.rke2.io
-if [[ ! -f "${installer}" || -L "${installer}" ]]; then
-  echo "Downloaded RKE2 installer is not a regular file." >&2
-  exit 1
+if [[ -n "${RKE2_OFFLINE_CACHE:-}" ]]; then
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  offline_args=(--cache "${RKE2_OFFLINE_CACHE}" --version "${RKE2_VERSION}" --cni "${RKE2_CNI}"
+    --installer-sha256 "${installer_sha256}" --checksums-sha256 "${RKE2_OFFLINE_CHECKSUMS_SHA256:-}")
+else
+  installer="$(mktemp)"
+  curl --fail --show-error --silent --location --retry 3 \
+    --retry-all-errors \
+    --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --max-redirs 3 \
+    --connect-timeout 20 --max-time "${RKE2_INSTALL_DOWNLOAD_TIMEOUT}" \
+    --max-filesize "${RKE2_INSTALLER_MAX_BYTES}" \
+    --output "${installer}" https://get.rke2.io
+  if [[ ! -f "${installer}" || -L "${installer}" ]]; then
+    echo "Downloaded RKE2 installer is not a regular file." >&2
+    exit 1
+  fi
+  installer_bytes="$(wc -c <"${installer}")"
+  if [[ ! "${installer_bytes}" =~ ^[1-9][0-9]*$ ]] ||
+    (( 10#${installer_bytes} > RKE2_INSTALLER_MAX_BYTES )); then
+    echo "Downloaded RKE2 installer has an unsafe size." >&2
+    exit 1
+  fi
+  printf '%s  %s\n' "${installer_sha256}" "${installer}" | sha256sum --check --strict
+  chmod 0700 "${installer}"
 fi
-installer_bytes="$(wc -c <"${installer}")"
-if [[ ! "${installer_bytes}" =~ ^[1-9][0-9]*$ ]] ||
-  (( 10#${installer_bytes} > RKE2_INSTALLER_MAX_BYTES )); then
-  echo "Downloaded RKE2 installer has an unsafe size." >&2
-  exit 1
-fi
-printf '%s  %s\n' "${installer_sha256}" "${installer}" | sha256sum --check --strict
-chmod 0700 "${installer}"
 
 install -d -o root -g root -m 0750 /etc/rancher/rke2
 config_tmp="$(mktemp /etc/rancher/rke2/.config.yaml.XXXXXX)"
@@ -112,7 +122,11 @@ chown root:root "${config_tmp}"
 mv -f -- "${config_tmp}" /etc/rancher/rke2/config.yaml
 config_tmp=""
 
-timeout "${RKE2_INSTALL_TIMEOUT}" "${installer}"
+if [[ -n "${RKE2_OFFLINE_CACHE:-}" ]]; then
+  timeout "${RKE2_INSTALL_TIMEOUT}" python3 "${script_dir}/install-rke2-offline.py" "${offline_args[@]}"
+else
+  timeout "${RKE2_INSTALL_TIMEOUT}" "${installer}"
+fi
 systemctl enable rke2-server
 systemctl --no-block restart rke2-server
 echo "RKE2 first server start requested. Follow progress with: journalctl -u rke2-server -f"

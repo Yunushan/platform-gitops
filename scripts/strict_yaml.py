@@ -93,7 +93,7 @@ for _first, _resolvers in list(_StrictYaml12Loader.yaml_implicit_resolvers.items
     _StrictYaml12Loader.yaml_implicit_resolvers[_first] = [
         item
         for item in _resolvers
-        if item[0] != "tag:yaml.org,2002:bool"
+        if item[0] not in {"tag:yaml.org,2002:bool", "tag:yaml.org,2002:value", "tag:yaml.org,2002:timestamp"}
     ]
 _StrictYaml12Loader.add_implicit_resolver(
     "tag:yaml.org,2002:bool",

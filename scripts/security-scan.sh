@@ -43,11 +43,15 @@ gitleaks_args=(
   --verbose
 )
 
-if [ -f "${ROOT}/.gitleaks.toml" ]; then
-  gitleaks_args+=(--config "${ROOT}/.gitleaks.toml")
+gitleaks_config="${GITLEAKS_CONFIG:-${ROOT}/.gitleaks.toml}"
+if [[ -n "${GITLEAKS_CONFIG:-}" || -f "${gitleaks_config}" ]]; then
+  if [[ "${gitleaks_config}" != /* ]]; then
+    gitleaks_config="${PWD}/${gitleaks_config}"
+  fi
+  gitleaks_args+=(--config "${gitleaks_config}")
 fi
 
-gitleaks_args+=("${ROOT}")
+gitleaks_args+=(.)
 
 semgrep_args=(
   scan
@@ -60,7 +64,7 @@ printf '== trivy ==\n'
 trivy "${trivy_args[@]}"
 
 printf '== gitleaks ==\n'
-gitleaks "${gitleaks_args[@]}"
+(cd "${ROOT}" && gitleaks "${gitleaks_args[@]}")
 
 printf '== semgrep ==\n'
 semgrep "${semgrep_args[@]}"

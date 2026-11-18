@@ -10,7 +10,7 @@ import stat
 import tempfile
 from unittest import mock
 
-from atomic_file import PRIVATE_FILE_MODE, atomic_write_text
+from atomic_file import PRIVATE_FILE_MODE, atomic_binary_output, atomic_write_bytes, atomic_write_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,7 +70,17 @@ def direct_file_write(node: ast.Call) -> bool:
             and node.func.value.func.id == "Path"
         ):
             return False
-        mode_index = 0
+        keywords = {keyword.arg for keyword in node.keywords}
+        if "timeout" in keywords and isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "opener":
+            return False
+        if isinstance(node.func.value, ast.Name) and node.func.value.id in {"gzip", "tarfile", "zipfile"}:
+            # Archive mode follows its filename. With only fileobj the
+            # stream was opened separately and that call is checked.
+            if not node.args and "fileobj" in keywords and "name" not in keywords:
+                return False
+            mode_index = 1
+        else:
+            mode_index = 0
     else:
         return False
 
@@ -94,16 +104,25 @@ def assert_direct_write_detection() -> None:
         'open("output", "wb")',
         'path.open("a")',
         'Path("output").open(mode="r+")',
+        'gzip.open("output", "wb")',
+        'tarfile.open("output", mode="w:gz")',
     ):
         document = ast.parse(source)
         calls = [node for node in ast.walk(document) if isinstance(node, ast.Call)]
         if not any(direct_file_write(node) for node in calls):
             raise AssertionError(f"direct local write escaped static detection: {source}")
 
-    document = ast.parse('open("input", "rb")')
-    call = next(node for node in ast.walk(document) if isinstance(node, ast.Call))
-    if direct_file_write(call):
-        raise AssertionError("read-only file input was classified as a local output")
+    for source in (
+        'open("input", "rb")',
+        'gzip.open(path, "rb")',
+        'tarfile.open(path, "r|gz")',
+        'tarfile.open(fileobj=output, mode="w")',
+        'self.opener.open(request, timeout=10)',
+        'archive.open(info, mode="r")',
+    ):
+        call = next(node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Call))
+        if direct_file_write(call):
+            raise AssertionError(f"non-writing file or stream open classified as local output: {source}")
 
 
 def assert_production_writes_use_shared_policy() -> None:
@@ -138,6 +157,21 @@ def main() -> int:
         if os.name == "posix" and stat.S_IMODE(destination.stat().st_mode) != PRIVATE_FILE_MODE:
             raise AssertionError("atomic writer did not apply owner-only permissions")
         assert_no_temporary_files(destination.parent, destination)
+
+        binary = root / "archive"
+        with atomic_binary_output(binary, replace=False) as stream:
+            stream.write(b"\x00\xff")
+            if binary.exists():
+                raise AssertionError("incomplete archive was published")
+        try:
+            atomic_write_bytes(binary, b"second", replace=False)
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("create-only write replaced the original artifact")
+        if binary.read_bytes() != b"\x00\xff":
+            raise AssertionError("create-only write damaged the original artifact")
+        assert_no_temporary_files(binary.parent, binary)
 
         destination.write_text("retained\n", encoding="utf-8")
         with mock.patch("atomic_file.os.replace", side_effect=OSError("simulated replace failure")):

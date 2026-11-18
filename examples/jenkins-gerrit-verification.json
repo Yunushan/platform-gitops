@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "jenkins_origin": "https://ci.example.invalid",
+  "job": ["team", "review-build"],
+  "build": 1,
+  "job_config_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "gerrit_origin": "https://review.example.invalid",
+  "project": "team/project",
+  "branch": "main",
+  "change": 123,
+  "patchset": 1,
+  "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}

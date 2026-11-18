@@ -16,7 +16,9 @@ from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
 from cleanup_firewalld_cni_interfaces import cleanup_zone_file
 from forgejo_database_contract import (
+    FORGEJO_CA_MOUNT_PATH,
     FORGEJO_NON_POSTGRES_DATABASE_TYPES,
+    FORGEJO_POSTGRES_CA_ENV,
     effective_forgejo_database_type,
 )
 
@@ -570,8 +572,6 @@ def rendered_optional_redis_contract(text: str, needle: str) -> bool:
 def rendered_optional_woodpecker_database_contract(text: str, needle: str) -> bool:
     if not is_private_rendered(text) or "Woodpecker" not in text:
         return False
-    if needle == "replicaCount: 3" and "WOODPECKER_DATABASE_DRIVER" not in text:
-        return True
     if needle == 'WOODPECKER_DATABASE_DRIVER: "postgres"' and "WOODPECKER_DATABASE_DRIVER" not in text:
         return True
     if needle == "- woodpecker-database" and "WOODPECKER_DATABASE_DRIVER" not in text:
@@ -595,7 +595,8 @@ def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
         "HOST: platform-postgres-rw.platform-databases.svc.cluster.local:5432",
         "SSL_MODE: verify-full",
         "name: platform-postgres-ca",
-        "mountPath: /data/gitea/git/.postgresql",
+        "name: PGSSLROOTCERT",
+        f"value: {FORGEJO_POSTGRES_CA_ENV['PGSSLROOTCERT']}",
     }:
         return True
     if sqlite_mode and needle in {
@@ -606,8 +607,8 @@ def rendered_optional_forgejo_database_contract(text: str, needle: str) -> bool:
         "USER: forgejo",
         "name: platform-internal-roots",
         "name: SSL_CERT_FILE",
-        "value: /data/gitea/git/.postgresql/ca-certificates.crt",
-        "mountPath: /etc/ssl/platform",
+        f"value: {FORGEJO_POSTGRES_CA_ENV['SSL_CERT_FILE']}",
+        f"mountPath: {FORGEJO_CA_MOUNT_PATH}",
         "PROVIDER: db",
     }:
         return True
@@ -902,6 +903,80 @@ def require_woodpecker_role_image_pin(text: str, role: str, repository: str, tag
             fail(f"{label} must pin {role}.image with {needle.strip()}")
 
 
+def assert_default_woodpecker_template(base_woodpecker_text: str) -> None:
+    for needle in (
+        "WOODPECKER_OPEN: \"false\"",
+        "WOODPECKER_FORGEJO: \"true\"",
+        "WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>",
+        'WOODPECKER_SERVER_ADDR: ":8000"',
+        'WOODPECKER_GRPC_ADDR: ":9000"',
+        'WOODPECKER_LOG_LEVEL: "info"',
+        'WOODPECKER_DEFAULT_PIPELINE_TIMEOUT: "60"',
+        'WOODPECKER_MAX_PIPELINE_TIMEOUT: "120"',
+        "probes:\n    liveness:\n      timeoutSeconds: 10\n      periodSeconds: 10\n      successThreshold: 1\n      failureThreshold: 30",
+        "ingressClassName: traefik",
+        "traefik.ingress.kubernetes.io/router.entrypoints: websecure",
+        "traefik.ingress.kubernetes.io/router.tls: \"true\"",
+        "host: woodpecker.<PLATFORM_DOMAIN>",
+        "persistentVolume:\n    enabled: true\n    size: <WOODPECKER_DATA_SIZE>",
+        "  resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
+        "WOODPECKER_BACKEND: kubernetes",
+        "WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker",
+        "  resources:\n    requests:\n      cpu: 250m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
+    ):
+        require_text(base_woodpecker_text, needle, f"default Woodpecker profile must include {needle.splitlines()[0]}")
+    require_text(
+        base_woodpecker_text,
+        "replicaCount: 1",
+        "default Woodpecker profile must use one server replica without a shared PostgreSQL datasource",
+    )
+    reject_text(
+        base_woodpecker_text,
+        'WOODPECKER_DATABASE_DRIVER: "postgres"',
+        "default Woodpecker profile must not declare PostgreSQL without generated DB secret plumbing",
+    )
+    reject_text(
+        base_woodpecker_text,
+        "- woodpecker-database",
+        "default Woodpecker profile must not require the production database secret",
+    )
+    require_woodpecker_role_image_pin(
+        base_woodpecker_text,
+        "server",
+        "woodpeckerci/woodpecker-server",
+        "v3.16.0",
+        "default Woodpecker profile",
+    )
+    require_woodpecker_role_image_pin(
+        base_woodpecker_text,
+        "agent",
+        "woodpeckerci/woodpecker-agent",
+        "v3.16.0",
+        "default Woodpecker profile",
+    )
+
+
+def assert_rendered_gitea_woodpecker(path: Path, text: str) -> None:
+    from render_woodpecker_forge import gitea_values_ready
+    from strict_yaml import loads_strict_yaml_all
+
+    if not gitea_values_ready(path):
+        fail("Gitea Woodpecker values must select Gitea and reference its OAuth Secret")
+    values = loads_strict_yaml_all(text)[0]
+    server = values["server"]
+    agent = values["agent"]
+    if server["statefulSet"]["replicaCount"] != 1:
+        fail("Woodpecker must run one server replica because its scheduler queue is process-local")
+    if server["env"].get("WOODPECKER_OPEN") != "false" or agent["env"].get("WOODPECKER_BACKEND") != "kubernetes":
+        fail("Gitea Woodpecker requires closed registration and the Kubernetes agent backend")
+    if server["image"]["tag"] != agent["image"]["tag"]:
+        fail("Woodpecker server and agent must use the same release")
+    for role, settings in (("server", server), ("agent", agent)):
+        image = settings["image"]
+        if image["registry"] != "docker.io" or image["repository"] != f"woodpeckerci/woodpecker-{role}" or not re.fullmatch(r"v?\d+\.\d+\.\d+", image["tag"]):
+            fail(f"Gitea Woodpecker {role} must pin a release of its official image")
+
+
 def application_names(*paths: Path) -> list[str]:
     names: set[str] = set()
     for path in paths:
@@ -979,15 +1054,29 @@ def main() -> None:
         "strategy:\n  type: Recreate",
         "image:\n  rootless: true",
         "className: traefik",
-        "gitea.<PLATFORM_DOMAIN>",
         "postgresql:\n  enabled: false",
-        "redis-cluster:\n  enabled: false",
-        "persistence:\n  enabled: true\n  size: <GITEA_DATA_SIZE>\n  storageClass: <GITEA_STORAGE_CLASS>",
+        "postgresql-ha:\n  enabled: false",
+        "valkey:\n  enabled: false",
+        "valkey-cluster:\n  enabled: false",
+        "existingSecret: gitea-bootstrap-admin",
+        "passwordMode: initialOnlyRequireReset",
         "DISABLE_REGISTRATION: true",
         "DB_TYPE: sqlite3",
         "resources:\n  requests:\n    cpu: 250m\n    memory: 512Mi\n  limits:\n    memory: 2Gi",
     ):
         require_text(alternative_gitea_text, needle, f"alternative Gitea profile must include {needle.splitlines()[0]}")
+    gitea_hostname = re.search(r"(?m)^      DOMAIN: (gitea\.<PLATFORM_DOMAIN>|[a-z0-9][a-z0-9.-]*)$", alternative_gitea_text)
+    if gitea_hostname is None:
+        fail("alternative Gitea profile must set its public domain")
+    host = gitea_hostname.group(1)
+    for needle in (f"- host: {host}", f"- {host}", f"ROOT_URL: https://{host}/", f"SSH_DOMAIN: {host}"):
+        require_text(alternative_gitea_text, needle, "alternative Gitea profile must use the same public hostname for ingress, HTTPS and SSH")
+    if not re.search(
+        r'(?m)^persistence:\n  enabled: true\n  size: (?:<GITEA_DATA_SIZE>|"?[0-9][A-Za-z0-9.+-]*"?)'
+        r'\n  storageClass: (?:<GITEA_STORAGE_CLASS>|"?[a-z0-9][a-z0-9.-]*"?)$',
+        alternative_gitea_text,
+    ):
+        fail("alternative Gitea profile must define persistent capacity and a storage class")
 
     alternative_gitlab_ce_text = read(alternative_gitlab_ce_values)
     for needle in (
@@ -1184,10 +1273,9 @@ def main() -> None:
         "SSL_MODE: verify-full",
         "name: platform-postgres-ca",
         "name: platform-internal-roots",
-        "mountPath: /data/gitea/git/.postgresql",
-        "name: SSL_CERT_FILE",
-        "value: /data/gitea/git/.postgresql/ca-certificates.crt",
-        "mountPath: /etc/ssl/platform",
+        *(f"name: {name}" for name in FORGEJO_POSTGRES_CA_ENV),
+        *(f"value: {value}" for value in FORGEJO_POSTGRES_CA_ENV.values()),
+        f"mountPath: {FORGEJO_CA_MOUNT_PATH}",
         "PROVIDER: db",
         "FORGEJO__CACHE__HOST",
         "name: forgejo-redis",
@@ -1199,65 +1287,20 @@ def main() -> None:
 
     base_woodpecker_text = read(base_woodpecker_values)
     premium_woodpecker_text = read(premium_woodpecker_values)
-    for needle in (
-        "WOODPECKER_OPEN: \"false\"",
-        "WOODPECKER_FORGEJO: \"true\"",
-        "WOODPECKER_FORGEJO_URL: https://forgejo.<PLATFORM_DOMAIN>",
-        'WOODPECKER_SERVER_ADDR: ":8000"',
-        'WOODPECKER_GRPC_ADDR: ":9000"',
-        'WOODPECKER_LOG_LEVEL: "info"',
-        'WOODPECKER_DEFAULT_PIPELINE_TIMEOUT: "60"',
-        'WOODPECKER_MAX_PIPELINE_TIMEOUT: "120"',
-        "probes:\n    liveness:\n      timeoutSeconds: 10\n      periodSeconds: 10\n      successThreshold: 1\n      failureThreshold: 30",
-        "ingressClassName: traefik",
-        "traefik.ingress.kubernetes.io/router.entrypoints: websecure",
-        "traefik.ingress.kubernetes.io/router.tls: \"true\"",
-        "host: woodpecker.<PLATFORM_DOMAIN>",
-        "persistentVolume:\n    enabled: true\n    size: <WOODPECKER_DATA_SIZE>",
-        "  resources:\n    requests:\n      cpu: 100m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
-        "WOODPECKER_BACKEND: kubernetes",
-        "WOODPECKER_BACKEND_K8S_NAMESPACE: woodpecker",
-        "  resources:\n    requests:\n      cpu: 250m\n      memory: 256Mi\n    limits:\n      memory: 1Gi",
-    ):
-        require_text(base_woodpecker_text, needle, f"default Woodpecker profile must include {needle.splitlines()[0]}")
-    require_text(
-        base_woodpecker_text,
-        "replicaCount: 1",
-        "default Woodpecker profile must use one server replica without a shared PostgreSQL datasource",
-    )
-    reject_text(
-        base_woodpecker_text,
-        'WOODPECKER_DATABASE_DRIVER: "postgres"',
-        "default Woodpecker profile must not declare PostgreSQL without generated DB secret plumbing",
-    )
-    reject_text(
-        base_woodpecker_text,
-        "- woodpecker-database",
-        "default Woodpecker profile must not require the production database secret",
-    )
-    require_woodpecker_role_image_pin(
-        base_woodpecker_text,
-        "server",
-        "woodpeckerci/woodpecker-server",
-        "v3.16.0",
-        "default Woodpecker profile",
-    )
-    require_woodpecker_role_image_pin(
-        base_woodpecker_text,
-        "agent",
-        "woodpeckerci/woodpecker-agent",
-        "v3.16.0",
-        "default Woodpecker profile",
-    )
+    rendered_gitea = os.environ.get("PLATFORM_PROFILE") == "gitea-woodpecker-argocd" and "WOODPECKER_GITEA:" in base_woodpecker_text
+    if rendered_gitea:
+        assert_rendered_gitea_woodpecker(base_woodpecker_values, base_woodpecker_text)
+    else:
+        assert_default_woodpecker_template(base_woodpecker_text)
     require_text(
         premium_woodpecker_text,
-        "replicaCount: 3",
-        "premium Woodpecker profile must keep HA server replicas",
+        "server:\n  enabled: true\n  statefulSet:\n    replicaCount: 1",
+        "premium Woodpecker profile must use one active server with a process-local scheduler",
     )
     require_text(
         premium_woodpecker_text,
         'WOODPECKER_DATABASE_DRIVER: "postgres"',
-        "premium Woodpecker profile must use PostgreSQL-backed state for HA server replicas",
+        "premium Woodpecker profile must persist Woodpecker state in PostgreSQL",
     )
     require_text(
         premium_woodpecker_text,
@@ -3661,8 +3704,10 @@ def main() -> None:
         "SENSITIVE_HTTP_HEADERS = frozenset(",
         "SENSITIVE_QUERY_FIELDS = frozenset(",
         "math.isfinite(timeout)",
-        "remaining = limit + 1",
-        "chunk = response.read(remaining)",
+        "_response_chunks(response.read, limit, limit + 1)",
+        "chunk = read(min(chunk_bytes, remaining + 1))",
+        "remaining -= len(chunk)",
+        "if remaining < 0:",
         "def require_bounded_text(",
         "class HttpResponseTooLarge(",
         "class HttpRequestTooLarge(",
@@ -4989,13 +5034,13 @@ def main() -> None:
         dns_repair_text,
     )
     if api_routing_task and 'internalTrafficPolicy":"Local"' in api_routing_task.group("body"):
-        errors.append("Kubernetes API Service repair must not restrict traffic to node-local endpoints")
+        fail("Kubernetes API Service repair must not restrict traffic to node-local endpoints")
     if api_routing_task:
         routing_body = api_routing_task.group("body")
         if "platform_dns_service_path_repair_effective | bool" not in routing_body:
-            errors.append("Kubernetes API Service restoration must be gated by service-path repair")
+            fail("Kubernetes API Service restoration must be gated by service-path repair")
         if "platform_dns_cilium_api_bootstrap_effective" in routing_body:
-            errors.append("Kubernetes API Service restoration must not depend on optional Cilium bootstrap")
+            fail("Kubernetes API Service restoration must not depend on optional Cilium bootstrap")
     cleanup_script_text = read(firewalld_cleanup_script)
     for needle in (
         "TRANSIENT_INTERFACE_RE",
@@ -5227,11 +5272,6 @@ def main() -> None:
             needle,
             f"project validator must detect unresolved merge conflicts: {needle}",
         )
-    require_text(
-        validate_project_text,
-        "part.startswith('.ansible-shell-syntax-')",
-        "project validator must ignore temporary Ansible inline shell syntax directories",
-    )
     require_text(
         validate_project_text,
         "scripts/test_python_syntax.py",
@@ -5641,7 +5681,7 @@ def main() -> None:
             f"project validator must enforce Git attributes: {needle}",
         )
     for needle in (
-        "part.startswith('.shell-syntax-')",
+        "name.startswith(('.shell-syntax-', '.ansible-shell-syntax-'))",
         "'__pycache__'",
         "'private'",
         "'rendered'",
@@ -5987,7 +6027,7 @@ def main() -> None:
         "python_files",
         "Python syntax validation failed",
         "__pycache__",
-        "part.startswith(\".shell-syntax-\")",
+        "name.startswith(\".shell-syntax-\")",
     ):
         require_text(
             read(python_syntax_test),
@@ -8413,8 +8453,7 @@ def main() -> None:
         "woodpeckerci/woodpecker-server",
         "woodpeckerci/woodpecker-agent",
         "WOODPECKER_SERVER_REPLICAS",
-        "default_server_replicas",
-        "WOODPECKER_SERVER_REPLICAS must be 1 when WOODPECKER_DATABASE_MODE=sqlite",
+        "WOODPECKER_SERVER_REPLICAS must be 1 because the Woodpecker scheduler queue is local to each server",
         "WOODPECKER_IMAGE_TAG must be a stable release tag",
         "HARBOR_DATABASE_MODE",
         "HARBOR_DATABASE_SECRET_NAME",

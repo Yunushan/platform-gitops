@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "<RENDERED_CONTRACT_SHA256>",
+  "deployment_plan_sha256": "<CANONICAL_DEPLOYMENT_PLAN_SHA256>",
+  "installation_sha256": "<COMPLETED_INSTALLATION_RECEIPT_FILE_SHA256>",
+  "runtime_sha256": "<COMPLETED_RUNTIME_RECEIPT_FILE_SHA256>",
+  "source_primary": {"name": "platform-postgres-1", "uid": "<REVIEWED_SOURCE_POD_UID>"},
+  "target_primary": {"name": "platform-postgres-2", "uid": "<REVIEWED_STANDBY_POD_UID>"}
+}

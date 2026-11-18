@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "cluster": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "version": "2.7.2",
+    "members": [
+      {"name": "bao-a", "api_url": "https://bao-a.example.com:8200", "raft_address": "192.0.2.41:8201"},
+      {"name": "bao-b", "api_url": "https://bao-b.example.com:8200", "raft_address": "192.0.2.42:8201"},
+      {"name": "bao-c", "api_url": "https://bao-c.example.com:8200", "raft_address": "192.0.2.43:8201"}
+    ],
+    "ca_file": "/etc/openbao-trust/ca.crt",
+    "ca_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "observer": {"token_env": "OPENBAO_OBSERVER_TOKEN"},
+  "probe": {
+    "token_env": "OPENBAO_CANARY_TOKEN",
+    "path": "platform-probe/data/allowed",
+    "value_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "denied_paths": ["platform-probe/data/denied"]
+  },
+  "audit_devices": {
+    "platform-local/": {"type": "file", "file_path": "/var/log/openbao/audit.json"}
+  },
+  "request_seconds": 15
+}

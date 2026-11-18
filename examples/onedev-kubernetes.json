@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "onedev",
+  "namespace": "onedev",
+  "state_claim": "onedev-state",
+  "credentials_secret": "onedev-private",
+  "https_url": "https://onedev.example.com",
+  "ssh_host": "onedev.example.com",
+  "ssh_public_port": 2222,
+  "database": {
+    "type": "postgres",
+    "host": "onedev-postgres-rw.onedev.svc.cluster.local",
+    "port": 5432,
+    "name": "onedev",
+    "user": "onedev"
+  },
+  "bootstrap": null
+}

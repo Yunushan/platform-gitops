@@ -11,11 +11,11 @@ assert spec.loader is not None
 spec.loader.exec_module(scanner)
 
 
-def scan(text: str, include_internal_markers: bool = True) -> list[str]:
+def scan(text: str, include_internal_markers: bool = True, path: str = "fixture.yaml") -> list[str]:
     return [
         message
         for _, message in scanner.scan_text(
-            Path("fixture.yaml"),
+            Path(path),
             text,
             include_internal_markers=include_internal_markers,
         )
@@ -66,6 +66,53 @@ token: ${PLATFORM_TOKEN}
         "organization-secret:SIGNING_KEY",
     ):
         assert_clean(f"source: {schema_identifier}\n")
+
+    # Assemble fixture assignments so this test file does not itself contain
+    # a fake plaintext credential that the repository scanner should reject.
+    key = "password"
+    for value in ("runtime_password", "self.admin_password", "credentials.admin.password"):
+        for expression in (f"{key} = {value}", f"client({key}={value})",
+                           f"{key}: str = {value}", f"({key} := {value})"):
+            if scan(expression + "\n", path="fixture.py"):
+                raise AssertionError("unquoted Python reference was treated as a literal")
+        for quote in ("'", '"'):
+            problems = scan(f"{key} = {quote}{value}{quote}\n", path="fixture.py")
+            if not any("possible plaintext secret" in problem for problem in problems):
+                raise AssertionError("quoted reference-looking literal was exempted")
+        for suffix in ("yaml", "md", "sh"):
+            problems = scan(f"{key}: {value}\n", path="fixture." + suffix)
+            if not any("possible plaintext secret" in problem for problem in problems):
+                raise AssertionError("non-Python literal was exempted")
+        problems = scan(f"broken(\n{key}={value}\n", path="fixture.py")
+        if not any("possible plaintext secret" in problem for problem in problems):
+            raise AssertionError("invalid Python bypassed conservative scanning")
+    # Unicode before a reference on the same line changes AST byte columns.
+    prefix = 'label = "caf' + chr(233) + ' example.com"; '
+    reference = f"client({key}=self.admin_password)"
+    if scan(prefix + reference + "\n", path="fixture.py"):
+        raise AssertionError("reference offsets changed after Unicode or allow-fragment masking")
+    for separator in (chr(0x85), chr(0x2028), chr(0x2029)):
+        unicode_line = 'label = "' + separator + '"; ' + reference
+        if scan(unicode_line + "\n", path="fixture.py"):
+            raise AssertionError("Unicode string separator changed Python line offsets")
+    for newline in ("\n", "\r\n", "\r"):
+        multiline = "label = 1" + newline + reference + newline
+        if scan(multiline, path="fixture.py"):
+            raise AssertionError("Python line ending changed reference offsets")
+    mixed = prefix + reference + f'; client({key}="{fake_secret}")\n'
+    problems = scan(mixed, path="fixture.py")
+    if len(problems) != 1 or "possible plaintext secret at line 1" not in problems[0]:
+        raise AssertionError("literal credential next to a reference was exempted")
+    for expression in (f'{key} = "{fake_secret}"', f'# {key}={fake_secret}',
+                       f'notice = """{key}={fake_secret}"""',
+                       f'client({key}="{fake_secret}")'):
+        if not any("possible plaintext secret" in p for p in scan(expression + "\n", path="fixture.py")):
+            raise AssertionError("literal in Python source was exempted")
+    # Masking must not fuse previously separated text into a different token.
+    masked = scanner.scan_text(Path("fixture.yaml"), "token: <TOKEN>\n" + f"{key}: {fake_secret}\n")
+    if len(masked) != 1 or "line 2" not in masked[0][1]:
+        raise AssertionError("placeholder masking changed line attribution")
+
     if scanner.should_scan(root / ".shell-syntax-leftover" / "script.sh"):
         raise AssertionError("expected stale shell syntax temp directories to be skipped")
     if scanner.should_scan(root / ".ansible-shell-syntax-leftover" / "block.sh"):
@@ -90,6 +137,13 @@ token: ${PLATFORM_TOKEN}
         raise AssertionError("expected first-party README files to remain scanned")
     if not scanner.should_scan(root / "gitops/apps/example/charts/vendor/credentials.txt"):
         raise AssertionError("expected non-README vendored chart files to remain scanned")
+    manual = scanner.gitea_yq_manual
+    citation = scanner.yaml_boolean_citation + "\n"
+    if not scanner.should_scan(root / manual) or scan(citation, path=manual):
+        raise AssertionError("only the reviewed citation should be exempt in the vendored manual")
+    for path, text in ((manual, citation + f"vip: {private_ip}\n"), ("docs/example.md", citation)):
+        if not any("private IP-like value" in problem for problem in scan(text, path=path)):
+            raise AssertionError("citation masking exempted unrelated content")
 
     print("Secret/privacy scanner self-test passed.")
     return 0

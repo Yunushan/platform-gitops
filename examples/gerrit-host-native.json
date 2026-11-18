@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "runtime": "raw",
+  "site_plan": {"replace_with_complete_reviewed_version_2_native_plan_from": "examples/gerrit-sites.json"},
+  "member": "gerrit-a",
+  "machine_id_sha256": "<SHA256_OF_MACHINE_ID_WITHOUT_TRAILING_NEWLINE>",
+  "boot_id": "<CURRENT_HOST_BOOT_UUID>",
+  "service_uid": 1000,
+  "service_gid": 1000,
+  "private_files_sha256": {
+    "etc/secure.config": "<PRIVATE_SECURE_CONFIG_SHA256>",
+    "etc/keystore": "<PRIVATE_KEYSTORE_SHA256>",
+    "etc/ssh_host_ed25519_key": "<PRIVATE_SSH_HOST_KEY_SHA256>"
+  },
+  "health": {
+    "address": "192.0.2.31",
+    "hostname": "review.example.com",
+    "ca_file": "/etc/gerrit-health-ca.crt",
+    "ca_sha256": "<REVIEWED_HEALTH_CA_SHA256>"
+  },
+  "docker": null,
+  "native": {
+    "user": "gerrit",
+    "group": "gerrit",
+    "java_home": "/opt/gerrit-java",
+    "java_manifest": "/etc/gerrit-java.sha256",
+    "java_manifest_sha256": "<REVIEWED_COMPLETE_JAVA_INVENTORY_SHA256>",
+    "systemctl_sha256": "<REVIEWED_SYSTEMCTL_SHA256>"
+  }
+}

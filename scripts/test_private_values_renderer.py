@@ -317,9 +317,11 @@ def test_focused_woodpecker_cli_refreshes_bounded_forgejo_contracts(renderer) ->
             "retained: true",
             "SSL_MODE: verify-full",
             "name: platform-internal-roots",
-            "mountPath: /data/gitea/git/.postgresql",
+            "mountPath: /etc/ssl/platform",
             "name: SSL_CERT_FILE",
-            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
+            "value: /etc/ssl/platform/ca-certificates.crt",
+            "name: PGSSLROOTCERT",
+            "value: /etc/ssl/platform/root.crt",
         )
         assert_not_contains(forgejo_path, 'tag: "14.0.0"', "GITEA__cache__HOST")
         assert_not_contains(
@@ -495,6 +497,23 @@ def test_focused_forgejo_tls_preserves_private_object_storage(renderer) -> None:
 ingress:
   hosts:
     - host: forgejo.private.example.test
+deployment:
+  env:
+    - name: SSL_CERT_FILE
+      value: /data/gitea/git/.postgresql/ca-certificates.crt
+    - name: PRIVATE_SETTING
+      value: retained
+extraContainerVolumeMounts:
+  - name: platform-postgres-ca
+    mountPath: /data/gitea/git/.postgresql
+    readOnly: true
+  - name: private-config
+    mountPath: /etc/private-config
+    readOnly: true
+extraInitVolumeMounts:
+  - name: platform-postgres-ca
+    mountPath: /data/gitea/git/.postgresql
+    readOnly: true
 gitea:
   additionalConfigFromEnvs:
     - name: GITEA__storage__MINIO_ACCESS_KEY_ID
@@ -531,14 +550,19 @@ gitea:
             raise AssertionError("focused Forgejo TLS refresh changed private object storage")
         if after["gitea"]["config"]["privateExtension"] != before_extension:
             raise AssertionError("focused Forgejo TLS refresh changed an unrelated private extension")
+        assert before["extraContainerVolumeMounts"][1] in after["extraContainerVolumeMounts"]
+        assert before["deployment"]["env"][1] in after["deployment"]["env"]
+        assert_not_contains(forgejo_path, "/data/gitea/git/.postgresql")
         assert_contains(
             forgejo_path,
             "DB_TYPE: postgres",
             "SSL_MODE: verify-full",
             "name: platform-internal-roots",
-            "mountPath: /data/gitea/git/.postgresql",
-            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
+            "mountPath: /etc/ssl/platform",
+            "value: /etc/ssl/platform/ca-certificates.crt",
+            "value: /etc/ssl/platform/root.crt",
         )
+        assert not renderer.refresh_forgejo_postgres_tls(forgejo_path)
 
 
 def test_focused_forgejo_tls_rejects_ambiguous_legacy_database(renderer) -> None:
@@ -1072,6 +1096,29 @@ def test_forgejo_config_env_migration(renderer) -> None:
 
 def main() -> int:
     renderer = load_renderer()
+    with tempfile.TemporaryDirectory() as directory:
+        values_path = Path(directory) / "forgejo-values.yaml"
+        env = {
+            "PLATFORM_FORGEJO_HOST": "git.example.invalid",
+            "PLATFORM_PRODUCTION_STRICT": "false",
+            "FORGEJO_MAILER_ENABLED": "false",
+            "FORGEJO_WOODPECKER_WEBHOOK_HOST": "CI.example.invalid",
+        }
+        for mode in ("sqlite", "postgres"):
+            with patched_env(dict(env, FORGEJO_DATABASE_MODE=mode)):
+                renderer.render_forgejo(values_path, {})
+                config = renderer.loads_strict_yaml_all(values_path.read_text(encoding="utf-8"))[0]["gitea"]["config"]
+                assert config["webhook"] == {"ALLOWED_HOST_LIST": "external, ci.example.invalid"}
+                assert not renderer.render_forgejo(values_path, {})
+        with patched_env(dict(env, FORGEJO_DATABASE_MODE="sqlite", FORGEJO_WOODPECKER_WEBHOOK_HOST="*")):
+            before = values_path.read_bytes()
+            try:
+                renderer.render_forgejo(values_path, {})
+            except SystemExit as exc:
+                assert "must be a DNS hostname" in str(exc)
+                assert values_path.read_bytes() == before
+            else:
+                raise AssertionError("Forgejo renderer accepted a wildcard Woodpecker hostname")
     test_render_result_omits_private_paths(renderer)
     test_forgejo_config_env_migration(renderer)
     test_forgejo_storage_bindings(renderer)
@@ -1287,7 +1334,8 @@ def main() -> int:
             'SSL_MODE: "verify-full"',
             "name: platform-postgres-ca",
             "name: platform-internal-roots",
-            "mountPath: /data/gitea/git/.postgresql",
+            "mountPath: /etc/ssl/platform",
+            "name: PGSSLROOTCERT",
             "FORGEJO__CACHE__HOST",
             'name: "forgejo-redis"',
             "ADAPTER: redis",
@@ -1320,9 +1368,10 @@ def main() -> int:
             "SSL_MODE: verify-full",
             "name: platform-postgres-ca",
             "name: platform-internal-roots",
-            "mountPath: /data/gitea/git/.postgresql",
+            "name: PGSSLROOTCERT",
+            "value: /etc/ssl/platform/root.crt",
             "name: SSL_CERT_FILE",
-            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
+            "value: /etc/ssl/platform/ca-certificates.crt",
             "mountPath: /etc/ssl/platform",
         ):
             if not contract_validator.rendered_optional_forgejo_database_contract(
@@ -1389,9 +1438,10 @@ def main() -> int:
             'MINIO_LOCATION: "eu-test-1"',
             'MINIO_BUCKET: "platform-test-forgejo"',
             "MINIO_USE_SSL: true",
-            "mountPath: /data/gitea/git/.postgresql",
+            "name: PGSSLROOTCERT",
+            "value: /etc/ssl/platform/root.crt",
             "name: SSL_CERT_FILE",
-            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
+            "value: /etc/ssl/platform/ca-certificates.crt",
             "mountPath: /etc/ssl/platform",
         )
         assert_not_contains(external_forgejo_path, "FORGEJO_REDIS_URL", "redis://")
@@ -1447,7 +1497,8 @@ def main() -> int:
             "DB_TYPE: postgres",
             "SSL_MODE: verify-full",
             "name: platform-postgres-ca",
-            "mountPath: /data/gitea/git/.postgresql",
+            "name: PGSSLROOTCERT",
+            "value: /etc/ssl/platform/root.crt",
         ):
             if not contract_validator.rendered_optional_forgejo_database_contract(
                 mysql_forgejo_text,
@@ -1498,8 +1549,45 @@ def main() -> int:
             'name: "cnpg-object-test"',
             "key: ACCESS_KEY_ID",
             "key: SECRET_ACCESS_KEY",
-            'schedule: "20 2 * * *"',
+            'schedule: "0 20 2 * * *"',
         )
+        for expression, expected in (
+            ("", "0 0 2 * * *"),
+            ("20 2 * * *", "0 20 2 * * *"),
+            ("45 20 2 * * *", "45 20 2 * * *"),
+            ("TZ=UTC 20 2 * * *", "TZ=UTC 0 20 2 * * *"),
+            ("@daily", "@daily"),
+        ):
+            with patched_env(dict(env, CNPG_BACKUP_SCHEDULE=expression)):
+                rendered_cluster = renderer.configured_cnpg_postgres_cluster_manifest()
+            if f'schedule: "{expected}"' not in rendered_cluster:
+                raise AssertionError("CNPG backup schedule changed its intended execution time")
+        with patched_env(dict(env, CNPG_BACKUP_SCHEDULE="20 2 * *")):
+            try:
+                renderer.configured_cnpg_postgres_cluster_manifest()
+            except SystemExit as exc:
+                if "CNPG_BACKUP_SCHEDULE" not in str(exc):
+                    raise
+            else:
+                raise AssertionError("CNPG renderer accepted a schedule missing fields")
+        for profile in ("premium-3node", "premium-3node-gitlab-ce"):
+            production = dict(env, PLATFORM_PROFILE=profile, PLATFORM_PRODUCTION_STRICT="true")
+            with patched_env(dict(production, CNPG_INSTANCES="3")):
+                manifest = renderer.configured_cnpg_postgres_cluster_manifest()
+                if "podAntiAffinityType: required" not in manifest or "topologyKey: kubernetes.io/hostname" not in manifest:
+                    raise AssertionError(f"{profile} allows CloudNativePG replicas to share a node")
+            with patched_env(dict(production, CNPG_INSTANCES="2")):
+                try:
+                    renderer.configured_cnpg_postgres_cluster_manifest()
+                except SystemExit as exc:
+                    if "CNPG_INSTANCES" not in str(exc):
+                        raise
+                else:
+                    raise AssertionError(f"{profile} accepted fewer than three database instances")
+        with patched_env(dict(env, PLATFORM_PRODUCTION_STRICT="false", CNPG_INSTANCES="1")):
+            manifest = renderer.configured_cnpg_postgres_cluster_manifest()
+            if "instances: 1" not in manifest or "podAntiAffinityType: required" in manifest:
+                raise AssertionError("CNPG lab rendering lost the singleton topology")
         assert_contains(
             paths["valkey"],
             'usersExistingSecret: "platform-valkey-test"',
@@ -1655,7 +1743,7 @@ def main() -> int:
             '"woodpecker-db-test"',
             "createAgentSecret: false",
             "mapAgentSecret: false",
-            "replicaCount: 3",
+            "server:\n  enabled: true\n  statefulSet:\n    replicaCount: 1",
             "repository: woodpeckerci/woodpecker-server",
             "repository: woodpeckerci/woodpecker-agent",
             'tag: "v3.16.0"',
@@ -1670,6 +1758,14 @@ def main() -> int:
             "path: ca-certificates.crt",
             "mountPath: /etc/ssl/platform-postgres",
         )
+        with patched_env(dict(env, WOODPECKER_SERVER_REPLICAS="2")):
+            try:
+                renderer.render_woodpecker(paths["woodpecker"], inventory)
+            except SystemExit as exc:
+                if "WOODPECKER_SERVER_REPLICAS must be 1" not in str(exc):
+                    raise AssertionError(f"unexpected Woodpecker server replica validation error: {exc}") from exc
+            else:
+                raise AssertionError("PostgreSQL-backed Woodpecker accepted multiple server replicas")
         invalid_woodpecker_log_env = dict(env, WOODPECKER_LOG_LEVEL="verbose")
         with patched_env(invalid_woodpecker_log_env):
             try:

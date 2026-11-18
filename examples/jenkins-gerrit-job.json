@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "gerrit_origin": "https://review.example.invalid",
+  "project": "team/project",
+  "credential_id": "gerrit-scoped-reader",
+  "agent_label": "review-ci-workers",
+  "git_plugin_version": "5.11.0",
+  "build_argv": ["python3", "-m", "unittest", "discover"]
+}

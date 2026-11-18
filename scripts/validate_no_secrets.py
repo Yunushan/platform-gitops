@@ -5,6 +5,7 @@ This scanner is not a replacement for professional secret scanning. It blocks
 obvious secrets, private keys, kubeconfigs, and real-looking private IPs.
 """
 from pathlib import Path
+import ast
 import os
 import re
 import sys
@@ -44,6 +45,8 @@ vendored_document_exceptions = {
     'gitops/clusters/rke2-main/premium-3node/apps/traefik/charts/'
     'traefik-41.2.0/traefik/EXAMPLES.md',
 }
+gitea_yq_manual = 'gitops/clusters/rke2-main/alternatives/gitea/charts/gitea-12.7.0/gitea/yq.1'
+yaml_boolean_citation = "See `10.2.1.2. Boolean' in https://yaml.org/spec/1.2.2/"
 
 allow_fragments = [
     '<GENERATE_WITH_PASSWORD_MANAGER>', '<NODE_1_IP>', '<NODE_2_IP>', '<NODE_3_IP>',
@@ -54,15 +57,13 @@ allow_fragments = [
 ]
 
 
+def excluded_path_part(part: str) -> bool:
+    return (part in exclude_dirs or part.startswith('.shell-syntax-')
+            or part.startswith('.ansible-shell-syntax-'))
+
+
 def should_scan(path: Path) -> bool:
-    if path.is_dir():
-        return False
-    if any(
-        part in exclude_dirs
-        or part.startswith('.shell-syntax-')
-        or part.startswith('.ansible-shell-syntax-')
-        for part in path.parts
-    ):
+    if path.is_dir() or any(excluded_path_part(part) for part in path.parts):
         return False
     rel = path.relative_to(root)
     rel_posix = rel.as_posix()
@@ -95,16 +96,51 @@ def should_scan(path: Path) -> bool:
     return True
 
 
+
+def python_reference_value_spans(data: str) -> set[tuple[int, int]]:
+    """Only unquoted reference values in parseable Python, never literal text."""
+    try:
+        tree = ast.parse(data)
+    except (SyntaxError, ValueError):
+        return set()
+    # Python line positions use CR/LF, not Unicode separators inside strings.
+    lines = re.findall(r"[^\r\n]*(?:\r\n|\r|\n|$)", data)
+    starts = []
+    offset = 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line)
+
+    def position(line_number: int, byte_column: int) -> int:
+        # AST columns count UTF-8 bytes; regex spans count Unicode characters.
+        line = lines[line_number - 1]
+        return starts[line_number - 1] + len(line.encode("utf-8")[:byte_column].decode("utf-8"))
+
+    spans = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr, ast.keyword)):
+            continue
+        value = node.value
+        if isinstance(value, (ast.Name, ast.Attribute)):
+            spans.add((position(value.lineno, value.col_offset),
+                       position(value.end_lineno, value.end_col_offset)))
+    return spans
+
 def scan_text(rel: Path, data: str, include_internal_markers: bool = True) -> list[tuple[Path, str]]:
     problems: list[tuple[Path, str]] = []
     normalized = data
     for frag in allow_fragments:
-        normalized = normalized.replace(frag, '')
+        normalized = normalized.replace(frag, ' ' * len(frag))
+    if rel.as_posix() == gitea_yq_manual:
+        normalized = normalized.replace(yaml_boolean_citation, ' ' * len(yaml_boolean_citation))
     if private_key.search(normalized):
         problems.append((rel, 'private key block'))
     if kubeconfig.search(normalized) and 'clusters:' in normalized and 'users:' in normalized:
         problems.append((rel, 'possible kubeconfig'))
+    reference_spans = python_reference_value_spans(data) if rel.suffix == '.py' else set()
     for m in secret_assignment.finditer(normalized):
+        if m.span(2) in reference_spans:
+            continue
         line = normalized[:m.start()].count('\n') + 1
         problems.append((rel, f'possible plaintext secret at line {line}: {m.group(1)}'))
     for m in private_ip.finditer(normalized):
@@ -120,15 +156,17 @@ def scan_text(rel: Path, data: str, include_internal_markers: bool = True) -> li
 
 def scan_repo(include_internal_markers: bool = True) -> list[tuple[Path, str]]:
     problems: list[tuple[Path, str]] = []
-    for path in root.rglob('*'):
-        if not should_scan(path):
-            continue
-        rel = path.relative_to(root)
-        try:
-            data = read_bounded_text(path)
-        except UnicodeDecodeError:
-            continue
-        problems.extend(scan_text(rel, data, include_internal_markers=include_internal_markers))
+    for directory, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs if not excluded_path_part(name)]
+        for name in files:
+            path = Path(directory) / name
+            if not should_scan(path):
+                continue
+            try:
+                data = read_bounded_text(path)
+            except UnicodeDecodeError:
+                continue
+            problems.extend(scan_text(path.relative_to(root), data, include_internal_markers=include_internal_markers))
     return problems
 
 

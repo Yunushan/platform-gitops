@@ -156,6 +156,21 @@ Only regular files are accepted. FIFOs, sockets, directories, and devices are
 rejected after a nonblocking descriptor open so they cannot stall an operator
 or CI process before the byte limit applies.
 
+Large physical backup files use a separate forward-only streaming reader with
+an explicit total budget from the reviewed backup/restore plan. Each read
+requires a bounded chunk; the whole-file allocation ceiling is unchanged.
+Growth beyond the original budget fails immediately, including on subsequent
+reads after an overflow. This supports large backups without loading them into
+memory or disabling byte limits.
+
+The standalone Ceph clients/device probes, Gerrit storage guard and pre-import
+SSH staging bootstrap carry the shared self-contained bounded-read primitive.
+Their isolated execution cannot rely on unverified adjacent imports. The
+bounded-file contract compares each embedded function's syntax tree to the
+shared implementation and checks the actual limits. The scanner separately
+recognizes urllib openers constructed by `build_opener`; an arbitrary
+`.opener.open` name or a later local-file reassignment receives no exemption.
+
 First-party JSON is decoded through one strict parser after its transport or
 file bound is enforced. Duplicate object keys, `NaN`, positive or negative
 `Infinity`, and numeric literals that overflow to non-finite values are

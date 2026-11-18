@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "root": "/opt/platform-gitops",
+  "user": "ci_poller",
+  "group": "ci_poller",
+  "queue_dir": "/opt/platform-gitops/private/queue",
+  "review_dir": "/opt/platform-gitops/private/reviews",
+  "trigger_policy": "/opt/platform-gitops/private/trigger.json",
+  "result_policy": "/opt/platform-gitops/private/results.json",
+  "trigger_inputs": "/opt/platform-gitops/private/trigger-inputs",
+  "result_inputs": "/opt/platform-gitops/private/result-inputs",
+  "trigger_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "result_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "interval_seconds": 60
+}

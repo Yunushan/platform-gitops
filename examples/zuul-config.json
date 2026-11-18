@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "zuul_version": "<REVIEWED_ZUUL_VERSION>",
+  "image": "registry.example.com/platform/zuul@sha256:<REVIEWED_ZUUL_IMAGE_DIGEST>",
+  "namespace": "zuul",
+  "web_url": "https://ci.example.com/",
+  "zookeeper": [
+    {"host": "zk-a.example.com", "port": 2281},
+    {"host": "zk-b.example.com", "port": 2281},
+    {"host": "zk-c.example.com", "port": 2281}
+  ],
+  "gerrit": {"host": "review.example.com", "port": 29418, "user": "zuul"},
+  "executor": {"enabled": false},
+  "tenants": [
+    {
+      "name": "platform",
+      "config_branch": "main",
+      "config_projects": ["platform/ci-config"],
+      "untrusted_projects": ["applications/example"]
+    }
+  ]
+}

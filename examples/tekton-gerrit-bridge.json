@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "name": "gerrit-review",
+  "source": {
+    "api_url": "https://review.example.com",
+    "project": "team/application",
+    "branch": "main",
+    "clone_url": "https://review.example.com/a/team/application.git",
+    "read_username": "ci-read",
+    "ca_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "management_target": {
+    "kubeconfig_env": "PLATFORM_CI_KUBECONFIG",
+    "context": "ci",
+    "cluster_uid": "11111111-1111-4111-8111-111111111111"
+  },
+  "namespace": "platform-ci-jobs",
+  "service_account": "application-build",
+  "submitter_account": "forge-event-bridge",
+  "submitter_namespace": "platform-ci-control",
+  "node_selector": {
+    "kubernetes.io/os": "linux",
+    "platform.gitops/ci-worker": "true"
+  },
+  "controller_selector": {
+    "kubernetes.io/os": "linux",
+    "platform.gitops/control-service": "true"
+  },
+  "checkout_image": "registry.example.com/git-python@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "build_image": "registry.example.com/python@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "bridge_image": "registry.example.com/python-kubectl@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "build_argv": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover"
+  ],
+  "read_secret": "application-read",
+  "timeout_minutes": 10,
+  "bridge_secret": "forge-event-inputs",
+  "namespace_uid": "33333333-3333-4333-8333-333333333333",
+  "poll_seconds": 30,
+  "max_changes": 100
+}

@@ -7,6 +7,7 @@ import contextlib
 import functools
 import http.server
 import io
+import json
 import os
 import shutil
 import socket
@@ -15,6 +16,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -23,15 +25,14 @@ from unittest import mock
 import repair_forgejo_runtime as forgejo_runtime
 
 from forgejo_database_contract import (
-    FORGEJO_NON_POSTGRES_DATABASE_TYPES,
+    FORGEJO_CA_MOUNT_PATH, FORGEJO_LEGACY_POSTGRES_CA_MOUNT_PATH,
+    FORGEJO_NON_POSTGRES_DATABASE_TYPES, FORGEJO_POSTGRES_CA_ENV,
     effective_forgejo_database_type,
 )
 from repair_forgejo_runtime import (
-    MOUNT_PATHS,
-    POSTGRES_CA_BUNDLE_PATH,
     POSTGRES_SERVER_CERTIFICATE_SECRET,
+    forgejo_ca_patch,
     mount_contract_ready,
-    stale_init_application_mount_patch,
     tls_env_contract_ready,
 )
 from reconcile_forgejo_tls_routes import build_patch
@@ -135,101 +136,60 @@ def test_forgejo_runtime_storage_preflight() -> None:
     assert "never-log-test-secret" not in output.getvalue()
     playbook = read(FORGEJO_RUNTIME_REPAIR_PLAYBOOK)
     require(playbook, "- forgejo_storage_contract.py", "runtime storage bundle")
+    require(playbook, "- forgejo_database_contract.py", "runtime database bundle")
     require(playbook, "lookup('ansible.builtin.env', 'FORGEJO_OBJECT_STORAGE_MODE')", "remote storage mode")
 
 
 def test_forgejo_runtime_mount_contract_scope() -> None:
-    def workload(
-        init_paths: tuple[str, ...],
-        *,
-        ca_path: str = POSTGRES_CA_BUNDLE_PATH,
-    ) -> dict[str, object]:
-        return {
-            "metadata": {"resourceVersion": "17"},
-            "spec": {
-                "template": {
-                    "spec": {
-                        "volumes": [{
-                            "name": "platform-postgres-ca",
-                            "configMap": {
-                                "name": "platform-internal-roots",
-                                "items": [
-                                    {
-                                        "key": "ca-certificates.crt",
-                                        "path": path,
-                                    }
-                                    for path in ("ca-certificates.crt", "root.crt")
-                                ],
-                            },
-                        }],
-                        "containers": [{
-                            "name": "forgejo",
-                            "env": [{
-                                "name": "SSL_CERT_FILE",
-                                "value": ca_path,
-                            }],
-                            "volumeMounts": [
-                                {
-                                    "name": "platform-postgres-ca",
-                                    "mountPath": path,
-                                }
-                                for path in MOUNT_PATHS
-                            ],
-                        }],
-                        "initContainers": [{
-                            "name": "configure-gitea",
-                            "env": [{
-                                "name": "SSL_CERT_FILE",
-                                "value": ca_path,
-                            }],
-                            "volumeMounts": [
-                                {
-                                    "name": "platform-postgres-ca",
-                                    "mountPath": path,
-                                }
-                                for path in init_paths
-                            ],
-                        }],
-                    }
-                }
-            }
-        }
+    from copy import deepcopy
 
-    if not mount_contract_ready(workload((MOUNT_PATHS[0],))):
-        raise AssertionError(
-            "a PostgreSQL root.crt mount on the init container must satisfy the contract"
-        )
-    if mount_contract_ready(workload(MOUNT_PATHS)):
-        raise AssertionError(
-            "the application trust-directory mount must not be accepted on init containers"
-        )
-    if mount_contract_ready(workload(())):
-        raise AssertionError("an init container without PostgreSQL trust must fail closed")
-    if not tls_env_contract_ready(workload((MOUNT_PATHS[0],))):
-        raise AssertionError(
-            "all Forgejo containers must use the shared PostgreSQL CA bundle via SSL_CERT_FILE"
-        )
-    if tls_env_contract_ready(
-        workload(
-            (MOUNT_PATHS[0],),
-            ca_path="/etc/ssl/platform/ca-certificates.crt",
-        )
-    ):
-        raise AssertionError("a stale SSL_CERT_FILE path must fail closed")
+    mount = {"name": "platform-postgres-ca", "mountPath": FORGEJO_CA_MOUNT_PATH, "readOnly": True}
+    env = [{"name": name, "value": value} for name, value in FORGEJO_POSTGRES_CA_ENV.items()]
+    volume = {
+        "name": "platform-postgres-ca",
+        "configMap": {"name": "platform-internal-roots", "items": [
+            {"key": "ca-certificates.crt", "path": path}
+            for path in ("ca-certificates.crt", "root.crt")
+        ]},
+    }
+    pod = {
+        "volumes": [volume],
+        "containers": [{"name": "forgejo", "env": deepcopy(env), "volumeMounts": [mount.copy()]}],
+        "initContainers": [{"name": "configure-gitea", "env": deepcopy(env), "volumeMounts": [mount.copy()]}],
+    }
+    workload = {"metadata": {"resourceVersion": "17"}, "spec": {"template": {"spec": pod}}}
+    assert mount_contract_ready(workload)
+    assert tls_env_contract_ready(workload)
+    pod["initContainers"][0]["env"].pop()
+    assert not tls_env_contract_ready(workload)
+    pod["initContainers"][0]["volumeMounts"][0]["readOnly"] = False
+    assert not mount_contract_ready(workload)
 
-    guarded_patch = stale_init_application_mount_patch(workload(MOUNT_PATHS))
-    if len(guarded_patch) != 2:
-        raise AssertionError("stale init mount cleanup must emit one guard and one remove")
-    if guarded_patch[0] != {
-        "op": "test",
-        "path": "/metadata/resourceVersion",
-        "value": "17",
-    }:
-        raise AssertionError("stale init mount cleanup must guard the resourceVersion")
-    if guarded_patch[1].get("op") != "remove" or not guarded_patch[1].get(
-        "path", ""
-    ).endswith("/volumeMounts/1"):
-        raise AssertionError("stale init mount cleanup targeted the wrong mount index")
+    legacy = dict(mount, mountPath=FORGEJO_LEGACY_POSTGRES_CA_MOUNT_PATH)
+    data = {"name": "data", "mountPath": "/data"}
+    private = {"name": "private-ca", "mountPath": "/data/private-ca"}
+    for container in (pod["containers"][0], pod["initContainers"][0]):
+        container["volumeMounts"] = [data.copy(), private.copy(), legacy.copy()]
+        container["env"] = [{"name": "SSL_CERT_FILE", "value": legacy["mountPath"] + "/ca-certificates.crt"},
+                            {"name": "USER_SETTING", "value": "preserve"}]
+    assert not mount_contract_ready(workload)
+    assert not tls_env_contract_ready(workload)
+    patch = forgejo_ca_patch(workload)
+    assert patch["metadata"] == {"resourceVersion": "17"}
+    updates = patch["spec"]["template"]["spec"]
+    for field in ("containers", "initContainers"):
+        update, = updates[field]
+        assert update["name"] == pod[field][0]["name"]
+        assert update["volumeMounts"] == [mount, {"mountPath": legacy["mountPath"], "$patch": "delete"}]
+        assert update["env"] == [dict(entry, valueFrom=None) for entry in env]
+
+    pod["containers"][0]["volumeMounts"].append(dict(private, mountPath=FORGEJO_CA_MOUNT_PATH))
+    try:
+        forgejo_ca_patch(workload)
+    except forgejo_runtime.RepairError:
+        pass
+    else:
+        raise AssertionError("an unrelated volume at the trust path must be preserved")
 
 
 def run_command(
@@ -1023,6 +983,37 @@ def test_woodpecker_route_reconciler_bundle() -> None:
         )
 
 
+def test_gitlab_ingress_host_selection() -> None:
+    script = read(PUBLIC_TLS_VERIFY_PLAYBOOK).split("<<'PY'\n", 1)[1].split("\n        PY", 1)[0]
+    script = textwrap.dedent(script)
+    items = []
+    for host in ("gitlab.example.test", "registry-gitlab.example.test", "kas.example.test"):
+        items.append({
+            "spec": {
+                "rules": [{"host": host}],
+                "tls": [{"secretName": "gitlab-tls", "hosts": [host]}],
+            },
+        })
+    with tempfile.TemporaryDirectory() as temporary:
+        snapshot = Path(temporary) / "ingresses.json"
+        snapshot.write_text(json.dumps({"items": items}), encoding="utf-8")
+
+        def discover(host: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [sys.executable, "-c", script, str(snapshot), "gitlab-tls", host, "true"],
+                check=False, capture_output=True, text=True, timeout=30,
+            )
+
+        registry_host = "registry-gitlab.example.test"
+        registry = discover(registry_host)
+        if registry.returncode != 0 or registry.stdout.strip() != registry_host:
+            raise AssertionError("the shared GitLab TLS Secret hid the registry ingress host")
+        items[1]["spec"]["rules"][0]["host"] = "other.example.test"
+        snapshot.write_text(json.dumps({"items": items}), encoding="utf-8")
+        if discover(registry_host).returncode == 0:
+            raise AssertionError("a TLS host without an ingress rule passed GitLab verification")
+
+
 def test_public_tls_chain_completion() -> None:
     if os.name == "nt":
         print("Public TLS chain behavior test skipped on Windows; static contract still enforced.")
@@ -1443,9 +1434,11 @@ gitea:
         for needle in (
             "SSL_MODE: verify-full",
             "name: platform-internal-roots",
-            "mountPath: /data/gitea/git/.postgresql",
+            "mountPath: /etc/ssl/platform",
             "name: SSL_CERT_FILE",
-            "value: /data/gitea/git/.postgresql/ca-certificates.crt",
+            "value: /etc/ssl/platform/ca-certificates.crt",
+            "name: PGSSLROOTCERT",
+            "value: /etc/ssl/platform/root.crt",
         ):
             require(forgejo, needle, "Forgejo PostgreSQL TLS values")
     for needle in (
@@ -1659,14 +1652,12 @@ gitea:
         "configmap/platform-internal-roots",
         "POSTGRES_CA_BUNDLE_PATH",
         "mount_contract_ready",
-        "container_mount_paths",
         "container_env_value",
         "tls_env_contract_ready",
-        "stale_init_application_mount_patch",
-        '"op": "test"',
-        "metadata/resourceVersion",
-        "STALE_INIT_MOUNT_CLEANUP_RETRIES",
-        "forgejo_postgres_ca_init_mount=removed",
+        "forgejo_ca_patch",
+        '"$patch": "delete"',
+        '"resourceVersion": resource_version',
+        "POSTGRES_CA_PATCH_RETRIES",
         "forgejo_postgres_ca_env=patched",
         "SSL_CERT_FILE",
         "redact_diagnostic_text",
@@ -1675,7 +1666,6 @@ gitea:
         "last_exit_code=",
         "initContainerStatuses",
         'conditions.get("ready") is True',
-        "application-only",
         "rollout",
         "result=ok",
     ):
@@ -1717,6 +1707,7 @@ gitea:
     test_valkey_longhorn_storage_preflight()
     test_forgejo_route_reconciliation()
     test_woodpecker_route_reconciler_bundle()
+    test_gitlab_ingress_host_selection()
     test_public_tls_chain_completion()
 
     for needle in (

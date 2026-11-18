@@ -67,6 +67,78 @@ The monitoring stack should alert on these production-critical signals:
 `make platform-app-health` covers many of these as an on-demand gate. Alerting
 should make the same kinds of failures visible without waiting for a manual run.
 
+### Independent HTTPS checks
+
+Run Prometheus, Blackbox Exporter and Alertmanager on a Linux host that can
+reach the platform endpoints and the incident receiver during a cluster outage.
+Copy the [example plan](../examples/external-monitoring.json) into ignored
+private storage, then set the DNS names, exact expected response codes and
+alert owners. An expected HTTP 401 verifies the TLS connection and
+expected unauthorized response for a protected endpoint. Choose a dedicated
+health endpoint when the check needs to verify service readiness.
+
+```bash
+python3 scripts/render_external_monitoring.py \
+  --plan private/external-monitoring.json --runtime raw \
+  --output-dir private/rendered-external-monitoring
+```
+
+Install the configs in `/etc/platform-monitoring` and provide
+`probe-ca.pem`, `receiver-ca.pem`, and `webhook-url` there. Put the HTTPS
+receiver URL alone in `webhook-url`. Restrict it to the Alertmanager service
+account and use a receiver controlled by the organization. Run the native
+programs under unprivileged supervised accounts with writable state directories.
+Set these executable arguments in the supervisor and create the state
+directories with ownership assigned to their respective service accounts.
+
+```bash
+blackbox_exporter --web.listen-address=127.0.0.1:9115 \
+  --config.file=/etc/platform-monitoring/blackbox.yaml
+alertmanager --web.listen-address=127.0.0.1:9093 --cluster.listen-address= \
+  --config.file=/etc/platform-monitoring/alertmanager.yaml \
+  --storage.path=/var/lib/platform-monitoring/alerts
+prometheus --web.listen-address=127.0.0.1:9090 \
+  --config.file=/etc/platform-monitoring/prometheus.yaml \
+  --storage.tsdb.path=/var/lib/platform-monitoring/metrics \
+  --storage.tsdb.retention.time=15d
+```
+
+For Docker, add an `images` object with digest-pinned `prometheus`,
+`blackbox`, and `alertmanager` images and render with `--runtime docker`.
+Place the same three private input files and separate `prometheus-state`
+and `alertmanager-state` directories alongside `compose.yaml`. The configs
+and private inputs must be readable by UID 65534, and the state directories
+must be writable by that UID. On a rootful Docker host without user
+namespace remapping, prepare the inputs and start the rendered project
+from its output directory.
+
+```bash
+sudo chown 65534:65534 prometheus.yaml alerts.yaml blackbox.yaml \
+  alertmanager.yaml probe-ca.pem receiver-ca.pem webhook-url
+sudo chmod 0400 prometheus.yaml alerts.yaml blackbox.yaml \
+  alertmanager.yaml probe-ca.pem receiver-ca.pem webhook-url
+sudo install -d -o 65534 -g 65534 -m 0700 prometheus-state alertmanager-state
+sudo docker compose config --quiet
+sudo docker compose up -d
+```
+
+For a remapped Docker daemon, use the host IDs that correspond to UID and
+GID 65534 inside its containers. The Compose network carries the internal
+scrapes and alerts. Keep the Blackbox Exporter probe endpoint private.
+
+The monitor compares exact HTTPS status codes, verifies TLS, and refuses
+redirects. It sends a critical alert when a probe fails for 30 seconds and
+a warning when an endpoint's probe series disappears for 30 seconds.
+Alertmanager sends recovery notifications to the same receiver.
+[Prometheus multi-target exporter pattern](https://prometheus.io/docs/guides/multi-target-exporter/)
+
+Disposable Linux tests with Prometheus 2.53.5, Blackbox Exporter 0.26.0,
+and Alertmanager 0.28.1 exercised both native programs and the digest-pinned
+upstream images in Compose. A local TLS endpoint and webhook verified an
+expected registry 401 and both firing and resolved alerts for endpoint
+failure and exporter loss. In Compose, Prometheus replayed historical probe
+data after a restart, and Alertmanager saved its notification log on shutdown.
+
 ## SLO and Error Budget Expectations
 
 Each private deployment should define service objectives for:

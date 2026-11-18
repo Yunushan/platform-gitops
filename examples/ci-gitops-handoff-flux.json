@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "runtime": "rke2",
+  "bridge_contract_sha256": "<REVIEWED_CI_EVENT_CONTRACT_SHA256>",
+  "deployment_branch": "deploy/staging",
+  "allow_create_branch": false,
+  "allow_prune": false,
+  "git_username": "cd-writer",
+  "timeout_seconds": 600,
+  "cd": {
+    "kind": "flux",
+    "management_target": {
+      "kubeconfig_env": "PLATFORM_CD_KUBECONFIG",
+      "context": "cd",
+      "cluster_uid": "<REVIEWED_CD_KUBE_SYSTEM_NAMESPACE_UID>"
+    },
+    "namespace": "platform-apps",
+    "name": "application",
+    "uid": "<REVIEWED_KUSTOMIZATION_UID>",
+    "spec_sha256": "<REVIEWED_KUSTOMIZATION_SPEC_SHA256>",
+    "path": "deploy/staging",
+    "source_namespace": "platform-apps",
+    "source_name": "application",
+    "source_uid": "<REVIEWED_GITREPOSITORY_UID>",
+    "source_spec_sha256": "<REVIEWED_GITREPOSITORY_SPEC_SHA256>"
+  }
+}

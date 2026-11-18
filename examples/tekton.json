@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "pipelines_version": "1.4.0",
+  "bundle_sha256": "<REVIEWED_RELEASE_MANIFEST_SHA256>",
+  "management_target": {
+    "kubeconfig_env": "PLATFORM_MANAGEMENT_KUBECONFIG",
+    "context": "management",
+    "cluster_uid": "<REVIEWED_KUBE_SYSTEM_NAMESPACE_UID>"
+  },
+  "replicas": 2,
+  "leader_buckets": 2,
+  "webhook_max_replicas": 3,
+  "node_selector": {
+    "kubernetes.io/os": "linux",
+    "platform.gitops/control-service": "true"
+  },
+  "failure_domain_key": "kubernetes.io/hostname",
+  "image_overrides": {},
+  "api_fields": "stable",
+  "resolvers": {
+    "git": false,
+    "hub": false,
+    "bundles": false,
+    "cluster": false,
+    "http": false
+  },
+  "canary": {
+    "name": "platform-canary",
+    "namespace": "platform-ci-canary",
+    "image": "registry.example.com/platform/python@sha256:<REVIEWED_LINUX_PYTHON_IMAGE_DIGEST>",
+    "node_selector": {
+      "kubernetes.io/os": "linux",
+      "platform.gitops/ci-worker": "true"
+    }
+  }
+}

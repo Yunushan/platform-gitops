@@ -3,7 +3,7 @@ stages:
 
 validate:
   stage: validate
-  image: python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+  image: python:3.12.13-bookworm@sha256:3cd9086bdb30f7c9bc08a3fa621d9842e0d3f6f9291aeb4677e0547817c10b12
   timeout: 60m
   script:
     - >-
@@ -36,6 +36,140 @@ validate:
     - python scripts/test_private_values_renderer.py
     - python scripts/test_system_mail.py
     - python scripts/test_platform_version_updates.py
+    - python scripts/test_platform_stack_plan.py
+    - python scripts/test_gitbucket_render.py
+    - python scripts/test_gogs_render.py
+    - python scripts/test_scm_manager_render.py
+    - python scripts/test_onedev_render.py
+    - python scripts/test_allura_render.py
+    - python scripts/test_rhodecode_render.py
+    - python scripts/test_sourcehut_render.py
+    - python scripts/test_kallithea_render.py
+    - python scripts/test_render_woodpecker_forge.py
+    - python scripts/test_render_woodpecker_agent.py
+    - python scripts/test_forge_host.py
+    - python scripts/test_provision_woodpecker_gitea_oauth.py
+    - python scripts/test_gitlab_praefect.py
+    - python scripts/test_gitlab_repository_hosts.py
+    - python scripts/test_gitlab_application_entry.py
+    - python scripts/test_gitlab_traefik_entry.py
+    - python scripts/test_gitlab_runner_profile.py
+    - python scripts/test_gitlab_runner_api_fixture.py
+    - python scripts/test_gitlab_runner_execution_fixture.py
+    - python scripts/test_gitlab_runner_kubernetes_fixture.py
+    - python scripts/test_gitlab_pipeline_verification.py
+    - GITLAB_PIPELINE_HTTPS_FIXTURE=1 python scripts/test_gitlab_pipeline_https_fixture.py
+    - python scripts/test_gitlab_gitops_handoff.py
+    - python scripts/test_gitlab_gitops_schedule.py
+    - python scripts/test_gitlab_gitops_cronjob.py
+    - python scripts/test_gitlab_gitops_image.py
+    - python scripts/test_gitlab_gitops_cronjob_api_fixture.py
+    - python scripts/test_jenkins_controller.py
+    - python scripts/test_jenkins_host.py
+    - python scripts/test_jenkins_host_preflight.py
+    - python scripts/test_jenkins_native_runtime_fixture.py
+    - python scripts/test_jenkins_fixture_plugins.py
+    - python scripts/test_jenkins_gerrit_verification.py
+    - python scripts/test_jenkins_gerrit_job.py
+    - python scripts/test_trigger_jenkins_gerrit.py
+    - python scripts/test_scan_jenkins_gerrit.py
+    - python scripts/test_resolve_jenkins_gerrit_build.py
+    - python scripts/test_report_jenkins_gerrit.py
+    - python scripts/test_scan_jenkins_gerrit_results.py
+    - python scripts/test_jenkins_gerrit_gitops_handoff.py
+    - python scripts/test_render_jenkins_pollers.py
+    - python scripts/test_render_jenkins_pollers_k8s.py
+    - python scripts/test_prepare_jenkins_poller_image.py
+    - python scripts/test_jenkins_gerrit_https_fixture.py
+    - python scripts/test_jenkins_gerrit_real_fixture.py
+    - python scripts/test_jenkins_controller_api_fixture.py
+    - GITLAB_GITOPS_HTTPS_FIXTURE=1 python scripts/test_gitlab_gitops_https_fixture.py
+    - python scripts/test_keycloak_ha.py
+    - python scripts/test_keycloak_installation.py
+    - python scripts/test_keycloak_host.py
+    - python scripts/test_keycloak_native_runtime.py
+    - python scripts/test_keycloak_docker_runtime.py
+    - python scripts/test_openbao_ha.py
+    - python scripts/test_openbao_installation.py
+    - python scripts/test_openbao_snapshot.py
+    - python scripts/test_openbao_runtime.py
+    - python scripts/test_openbao_host.py
+    - python scripts/test_valkey_ha.py
+    - python scripts/test_valkey_installation.py
+    - python scripts/test_valkey_runtime.py
+    - python scripts/test_valkey_gateway.py
+    - python scripts/test_harbor_cache_artifacts.py
+    - python scripts/test_harbor_registry_contract.py
+    - python scripts/test_harbor_service_contract.py
+    - python scripts/test_harbor_pool_build.py
+    - python scripts/test_harbor_robot.py
+    - python scripts/test_harbor_static_image.py
+    - python scripts/test_image_signature.py
+    - python scripts/test_sigstore_tuf.py
+    - python scripts/test_kyverno_installation.py
+    - python scripts/test_kyverno_authority_contract.py
+    - python scripts/test_source_bound_static_image.py
+    - python scripts/test_gerrit_artifact_contract.py
+    - python scripts/test_gerrit_artifact_promotion.py
+    - python scripts/test_valkey_host.py
+    - python scripts/test_argocd_valkey.py
+    - python scripts/test_keycloak_realm.py
+    - python scripts/test_keycloak_argocd.py
+    - python scripts/test_argocd_identity.py
+    - python scripts/test_argocd_identity_runtime.py
+    - python scripts/test_gerrit_router.py
+    - python scripts/test_gerrit_sites.py
+    - python scripts/test_gerrit_storage.py
+    - python scripts/test_gerrit_initialization.py
+    - python scripts/test_gerrit_preparation.py
+    - python scripts/test_gerrit_artifacts.py
+    - python scripts/test_gerrit_activation.py
+    - python scripts/test_gerrit_host.py
+    - python scripts/test_gerrit_pair.py
+    - python scripts/test_zuul_config.py
+    - python scripts/test_zuul_services.py
+    - python scripts/test_zuul_gitops_handoff.py
+    - python scripts/test_zuul_static_image.py
+    - python scripts/test_zuul_executors.py
+    - python scripts/test_nodepool_static.py
+    - python scripts/test_nodepool_services.py
+    - python scripts/test_zuul_canary.py
+    - python scripts/test_zookeeper.py
+    - python scripts/test_flux.py
+    - python scripts/test_tekton.py
+    - python scripts/test_kubernetes_management.py
+    - python scripts/test_k3s_worker_runtime.py
+    - python scripts/test_tekton_forge_bridge.py
+    - python scripts/test_tekton_gerrit_bridge.py
+    - python scripts/test_tekton_gerrit_reporter.py
+    - python scripts/test_tekton_forge_reporter.py
+    - python scripts/test_ci_gitops_handoff.py
+    - python scripts/test_woodpecker_gitops_handoff.py
+    - python scripts/test_gerrit_gitops_handoff.py
+    - python scripts/test_cilium_gateway.py
+    - python scripts/test_cilium_installation.py
+    - python scripts/test_gateway_edge.py
+    - python scripts/test_gateway_edge_host.py
+    - python scripts/test_gateway_edge_pair.py
+    - python scripts/test_gateway_edge_pair_staging.py
+    - python scripts/test_gateway_edge_systemd_job.py
+    - python scripts/test_postgres_ha.py
+    - python scripts/test_postgres_installation.py
+    - python scripts/test_cnpg_operator.py
+    - python scripts/test_postgres_runtime.py
+    - python scripts/test_postgres_switchover.py
+    - python scripts/test_postgres_physical_backup.py
+    - python scripts/test_postgres_restore.py
+    - python scripts/test_ceph_storage.py
+    - python scripts/test_ceph_clients.py
+    - python scripts/test_ceph_host_recovery.py
+    - python scripts/test_ceph_native.py
+    - python scripts/test_ceph_native_docker.py
+    - python scripts/test_ceph_mount.py
+    - python scripts/test_ceph_provider.py
+    - python scripts/test_ceph_provider_installation.py
+    - python scripts/test_ceph_key_recovery.py
+    - python scripts/test_rook_bootstrap.py
     - python scripts/test_argocd_application_diagnostics.py
     - python scripts/test_platform_secret_contract.py
     - python scripts/test_policy_examples.py

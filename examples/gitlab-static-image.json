@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "api_url": "https://gitlab.example.invalid/api/v4",
+  "project_id": 123,
+  "project_path": "applications/example",
+  "branch": "main",
+  "job": "platform-publish-static-image",
+  "source": {
+    "read_username": "source-reader",
+    "ca_sha256": "REVIEWED_GITLAB_CA_SHA256"
+  },
+  "static_directory": "public",
+  "registry": {
+    "origin": "https://registry.example.invalid",
+    "repository": "applications/example",
+    "project_id": 42,
+    "robot_id": 73,
+    "base_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "ca_sha256": "REVIEWED_HARBOR_CA_SHA256",
+    "leaf_sha256": "REVIEWED_HARBOR_LEAF_SHA256",
+    "credential_sha256": "REVIEWED_PUBLISHER_ROBOT_HANDOFF_SHA256",
+    "files": ["index.html"]
+  }
+}

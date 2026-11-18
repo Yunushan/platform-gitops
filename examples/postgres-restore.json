@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "backup_plan_sha256": "<REVIEWED_CANONICAL_BACKUP_PLAN_SHA256>",
+  "backup_receipt_sha256": "<INDEPENDENT_COMPLETED_BACKUP_RECEIPT_SHA256>",
+  "runner_machine_id_sha256": "<RESTORE_HOST_MACHINE_ID_SHA256>",
+  "server": {
+    "bin_dir": "/usr/lib/postgresql/18/bin",
+    "artifacts_sha256": {
+      "postgres": "<REVIEWED_BINARY_SHA256>",
+      "psql": "<REVIEWED_BINARY_SHA256>",
+      "pg_controldata": "<REVIEWED_BINARY_SHA256>"
+    },
+    "library_dir": null,
+    "libraries_sha256": {},
+    "asset_trees_sha256": {
+      "/usr/share/postgresql/18": "<REVIEWED_RUNTIME_TREE_SHA256>",
+      "/usr/lib/postgresql/18/lib": "<REVIEWED_RUNTIME_TREE_SHA256>"
+    }
+  },
+  "runtime_parent": "/run/postgres-drill",
+  "database_user": "platform_pg_admin",
+  "port": 16543,
+  "limits": {
+    "startup_seconds": 300,
+    "query_seconds": 10,
+    "stop_seconds": 30,
+    "max_memory_bytes": 2147483648,
+    "max_log_bytes": 4194304
+  },
+  "witnesses": [
+    {
+      "database": "platform",
+      "rows": 2,
+      "sha256": "<INDEPENDENT_BACKUP_TIME_WITNESS_SHA256>"
+    }
+  ]
+}

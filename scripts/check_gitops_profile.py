@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from bounded_file import read_bounded_text
+from render_deployable_gitops_apps import known_application_docs
 
 
 PLACEHOLDER_RE = re.compile(r"<[A-Z0-9_]+>")
@@ -254,7 +255,8 @@ def is_application_source(path: Path) -> bool:
 
 def profile_source_paths(repo_root: Path, profile: str) -> list[Path]:
     includes, _ = resolve_profile_entries(repo_root, profile)
-    return [repo_root / entry for entry in includes if is_application_source(repo_root / entry)]
+    known = known_application_docs(repo_root)
+    return [repo_root / entry for entry in includes if entry in known or is_application_source(repo_root / entry)]
 
 
 def strip_scalar(value: str) -> str:
@@ -310,6 +312,7 @@ def parse_helm_charts(lines: list[str]) -> list[dict[str, str]]:
     charts: list[dict[str, str]] = []
     in_helm_charts = False
     helm_indent = 0
+    chart_indent = None
     current: dict[str, str] | None = None
 
     def finish() -> None:
@@ -327,12 +330,17 @@ def parse_helm_charts(lines: list[str]) -> list[dict[str, str]]:
             if stripped == "helmCharts:":
                 in_helm_charts = True
                 helm_indent = indent
+                chart_indent = None
             continue
         if indent <= helm_indent and not stripped.startswith("- "):
             finish()
             in_helm_charts = False
             continue
         if stripped.startswith("- "):
+            if chart_indent is None:
+                chart_indent = indent
+            if indent != chart_indent:
+                continue
             finish()
             current = {}
             field = stripped[2:]
@@ -346,6 +354,25 @@ def parse_helm_charts(lines: list[str]) -> list[dict[str, str]]:
         current[key.strip()] = strip_scalar(value)
     finish()
     return charts
+
+
+def additional_helm_values(text: str) -> list[str]:
+    # Read the block-style lists used by the private renderers.
+    values = []
+    indent = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        current_indent = len(line) - len(line.lstrip(" "))
+        if indent is not None:
+            if current_indent >= indent and (item := LIST_ITEM_RE.match(line)):
+                values.append(strip_scalar(item.group("value")))
+                continue
+            indent = None
+        if stripped in ("additionalValuesFiles:", "- additionalValuesFiles:"):
+            indent = current_indent + (2 if stripped.startswith("- ") else 0)
+    return values
 
 
 def referenced_patch_paths(text: str) -> list[str]:
@@ -423,7 +450,7 @@ def check_kustomization_structure(path: Path, repo_root: Path) -> list[str]:
                     )
                 pending.extend(children)
 
-        values_files = [strip_scalar(value) for value in VALUES_FILE_RE.findall(text)]
+        values_files = [strip_scalar(value) for value in VALUES_FILE_RE.findall(text)] + additional_helm_values(text)
         for raw_ref in values_files:
             if not is_static_local_ref(raw_ref):
                 continue
@@ -522,9 +549,13 @@ def check_profile(
         ]
     else:
         try:
+            application_files = {repo_root / path for path in PROFILE_APP_FILES.values()}
             for profile_file in profile_dependency_files(repo_root, profile):
                 if check_placeholders:
-                    findings.extend(scan_path(profile_file, repo_root))
+                    if profile_file in application_files:
+                        findings.extend(scan_applications_file(profile_file, repo_root, optional_apps))
+                    else:
+                        findings.extend(scan_path(profile_file, repo_root))
             source_paths = [
                 path
                 for path in profile_source_paths(repo_root, profile)
@@ -539,6 +570,11 @@ def check_profile(
         findings.extend(scan_path(projects_dir, repo_root, allow_repo_url=True))
         for source_path in source_paths:
             findings.extend(scan_path(source_path, repo_root))
+        if profile == "gitea-woodpecker-argocd":
+            from render_woodpecker_forge import gitea_values_ready
+            values = repo_root / "gitops/clusters/rke2-main/apps/woodpecker/values.yaml"
+            if not gitea_values_ready(values):
+                findings.append("Woodpecker values must select Gitea with an HTTPS URL and OAuth Secret reference")
     if require_structure:
         findings.extend(profile_structure_findings(repo_root, profile, source_paths))
 

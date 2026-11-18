@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "rhodecode",
+  "install_path": "/opt/rhodecode",
+  "state_path": "/srv/rhodecode",
+  "config_dir": "/etc/rhodecode/conf",
+  "http_port": 10020,
+  "user": "rhodecode",
+  "group": "rhodecode"
+}

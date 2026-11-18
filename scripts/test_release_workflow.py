@@ -6,6 +6,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/release.yml"
@@ -24,8 +26,40 @@ def require(text: str, needle: str, label: str) -> None:
         raise AssertionError(f"{label} is missing {needle!r}")
 
 
+def check_release_inputs(workflow: str) -> None:
+    jobs = yaml.safe_load(workflow)["jobs"]
+    steps = jobs["verify"]["steps"]
+    profiles = {
+        step.get("env", {}).get("PLATFORM_PROFILE")
+        for step in steps if step.get("run") == "make rendered-private-schema-verify"
+    }
+    if not {"premium-3node", "premium-3node-gitlab-ce"} <= profiles:
+        raise AssertionError("release verification must fully render both premium profiles")
+
+    package = next(step["run"] for step in steps if step.get("name") == "Build reproducible release evidence")
+    extract = 'tar -xzf "dist/${artifact}.tar.gz" -C "${source_dir}"'
+    scan = '"${SYFT_CMD}" "dir:${source_dir}/${artifact}"'
+    if package.index(extract) >= package.index(scan) or "--exclude" in package:
+        raise AssertionError("release SBOMs must inventory the complete published source archive")
+
+    publication = jobs["release"]["steps"][-1]["run"]
+    commands = (
+        "set -euo pipefail",
+        "jq -er '.tagObjectSha",
+        'gh api "repos/${GH_REPO}/git/ref/tags/${GITHUB_REF_NAME}"',
+        'select(.object.type == "tag") | .object.sha',
+        'if [[ "${current_tag}" != "${expected_tag}" ]]; then',
+        "exit 1",
+        'gh release create "${GITHUB_REF_NAME}"',
+    )
+    positions = [publication.index(command) for command in commands]
+    if positions != sorted(positions):
+        raise AssertionError("publication must reject a missing or changed approved tag before creating the release")
+
+
 def main() -> int:
     workflow = read(WORKFLOW)
+    check_release_inputs(workflow)
     for needle in (
         "tags:\n      - 'v*.*.*'",
         "  verify:",

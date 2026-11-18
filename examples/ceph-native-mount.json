@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "operation_id": "<NEW_INDEPENDENT_MOUNT_OPERATION_UUID>",
+  "native_plan_sha256": "<CANONICAL_COMPLETE_NATIVE_CLIENT_PLAN_SHA256>",
+  "monitors": [
+    {"address": "192.0.2.31", "port": 3300},
+    {"address": "192.0.2.32", "port": 3300},
+    {"address": "192.0.2.33", "port": 3300}
+  ],
+  "hosts": {
+    "client-1": {
+      "helper_sha256": "<REVIEWED_CLIENT_1_MOUNT_CEPH_BINARY_SHA256>",
+      "kernel_release": "<REVIEWED_EXACT_CLIENT_1_KERNEL_RELEASE>",
+      "credential_file_env": "CEPH_CLIENT_1_SECRET_FILE"
+    },
+    "client-2": {
+      "helper_sha256": "<REVIEWED_CLIENT_2_MOUNT_CEPH_BINARY_SHA256>",
+      "kernel_release": "<REVIEWED_EXACT_CLIENT_2_KERNEL_RELEASE>",
+      "credential_file_env": "CEPH_CLIENT_2_SECRET_FILE"
+    }
+  }
+}

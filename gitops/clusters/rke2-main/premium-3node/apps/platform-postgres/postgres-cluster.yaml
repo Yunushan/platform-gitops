@@ -45,6 +45,10 @@ metadata:
     argocd.argoproj.io/sync-wave: "0"
 spec:
   instances: 3
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie
   primaryUpdateStrategy: unsupervised
   certificates:

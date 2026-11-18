@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "namespace": "rook-system",
+  "namespace_uid": "<LIVE_OPERATOR_NAMESPACE_UID>",
+  "target": {
+    "kubeconfig_env": "STORAGE_KUBECONFIG",
+    "context": "storage",
+    "cluster_uid": "<LIVE_KUBE_SYSTEM_NAMESPACE_UID>"
+  },
+  "nodes": [
+    {
+      "name": "storage-1",
+      "uid": "<LIVE_NODE_1_UID>",
+      "failure_domain": "rack-1"
+    },
+    {
+      "name": "storage-2",
+      "uid": "<LIVE_NODE_2_UID>",
+      "failure_domain": "rack-2"
+    },
+    {
+      "name": "storage-3",
+      "uid": "<LIVE_NODE_3_UID>",
+      "failure_domain": "rack-3"
+    },
+    {
+      "name": "storage-4",
+      "uid": "<LIVE_NODE_4_UID>",
+      "failure_domain": "rack-4"
+    }
+  ],
+  "controller_nodes": [
+    "storage-1",
+    "storage-2"
+  ],
+  "domain_label": "topology.kubernetes.io/zone",
+  "images": {
+    "addons": "registry.example.com/platform/addons@sha256:<REVIEWED_ADDONS_IMAGE_DIGEST>",
+    "attacher": "registry.example.com/platform/attacher@sha256:<REVIEWED_ATTACHER_IMAGE_DIGEST>",
+    "csi_operator": "registry.example.com/platform/csi-operator@sha256:<REVIEWED_CSI_OPERATOR_IMAGE_DIGEST>",
+    "plugin": "registry.example.com/platform/plugin@sha256:<REVIEWED_PLUGIN_IMAGE_DIGEST>",
+    "provisioner": "registry.example.com/platform/provisioner@sha256:<REVIEWED_PROVISIONER_IMAGE_DIGEST>",
+    "registrar": "registry.example.com/platform/registrar@sha256:<REVIEWED_REGISTRAR_IMAGE_DIGEST>",
+    "resizer": "registry.example.com/platform/resizer@sha256:<REVIEWED_RESIZER_IMAGE_DIGEST>",
+    "rook": "registry.example.com/platform/rook@sha256:<REVIEWED_ROOK_IMAGE_DIGEST>",
+    "snapshot_metadata": "registry.example.com/platform/snapshot-metadata@sha256:<REVIEWED_SNAPSHOT_METADATA_IMAGE_DIGEST>",
+    "snapshotter": "registry.example.com/platform/snapshotter@sha256:<REVIEWED_SNAPSHOTTER_IMAGE_DIGEST>"
+  },
+  "kubelet_dir": "/var/lib/kubelet",
+  "watch_current_namespace_only": true,
+  "resources": {
+    "node_sidecar": {
+      "requests": {
+        "cpu": "250m",
+        "memory": "512Mi"
+      },
+      "limits": {
+        "cpu": "2",
+        "memory": "2Gi"
+      }
+    },
+    "csi_operator": {
+      "requests": {
+        "cpu": "250m",
+        "memory": "512Mi"
+      },
+      "limits": {
+        "cpu": "2",
+        "memory": "2Gi"
+      }
+    },
+    "node_plugin": {
+      "requests": {
+        "cpu": "250m",
+        "memory": "512Mi"
+      },
+      "limits": {
+        "cpu": "2",
+        "memory": "2Gi"
+      }
+    },
+    "rook_operator": {
+      "requests": {
+        "cpu": "250m",
+        "memory": "512Mi"
+      },
+      "limits": {
+        "cpu": "2",
+        "memory": "2Gi"
+      }
+    },
+    "controller_plugin": {
+      "requests": {
+        "cpu": "250m",
+        "memory": "512Mi"
+      },
+      "limits": {
+        "cpu": "2",
+        "memory": "2Gi"
+      }
+    },
+    "controller_sidecar": {
+      "requests": {
+        "cpu": "250m",
+        "memory": "512Mi"
+      },
+      "limits": {
+        "cpu": "2",
+        "memory": "2Gi"
+      }
+    }
+  },
+  "admitted_core_sha256": null
+}

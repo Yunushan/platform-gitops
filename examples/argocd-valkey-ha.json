@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "version": "8.1.11",
+  "image": "docker.io/valkey/valkey@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tools_image": "docker.io/library/busybox@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "namespace": "argocd-cache-ha",
+  "cluster_domain": "cluster.local",
+  "private_dir": "/etc/platform-valkey-ha",
+  "binary": "/opt/valkey/bin/valkey-server",
+  "binary_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "primary": "cache-a",
+  "cache_name": "platform",
+  "members": [
+    {
+      "name": "cache-a",
+      "node": "worker-a.example.com",
+      "address": "192.0.2.51",
+      "failure_domain": "zone-a",
+      "server_dir": "/var/lib/valkey-a",
+      "sentinel_dir": "/var/lib/sentinel-a",
+      "server_claim": "cache-a-data",
+      "sentinel_claim": "cache-a-sentinel",
+      "tls_secret": "cache-a-tls",
+      "auth_secret": "cache-a-auth"
+    },
+    {
+      "name": "cache-b",
+      "node": "worker-b.example.com",
+      "address": "192.0.2.52",
+      "failure_domain": "zone-b",
+      "server_dir": "/var/lib/valkey-b",
+      "sentinel_dir": "/var/lib/sentinel-b",
+      "server_claim": "cache-b-data",
+      "sentinel_claim": "cache-b-sentinel",
+      "tls_secret": "cache-b-tls",
+      "auth_secret": "cache-b-auth"
+    },
+    {
+      "name": "cache-c",
+      "node": "worker-c.example.com",
+      "address": "192.0.2.53",
+      "failure_domain": "zone-c",
+      "server_dir": "/var/lib/valkey-c",
+      "sentinel_dir": "/var/lib/sentinel-c",
+      "server_claim": "cache-c-data",
+      "sentinel_claim": "cache-c-sentinel",
+      "tls_secret": "cache-c-tls",
+      "auth_secret": "cache-c-auth"
+    }
+  ],
+  "settings": {
+    "maxmemory_mib": 512,
+    "min_replicas": 1,
+    "max_lag_seconds": 5,
+    "down_after_ms": 5000,
+    "failover_timeout_ms": 60000
+  },
+  "network": {
+    "client_namespaces": [
+      "argocd"
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "woodpecker_origin": "https://ci.example.invalid",
+  "forge_origin": "https://git.example.invalid",
+  "provider": "gitea",
+  "woodpecker_repository_id": 17,
+  "forge_repository_id": 25,
+  "repository": "platform/example",
+  "branch": "main",
+  "workflow": "woodpecker",
+  "step": "publish-static-image",
+  "static_directory": "public",
+  "source": {
+    "read_username": "source-reader",
+    "ca_sha256": "REVIEWED_FORGE_CA_SHA256"
+  },
+  "registry": {
+    "origin": "https://registry.example.invalid",
+    "repository": "applications/example",
+    "project_id": 42,
+    "robot_id": 73,
+    "base_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "ca_sha256": "REVIEWED_HARBOR_CA_SHA256",
+    "leaf_sha256": "REVIEWED_HARBOR_LEAF_SHA256",
+    "credential_sha256": "REVIEWED_PUBLISHER_ROBOT_HANDOFF_SHA256",
+    "files": [
+      "index.html"
+    ]
+  },
+  "woodpecker_ca_sha256": "REVIEWED_WOODPECKER_CA_SHA256",
+  "receipt_key_sha256": "REVIEWED_RECEIPT_KEY_SHA256"
+}

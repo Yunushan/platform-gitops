@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: gitlab
 resources:
   - namespace.yaml
+  - argocd-bootstrap.yaml
   - ingress-network-policy.yaml
 components:
   - ../../components/network-isolation
@@ -12,6 +13,68 @@ components:
   - ../../components/external-git-egress
   - ../../components/external-smtp-egress
   - ../../components/external-object-storage-egress
+patches:
+  - target:
+      kind: NetworkPolicy
+      labelSelector: app.kubernetes.io/part-of=platform-network-isolation
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          argocd.argoproj.io/sync-wave: "-25"
+  - path: argocd-upgrade-check-patch.yaml
+    target:
+      kind: Job
+      name: gitlab-gitlab-upgrade-check
+  - target:
+      kind: ConfigMap
+      name: gitlab-gitlab-upgrade-check
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook
+        value: Sync
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "-11"
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook-delete-policy
+        value: BeforeHookCreation,HookSucceeded
+  - target:
+      kind: (ServiceAccount|Role|RoleBinding|ConfigMap)
+      name: gitlab-shared-secrets
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook
+        value: Sync
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "-5"
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook-delete-policy
+        value: BeforeHookCreation,HookSucceeded
+  - target:
+      kind: Job
+      name: gitlab-shared-secrets-.*
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook
+        value: Sync
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1sync-wave
+        value: "-4"
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook-delete-policy
+        value: BeforeHookCreation,HookSucceeded
+      - op: add
+        path: /spec/template/metadata/labels/platform.gitops~1gitlab-bootstrap
+        value: "true"
+  - target:
+      kind: Pod
+      name: gitlab-webservice-test-runner-.*
+    patch: |-
+      - op: add
+        path: /metadata/annotations/argocd.argoproj.io~1hook
+        value: Skip
 helmGlobals:
   chartHome: charts/gitlab-10.1.1
 helmCharts:

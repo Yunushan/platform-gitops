@@ -77,6 +77,12 @@ app again. The health gate also verifies the running Woodpecker server and agent
 `PLATFORM_APP_HEALTH_WOODPECKER_IMAGE_TAG`, which falls back to
 `WOODPECKER_IMAGE_TAG` and then `v3.16.0`.
 
+If a pipeline still shows Running after the Woodpecker server restarts, check
+the workflow's job Pods and worker before retrying. The pipeline record can
+remain Running after the server loses the task lease, and canceling the
+record can leave a job Pod running. See the
+[interrupted-job recovery procedure](CI_GITOPS_HANDOFF.md#woodpecker-server-scheduling-and-recovery).
+
 For the common case where the Woodpecker Argo CD application is `Synced` but
 still `Progressing`, or agents are stuck on an old `next-*` image and
 `CrashLoopBackOff`, use the focused repair target:
@@ -275,10 +281,10 @@ state still points at generated `platform-postgres-server`/`platform-postgres-ca
 certificates. It then proves the PostgreSQL STARTTLS handshake for
 `platform-postgres-rw.platform-databases.svc.cluster.local` with that CA before
 refreshing the `forgejo/platform-internal-roots` ConfigMap. It repairs the
-PostgreSQL client CA mount on Forgejo's application and database-related init
-containers, removes any stale application-only trust-directory mount from init
-containers, and restarts only the Forgejo workload. It never deletes a PVC, PV,
-Longhorn volume, or replica. If the canonical certificate Secret is missing,
+PostgreSQL client CA mount and trust environment on the Forgejo application
+and init containers. It moves the legacy nested mount to `/etc/ssl/platform`
+in one guarded workload update so a fresh data volume can initialize as the
+rootless user. If the canonical certificate Secret is missing,
 invalid, or the live handshake cannot be verified, the repair fails closed.
 The `forgejo_postgres_certificates=reconciled` line confirms the CNPG references
 were updated; `forgejo_postgres_certificates=verified` additionally proves the
@@ -364,7 +370,7 @@ with no active pod and a detached, zero-byte Longhorn volume. It verifies the
 original PVC and PV UIDs before requesting cleanup and never resets the active
 PostgreSQL primary.
 
-The same data-safety rule applies to a blocked Woodpecker HA server replica.
+The same data-safety rule applies to a blocked Woodpecker server replica on older multi-replica deployments.
 Only ordinals above `woodpecker-server-0` qualify, and only when the container
 has never started, the attach event says the Longhorn volume is not ready, the
 PVC/PV/Longhorn identity matches, and Longhorn reports exactly zero bytes. The
@@ -405,7 +411,7 @@ PLATFORM_APP_HEALTH_EXPECTED_REPO_URL=<PRIVATE_REPO_URL> make platform-app-healt
 
 That target still checks Argo CD pods, configured repo-server/Redis service
 endpoints, Argo CD and Woodpecker GUI routing, Traefik, Woodpecker generated
-secrets, Woodpecker HA replica coverage, and Argo CD / Woodpecker ClusterIP
+secrets, Woodpecker replica counts, and Argo CD / Woodpecker ClusterIP
 service paths, but skips Harbor, monitoring, Loki, Velero, CloudNativePG,
 Longhorn runtime, and StorageClass gates. It also
 sets `PLATFORM_APP_HEALTH_INCLUDE_EXISTING_APPS=false`, so unrelated existing
@@ -1073,7 +1079,7 @@ then fail immediately if the Loki, Velero, or CloudNativePG credential secret is
 Set `PLATFORM_APP_SECRET_REQUIRE_CNPG_OBJECT_STORAGE=true` to require only the
 CloudNativePG object-storage secret.
 Set `PLATFORM_APP_SECRET_REQUIRE_WOODPECKER_DATABASE=true` when enabling
-Woodpecker HA so a missing PostgreSQL datasource secret fails before rollout.
+Woodpecker's PostgreSQL mode so a missing datasource secret fails before rollout.
 Set `PLATFORM_APP_SECRET_REQUIRE_HARBOR_DATABASE=true`,
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REDIS=true`, and
 `PLATFORM_APP_SECRET_REQUIRE_HARBOR_REGISTRY_STORAGE=true` when enabling Harbor

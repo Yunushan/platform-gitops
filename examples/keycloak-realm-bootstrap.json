@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "<REVIEWED_KEYCLOAK_CONTRACT_SHA256>",
+  "server": {
+    "url": "https://identity.example.com",
+    "master_realm_id": "<ORIGINAL_MASTER_REALM_UUID>",
+    "token_env": "KEYCLOAK_ADMIN_ACCESS_TOKEN",
+    "ca_file": "/etc/platform-bootstrap/identity-ca.crt",
+    "ca_sha256": "<REVIEWED_CA_FILE_SHA256>"
+  }
+}

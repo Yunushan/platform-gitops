@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "provider": "gitea",
+  "runtime": "docker",
+  "name": "gitea",
+  "state_path": "/srv/platform/gitea",
+  "inputs_path": "/etc/platform/gitea-inputs",
+  "https_url": "https://gitea.example.invalid",
+  "ssh_host": "gitea.example.invalid",
+  "ssh_public_port": 2222,
+  "http_port": 13000,
+  "ssh_port": 12222,
+  "database": {
+    "type": "postgres",
+    "host": "postgres-rw.example.invalid",
+    "port": 5432,
+    "name": "gitea",
+    "user": "gitea"
+  },
+  "webhook_hosts": ["ci.example.invalid"],
+  "custom_https_ca": false,
+  "image": "docker.gitea.com/gitea@sha256:40c5a68a0463c0940e1ae32626c8300dd0572f3558e390073ad8379ca67c0e1d"
+}

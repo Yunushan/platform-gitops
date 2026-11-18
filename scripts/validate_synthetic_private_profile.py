@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -14,11 +15,12 @@ import tempfile
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_text
 from strict_json import loads_strict_json
-from synthetic_private_profile import prepare_synthetic_private_profile
+from synthetic_private_profile import DEFAULT_PROFILE, GITLAB_PROFILE, prepare_synthetic_private_profile
 from validate_rendered_manifests import ROOT, application_sources, validate
 
 
 OUTPUT_ROOT = ROOT / "rendered/synthetic-private-schema"
+GITLAB_OUTPUT_ROOT = ROOT / "rendered/synthetic-gitlab-schema"
 REPORT_SUFFIXES = (
     ".kubeconform.json",
     ".kubeconform.stderr.log",
@@ -35,6 +37,7 @@ def retained_summary(summary: dict[str, object]) -> dict[str, object]:
         for record in records:
             if not isinstance(record, dict):
                 continue
+            record.pop("imageReferences", None)
             for field in ("log", "report"):
                 value = record.get(field)
                 if isinstance(value, str) and value:
@@ -70,7 +73,13 @@ def retain_sanitized_artifacts(
 
 
 def main() -> int:
-    output_root = OUTPUT_ROOT.resolve()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=(DEFAULT_PROFILE, GITLAB_PROFILE))
+    requested_profile = parser.parse_args().profile
+    profile = requested_profile or (
+        GITLAB_PROFILE if os.environ.get("PLATFORM_PROFILE") == GITLAB_PROFILE else DEFAULT_PROFILE
+    )
+    output_root = (GITLAB_OUTPUT_ROOT if profile == GITLAB_PROFILE else OUTPUT_ROOT).resolve()
     rendered_root = (ROOT / "rendered").resolve()
     if rendered_root not in output_root.parents:
         print("synthetic profile output escaped rendered/", file=sys.stderr)
@@ -81,19 +90,19 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="platform-synthetic-private-schema-") as temporary:
         repo_root = Path(temporary) / "repo"
         try:
-            prepare_synthetic_private_profile(repo_root, source_root=ROOT)
+            prepare_synthetic_private_profile(repo_root, source_root=ROOT, profile=profile)
+            expected = {name for name, _ in application_sources(profile, repo_root)}
         except (OSError, RuntimeError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
 
         args = argparse.Namespace(
-            profile=["premium-3node"],
+            profile=[profile],
             allow_incomplete=False,
             require_complete=True,
             kubernetes_version=None,
             output_dir="rendered/schema-validation",
         )
-        expected = {name for name, _ in application_sources("premium-3node", repo_root)}
         result = validate(args, root=repo_root)
         schema_output = repo_root / "rendered/schema-validation"
         summary_path = schema_output / "summary.json"
@@ -128,7 +137,7 @@ def main() -> int:
 
     print(
         "synthetic_private_profile=passed "
-        f"profile=premium-3node applications={len(rendered)} placeholders=0"
+        f"profile={profile} applications={len(rendered)} placeholders=0"
     )
     return 0
 

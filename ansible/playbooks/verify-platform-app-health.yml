@@ -59,6 +59,8 @@
     platform_forgejo_redis_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_REDIS_SECRET_NAME') }}"
     platform_forgejo_object_storage_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'FORGEJO_S3_SECRET_NAME') }}"
     platform_woodpecker_oauth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_FORGEJO_OAUTH_SECRET_NAME') }}"
+    platform_woodpecker_forge_provider_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_FORGE_PROVIDER') }}"
+    platform_woodpecker_gitea_oauth_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_GITEA_OAUTH_SECRET_NAME') }}"
     platform_woodpecker_agent_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_AGENT_SECRET_NAME') }}"
     platform_woodpecker_database_mode_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_MODE') }}"
     platform_woodpecker_database_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'WOODPECKER_DATABASE_SECRET_NAME') }}"
@@ -79,7 +81,7 @@
     platform_app_health_max_time_effective: "{{ platform_app_health_max_time | default(platform_app_health_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_gitlab_required_apps: >-
       cert-manager trust-manager step-ca kyverno platform-policies platform-image-integrity tetragon external-secrets openbao
-      metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak harbor monitoring loki velero
+      metallb traefik longhorn cloudnativepg platform-postgres platform-valkey argocd-ha keycloak harbor monitoring loki velero
       gitlab-ce gitlab-runner
     platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default(platform_app_health_gitlab_required_apps if platform_gitlab_profile_enabled | bool else '', true) | default('cert-manager trust-manager step-ca kyverno platform-policies platform-image-integrity tetragon external-secrets openbao metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak forgejo woodpecker harbor monitoring loki velero', true) }}"
     platform_app_health_include_existing_apps_effective: "{{ platform_app_health_include_existing_apps | default(platform_app_health_include_existing_apps_from_env, true) | default(true, true) | bool }}"
@@ -88,7 +90,7 @@
     platform_app_health_expected_repo_url_effective: "{{ platform_app_health_expected_repo_url | default(platform_app_health_expected_repo_url_from_env, true) | default(platform_repo_url_from_env, true) | default('', true) }}"
     platform_app_health_gitlab_namespaces: >-
       argocd cert-manager step-ca kyverno tetragon external-secrets openbao cnpg-system platform-databases platform-cache
-      object-storage keycloak harbor longhorn-system metallb-system monitoring logging traefik velero gitlab gitlab-runner
+      keycloak harbor longhorn-system metallb-system monitoring logging traefik velero gitlab gitlab-runner gitlab-jobs
     platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default(platform_app_health_gitlab_namespaces if platform_gitlab_profile_enabled | bool else '', true) | default('argocd cert-manager step-ca kyverno tetragon external-secrets openbao cnpg-system platform-databases platform-cache object-storage keycloak forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
     platform_app_health_storage_classes_effective: "{{ platform_app_health_storage_classes | default(platform_app_health_storage_classes_from_env, true) | default('longhorn-standard longhorn-critical longhorn-cache longhorn-standard-encrypted longhorn-critical-encrypted longhorn-cache-encrypted', true) }}"
     platform_app_health_certificates_effective: "{{ platform_app_health_certificates | default(platform_app_health_certificates_from_env, true) | default('auto', true) }}"
@@ -169,7 +171,7 @@
           - platform_app_health_required_apps_effective | length > 0
           - not (platform_gitlab_profile_enabled | bool) or ['gitlab-ce', 'gitlab-runner'] | difference(platform_app_health_required_apps_effective.split()) | length == 0
           - platform_app_health_namespaces_effective | length > 0
-          - not (platform_gitlab_profile_enabled | bool) or ['gitlab', 'gitlab-runner'] | difference(platform_app_health_namespaces_effective.split()) | length == 0
+          - not (platform_gitlab_profile_enabled | bool) or ['gitlab', 'gitlab-runner', 'gitlab-jobs'] | difference(platform_app_health_namespaces_effective.split()) | length == 0
           - platform_app_health_storage_classes_effective | length > 0
           - platform_app_health_certificates_effective | length > 0
           - platform_app_health_trust_bundles_effective | length > 0
@@ -205,7 +207,7 @@
         fail_msg: >-
           Set the ingress VIP and platform domain, and check the application health
           settings for the selected profile. GitLab overrides must retain GitLab CE,
-          and the GitLab Runner application and namespace in the relevant checks.
+          GitLab Runner, and the GitLab job namespace in the relevant checks.
       run_once: true
 
     - name: Record configured focused GUI hosts before optional discovery
@@ -525,14 +527,14 @@
         required_apps="{{ platform_app_health_required_apps_effective }}"
         include_existing_apps="{{ platform_app_health_include_existing_apps_effective | ternary('true', 'false') }}"
         forbid_temporary_repo="{{ platform_app_health_forbid_temporary_repo_effective | ternary('true', 'false') }}"
-        expected_repo_url="{{ platform_app_health_expected_repo_url_effective }}"
+        expected_repo_url="${PLATFORM_EXPECTED_REPOSITORY}"
         existing_apps="$("$K" --kubeconfig "$C" -n argocd get applications.argoproj.io -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' 2>/dev/null || true)"
         failed=0
         seen=" "
 
         echo "===== Argo CD application source repositories ====="
         if [ -n "${expected_repo_url}" ]; then
-          echo "expected_repo_url=${expected_repo_url}"
+          printf '%s' "${expected_repo_url}" | sha256sum | awk '{print "expected_repo_sha256=" $1}'
         else
           echo "expected_repo_url=not-set"
         fi
@@ -586,7 +588,8 @@
               result=fail
               reason=unexpected-repo-url
             fi
-            echo "app=${app} repo_url=${repo_url} expected_repo_url=${expected_repo_url:-not-set} result=${result} reason=${reason}"
+            repo_hash="$(printf '%s' "${repo_url}" | sha256sum | cut -d' ' -f1)"
+            echo "app=${app} repo_sha256=${repo_hash} result=${result} reason=${reason}"
             if [ "${result}" != "ok" ]; then
               failed=1
             fi
@@ -599,6 +602,8 @@
       args:
         executable: /bin/bash
       register: platform_app_health_argocd_source_probe
+      environment:
+        PLATFORM_EXPECTED_REPOSITORY: "{{ platform_app_health_expected_repo_url_effective }}"
       changed_when: false
       failed_when: false
       delegate_to: "{{ rke2_first_server }}"
@@ -918,43 +923,6 @@
           esac
         }
 
-        woodpecker_uses_postgres() {
-          mode="{{ platform_woodpecker_database_mode_effective }}"
-          case "${mode}" in
-            postgres|postgresql|external)
-              echo "woodpecker_database_mode=${mode}"
-              return 0
-              ;;
-            sqlite)
-              echo "woodpecker_database_mode=sqlite"
-              return 1
-              ;;
-          esac
-
-          for workload in statefulset/woodpecker-server deployment/woodpecker-server; do
-            if ! "$K" --kubeconfig "$C" -n woodpecker get "${workload}" >/dev/null 2>&1; then
-              continue
-            fi
-            driver="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" -o jsonpath='{range .spec.template.spec.containers[*].env[?(@.name=="WOODPECKER_DATABASE_DRIVER")]}{.value}{"\n"}{end}' 2>/dev/null || true)"
-            env_from="$("$K" --kubeconfig "$C" -n woodpecker get "${workload}" -o jsonpath='{range .spec.template.spec.containers[*].envFrom[*].secretRef}{.name}{"\n"}{end}' 2>/dev/null || true)"
-            case "${driver}" in
-              *postgres*|*postgresql*)
-                echo "woodpecker_database_mode=postgres source=${workload}/env"
-                return 0
-                ;;
-            esac
-            case " ${env_from} " in
-              *" {{ platform_woodpecker_database_secret_name_effective }} "*)
-                echo "woodpecker_database_mode=postgres source=${workload}/envFrom"
-                return 0
-                ;;
-            esac
-          done
-
-          echo "woodpecker_database_mode=sqlite source=auto"
-          return 1
-        }
-
         sanitize_uint() {
           case "${1:-}" in
             ''|*[!0-9]*) printf '0' ;;
@@ -1007,6 +975,12 @@
             return
           fi
 
+          if [ "${label}" = "woodpecker-server" ] && { [ "${desired}" -gt 1 ] || [ "${ready}" -gt 1 ]; }; then
+            echo "result=fail reason=woodpecker-server-requires-single-active-replica"
+            failed=1
+            return
+          fi
+
           if [ "${updated}" -lt "${min_ready}" ] || [ "${ready}" -lt "${min_ready}" ] || [ "${available}" -lt "${min_ready}" ]; then
             echo "result=fail reason=ha-workload-ready-replicas-below-minimum"
             failed=1
@@ -1051,11 +1025,7 @@
         fi
 
         if required_app_present woodpecker; then
-          if woodpecker_uses_postgres; then
-            check_first_workload woodpecker 2 2 woodpecker-server statefulset/woodpecker-server deployment/woodpecker-server
-          else
-            check_first_workload woodpecker 1 1 woodpecker-server statefulset/woodpecker-server deployment/woodpecker-server
-          fi
+          check_first_workload woodpecker 1 1 woodpecker-server statefulset/woodpecker-server deployment/woodpecker-server
           check_first_workload woodpecker 3 3 woodpecker-agent statefulset/woodpecker-agent deployment/woodpecker-agent
         else
           echo "result=skip reason=woodpecker-not-required-by-platform-app-health-required-apps"
@@ -2088,7 +2058,10 @@
 
           case " ${required_apps} " in
             *" woodpecker "*)
-              check_secret_contract woodpecker "{{ platform_woodpecker_oauth_secret_name_effective }}" WOODPECKER_FORGEJO_CLIENT WOODPECKER_FORGEJO_SECRET
+              case "{{ platform_woodpecker_forge_provider_effective }}" in
+                gitea) check_secret_contract woodpecker "{{ platform_woodpecker_oauth_secret_name_effective }}" WOODPECKER_GITEA_CLIENT WOODPECKER_GITEA_SECRET ;;
+                forgejo) check_secret_contract woodpecker "{{ platform_woodpecker_oauth_secret_name_effective }}" WOODPECKER_FORGEJO_CLIENT WOODPECKER_FORGEJO_SECRET ;;
+              esac
               check_secret_contract woodpecker "{{ platform_woodpecker_agent_secret_name_effective }}" WOODPECKER_AGENT_SECRET
               if woodpecker_uses_postgres; then
                 check_secret_contract woodpecker "{{ platform_woodpecker_database_secret_name_effective }}" WOODPECKER_DATABASE_DATASOURCE
@@ -3783,31 +3756,47 @@
       when: ansible_play_hosts | map('extract', hostvars, 'platform_app_health_failed') | map('bool') | select('equalto', true) | list | length > 0
 
     - name: Verify active Argo CD sources match the reviewed platform release
-      ansible.builtin.shell: |
-        set -euo pipefail
-        umask 077
-        workdir="$(mktemp -d)"
-        trap 'rm -rf -- "${workdir}"' EXIT
-        cat > "${workdir}/strict_json.py" <<'STRICT_JSON'
-        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../scripts/strict_json.py') }}
-        STRICT_JSON
-        cat > "${workdir}/verify_argocd_platform_revision.py" <<'REVISION_CHECK'
-        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../scripts/verify_argocd_platform_revision.py') }}
-        REVISION_CHECK
-        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
-          --request-timeout=20s -n argocd get applications.argoproj.io -o json | \
-          /usr/bin/python3 "${workdir}/verify_argocd_platform_revision.py"
-      args:
-        executable: /bin/bash
-      environment:
-        PLATFORM_PROFILE: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
-        PLATFORM_APP_HEALTH_EXPECTED_REVISION: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REVISION') }}"
-        PLATFORM_APP_HEALTH_REVISION_PLAN: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_REVISION_PLAN') }}"
-      register: platform_app_health_release_revision
-      changed_when: false
       run_once: true
       delegate_to: "{{ rke2_first_server }}"
       when: lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REVISION') | length > 0
+      block:
+        - name: Create a private directory for the revision verifier
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: platform-argocd-revision-
+          register: platform_revision_directory
+
+        - name: Stage the revision verifier and its JSON input helpers
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../../scripts/{{ item }}"
+            dest: "{{ platform_revision_directory.path }}/{{ item }}"
+            mode: "0600"
+          loop:
+            - verify_argocd_platform_revision.py
+            - bounded_file.py
+            - strict_json.py
+
+        - name: Check the current Argo CD application snapshot
+          ansible.builtin.shell: |
+            set -euo pipefail
+            /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+              --request-timeout=20s -n argocd get applications.argoproj.io -o json | \
+              /usr/bin/python3 {{ (platform_revision_directory.path ~ '/verify_argocd_platform_revision.py') | quote }}
+          args:
+            executable: /bin/bash
+          environment:
+            PLATFORM_PROFILE: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
+            PLATFORM_APP_HEALTH_EXPECTED_REVISION: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REVISION') }}"
+            PLATFORM_APP_HEALTH_EXPECTED_REPO_SHA256: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REPO_SHA256') }}"
+            PLATFORM_APP_HEALTH_REVISION_PLAN: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_REVISION_PLAN') }}"
+          register: platform_app_health_release_revision
+          changed_when: false
+      always:
+        - name: Remove the staged revision verifier
+          ansible.builtin.file:
+            path: "{{ platform_revision_directory.path }}"
+            state: absent
+          when: platform_revision_directory.path is defined
 
     - name: Record verified Argo CD release revision
       ansible.builtin.debug:

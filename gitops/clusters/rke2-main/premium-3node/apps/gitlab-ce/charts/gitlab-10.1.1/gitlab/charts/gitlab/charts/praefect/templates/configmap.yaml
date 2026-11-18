@@ -3,6 +3,10 @@ kind: ConfigMap
 metadata:
   name: {{ template "fullname" . }}
   namespace: {{ $.Release.Namespace }}
+  {{- if .Values.migrationJob.enabled }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+  {{- end }}
   labels:
     {{- include "gitlab.standardLabels" . | nindent 4 }}
     {{- include "gitlab.commonLabels" . | nindent 4 }}

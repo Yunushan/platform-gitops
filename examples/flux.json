@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "flux_version": "2.6.4",
+  "namespace": "flux-system",
+  "bundle_sha256": "<REVIEWED_EXPORTED_MANIFEST_SHA256>",
+  "images": {
+    "source-controller": "ghcr.io/fluxcd/source-controller@sha256:<REVIEWED_IMAGE_DIGEST>",
+    "kustomize-controller": "ghcr.io/fluxcd/kustomize-controller@sha256:<REVIEWED_IMAGE_DIGEST>",
+    "helm-controller": "ghcr.io/fluxcd/helm-controller@sha256:<REVIEWED_IMAGE_DIGEST>",
+    "notification-controller": "ghcr.io/fluxcd/notification-controller@sha256:<REVIEWED_IMAGE_DIGEST>"
+  },
+  "artifact_server_image": "registry.example.com/platform/nginx@sha256:<REVIEWED_NGINX_IMAGE_DIGEST>",
+  "artifact_claim": "flux-source-artifacts",
+  "failure_domain_key": "kubernetes.io/hostname",
+  "node_selector": {
+    "platform.gitops/control-service": "true"
+  },
+  "management_target": {
+    "kubeconfig_env": "PLATFORM_MANAGEMENT_KUBECONFIG",
+    "context": "management",
+    "cluster_uid": "<REVIEWED_KUBE_SYSTEM_NAMESPACE_UID>"
+  },
+  "sync": {
+    "name": "platform",
+    "namespace": "platform-apps",
+    "url": "ssh://git@review.example.com:29418/platform/deploy",
+    "branch": "main",
+    "path": "./clusters/platform",
+    "read_secret": "flux-source-read",
+    "service_account": "platform-reconciler",
+    "prune": false
+  }
+}

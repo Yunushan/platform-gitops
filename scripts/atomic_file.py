@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import tempfile
@@ -36,8 +37,23 @@ def atomic_write_text(
     *,
     encoding: str = "utf-8",
     mode: int = PRIVATE_FILE_MODE,
+    replace: bool = True,
 ) -> None:
     """Replace *path* only after a complete, durable same-directory write."""
+
+    atomic_write_bytes(path, text.encode(encoding), mode=mode, replace=replace)
+
+
+def atomic_write_bytes(path: Path, data: bytes, *, mode: int = PRIVATE_FILE_MODE, replace: bool = True) -> None:
+    """Replace *path* with bytes from a durable same-directory temporary file."""
+
+    with atomic_binary_output(path, mode=mode, replace=replace) as handle:
+        handle.write(data)
+
+
+@contextmanager
+def atomic_binary_output(path: Path, *, mode: int = PRIVATE_FILE_MODE, replace: bool = True):
+    """Publish a complete streamed file, optionally refusing an existing path."""
 
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -49,18 +65,22 @@ def atomic_write_text(
     temporary = Path(temporary_name)
     descriptor_open = True
     try:
-        os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "w", encoding=encoding, newline="") as handle:
+        if os.name == "posix":
+            os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb") as handle:
             descriptor_open = False
-            handle.write(text)
+            yield handle
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-        if os.name == "posix":
-            os.chmod(destination, mode)
+        if replace:
+            os.replace(temporary, destination)
+        elif os.name == "nt":
+            os.rename(temporary, destination)
+        else:
+            os.link(temporary, destination)
+            temporary.unlink()
         _fsync_directory(destination.parent)
-    except BaseException:
+    finally:
         if descriptor_open:
             os.close(descriptor)
         temporary.unlink(missing_ok=True)
-        raise

@@ -72,6 +72,230 @@ jobs:
         run: python scripts/test_system_mail.py
       - name: Test optional platform version updates
         run: python scripts/test_platform_version_updates.py
+      - name: Validate requested multi-runtime stack planning contract
+        run: python scripts/test_platform_stack_plan.py
+      - name: Test forge, GitLab, and Jenkins packages and integrations
+        run: |
+          set -eu
+          python scripts/test_gitbucket_render.py
+          python scripts/test_gogs_render.py
+          python scripts/test_scm_manager_render.py
+          python scripts/test_onedev_render.py
+          python scripts/test_allura_render.py
+          python scripts/test_rhodecode_render.py
+          python scripts/test_sourcehut_render.py
+          python scripts/test_kallithea_render.py
+          python scripts/test_render_woodpecker_forge.py
+          python scripts/test_render_woodpecker_agent.py
+          python scripts/test_forge_host.py
+          python scripts/test_provision_woodpecker_gitea_oauth.py
+          python scripts/test_gitlab_praefect.py
+          python scripts/test_gitlab_repository_hosts.py
+          python scripts/test_gitlab_application_entry.py
+          python scripts/test_gitlab_traefik_entry.py
+          python scripts/test_gitlab_runner_profile.py
+          python scripts/test_gitlab_runner_api_fixture.py
+          python scripts/test_gitlab_runner_execution_fixture.py
+          python scripts/test_gitlab_runner_kubernetes_fixture.py
+          python scripts/test_gitlab_pipeline_verification.py
+          GITLAB_PIPELINE_HTTPS_FIXTURE=1 python scripts/test_gitlab_pipeline_https_fixture.py
+          python scripts/test_gitlab_gitops_handoff.py
+          python scripts/test_gitlab_gitops_schedule.py
+          python scripts/test_gitlab_gitops_cronjob.py
+          python scripts/test_gitlab_gitops_image.py
+          python scripts/test_gitlab_gitops_cronjob_api_fixture.py
+          python scripts/test_jenkins_controller.py
+          python scripts/test_jenkins_host.py
+          python scripts/test_jenkins_host_preflight.py
+          python scripts/test_jenkins_native_runtime_fixture.py
+          python scripts/test_jenkins_fixture_plugins.py
+          python scripts/test_jenkins_gerrit_verification.py
+          python scripts/test_jenkins_gerrit_job.py
+          python scripts/test_trigger_jenkins_gerrit.py
+          python scripts/test_scan_jenkins_gerrit.py
+          python scripts/test_resolve_jenkins_gerrit_build.py
+          python scripts/test_report_jenkins_gerrit.py
+          python scripts/test_scan_jenkins_gerrit_results.py
+          python scripts/test_jenkins_gerrit_gitops_handoff.py
+          python scripts/test_render_jenkins_pollers.py
+          python scripts/test_render_jenkins_pollers_k8s.py
+          python scripts/test_prepare_jenkins_poller_image.py
+          python scripts/test_jenkins_gerrit_https_fixture.py
+          python scripts/test_jenkins_gerrit_real_fixture.py
+          python scripts/test_jenkins_controller_api_fixture.py
+          GITLAB_GITOPS_HTTPS_FIXTURE=1 python scripts/test_gitlab_gitops_https_fixture.py
+      - name: Test optional Keycloak cluster and new-realm packages
+        run: python scripts/test_keycloak_ha.py
+      - name: Test guarded fresh Keycloak workload installation
+        run: python scripts/test_keycloak_installation.py
+      - name: Test guarded Docker and native Keycloak host activation
+        run: python scripts/test_keycloak_host.py
+      - name: Check opt-in native Keycloak runtime entrypoint
+        run: python scripts/test_keycloak_native_runtime.py
+      - name: Check opt-in disposable Docker engine entrypoint
+        run: python scripts/test_keycloak_docker_runtime.py
+      - name: Test optional OpenBao Raft packages and runtime entrypoint
+        run: python scripts/test_openbao_ha.py
+      - name: Test guarded OpenBao workload installation
+        run: python scripts/test_openbao_installation.py
+      - name: Test scoped OpenBao snapshot capture and offline integrity
+        run: python scripts/test_openbao_snapshot.py
+      - name: Test read-only OpenBao member and canary observations
+        run: python scripts/test_openbao_runtime.py
+      - name: Test guarded native and Docker OpenBao activation
+        run: python scripts/test_openbao_host.py
+      - name: Test TLS Valkey Sentinel packages and private authentication
+        run: python scripts/test_valkey_ha.py
+      - name: Test guarded Valkey original-resource installation
+        run: python scripts/test_valkey_installation.py
+      - name: Test pinned Valkey runtime observations and bounded TLS protocol
+        run: python scripts/test_valkey_runtime.py
+      - name: Test valkey gateway
+        run: python scripts/test_valkey_gateway.py
+      - name: Test harbor cache artifacts
+        run: python scripts/test_harbor_cache_artifacts.py
+      - name: Test harbor registry contract
+        run: python scripts/test_harbor_registry_contract.py
+      - name: Test harbor service contract
+        run: python scripts/test_harbor_service_contract.py
+      - name: Test harbor pool build
+        run: python scripts/test_harbor_pool_build.py
+      - name: Test harbor robot
+        run: python scripts/test_harbor_robot.py
+      - name: Test harbor static image
+        run: python scripts/test_harbor_static_image.py
+      - name: Test image signature verification
+        run: python scripts/test_image_signature.py
+      - name: Test private TUF bootstrap
+        run: python scripts/test_sigstore_tuf.py
+      - name: Test explicit Kyverno installation
+        run: python scripts/test_kyverno_installation.py
+      - name: Verify binding-specific Kyverno admission policies
+        run: python scripts/test_kyverno_authority_contract.py
+      - name: Test source bound static image
+        run: python scripts/test_source_bound_static_image.py
+      - name: Test gerrit artifact contract
+        run: python scripts/test_gerrit_artifact_contract.py
+      - name: Test gerrit artifact promotion
+        run: python scripts/test_gerrit_artifact_promotion.py
+      - name: Test guarded Valkey native and Docker pair activation
+        run: python scripts/test_valkey_host.py
+      - name: Test dedicated Argo CD Valkey Sentinel client preparation
+        run: python scripts/test_argocd_valkey.py
+      - name: Test guarded new Keycloak MFA realm bootstrap
+        run: python scripts/test_keycloak_realm.py
+      - name: Test guarded Keycloak client and private Argo CD identity handoff
+        run: python scripts/test_keycloak_argocd.py
+      - name: Test guarded Argo CD configuration and restart
+        run: python scripts/test_argocd_identity.py
+      - name: Check opt-in Argo CD runtime fixture entrypoint
+        run: python scripts/test_argocd_identity_runtime.py
+      - name: Test Gerrit multi-runtime entry-point rendering
+        run: python scripts/test_gerrit_router.py
+      - name: Test Gerrit site integrity and runtime packaging
+        run: python scripts/test_gerrit_sites.py
+      - name: Test Gerrit shared CephFS identity and startup guards
+        run: python scripts/test_gerrit_storage.py
+      - name: Test guarded fresh Gerrit initialization
+        run: python scripts/test_gerrit_initialization.py
+      - name: Test Gerrit container preparation packaging
+        run: python scripts/test_gerrit_preparation.py
+      - name: Test gerrit artifacts
+        run: python scripts/test_gerrit_artifacts.py
+      - name: Test gerrit activation
+        run: python scripts/test_gerrit_activation.py
+      - name: Test gerrit host
+        run: python scripts/test_gerrit_host.py
+      - name: Test gerrit pair
+        run: python scripts/test_gerrit_pair.py
+      - name: Test Zuul configuration and local input checks
+        run: python scripts/test_zuul_config.py
+      - name: Test guarded Zuul service packages
+        run: python scripts/test_zuul_services.py
+      - name: Test Zuul GitOps handoff
+        run: python scripts/test_zuul_gitops_handoff.py
+      - name: Test trusted Zuul static publication
+        run: python scripts/test_zuul_static_image.py
+      - name: Test opt-in Zuul executor packages
+        run: python scripts/test_zuul_executors.py
+      - name: Test static worker identity and tenant restrictions
+        run: python scripts/test_nodepool_static.py
+      - name: Test guarded static Nodepool launcher packages
+        run: python scripts/test_nodepool_services.py
+      - name: Test Gerrit Zuul worker canary scope and review reports
+        run: python scripts/test_zuul_canary.py
+      - name: Test guarded ZooKeeper member packages and TLS status probes
+        run: python scripts/test_zookeeper.py
+      - name: Test Flux artifact-serving and explicit deployment target guards
+        run: python scripts/test_flux.py
+      - name: Test Tekton release pins admission and manual worker canary
+        run: python scripts/test_tekton.py
+      - name: Test safe Kubernetes failure diagnostics
+        run: python scripts/test_kubernetes_management.py
+      - name: Check opt-in isolated K3s virtual worker acceptance
+        run: python scripts/test_k3s_worker_runtime.py
+      - name: Test authenticated forge push bridge and exact commit checkout
+        run: python scripts/test_tekton_forge_bridge.py
+      - name: Check Gerrit patch-set Tekton submission
+        run: python scripts/test_tekton_gerrit_bridge.py
+      - name: Check verified Gerrit review result reporting
+        run: python scripts/test_tekton_gerrit_reporter.py
+      - name: Test verified Tekton outcomes and separate forge status reporting
+        run: python scripts/test_tekton_forge_reporter.py
+      - name: Test verified CI Git branch promotion and GitOps revision handoff
+        run: python scripts/test_ci_gitops_handoff.py
+      - name: Test exact Woodpecker pipeline promotion to Argo CD
+        run: python scripts/test_woodpecker_gitops_handoff.py
+      - name: Test exact merged Gerrit CI revision promotion to Argo CD
+        run: python scripts/test_gerrit_gitops_handoff.py
+      - name: Test Cilium gateway topology route ownership and programming checks
+        run: python scripts/test_cilium_gateway.py
+      - name: Test pinned Cilium installation patch upgrades and interrupted recovery
+        run: python scripts/test_cilium_installation.py
+      - name: Test Gateway external entry packages and ordered rollout guards
+        run: python scripts/test_gateway_edge.py
+      - name: Test entry host installation rollback and interrupted activation
+        run: python scripts/test_gateway_edge_host.py
+      - name: Test durable entry pair reservations ordered jobs and recovery
+        run: python scripts/test_gateway_edge_pair.py
+      - name: Test verified entry input distribution and partial transfer recovery
+        run: python scripts/test_gateway_edge_pair_staging.py
+      - name: Test entry job termination evidence and guarded recovery
+        run: python scripts/test_gateway_edge_systemd_job.py
+      - name: Test PostgreSQL durability policy and private runtime materialization
+        run: python scripts/test_postgres_ha.py
+      - name: Test guarded fresh PostgreSQL installation and same-handle recovery
+        run: python scripts/test_postgres_installation.py
+      - name: Test fresh CloudNativePG operator bootstrap and original object recovery
+        run: python scripts/test_cnpg_operator.py
+      - name: Test read-only PostgreSQL runtime and streaming quorum observations
+        run: python scripts/test_postgres_runtime.py
+      - name: Test planned PostgreSQL switchover and uncertain-request recovery
+        run: python scripts/test_postgres_switchover.py
+      - name: Test physical PostgreSQL backup capture and offline integrity
+        run: python scripts/test_postgres_physical_backup.py
+      - name: Test fresh PostgreSQL restore drills and process cleanup
+        run: python scripts/test_postgres_restore.py
+      - name: Test guarded Ceph storage provisioning and recovery headroom
+        run: python scripts/test_ceph_storage.py
+      - name: Test guarded Ceph client data-path acceptance
+        run: python scripts/test_ceph_clients.py
+      - name: Test Ceph host data recovery
+        run: python scripts/test_ceph_host_recovery.py
+      - name: Test native CephFS mount identity and peer exchange
+        run: python scripts/test_ceph_native.py
+      - name: Test managed Docker CephFS peer handles and recovery
+        run: python scripts/test_ceph_native_docker.py
+      - name: Test guarded native CephFS mount preparation
+        run: python scripts/test_ceph_mount.py
+      - name: Test fresh Ceph provider policy and read-only device probes
+        run: python scripts/test_ceph_provider.py
+      - name: Test guarded Ceph provider creation and interrupted-request recovery
+        run: python scripts/test_ceph_provider_installation.py
+      - name: Test encrypted Ceph key archives and uncertain escrow recovery
+        run: python scripts/test_ceph_key_recovery.py
+      - name: Test fresh pinned Rook and CSI bootstrap recovery
+        run: python scripts/test_rook_bootstrap.py
       - name: Test read-only Argo application diagnostics
         run: python scripts/test_argocd_application_diagnostics.py
       - name: Test platform app secret contract

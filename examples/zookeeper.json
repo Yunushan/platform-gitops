@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "ensemble_id": "<NEW_CANONICAL_UUID>",
+  "zookeeper_version": "3.9.4",
+  "image": "registry.example.com/platform/zookeeper@sha256:<REVIEWED_IMAGE_DIGEST>",
+  "namespace": "coordination",
+  "cluster_domain": "cluster.local",
+  "failure_domain_key": "topology.kubernetes.io/zone",
+  "client_port": 2281,
+  "quorum_port": 2888,
+  "election_port": 3888,
+  "initialize_if_empty": false,
+  "artifacts": {
+    "zookeeper-3.9.4.jar": "<SHA256_FROM_VERIFIED_DISTRIBUTION>"
+  },
+  "members": [
+    {
+      "id": 1,
+      "name": "zk-1",
+      "host": "zk-1.coordination.svc.cluster.local",
+      "bind_address": "192.0.2.11",
+      "failure_domain": "rack-1",
+      "claim": "zk-1-data",
+      "state_host_path": "/srv/zookeeper/zk-1",
+      "tls_secret": "zk-1-tls"
+    },
+    {
+      "id": 2,
+      "name": "zk-2",
+      "host": "zk-2.coordination.svc.cluster.local",
+      "bind_address": "192.0.2.12",
+      "failure_domain": "rack-2",
+      "claim": "zk-2-data",
+      "state_host_path": "/srv/zookeeper/zk-2",
+      "tls_secret": "zk-2-tls"
+    },
+    {
+      "id": 3,
+      "name": "zk-3",
+      "host": "zk-3.coordination.svc.cluster.local",
+      "bind_address": "192.0.2.13",
+      "failure_domain": "rack-3",
+      "claim": "zk-3-data",
+      "state_host_path": "/srv/zookeeper/zk-3",
+      "tls_secret": "zk-3-tls"
+    }
+  ]
+}

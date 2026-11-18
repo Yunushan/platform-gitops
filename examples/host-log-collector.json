@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "cluster": "platform",
+  "node": "ci-host-01",
+  "gateway": "https://logs.example.invalid/loki/api/v1/push",
+  "tenant": "platform",
+  "username": "host-log-writer",
+  "services": {
+    "forge": "forge",
+    "ci": "woodpecker-server"
+  },
+  "files": {}
+}

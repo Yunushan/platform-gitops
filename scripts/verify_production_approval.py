@@ -5,17 +5,18 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from bounded_file import read_bounded_bytes, read_bounded_text
+from atomic_file import atomic_write_bytes
+from bounded_file import read_bounded_bytes
 from bounded_subprocess import BoundedSubprocessError, run_bounded
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
@@ -195,6 +196,7 @@ def verify_signature(
     public_key_path: Path,
     expected_key_sha256: str,
     cosign_bin: str,
+    expected_approval_sha256: str | None = None,
     runner: Any = run_bounded,
 ) -> dict[str, str]:
     if not approval_path.is_file():
@@ -205,9 +207,14 @@ def verify_signature(
         raise ApprovalError(f"production approval public key does not exist: {public_key_path}")
     if not SHA256_RE.fullmatch(expected_key_sha256):
         raise ApprovalError("expected approval public-key SHA-256 is invalid")
-    actual_key_sha256 = artifact_sha256(public_key_path)
+    key_bytes = read_bounded_bytes(public_key_path)
+    actual_key_sha256 = hashlib.sha256(key_bytes).hexdigest()
     if actual_key_sha256 != expected_key_sha256:
         raise ApprovalError("production approval public key does not match its pinned SHA-256")
+    approval_bytes = read_bounded_bytes(approval_path)
+    if expected_approval_sha256 is not None and hashlib.sha256(approval_bytes).hexdigest() != expected_approval_sha256:
+        raise ApprovalError("production approval changed after loading")
+    bundle_bytes = read_bounded_bytes(bundle_path)
 
     cosign_path = Path(cosign_bin)
     executable = str(cosign_path.resolve()) if cosign_path.is_file() else shutil.which(cosign_bin)
@@ -218,20 +225,19 @@ def verify_signature(
             COSIGN_TIMEOUT_SECONDS,
             "PLATFORM_PRODUCTION_APPROVAL_COSIGN_TIMEOUT_SECONDS",
         )
-        result = runner(
-            [
-                str(executable),
-                "verify-blob",
-                "--key",
-                str(public_key_path),
-                "--bundle",
-                str(bundle_path),
-                str(approval_path),
-            ],
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="platform-production-signature-") as directory:
+            key = Path(directory) / "approver.pub"
+            bundle = Path(directory) / "approval.bundle.json"
+            approval = Path(directory) / "approval.json"
+            atomic_write_bytes(key, key_bytes)
+            atomic_write_bytes(bundle, bundle_bytes)
+            atomic_write_bytes(approval, approval_bytes)
+            result = runner(
+                [str(executable), "verify-blob", "--key", str(key), "--bundle", str(bundle), str(approval)],
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
     except ValueError as exc:
         raise ApprovalError(str(exc)) from None
     except subprocess.TimeoutExpired:
@@ -245,7 +251,7 @@ def verify_signature(
     if result.returncode != 0:
         raise ApprovalError("Cosign rejected the detached production approval signature")
     return {
-        "productionApprovalBundle": artifact_sha256(bundle_path),
+        "productionApprovalBundle": hashlib.sha256(bundle_bytes).hexdigest(),
         "productionApprovalPublicKey": actual_key_sha256,
     }
 
@@ -283,9 +289,8 @@ def main() -> int:
         )
         return 2
     try:
-        production_document = loads_strict_json(
-            read_bounded_text(args.production_evidence)
-        )
+        production_bytes = read_bounded_bytes(args.production_evidence)
+        production_document = loads_strict_json(production_bytes.decode("utf-8"))
         if not isinstance(production_document, dict):
             raise ApprovalError("production evidence must be a JSON object")
         production_evidence.validate_evidence(
@@ -296,11 +301,12 @@ def main() -> int:
             expected_profile=args.profile,
             expected_commit=args.commit,
         )
-        approval_document = loads_strict_json(read_bounded_text(args.approval_file))
+        approval_bytes = read_bounded_bytes(args.approval_file)
+        approval_document = loads_strict_json(approval_bytes.decode("utf-8"))
         summary = validate_approval_document(
             approval_document,
             production_document=production_document,
-            production_sha256=artifact_sha256(args.production_evidence),
+            production_sha256=hashlib.sha256(production_bytes).hexdigest(),
             expected_key_sha256=args.public_key_sha256,
             authorized_approver=args.authorized_approver,
             now=datetime.now(timezone.utc),
@@ -312,13 +318,9 @@ def main() -> int:
             public_key_path=args.public_key,
             expected_key_sha256=args.public_key_sha256,
             cosign_bin=args.cosign_bin,
+            expected_approval_sha256=hashlib.sha256(approval_bytes).hexdigest(),
         )
-    except (
-        OSError,
-        json.JSONDecodeError,
-        ApprovalError,
-        production_evidence.EvidenceError,
-    ) as exc:
+    except (OSError, ValueError) as exc:
         print(f"Production approval validation failed: {exc}", file=sys.stderr)
         return 1
     print(

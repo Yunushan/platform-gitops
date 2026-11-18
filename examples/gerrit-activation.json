@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "target": {
+    "kubeconfig_env": "GERRIT_MANAGEMENT_KUBECONFIG",
+    "context": "<REVIEWED_CONTEXT>",
+    "cluster_uid": "<KUBE_SYSTEM_NAMESPACE_UID>"
+  },
+  "namespace_uid": "<GERRIT_NAMESPACE_UID>",
+  "site_plan": {
+    "replace_with_complete_reviewed_version_2_plan_from": "examples/gerrit-sites.json"
+  },
+  "domain_label": "topology.kubernetes.io/zone",
+  "nodes": {
+    "gerrit-a": {
+      "name": "worker-a",
+      "uid": "<ORIGINAL_WORKER_A_UID>",
+      "failure_domain": "zone-a"
+    },
+    "gerrit-b": {
+      "name": "worker-b",
+      "uid": "<ORIGINAL_WORKER_B_UID>",
+      "failure_domain": "zone-b"
+    }
+  },
+  "claims": {
+    "gerrit-shared": {
+      "uid": "<ORIGINAL_SHARED_CLAIM_UID>",
+      "pv": "<ORIGINAL_SHARED_PV_NAME>",
+      "pv_uid": "<ORIGINAL_SHARED_PV_UID>",
+      "csi_sha256": "<REVIEWED_SHARED_PV_SPEC_CSI_SHA256>"
+    },
+    "gerrit-a-site": {
+      "uid": "<ORIGINAL_A_CLAIM_UID>",
+      "pv": "<ORIGINAL_A_PV_NAME>",
+      "pv_uid": "<ORIGINAL_A_PV_UID>",
+      "csi_sha256": "<REVIEWED_A_PV_SPEC_CSI_SHA256>"
+    },
+    "gerrit-b-site": {
+      "uid": "<ORIGINAL_B_CLAIM_UID>",
+      "pv": "<ORIGINAL_B_PV_NAME>",
+      "pv_uid": "<ORIGINAL_B_PV_UID>",
+      "csi_sha256": "<REVIEWED_B_PV_SPEC_CSI_SHA256>"
+    }
+  },
+  "admitted_sha256": null
+}

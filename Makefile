@@ -4,6 +4,7 @@ PYTHON ?= python3
 .PHONY: platform-inventory-preflight
 .PHONY: platform-forgejo-runtime-repair
 .PHONY: platform-update-plan platform-app-diagnose
+.PHONY: platform-stack-plan
 
 .PHONY: help init-local validate no-secrets security-scan supply-chain-posture supply-chain-verify vendored-chart-provenance-verify github-governance-plan github-governance-security-apply github-governance-apply github-governance-verify rendered-schema-verify rendered-private-schema-verify policy-cel-verify forge-migration-validate forge-migration-run forge-migration-verify forge-migration-proof-verify forge-migration-live-plan forge-migration-live-run forge-workspace-validate forge-workspace-export forge-workspace-import forge-workspace-audit-users forge-pipeline-convert forge-cutover-validate forge-cutover-discover forge-cutover-prepare forge-cutover-verify forge-cutover-activate forge-cutover-rollback forge-cutover-proof-verify forge-transition-validate forge-transition-discover forge-transition-prepare forge-transition-verify-shadow forge-transition-enter forge-transition-status forge-transition-reconcile forge-transition-relay forge-transition-fallback forge-transition-finalize forge-transition-failback forge-transition-rollback forge-transition-proof-verify bootstrap-plan platform-render-private-values platform-profile-check platform-bootstrap platform-first-deploy platform-first-deploy-auto platform-first-deploy-seed platform-seed-git platform-seed-git-sync platform-seed-git-remove platform-argocd platform-argocd-core platform-argocd-ha platform-argocd-expose platform-argocd-unexpose platform-argocd-diagnose platform-argocd-service-repair platform-app-secrets platform-app-health platform-ci-health platform-woodpecker-repair platform-monitoring-health platform-monitoring-repair platform-tls platform-tls-verify platform-data-protection platform-policy-readiness platform-network-isolation-verify platform-internal-tls-verify platform-openbao-status platform-openbao-verify platform-openbao-ceremony-digest platform-openbao-ceremony-evidence-verify platform-observability-verify platform-capacity-verify platform-image-inventory-verify platform-production-evidence platform-production-score platform-production-check platform-node-storage-diagnose platform-node-storage-cleanup platform-longhorn-bootstrap platform-longhorn-runtime-repair platform-longhorn-crd-repair platform-forgejo-diagnose platform-forgejo-repair platform-forgejo-storage-repair platform-forgejo-ingress platform-forgejo-recovery-drill platform-dns-repair platform-service-path-consumers-repair platform-service-path-repair platform-dns-repair-traefik platform-ingress platform-ingress-vip platform-ingress-diagnose platform-status rke2-preflight rke2-controller-hosts rke2-prepare rke2-registry-check rke2-api-vip rke2-install rke2-recover rke2-reset rke2-verify rke2-diagnose rke2-status rke2-cleanup-installers rke2-network-check rke2-ping docs-list ci-list
 
@@ -59,6 +60,7 @@ help:
 	@echo "  bootstrap-plan  Print recommended bootstrap order"
 	@echo "  platform-render-private-values  Render first-deploy private values for platform apps from env/private env file or inventory"
 	@echo "  platform-update-plan  Show reviewed optional releases; no files or cluster resources changed"
+	@echo "  platform-stack-plan  Report requested stack/runtime implementation gaps; no deployment changes"
 	@echo "  platform-app-diagnose  Read Argo application status and sanitized failure categories (node-local kubectl)"
 	@echo "  platform-profile-check  Verify selected GitOps profile is structurally complete and has no unresolved placeholders"
 	@echo "  platform-bootstrap  Verify RKE2/API VIP, bootstrap Argo CD, configure app VIP when ready, and print access report"
@@ -370,6 +372,9 @@ platform-render-private-values:
 platform-update-plan:
 	@$(PYTHON) scripts/update_platform_versions.py
 
+platform-stack-plan:
+	@$(PYTHON) scripts/plan_platform_stack.py
+
 platform-app-diagnose:
 	@$(PYTHON) scripts/diagnose_argocd_applications.py
 
@@ -678,6 +683,7 @@ platform-observability-verify:
 platform-capacity-verify:
 	@ANSIBLE_TIMEOUT=$${ANSIBLE_TIMEOUT:-20} ansible-playbook -i inventory/hosts.local.ini ansible/playbooks/verify-platform-capacity.yml
 
+platform-image-inventory-verify: override export PLATFORM_RENDERED_SCHEMA_INCLUDE_IMAGE_REFERENCES := true
 platform-image-inventory-verify: rendered-schema-verify rendered-private-schema-verify supply-chain-verify
 	@bash scripts/bootstrap/run-platform-image-inventory.sh
 

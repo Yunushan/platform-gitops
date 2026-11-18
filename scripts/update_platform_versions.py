@@ -15,19 +15,22 @@ import yaml
 from atomic_file import atomic_write_text
 from bounded_file import read_bounded_bytes
 from platform_release_policy import (
-    CHANNELS, COMPONENTS, ReleasePolicyError, load_catalog, select_release, version_tuple,
+    CHANNELS, COMPONENTS, ReleasePolicyError, load_catalog, normalize_tag, select_release, version_tuple,
 )
 from strict_yaml import loads_strict_yaml_all
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PREMIUM_APPS = ROOT / "gitops/clusters/rke2-main/premium-3node/apps"
+GITEA_VALUES = ROOT / "gitops/clusters/rke2-main/alternatives/gitea/values.yaml"
 IMAGE_PATHS = {
     "forgejo": (("image", "tag"),),
+    "gitea": (("image", "tag"),),
     "woodpecker": (("server", "image", "tag"), ("agent", "image", "tag")),
     "argocd": (("global", "image", "tag"),),
 }
 ARGO_COMPONENTS = ("controller", "server", "repoServer", "applicationSet", "notifications", "dex")
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def values_document(text: str) -> dict:
@@ -49,7 +52,7 @@ def mapping_at(document: dict, keys: tuple[str, ...]) -> dict:
     return value
 
 
-def scalar_edit(text: str, keys: tuple[str, ...], tag: str) -> str:
+def scalar_edit(text: str, keys: tuple[str, ...], value: str) -> str:
     """Use validated YAML marks to preserve comments and every other scalar verbatim."""
     values_document(text)
     node = yaml.compose(text, Loader=yaml.SafeLoader)
@@ -61,11 +64,18 @@ def scalar_edit(text: str, keys: tuple[str, ...], tag: str) -> str:
             if index == len(keys) - 1:
                 scalar = pair[1]
                 if not isinstance(scalar, yaml.ScalarNode) or scalar.style in {"|", ">"}:
-                    raise ReleasePolicyError("Expected an image tag scalar")
-                return text[:scalar.start_mark.index] + json.dumps(tag) + text[scalar.end_mark.index:]
+                    raise ReleasePolicyError("Expected an image version or digest scalar")
+                return text[:scalar.start_mark.index] + json.dumps(value) + text[scalar.end_mark.index:]
             node = pair[1]
             continue
-        # Only Argo's global.image/tag may be absent: chart appVersion is its current pin.
+        if keys == ("image", "digest") and index == 1 and not node.flow_style:
+            tag_key = next((k for k, _ in node.value if k.value == "tag"), None)
+            if tag_key is not None:
+                position = text.rfind("\n", 0, tag_key.start_mark.index) + 1
+                newline = "\r\n" if "\r\n" in text else "\n"
+                line = " " * tag_key.start_mark.column + "digest: " + json.dumps(value) + newline
+                return text[:position] + line + text[position:]
+        # Argo's chart appVersion is the current pin when global.image.tag is absent.
         if keys != ("global", "image", "tag") or index == 0 or node.flow_style or not node.value:
             raise ReleasePolicyError("Image tag is absent or uses an unsupported mapping layout")
         newline = "\r\n" if "\r\n" in text else "\n"
@@ -73,7 +83,7 @@ def scalar_edit(text: str, keys: tuple[str, ...], tag: str) -> str:
         block = ""
         for offset, field in enumerate(remaining):
             indent = "  " * (index + offset)
-            block += indent + field + (": " + json.dumps(tag) if field == "tag" else ":") + newline
+            block += indent + field + (": " + json.dumps(value) if field == "tag" else ":") + newline
         position = node.end_mark.index
         prefix = newline if position and text[position - 1] != "\n" else ""
         return text[:position] + prefix + block + text[position:]
@@ -94,13 +104,22 @@ def current_tags(component: str, document: dict, catalog: dict) -> list[str]:
     return result
 
 
-def update_values_text(component: str, text: str, target: str, *, current: list[str]) -> str:
+def update_values_text(component: str, text: str, target: str, *, current: list[str], digest: str = "") -> str:
     before = values_document(text)
-    if all(tag == target for tag in current):
+    forge_image = mapping_at(before, ("image",)) if digest else {}
+    old_digest = forge_image.get("digest")
+    if digest and (component not in {"forgejo", "gitea"} or not DIGEST.fullmatch(digest)):
+        raise ReleasePolicyError("Supply an exact lowercase sha256 image digest for the selected forge")
+    if digest and old_digest and (not isinstance(old_digest, str) or not DIGEST.fullmatch(old_digest)):
+        raise ReleasePolicyError("The current forge image digest is invalid")
+    same_version = all(version_tuple(component, tag) == version_tuple(component, target) for tag in current)
+    if digest and not same_version and digest == old_digest:
+        raise ReleasePolicyError("An image version change requires a matching new digest")
+    if all(tag == target for tag in current) and (not digest or old_digest == digest):
         return text
     for path in IMAGE_PATHS[component]:
         image = mapping_at(before, path[:-1])
-        if any(image.get(key) for key in ("digest", "sha", "fullOverride")):
+        if (image.get("digest") and not digest) or any(image.get(key) for key in ("sha", "fullOverride")):
             raise ReleasePolicyError("Image has a digest pin or full override; review and update that image reference separately")
     if component == "forgejo" and target.endswith("-rootless") and mapping_at(before, ("image",)).get("rootless") is False:
         raise ReleasePolicyError("Keep the existing Forgejo image variant; a rootless conversion needs a separate migration")
@@ -117,12 +136,17 @@ def update_values_text(component: str, text: str, target: str, *, current: list[
             container = container.setdefault(key, {})
         container["tag"] = target
         rendered = scalar_edit(rendered, path, target)
+    if digest:
+        after["image"]["digest"] = digest
+        rendered = scalar_edit(rendered, ("image", "digest"), digest)
     if values_document(rendered) != after:
         raise ReleasePolicyError("Version edit would alter unrelated values; no file changed")
     return rendered
 
 
-def prepare_change(component: str, path: Path, channel: str, specific: str, catalog: dict) -> tuple[dict, str, str]:
+def prepare_change(
+    component: str, path: Path, channel: str, specific: str, catalog: dict, *, digest: str = "",
+) -> tuple[dict, str, str]:
     if path.is_symlink() or not path.is_file():
         raise ReleasePolicyError(f"{component} requires an existing regular values file")
     try:
@@ -131,42 +155,57 @@ def prepare_change(component: str, path: Path, channel: str, specific: str, cata
         raise ReleasePolicyError(f"Cannot read {component} values; private path/content suppressed") from exc
     document = values_document(text)
     tags = current_tags(component, document, catalog)
-    target = select_release(component, channel=channel, specific=specific, current=tags[0], catalog=catalog)
+    if component == "gitea":
+        if channel != "specific" or not specific or not digest:
+            raise ReleasePolicyError("Select an exact Gitea version and its reviewed image digest")
+        target = normalize_tag(component, specific)
+    else:
+        target = select_release(component, channel=channel, specific=specific, current=tags[0], catalog=catalog)
     if any(version_tuple(component, target) < version_tuple(component, old) for old in tags):
         raise ReleasePolicyError("Application downgrades are refused; use the documented backup/restore procedure")
-    rendered = update_values_text(component, text, target, current=tags)
+    rendered = update_values_text(component, text, target, current=tags, digest=digest)
     summary = {
         "component": component, "channel": channel, "current": tags, "target": target,
         "changed": rendered != text,
         "major_upgrade": any(version_tuple(component, target)[0] > version_tuple(component, old)[0] for old in tags),
         "unresolved_placeholders": bool(re.search(r"<[A-Z0-9_]+>", text)),
     }
+    if digest:
+        summary["target_digest"] = digest
     return summary, text, rendered
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    for component in COMPONENTS:
+    components = (*COMPONENTS, "gitea")
+    for component in components:
         name = "argocd-ha" if component == "argocd" else component
-        parser.add_argument(f"--{component}", choices=CHANNELS, help="Omit to leave this component untouched")
+        parser.add_argument(f"--{component}", choices=("specific",) if component == "gitea" else CHANNELS,
+                            help="Omit to leave this component untouched")
         parser.add_argument(f"--{component}-version", default="", help="Exact stable X.Y.Z version for specific")
-        parser.add_argument(f"--{component}-values", type=Path, default=PREMIUM_APPS / name / "values.yaml")
-    parser.add_argument("--write", action="store_true", help="Write only selected image tags to local files; never sync/deploy")
+        parser.add_argument(f"--{component}-values", type=Path,
+                            default=GITEA_VALUES if component == "gitea" else PREMIUM_APPS / name / "values.yaml")
+    for forge in ("forgejo", "gitea"):
+        parser.add_argument(f"--{forge}-digest", default="", help="Reviewed sha256 image manifest for the selected release")
+    parser.add_argument("--write", action="store_true", help="Write selected image versions and digests to local values")
     parser.add_argument("--allow-major-upgrade", action="store_true", help="Acknowledge a reviewed major upgrade (does not permit downgrades)")
     args = parser.parse_args(argv)
     try:
         catalog = load_catalog()
         changes = []
-        for component in COMPONENTS:
+        for component in components:
             channel = getattr(args, component)
             specific = getattr(args, f"{component}_version")
+            digest = getattr(args, f"{component}_digest", "")
+            if digest and not channel:
+                raise ReleasePolicyError(f"--{component}-digest requires selecting {component}")
             if specific and not channel:
                 raise ReleasePolicyError(f"--{component}-version requires --{component} specific")
             if channel:
                 path = getattr(args, f"{component}_values")
                 if any(path.resolve() == existing[0].resolve() for existing in changes):
                     raise ReleasePolicyError("Selected components must use distinct values files")
-                summary, original, rendered = prepare_change(component, path, channel, specific, catalog)
+                summary, original, rendered = prepare_change(component, path, channel, specific, catalog, digest=digest)
                 changes.append((path, original, rendered, summary))
         if args.write and not changes:
             raise ReleasePolicyError("Select at least one component before --write")

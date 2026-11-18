@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "operation_id": "<NEW_INDEPENDENT_CANARY_UUID>",
+  "storage_plan_sha256": "<CANONICAL_STORAGE_PLAN_SHA256>",
+  "storage_proof_sha256": "<ORIGINAL_STORAGE_PROOF_FILE_SHA256>",
+  "namespace": "storage-canary",
+  "namespace_uid": "<LIVE_CANARY_NAMESPACE_UID>",
+  "nodes": [
+    {
+      "name": "client-1",
+      "uid": "<LIVE_CLIENT_NODE_1_UID>",
+      "failure_domain": "rack-1"
+    },
+    {
+      "name": "client-2",
+      "uid": "<LIVE_CLIENT_NODE_2_UID>",
+      "failure_domain": "rack-2"
+    }
+  ],
+  "image": "registry.example.com/platform/python@sha256:<REVIEWED_NONROOT_PYTHON_IMAGE_DIGEST>",
+  "resources": {
+    "requests": {
+      "cpu": "100m",
+      "memory": "128Mi"
+    },
+    "limits": {
+      "cpu": "1",
+      "memory": "512Mi"
+    }
+  },
+  "payload_bytes": 1048576,
+  "timeout_seconds": 120,
+  "admitted_sha256": null
+}

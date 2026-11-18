@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "kallithea",
+  "state_path": "/var/lib/kallithea",
+  "config_file": "/etc/kallithea/kallithea.ini",
+  "http_port": 5000,
+  "venv": "/opt/kallithea",
+  "user": "kallithea",
+  "group": "kallithea"
+}

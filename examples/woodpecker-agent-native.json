@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "runtime": "raw",
+  "name": "woodpecker-agent",
+  "server": "ci-grpc.example.invalid:443",
+  "state_path": "/var/lib/woodpecker-agent",
+  "inputs_path": "/etc/platform/woodpecker-agent",
+  "custom_https_ca": true,
+  "docker_socket": "/run/woodpecker-engine/docker.sock",
+  "socket_group": "woodpecker_engine",
+  "binary": "/opt/woodpecker/bin/woodpecker-agent",
+  "binary_sha256": "62f993975911e8e2ae872b2a220102c3d3160560c89ba3d6c34e0ec7b7ccfcd2",
+  "user": "woodpecker",
+  "group": "woodpecker"
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "runtime": "docker",
+  "name": "woodpecker-server",
+  "provider": "forgejo",
+  "forge_url": "https://git.example.invalid",
+  "https_url": "https://ci.example.invalid",
+  "admins": ["ci-admin"],
+  "state_path": "/var/lib/woodpecker-server",
+  "inputs_path": "/etc/platform/woodpecker",
+  "http_port": 18000,
+  "grpc_port": 19000,
+  "database": "sqlite3",
+  "custom_https_ca": false,
+  "clone_image": null,
+  "image": "docker.io/woodpeckerci/woodpecker-server@sha256:02fe9b0156178d779d2da02499058a9e23edbdd795d49982ee96af8a7efbce66"
+}

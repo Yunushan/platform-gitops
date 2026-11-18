@@ -4,15 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import sys
 
+from bounded_file import bounded_file_input_max_bytes, read_bounded_stream
 from strict_json import loads_strict_json
-
-MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024
 
 
 def application_plan(root: Path, profile: str) -> dict:
@@ -29,6 +29,8 @@ def application_plan(root: Path, profile: str) -> dict:
         spec = document["spec"]
         if name in expected or spec.get("sources") or not spec["source"].get("path"):
             raise ValueError("profile must select distinct single-source Git applications")
+        if spec["source"]["path"] == "gitops/clusters/rke2-main/premium-3node/apps/minio":
+            raise ValueError("the archived lab MinIO application is ineligible for production acceptance")
         expected[name] = {
             "source": source_settings(spec["source"]),
             "destination": spec["destination"],
@@ -43,9 +45,11 @@ def source_settings(source: dict) -> dict:
     return {key: value for key, value in source.items() if key not in {"repoURL", "targetRevision"}}
 
 
-def verify_revision(snapshot: dict, expected: dict, commit: str) -> None:
+def verify_revision(snapshot: dict, expected: dict, commit: str, repository_sha256: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("expected revision must be a full lowercase Git commit")
+    if not re.fullmatch(r"[0-9a-f]{64}", repository_sha256):
+        raise ValueError("expected GitOps repository fingerprint must be a lowercase SHA-256")
     if not isinstance(expected, dict) or not expected:
         raise ValueError("expected application plan is empty or invalid")
     live = {}
@@ -61,6 +65,9 @@ def verify_revision(snapshot: dict, expected: dict, commit: str) -> None:
             raise ValueError(f"{name}: required application is absent")
         spec = application["spec"]
         source = spec.get("source") or {}
+        repository = source.get("repoURL")
+        if not isinstance(repository, str) or hashlib.sha256(repository.encode()).hexdigest() != repository_sha256:
+            raise ValueError(f"{name}: repository differs from the configured production source")
         if (spec.get("sources") or source_settings(source) != plan["source"]
                 or spec.get("destination") != plan["destination"] or spec.get("project") != plan["project"]):
             raise ValueError(f"{name}: source, destination, or project differs from the reviewed profile")
@@ -100,17 +107,18 @@ def main() -> int:
         profile = os.environ["PLATFORM_PROFILE"]
         commit = os.environ["PLATFORM_APP_HEALTH_EXPECTED_REVISION"]
         expected = loads_strict_json(os.environ["PLATFORM_APP_HEALTH_REVISION_PLAN"])
-        snapshot = sys.stdin.buffer.read(MAX_SNAPSHOT_BYTES + 1)
-        if len(snapshot) > MAX_SNAPSHOT_BYTES:
-            raise ValueError("Argo CD snapshot exceeds the byte limit")
-        verify_revision(loads_strict_json(snapshot.decode("utf-8")), expected, commit)
+        repository_sha256 = os.environ["PLATFORM_APP_HEALTH_EXPECTED_REPO_SHA256"]
+        snapshot = read_bounded_stream(
+            sys.stdin.buffer, max_bytes=bounded_file_input_max_bytes(), label="Argo CD applications",
+        )
+        verify_revision(loads_strict_json(snapshot), expected, commit, repository_sha256)
     except ValueError as exc:
         print(f"Argo CD release revision verification failed: {exc}", file=sys.stderr)
         return 1
     except (KeyError, TypeError, AttributeError):
         print("Argo CD release revision verification received incomplete or malformed status", file=sys.stderr)
         return 1
-    print(f"argocd_revision=verified profile={profile} commit={commit} applications={len(expected)}")
+    print(f"argocd_revision=verified profile={profile} commit={commit} applications={len(expected)} repository_sha256={repository_sha256}")
     return 0
 
 

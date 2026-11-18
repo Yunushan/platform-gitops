@@ -1,0 +1,77 @@
+{
+  "schema_version": 2,
+  "name": "forge-push",
+  "provider": "forgejo",
+  "source": {
+    "repository_id": 123,
+    "repository": "team/application",
+    "branch": "main",
+    "read_username": "ci-read",
+    "api_url": "https://forge.example.com/api/v1",
+    "clone_url": "https://forge.example.com/team/application.git",
+    "ca_sha256": "REVIEWED_FORGE_CA_SHA256"
+  },
+  "management_target": {
+    "kubeconfig_env": "PLATFORM_CI_KUBECONFIG",
+    "context": "ci",
+    "cluster_uid": "<REVIEWED_KUBE_SYSTEM_NAMESPACE_UID>"
+  },
+  "namespace": "platform-ci-jobs",
+  "service_account": "application-build",
+  "submitter_namespace": "platform-ci-control",
+  "submitter_account": "forge-event-bridge",
+  "node_selector": {
+    "kubernetes.io/os": "linux",
+    "platform.gitops/ci-worker": "true"
+  },
+  "controller_selector": {
+    "kubernetes.io/os": "linux",
+    "platform.gitops/control-service": "true"
+  },
+  "checkout_image": "registry.example.com/platform/git-python@sha256:<REVIEWED_IMAGE_DIGEST>",
+  "build_image": "registry.example.com/platform/python@sha256:<REVIEWED_IMAGE_DIGEST>",
+  "bridge_image": "registry.example.com/platform/python-kubectl@sha256:<REVIEWED_IMAGE_DIGEST>",
+  "build_argv": [
+    "python3",
+    "-I",
+    "-B",
+    "/workspace/source/ci/build_static.py",
+    "/workspace/output"
+  ],
+  "read_secret": "application-read",
+  "bridge_secret": "forge-event-inputs",
+  "timeout_minutes": 10,
+  "publish_address": "<PRIVATE_DOCKER_OR_NATIVE_IPV4>",
+  "reporting": {
+    "enabled": true,
+    "account": "ci-result-reporter",
+    "secret": "ci-result-inputs",
+    "context": "ci/tekton/application",
+    "poll_seconds": 30,
+    "max_runs_per_poll": 25,
+    "helper_images": [
+      "registry.example.invalid/platform/tekton-entrypoint@sha256:<REVIEWED_IMAGE_DIGEST>"
+    ]
+  },
+  "publication": {
+    "publisher_image": "registry.example.invalid/platform/python@sha256:<REVIEWED_PLATFORM_MANIFEST_DIGEST>",
+    "trust_secret": "application-harbor-trust",
+    "robot_secret": "application-harbor-publisher",
+    "registry": {
+      "schema_version": 1,
+      "origin": "https://registry.example.invalid",
+      "ca_file": "/publisher-input/ca.crt",
+      "credential_file": "/run/robot/credential.json",
+      "ca_sha256": "REVIEWED_HARBOR_CA_SHA256",
+      "leaf_sha256": "REVIEWED_HARBOR_LEAF_SHA256",
+      "credential_sha256": "REVIEWED_CREDENTIAL_SHA256",
+      "project_id": 123,
+      "robot_id": 456,
+      "repository": "applications/example",
+      "base_digest": "sha256:REVIEWED_BASE_MANIFEST_DIGEST",
+      "files": [
+        "index.html"
+      ]
+    }
+  }
+}

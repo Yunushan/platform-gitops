@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+from fnmatch import fnmatchcase
+from functools import partial
 import hashlib
 import json
 import os
@@ -21,6 +23,7 @@ from urllib.request import Request
 
 from atomic_file import atomic_write_text
 from bounded_subprocess import BoundedSubprocessError, run_bounded
+from github_release_policy import GitHubPolicyError, covers_release_tags, fetch_github_objects
 from http_transport import (
     HttpTransportPolicyError,
     http_timeout_seconds,
@@ -30,6 +33,7 @@ from http_transport import (
 )
 from strict_json import loads_strict_json
 from subprocess_timeout import bounded_timeout_seconds
+from verify_github_release_ref import SEMVER_TAG_RE
 
 
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -92,6 +96,7 @@ def validate_release_approval(
     repository: str,
     run_id: int,
     expected_sha: str,
+    tag_ref: str,
     environment_name: str,
     tag_ref_pattern: str,
     repository_document: Any,
@@ -114,12 +119,17 @@ def validate_release_approval(
     expected_sha = expected_sha.lower()
     if not COMMIT_RE.fullmatch(expected_sha):
         raise ReleaseApprovalError("expected SHA must be a 40-character lowercase Git commit SHA")
-    if not isinstance(run_id, int) or run_id <= 0:
+    if type(run_id) is not int or run_id <= 0:
         raise ReleaseApprovalError("workflow run ID must be a positive integer")
     if not environment_name:
         raise ReleaseApprovalError("release environment name is required")
     if not tag_ref_pattern.startswith("refs/tags/"):
         raise ReleaseApprovalError("tag ref pattern must start with refs/tags/")
+    tag = tag_ref.removeprefix("refs/tags/")
+    if not tag_ref.startswith("refs/tags/") or not SEMVER_TAG_RE.fullmatch(tag):
+        raise ReleaseApprovalError("release approval requires a stable pushed tag ref")
+    if not fnmatchcase(tag_ref, tag_ref_pattern):
+        raise ReleaseApprovalError("pushed tag is outside the protected tag ref pattern")
 
     repo = require_object(repository_document, "repository")
     require(repo.get("full_name") == repository, "repository identity does not match")
@@ -128,16 +138,17 @@ def validate_release_approval(
     require(isinstance(owner_id, int), "repository owner ID is invalid")
 
     run = require_object(run_document, "workflow run")
-    require(run.get("id") == run_id, "workflow run identity does not match")
+    require(type(run.get("id")) is int and run["id"] == run_id, "workflow run identity does not match")
     require(str(run.get("head_sha") or "").lower() == expected_sha, "workflow run commit does not match")
     require(run.get("event") == "push", "release workflow run was not triggered by a push")
+    require(run.get("head_branch") == tag, "workflow run ref does not match the pushed release tag")
     require(run.get("path") == ".github/workflows/release.yml", "workflow run path is not release.yml")
     require(
         run.get("status") in {"queued", "in_progress", "completed", "waiting", "pending"},
         "workflow run status is invalid",
     )
     require(
-        run.get("run_attempt") == 1,
+        type(run.get("run_attempt")) is int and run["run_attempt"] == 1,
         "release publication requires the first workflow run attempt",
     )
     head_repository = require_object(run.get("head_repository"), "workflow run head_repository")
@@ -170,19 +181,7 @@ def validate_release_approval(
 
     if not isinstance(rulesets_document, list):
         raise ReleaseApprovalError("repository rulesets must be a JSON array")
-    matching_rulesets: list[dict[str, Any]] = []
-    for ruleset in rulesets_document:
-        if not isinstance(ruleset, dict):
-            continue
-        conditions = ruleset.get("conditions")
-        ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
-        includes = ref_name.get("include", []) if isinstance(ref_name, dict) else []
-        if (
-            ruleset.get("target") == "tag"
-            and ruleset.get("enforcement") == "active"
-            and tag_ref_pattern in includes
-        ):
-            matching_rulesets.append(ruleset)
+    matching_rulesets = [rule for rule in rulesets_document if covers_release_tags(rule, tag_ref_pattern)]
     require(bool(matching_rulesets), f"no active tag ruleset covers {tag_ref_pattern}")
 
     release_authority_ids: set[int] = set()
@@ -314,16 +313,18 @@ def validate_release_approval(
         "runId": run_id,
         "runAttempt": run["run_attempt"],
         "commit": expected_sha,
+        "tag": tag,
         "environmentId": environment_id,
         "approverId": approved_by,
     }
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedAt": generated_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
         "repository": repository,
         "runId": run_id,
         "runAttempt": run["run_attempt"],
         "commit": expected_sha,
+        "tag": tag,
         "releaseEnvironment": environment_name,
         "result": "passed",
         "approvalBindingSha256": canonical_sha256(approval_binding),
@@ -418,24 +419,12 @@ def api_get(
         raise ReleaseApprovalError(f"GitHub API response rejected for {path}: {exc}") from exc
 
 
-def api_get_all_pages(api_url: str, path: str, token: str) -> list[Any]:
-    items: list[Any] = []
-    separator = "&" if "?" in path else "?"
-    for page in range(1, 101):
-        document = api_get(api_url, f"{path}{separator}per_page=100&page={page}", token)
-        if not isinstance(document, list):
-            raise ReleaseApprovalError(f"paginated GitHub API response must be an array: {path}")
-        items.extend(document)
-        if len(document) < 100:
-            return items
-    raise ReleaseApprovalError(f"GitHub API pagination exceeded 100 pages: {path}")
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--run-id", type=int, default=int(os.environ.get("GITHUB_RUN_ID", "0") or 0))
     parser.add_argument("--sha", default=os.environ.get("GITHUB_SHA", ""))
+    parser.add_argument("--tag-ref", default=os.environ.get("GITHUB_REF", ""))
     parser.add_argument("--environment", default="production-release")
     parser.add_argument("--tag-ref-pattern", default="refs/tags/v*.*.*")
     parser.add_argument("--api-url", default=os.environ.get("GITHUB_API_URL", "https://api.github.com"))
@@ -469,6 +458,7 @@ def main() -> int:
 
     repository_path = quote(args.repository, safe="/")
     environment_path = quote(args.environment, safe="")
+    get = partial(api_get, args.api_url, token=token)
     try:
         repository_document = api_get(args.api_url, f"repos/{repository_path}", token)
         run_document = api_get(
@@ -481,15 +471,11 @@ def main() -> int:
             f"repos/{repository_path}/environments/{environment_path}",
             token,
         )
-        collaborators_document = api_get_all_pages(
-            args.api_url,
-            f"repos/{repository_path}/collaborators?affiliation=all",
-            token,
+        collaborators_document = fetch_github_objects(
+            f"repos/{repository_path}/collaborators?affiliation=all", get
         )
-        ruleset_summaries = api_get_all_pages(
-            args.api_url,
-            f"repos/{repository_path}/rulesets?includes_parents=true",
-            token,
+        ruleset_summaries = fetch_github_objects(
+            f"repos/{repository_path}/rulesets?includes_parents=true", get
         )
         rulesets_document = []
         for summary in ruleset_summaries:
@@ -538,10 +524,8 @@ def main() -> int:
             slug = str(team.get("slug") or "")
             if not slug:
                 raise ReleaseApprovalError(f"Team:{team_id} slug is missing")
-            team_members_document[f"Team:{team_id}"] = api_get_all_pages(
-                args.api_url,
-                f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all",
-                token,
+            team_members_document[f"Team:{team_id}"] = fetch_github_objects(
+                f"orgs/{organization}/teams/{quote(slug, safe='')}/members?role=all", get
             )
 
         environment_id = environment_document.get("id")
@@ -568,6 +552,7 @@ def main() -> int:
             repository=args.repository,
             run_id=args.run_id,
             expected_sha=args.sha,
+            tag_ref=args.tag_ref,
             environment_name=args.environment,
             tag_ref_pattern=args.tag_ref_pattern,
             repository_document=repository_document,
@@ -579,7 +564,7 @@ def main() -> int:
             team_members_document=team_members_document,
         )
         atomic_write_text(args.output, json.dumps(evidence, indent=2) + "\n")
-    except (OSError, ReleaseApprovalError) as exc:
+    except (OSError, ReleaseApprovalError, GitHubPolicyError) as exc:
         print(f"GitHub release approval verification failed: {exc}", file=sys.stderr)
         return 1
 

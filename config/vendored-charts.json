@@ -2,6 +2,21 @@
   "schemaVersion": 2,
   "charts": [
     {
+      "path": "gitops/clusters/rke2-main/alternatives/gitea/charts/gitea-12.7.0/gitea",
+      "repository": "https://dl.gitea.com/charts/",
+      "name": "gitea",
+      "version": "12.7.0",
+      "packageSha256": "5881ef9c59400bee2d5547e77c4cd0efb925143c2f5d93fb4f38446db76b0167",
+      "upstreamTreeSha256": "79ac5591aaa504bb16e130b8ac0223d56e8e2e167f9df2f8f707ff7802fe8da4",
+      "treeSha256": "204c0985719e0d5e8c687bc54e2d3252c1e001b9453c6cbaadb9b6d4a87b2fa9",
+      "patches": [
+        {
+          "path": "charts/valkey-cluster/values.yaml",
+          "reason": "Default the optional Valkey sysctl init container to unprivileged in the Gitea chart."
+        }
+      ]
+    },
+    {
       "path": "gitops/clusters/rke2-main/apps/cloudnativepg/charts/cloudnative-pg",
       "repository": "https://cloudnative-pg.github.io/charts",
       "name": "cloudnative-pg",
@@ -128,11 +143,43 @@
       "version": "10.1.1",
       "packageSha256": "0ea33554ba544b5ac82c21accaa8441a824dd03fbdf8b17997e3a0572d77b582",
       "upstreamTreeSha256": "ba3484f46d22d9040fc9f80624e23a9ad180e536250cacb3e2b5b6faf858a4f9",
-      "treeSha256": "0e9f67cc4754da6c866411ac6067f6923084e44b839142ab976eb0266519c13a",
+      "treeSha256": "545fb2ac0bbd89b396b301eaf65953db984a8f59327fc142173afe814b3d321a",
       "patches": [
         {
           "path": "charts/gitlab-runner/.gitlab-ci.yml",
           "reason": "Verify the pinned Helm archive before installing it in the vendored Runner integration job."
+        },
+        {
+          "path": "charts/gitlab/charts/praefect/templates/_platform-migration.tpl",
+          "reason": "Optional Praefect migration-pod, migration-name, scoped-account and schema-wait helpers for serialized bootstrap."
+        },
+        {
+          "path": "charts/gitlab/charts/praefect/templates/_platform-pod.tpl",
+          "reason": "Share the Praefect pod specification between the StatefulSet and optional schema migration Job."
+        },
+        {
+          "path": "charts/gitlab/charts/praefect/templates/configmap.yaml",
+          "reason": "Order the Praefect configuration before the optional migration Job during Argo CD synchronization."
+        },
+        {
+          "path": "charts/gitlab/charts/praefect/templates/migration-job.yaml",
+          "reason": "Add an opt-in, bounded, single-run Praefect schema migration Job with automatic router migration disabled."
+        },
+        {
+          "path": "charts/gitlab/charts/praefect/templates/schema-rbac.yaml",
+          "reason": "Allow each Praefect router projected identity to read only its declared migration Job."
+        },
+        {
+          "path": "charts/gitlab/charts/praefect/templates/serviceaccount.yaml",
+          "reason": "Add the prerequisite sync wave to an explicitly enabled Praefect service account."
+        },
+        {
+          "path": "charts/gitlab/charts/praefect/templates/statefulset.yaml",
+          "reason": "Gate Praefect routers on completion of the declared migration Job using a scoped projected API token."
+        },
+        {
+          "path": "charts/gitlab/charts/praefect/values.yaml",
+          "reason": "Keep the separate Praefect migration Job disabled by default with a bounded active deadline."
         }
       ]
     },

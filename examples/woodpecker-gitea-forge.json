@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "provider": "gitea",
+  "url": "https://gitea.example.invalid",
+  "oauth_secret": "woodpecker-gitea-oauth",
+  "previous_oauth_secret": "woodpecker-forgejo-oauth"
+}

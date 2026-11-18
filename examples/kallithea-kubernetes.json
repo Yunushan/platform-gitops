@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "name": "kallithea",
+  "namespace": "kallithea",
+  "state_claim": "kallithea-state",
+  "config_secret": "kallithea-private",
+  "image": "registry.example.com/platform/kallithea@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}

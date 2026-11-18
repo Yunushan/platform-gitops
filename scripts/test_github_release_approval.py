@@ -11,10 +11,12 @@ from verify_github_release_approval import ReleaseApprovalError, validate_releas
 
 REPOSITORY = "example/platform-gitops"
 COMMIT = "a" * 40
+TAG = "v1.2.3"
 
 
 def fixtures() -> dict[str, object]:
     return {
+        "tag_ref": f"refs/tags/{TAG}",
         "repository_document": {
             "full_name": REPOSITORY,
             "owner": {"id": 100, "login": "example"},
@@ -22,6 +24,7 @@ def fixtures() -> dict[str, object]:
         "run_document": {
             "id": 1234,
             "head_sha": COMMIT,
+            "head_branch": TAG,
             "event": "push",
             "path": ".github/workflows/release.yml",
             "status": "in_progress",
@@ -102,7 +105,7 @@ def reject(mutator, expected: str) -> None:  # type: ignore[no-untyped-def]
 
 def main() -> int:
     evidence = validate(fixtures())
-    if evidence["result"] != "passed" or evidence["schemaVersion"] != 1:
+    if evidence["result"] != "passed" or evidence["schemaVersion"] != 2 or evidence["tag"] != TAG:
         raise AssertionError("valid release approval did not produce passing evidence")
     if evidence["controls"]["independentReviewer"] != "passed":
         raise AssertionError("release approval omitted independent reviewer proof")
@@ -124,11 +127,27 @@ def main() -> int:
         "workflow run commit does not match",
     )
     reject(
+        lambda values: values["run_document"].update(head_branch="v1.2.2"),
+        "workflow run ref does not match",
+    )
+    reject(
+        lambda values: values.update(tag_ref=f"refs/heads/{TAG}"),
+        "stable pushed tag ref",
+    )
+    reject(
+        lambda values: values.update(tag_ref="refs/tags/v1.2.3-rc1"),
+        "stable pushed tag ref",
+    )
+    reject(
         lambda values: values["run_document"].update(path=".github/workflows/other.yml"),
         "workflow run path is not release.yml",
     )
     reject(
         lambda values: values["run_document"].update(run_attempt=2),
+        "release publication requires the first workflow run attempt",
+    )
+    reject(
+        lambda values: values["run_document"].update(run_attempt=True),
         "release publication requires the first workflow run attempt",
     )
     reject(
@@ -176,6 +195,17 @@ def main() -> int:
         lambda values: values["rulesets_document"][0].update(bypass_actors=[]),
         "release tag ruleset has no explicit release authority",
     )
+    reject(
+        lambda values: values["rulesets_document"][0]["conditions"]["ref_name"].update(
+            exclude=[f"refs/tags/{TAG}"]
+        ),
+        "no active tag ruleset",
+    )
+    other_release = fixtures()
+    other_release["tag_ref"] = "refs/tags/v1.2.4"
+    other_release["run_document"]["head_branch"] = "v1.2.4"
+    if validate(other_release)["approvalBindingSha256"] == evidence["approvalBindingSha256"]:
+        raise AssertionError("distinct releases at one commit must have distinct approval bindings")
 
     print("Independent GitHub release approval behavior validation passed.")
     return 0

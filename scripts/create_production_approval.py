@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from atomic_file import atomic_write_text
-from bounded_file import read_bounded_text
+from bounded_file import read_bounded_bytes
 from strict_json import loads_strict_json
 import verify_production_approval as approval
 import verify_production_evidence as production_evidence
@@ -36,7 +37,8 @@ def main() -> int:
         print("--max-age-days must be greater than zero", file=sys.stderr)
         return 2
     try:
-        document = loads_strict_json(read_bounded_text(args.production_evidence))
+        evidence_bytes = read_bounded_bytes(args.production_evidence)
+        document = loads_strict_json(evidence_bytes.decode("utf-8"))
         if not isinstance(document, dict):
             raise approval.ApprovalError("production evidence must be a JSON object")
         production_evidence.validate_evidence(
@@ -52,17 +54,12 @@ def main() -> int:
             )
         retained = approval.build_approval_document(
             document,
-            production_sha256=approval.artifact_sha256(args.production_evidence),
+            production_sha256=hashlib.sha256(evidence_bytes).hexdigest(),
             approval_key_sha256=key_sha256,
             approver=args.approver,
         )
         atomic_write_text(args.output, json.dumps(retained, indent=2) + "\n")
-    except (
-        OSError,
-        json.JSONDecodeError,
-        approval.ApprovalError,
-        production_evidence.EvidenceError,
-    ) as exc:
+    except (OSError, ValueError) as exc:
         print(f"Production approval creation failed: {exc}", file=sys.stderr)
         return 1
     print(f"Production approval document created for signing: {args.output}")

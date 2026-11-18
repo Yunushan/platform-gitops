@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically check the reviewed GitLab handoff
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+AccuracySec=15s
+Unit=gitlab-gitops-handoff.service
+
+[Install]
+WantedBy=timers.target

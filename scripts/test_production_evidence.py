@@ -36,11 +36,12 @@ def fixture(root: Path, now: datetime) -> dict[str, object]:
         "source_branch=private-deploy\n"
         "source_expected_ref=seed/main\n"
         f"source_tree={'b' * 40}\n"
+        f"source_remote_url_sha256={'c' * 64}\n"
         "== platform-production-check ==\n"
         "platform-production-check\n"
         "== rendered-live-image-reconciliation ==\n"
         "Image inventory evidence accepted:\n"
-        f"argocd_revision=verified profile=premium-3node commit={'a' * 40} applications=23\n",
+        f"argocd_revision=verified profile=premium-3node commit={'a' * 40} applications=23 repository_sha256={'d' * 64}\n",
         encoding="utf-8",
     )
     cluster_id_sha256 = hashlib.sha256(b"openbao-cluster-test").hexdigest()
@@ -287,14 +288,6 @@ def test_gitlab_production_evidence(root: Path, now: datetime) -> None:
     document["logSha256"] = verified_log_hash
     rejects(document, "does not record verification of the GitLab recovery hash")
     rebind("gitlabRecovery", recovery)
-    original_log = log.read_text(encoding="utf-8")
-    wrong_revision = original_log.replace(f"commit={'a' * 40}", f"commit={'b' * 40}")
-    log.write_text(wrong_revision, encoding="utf-8")
-    rejects(
-        dict(document, logSha256=hashlib.sha256(log.read_bytes()).hexdigest()),
-        "verified Argo CD release revision",
-    )
-    log.write_text(original_log, encoding="utf-8")
     rejects(dict(document, schemaVersion=7), "schemaVersion must be 8")
     rejects(dict(document, forgejoRecovery=document["gitlabRecovery"]), "forgejoRecovery cannot certify")
     rebind("gitlabRecovery", dict(recovery, clusterUid="other-cluster"))
@@ -312,13 +305,22 @@ def test_gitlab_production_evidence(root: Path, now: datetime) -> None:
 
 
 def test_live_application_revision() -> None:
+    try:
+        application_plan(ROOT, "premium-3node-lab")
+    except ValueError as exc:
+        if "lab MinIO" not in str(exc):
+            raise
+    else:
+        fail("lab-only object storage passed production planning")
     plan = application_plan(ROOT, GITLAB_PROFILE)
     if {"gitlab-ce", "gitlab-runner", "platform-postgres"} - plan.keys() or "forgejo" in plan:
         fail("release revision plan must use the GitLab deployment profile")
     commit = "a" * 40
+    repository = "https://git.example.test/platform.git"
+    repo_hash = hashlib.sha256(repository.encode()).hexdigest()
     items = []
     for name, app in plan.items():
-        source = dict(app["source"], repoURL="https://git.example.test/platform.git", targetRevision="main")
+        source = dict(app["source"], repoURL=repository, targetRevision="main")
         items.append({
             "metadata": {"name": name},
             "spec": dict(app, source=source),
@@ -329,15 +331,26 @@ def test_live_application_revision() -> None:
                 "health": {"status": "Healthy"},
             },
         })
-    verify_revision({"items": items}, plan, commit)
+    verify_revision({"items": items}, plan, commit, repo_hash)
 
     candidate = next(item for item in items if item["metadata"]["name"] == "gitlab-ce")
     sync = candidate["status"]["sync"]
+    for source in (candidate["spec"]["source"], sync["comparedTo"]["source"]):
+        source["repoURL"] = "https://mirror.example.test/platform.git"
+    try:
+        verify_revision({"items": items}, plan, commit, repo_hash)
+    except ValueError as exc:
+        if "repository differs" not in str(exc):
+            raise
+    else:
+        fail("matching Git revisions in a different repository were accepted")
+    for source in (candidate["spec"]["source"], sync["comparedTo"]["source"]):
+        source["repoURL"] = repository
     for field, wrong in (("revision", "b" * 40), ("status", "OutOfSync"), ("revisions", [commit])):
         original = dict(sync)
         sync[field] = wrong
         try:
-            verify_revision({"items": items}, plan, commit)
+            verify_revision({"items": items}, plan, commit, repo_hash)
         except ValueError:
             pass
         else:
@@ -346,7 +359,7 @@ def test_live_application_revision() -> None:
         sync.update(original)
     sync["comparedTo"]["source"]["path"] = "gitops/unreviewed"
     try:
-        verify_revision({"items": items}, plan, commit)
+        verify_revision({"items": items}, plan, commit, repo_hash)
     except ValueError as exc:
         if "different source" not in str(exc):
             raise
@@ -355,7 +368,7 @@ def test_live_application_revision() -> None:
     sync["comparedTo"]["source"]["path"] = plan["gitlab-ce"]["source"]["path"]
     candidate["operation"] = {"sync": {"revision": "b" * 40}}
     try:
-        verify_revision({"items": items}, plan, commit)
+        verify_revision({"items": items}, plan, commit, repo_hash)
     except ValueError as exc:
         if "active operation" not in str(exc):
             raise
@@ -427,6 +440,32 @@ def main() -> int:
             pass
         else:
             fail("production evidence accepted a dirty source checkout")
+
+        older_packet = {**document, "completedAt": (now - timedelta(minutes=20)).isoformat()}
+        try:
+            evidence.validate_evidence(older_packet, root=root, now=now, max_age_days=7)
+        except evidence.EvidenceError as exc:
+            if "postdates production acceptance" not in str(exc):
+                raise
+        else:
+            fail("production evidence accepted an image inventory captured after the acceptance")
+        outside_log = root / "outside.log"
+        outside_log.write_bytes((root / document["logPath"]).read_bytes())
+        linked_log = root / "private/production-evidence/linked.log"
+        try:
+            linked_log.symlink_to(outside_log)
+        except OSError:
+            if sys.platform != "win32":
+                raise
+        else:
+            redirected = {**document, "logPath": linked_log.relative_to(root).as_posix()}
+            try:
+                evidence.validate_evidence(redirected, root=root, now=now, max_age_days=7)
+            except evidence.EvidenceError as exc:
+                if "resolves outside" not in str(exc):
+                    raise
+            else:
+                fail("production evidence accepted a retained artifact outside the packet directory")
 
         wrong_remote = dict(document)
         wrong_remote["source"] = dict(
@@ -558,6 +597,16 @@ def main() -> int:
         changed_forgejo.write_text(original_forgejo, encoding="utf-8")
 
         changed_log = root / "private" / "production-evidence" / "acceptance.log"
+        original_log = changed_log.read_text(encoding="utf-8")
+        changed_log.write_text(original_log.replace(f"commit={'a' * 40}", f"commit={'b' * 40}"), encoding="utf-8")
+        wrong_live_revision = dict(document, logSha256=hashlib.sha256(changed_log.read_bytes()).hexdigest())
+        try:
+            evidence.validate_evidence(wrong_live_revision, root=root, now=now, max_age_days=7)
+        except evidence.EvidenceError as exc:
+            if "verified Argo CD release revision" not in str(exc):
+                raise
+        else:
+            fail("production evidence accepted an Argo CD check against another commit")
         changed_log.write_text("changed\n", encoding="utf-8")
         try:
             evidence.validate_evidence(document, root=root, now=now, max_age_days=7)

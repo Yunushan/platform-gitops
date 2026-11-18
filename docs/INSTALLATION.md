@@ -273,11 +273,34 @@ kubectl --kubeconfig <PATH_TO_PRIVATE_KUBECONFIG> --server=https://<VIP_DNS_NAME
 After the API VIP exists, `make rke2-verify` is strict by default: it checks
 local RKE2 readiness, every expected node, unauthenticated VIP/DNS `/readyz`
 reachability from every node, and authenticated `/readyz` through both the VIP
-and DNS name. For a pre-VIP sanity check during early bootstrap only, run:
+and DNS name. It also verifies the supervisor's `/cacerts` endpoint on port
+9345 from each server using that server's RKE2 CA. The stable registration
+address must route both port 9345 for nodes and port 6443 for Kubernetes
+API clients. [RKE2 high availability](https://docs.rke2.io/install/ha#1-configure-the-fixed-registration-address)
+
+For a pre-VIP sanity check during early bootstrap only, run:
 
 ```bash
 RKE2_VERIFY_API_VIP=false make rke2-verify
 ```
+
+For dedicated workers, install the same reviewed RKE2 release on fresh
+worker hosts. The local-cache installer documented in the
+[recovery runbook](BACKUP_RESTORE.md#stage-the-rke2-release-for-offline-recovery)
+also accepts `--role agent` with the cluster's reviewed CNI and digests.
+Place a secure agent token in a root-only file at the `token-file` path,
+and create `/etc/rancher/rke2/config.yaml` with mode `0600`.
+[RKE2 agent setup](https://docs.rke2.io/install/quickstart) · [RKE2 secure tokens](https://docs.rke2.io/security/token)
+
+```yaml
+server: https://<VIP_DNS_NAME>:9345
+token-file: /etc/rancher/rke2/agent.token
+```
+
+Start `rke2-agent` on each worker. To include dedicated workers in
+`make rke2-verify`, list their Kubernetes Node names under `[rke2_agents]`
+in the private inventory. Verification checks each listed node by name
+through the Kubernetes API. These hosts stay outside `[rke2_servers]`.
 
 For the normal post-RKE2 flow, use the higher-level automation:
 
@@ -448,7 +471,9 @@ OAuth2 Proxy and must be redirected to Keycloak or rejected. Keep
 break-glass compatibility option only and must be accompanied by an explicit
 review of Argo CD, Grafana, and Prometheus public access.
 
-Woodpecker defaults to PostgreSQL-backed HA for the 3-node premium profile.
+The 3-node premium profile runs one active Woodpecker server backed by
+PostgreSQL and three Kubernetes agents. See the
+[server scheduling and recovery test](CI_GITOPS_HANDOFF.md#woodpecker-server-scheduling-and-recovery).
 `platform-app-secrets` generates `woodpecker/woodpecker-database` and the
 matching `platform-databases/woodpecker-database` CloudNativePG role password
 secret unless you provide `WOODPECKER_DATABASE_PASSWORD` or a full
@@ -464,7 +489,7 @@ exact Forgejo login(s) that must administer Woodpecker. For first-time OAuth
 onboarding, set `WOODPECKER_OPEN=true` in the ignored private environment,
 render and sync the private values, let approved Forgejo users sign in once,
 then set it back to `false` and render/sync again.
-Render with 3 server replicas for the shared `platform-postgres` cluster:
+Render with the shared `platform-postgres` cluster.
 
 ```bash
 WOODPECKER_DATABASE_MODE=postgres \
@@ -482,12 +507,12 @@ WOODPECKER_DATABASE_MODE=postgres \
 WOODPECKER_DATABASE_SECRET_NAME=woodpecker-database \
 WOODPECKER_AGENT_SECRET_NAME=woodpecker-agent-secret \
 WOODPECKER_IMAGE_TAG=v3.16.0 \
-WOODPECKER_SERVER_REPLICAS=3 \
+WOODPECKER_SERVER_REPLICAS=1 \
 WOODPECKER_AGENT_REPLICAS=3 \
 make platform-render-private-values
 ```
 
-For a small non-HA bootstrap, set `WOODPECKER_DATABASE_MODE=sqlite` and keep
+For a small SQLite bootstrap, set `WOODPECKER_DATABASE_MODE=sqlite` and keep
 `WOODPECKER_SERVER_REPLICAS=1`.
 
 Harbor defaults to internal PostgreSQL, the shared external
@@ -897,8 +922,8 @@ make platform-ci-health
 
 This focused gate keeps Argo CD runtime component and configured
 repo-server/Redis service endpoint checks, plus the Argo CD, Traefik, and
-Woodpecker namespace, backend, ingress, generated Woodpecker secret, HA
-replica, runtime image tag, and ClusterIP service-path checks, while skipping
+Woodpecker namespace, backend, ingress, generated Woodpecker secret, replica
+count, runtime image tag, and ClusterIP service-path checks, while skipping
 Harbor, monitoring, Loki, Velero, CloudNativePG, Longhorn runtime, and
 StorageClass enforcement. It loads the ignored deployment environment through
 the normal health runner, but does not require unrelated platform SSO secrets.

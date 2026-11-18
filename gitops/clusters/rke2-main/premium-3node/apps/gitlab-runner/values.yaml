@@ -1,20 +1,46 @@
 # GitLab Runner premium profile for 100+ users. Kubernetes executor jobs run in the
-# gitlab-runner namespace. Set runnerToken through a private overlay or ExternalSecret;
+# gitlab-jobs namespace. Create the manager's authentication Secret privately;
 # never commit registration or authentication tokens.
 gitlabUrl: https://gitlab.<PLATFORM_DOMAIN>
 
 rbac:
   create: true
+  clusterWideAccess: false
+  rules:
+    - apiGroups: [""]
+      resources: ["events"]
+      verbs: ["list"]
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["create", "delete", "get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["pods/attach", "pods/exec"]
+      verbs: ["create", "delete", "get", "patch"]
+    - apiGroups: [""]
+      resources: ["pods/log"]
+      verbs: ["get", "list"]
+    - apiGroups: [""]
+      resources: ["secrets"]
+      verbs: ["create", "delete", "get", "update"]
+    - apiGroups: [""]
+      resources: ["serviceaccounts"]
+      verbs: ["get"]
+    - apiGroups: [""]
+      resources: ["services"]
+      verbs: ["create", "get"]
 
 concurrent: 20
 checkInterval: 30
 
 runners:
-  locked: false
+  secret: <GITLAB_RUNNER_TOKEN_SECRET_NAME>
+  jobNamespace: gitlab-jobs
   config: |
     [[runners]]
       [runners.kubernetes]
-        namespace = "gitlab-runner"
+        namespace = "gitlab-jobs"
+        service_account = "gitlab-job"
+        automount_service_account_token = false
         image = "alpine:3.22"
         privileged = false
         cpu_request = "250m"

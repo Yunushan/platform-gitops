@@ -46,10 +46,10 @@ APP_SYNC_WAVES = {
     "keycloak": "6",
     "forgejo": "5",
     "gitea": "3",
-    "gitlab-ce": "3",
+    "gitlab-ce": "5",
     "monitoring": "3",
     "woodpecker": "6",
-    "gitlab-runner": "4",
+    "gitlab-runner": "6",
     "harbor": "5",
     "minio": "4",
     "loki": "4",
@@ -319,6 +319,13 @@ def scan_path(path: Path, repo_root: Path) -> list[str]:
 
 
 def render(args: argparse.Namespace) -> int:
+    recovery_commit = getattr(args, "recovery_commit", None)
+    if recovery_commit is not None and not re.fullmatch(r"[0-9a-f]{40}", recovery_commit):
+        print("Use a full lowercase SHA-1 for --recovery-commit.", file=sys.stderr)
+        return 1
+    if recovery_commit is not None:
+        import yaml
+        from strict_yaml import loads_strict_yaml_all
     repo_root = args.repo_root.resolve()
     applications_file = args.applications_file.resolve() if args.applications_file else None
     required_findings: list[tuple[Path, list[str]]] = []
@@ -375,6 +382,10 @@ def render(args: argparse.Namespace) -> int:
         doc_findings = unresolved_in_text(doc)
         if path_match:
             path_findings = scan_path(repo_root / path_match.group("path"), repo_root)
+            if args.profile == "gitea-woodpecker-argocd" and name == "woodpecker":
+                from render_woodpecker_forge import gitea_values_ready
+                if not gitea_values_ready(repo_root / path_match.group("path") / "values.yaml"):
+                    path_findings.append("Woodpecker must select Gitea with an HTTPS URL and OAuth Secret reference")
         else:
             path_findings = ["application source path was not found"]
 
@@ -382,7 +393,24 @@ def render(args: argparse.Namespace) -> int:
         if findings:
             skipped.append((name, findings))
         else:
-            kept.append(doc.replace("<THIS_REPO_URL>", args.repo_url))
+            rendered = doc.replace("<THIS_REPO_URL>", args.repo_url)
+            if recovery_commit is not None:
+                try:
+                    # Read the placeholder as YAML before inserting operator data.
+                    application, = loads_strict_yaml_all(doc)
+                    spec = application["spec"]
+                    source = spec["source"]
+                    if (application["apiVersion"] != "argoproj.io/v1alpha1" or application["kind"] != "Application"
+                            or "sources" in spec or "chart" in source or source["repoURL"] not in {"<THIS_REPO_URL>", args.repo_url}
+                            or source["path"] != path_match.group("path")):
+                        raise ValueError("Unexpected Application source")
+                    source["repoURL"] = args.repo_url
+                    source["targetRevision"] = recovery_commit
+                    rendered = yaml.safe_dump(application, sort_keys=False).rstrip()
+                except (KeyError, TypeError, ValueError):
+                    print("Recovery requires a single-source Application from the selected Git repository.", file=sys.stderr)
+                    return 1
+            kept.append(rendered)
 
     if not kept:
         print(
@@ -421,6 +449,7 @@ def main() -> int:
     parser.add_argument("--applications-file", type=Path)
     parser.add_argument("--profile", help="GitOps profile to render. Supports catalog profiles in profiles/.")
     parser.add_argument("--repo-url", required=True)
+    parser.add_argument("--recovery-commit", help="Pin each Application to the full reviewed Git commit")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--required-path",

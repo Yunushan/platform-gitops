@@ -10,3 +10,5 @@ helmCharts:
     releaseName: platform-traefik
     namespace: traefik
     valuesFile: values.yaml
+    apiVersions:
+      - policy/v1/PodDisruptionBudget

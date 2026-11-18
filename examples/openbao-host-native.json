@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "contract_sha256": "<REVIEWED_NATIVE_OPENBAO_CONTRACT_SHA256>",
+  "member": "bao-a",
+  "machine_id_sha256": "<SHA256_OF_STRIPPED_MACHINE_ID>",
+  "boot_id": "<CURRENT_HOST_BOOT_UUID>",
+  "service_uid": 1000,
+  "service_gid": 1000,
+  "files_sha256": {
+    "tls/tls.crt": "<TLS_CERTIFICATE_FILE_SHA256>",
+    "tls/tls.key": "<PRIVATE_TLS_KEY_FILE_SHA256>",
+    "tls/ca.crt": "<TRUSTED_CA_FILE_SHA256>"
+  },
+  "storage": {
+    "data": {
+      "device": 1,
+      "inode": 2
+    },
+    "audit": {
+      "device": 1,
+      "inode": 3
+    }
+  },
+  "docker": null,
+  "native": {
+    "user": "openbao",
+    "group": "openbao",
+    "systemctl_sha256": "<REVIEWED_SYSTEMCTL_BINARY_SHA256>",
+    "max_runtime_seconds": null
+  }
+}

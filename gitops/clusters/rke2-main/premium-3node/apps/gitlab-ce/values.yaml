@@ -7,6 +7,13 @@
 # or a private overlay.
 global:
   edition: ce
+  pdb:
+    apiVersion: policy/v1
+  hpa:
+    apiVersion: autoscaling/v2
+  batch:
+    cronJob:
+      apiVersion: batch/v1
   gatewayApi:
     enabled: false
     installEnvoy: false
@@ -20,6 +27,7 @@ global:
       name: registry-gitlab.<PLATFORM_DOMAIN>
   ingress:
     enabled: true
+    apiVersion: networking.k8s.io/v1
     class: traefik
     configureCertmanager: false
     tls:
@@ -70,9 +78,6 @@ global:
     enabled: true
 
 installCertmanager: false
-
-certmanager-issuer:
-  install: false
 
 nginx-ingress:
   enabled: false

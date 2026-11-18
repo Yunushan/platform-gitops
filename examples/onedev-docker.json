@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "name": "onedev",
+  "state_path": "/srv/onedev/state",
+  "credentials_path": null,
+  "http_port": 6610,
+  "ssh_port": 6611,
+  "https_url": "https://onedev.example.com",
+  "ssh_host": "onedev.example.com",
+  "ssh_public_port": 2222,
+  "database": {"type": "embedded"},
+  "bootstrap": null
+}

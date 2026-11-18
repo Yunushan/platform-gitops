@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "scm-manager",
+  "state_path": "/var/lib/scm-manager",
+  "http_port": 8080,
+  "bootstrap_env_file": null,
+  "install_dir": "/opt/scm-manager/scm-server",
+  "java_home": "/usr/lib/jvm/java-21-openjdk",
+  "user": "scm-manager",
+  "group": "scm-manager"
+}

@@ -29,6 +29,7 @@ rendered/
 kubeconfig*
 # Upstream Helm template; contains value references, not a live kubeconfig.
 !/gitops/clusters/rke2-main/premium-3node/apps/gitlab-ce/charts/gitlab-10.1.1/gitlab/charts/prometheus/charts/kube-state-metrics/templates/kubeconfig-secret.yaml
+/.kube/
 *.agekey
 *.sops.yaml
 id_rsa*

@@ -10,9 +10,11 @@
     rke2_api_dns_effective: "{{ rke2_api_dns | default('', true) }}"
     kube_vip_version_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_VERSION') }}"
     kube_vip_image_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_IMAGE') }}"
+    kube_vip_preloaded_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_PRELOADED') }}"
     kube_vip_interface_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_INTERFACE') }}"
     kube_vip_version_effective: "{{ kube_vip_version | default(kube_vip_version_from_env, true) | default('v0.8.9', true) }}"
     kube_vip_image_effective: "{{ kube_vip_image | default(kube_vip_image_from_env, true) | default('ghcr.io/kube-vip/kube-vip:' + kube_vip_version_effective, true) }}"
+    kube_vip_preloaded_effective: "{{ kube_vip_preloaded | default(kube_vip_preloaded_from_env | default(false, true)) | bool }}"
     kube_vip_interface_effective: "{{ kube_vip_interface | default(kube_vip_interface_from_env, true) | default(ansible_default_ipv4.interface, true) }}"
     kube_vip_rollout_timeout_from_env: "{{ lookup('ansible.builtin.env', 'KUBE_VIP_ROLLOUT_TIMEOUT') }}"
     kube_vip_rollout_timeout_effective: "{{ kube_vip_rollout_timeout | default(kube_vip_rollout_timeout_from_env, true) | default('180s', true) }}"
@@ -45,6 +47,31 @@
           Deploying kube-vip API VIP {{ rke2_api_vip_effective }} on interface {{ kube_vip_interface_effective }}
           with image {{ kube_vip_image_effective }}.
       run_once: true
+
+    - name: Require a digest-pinned image for preloaded kube-vip
+      ansible.builtin.assert:
+        that:
+          - kube_vip_image_effective is match('^[A-Za-z0-9._:/-]+@sha256:[a-f0-9]{64}$')
+        fail_msg: "Set KUBE_VIP_IMAGE to the exact preloaded image reference with its SHA-256 digest."
+      when: kube_vip_preloaded_effective | bool
+      run_once: true
+
+    - name: Verify kube-vip image is available in each local CRI store
+      ansible.builtin.command:
+        argv:
+          - /var/lib/rancher/rke2/bin/crictl
+          - --image-endpoint
+          - unix:///run/k3s/containerd/containerd.sock
+          - inspecti
+          - --output
+          - json
+          - "{{ kube_vip_image_effective }}"
+      register: kube_vip_local_image
+      changed_when: false
+      failed_when: >-
+        kube_vip_local_image.rc != 0 or
+        kube_vip_image_effective not in ((kube_vip_local_image.stdout | from_json).get('status', {}).get('repoDigests') or [])
+      when: kube_vip_preloaded_effective | bool
 
     - name: Normalize kube-vip subnet suffix
       ansible.builtin.assert:
@@ -92,6 +119,7 @@
       register: kube_vip_registry_check
       changed_when: false
       failed_when: false
+      when: not (kube_vip_preloaded_effective | bool)
 
     - name: Stop when kube-vip image registry is unreachable
       ansible.builtin.fail:
@@ -103,7 +131,9 @@
           {{ kube_vip_registry_check.stderr }}
 
           Fix node egress/proxy/mirror access to ghcr.io, or set kube_vip_image to an internal mirrored image.
-      when: kube_vip_registry_check.rc != 0
+      when:
+        - not (kube_vip_preloaded_effective | bool)
+        - kube_vip_registry_check.rc != 0
 
     - name: Apply kube-vip RBAC and DaemonSet
       ansible.builtin.shell: |
@@ -180,7 +210,7 @@
                 containers:
                   - name: kube-vip
                     image: {{ kube_vip_image_effective }}
-                    imagePullPolicy: IfNotPresent
+                    imagePullPolicy: {{ (kube_vip_preloaded_effective | bool) | ternary('Never', 'IfNotPresent') }}
                     args:
                       - manager
                     env:

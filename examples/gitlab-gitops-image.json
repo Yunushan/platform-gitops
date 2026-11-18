@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "base_image": "registry.example.invalid/platform/python-git@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kubectl_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "architecture": "amd64"
+}

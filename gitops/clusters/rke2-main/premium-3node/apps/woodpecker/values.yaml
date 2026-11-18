@@ -1,5 +1,5 @@
 # Woodpecker premium profile.
-# Uses PostgreSQL-backed state so multiple Woodpecker server replicas can run safely.
+# Uses PostgreSQL-backed state with a single active Woodpecker server.
 # For Forgejo login, create the OAuth app in Forgejo and store its client/secret in
 # the woodpecker-forgejo-oauth Kubernetes secret before syncing this app.
 # Run make platform-app-secrets with WOODPECKER_DATABASE_DATASOURCE before syncing
@@ -7,7 +7,7 @@
 server:
   enabled: true
   statefulSet:
-    replicaCount: 3
+    replicaCount: 1
   podSecurityContext:
     runAsNonRoot: true
     fsGroup: 1000

@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "cluster_id": "<NEW_INDEPENDENT_CLUSTER_UUID>",
+  "namespace": "rook-provider",
+  "namespace_uid": "<LIVE_PROVIDER_NAMESPACE_UID>",
+  "name": "rook-provider",
+  "target": {
+    "kubeconfig_env": "STORAGE_KUBECONFIG",
+    "context": "storage",
+    "cluster_uid": "<LIVE_KUBE_SYSTEM_NAMESPACE_UID>"
+  },
+  "operator": {
+    "namespace": "rook-system",
+    "namespace_uid": "<LIVE_OPERATOR_NAMESPACE_UID>",
+    "deployment": "rook-ceph-operator",
+    "uid": "<LIVE_OPERATOR_UID>",
+    "image": "registry.example.com/platform/rook@sha256:<REVIEWED_ROOK_V1_21_2_IMAGE_DIGEST>",
+    "cluster_crd_uid": "<LIVE_OPERATOR_CLUSTER_CRD_UID>",
+    "configmaps": {
+      "rook-ceph-operator-config": {"uid": "<LIVE_OPERATOR_CONFIG_UID>", "data_sha256": "<LIVE_OPERATOR_CONFIG_DATA_SHA256>"},
+      "rook-csi-operator-image-set-configmap": {"uid": "<LIVE_CSI_IMAGE_CONFIG_UID>", "data_sha256": "<LIVE_CSI_IMAGE_CONFIG_DATA_SHA256>"}
+    }
+  },
+  "images": {
+    "ceph": "registry.example.com/platform/ceph@sha256:<REVIEWED_CEPH_20_2_IMAGE_DIGEST>",
+    "probe": "registry.example.com/platform/python@sha256:<REVIEWED_PYTHON_3_12_OR_NEWER_IMAGE_DIGEST>"
+  },
+  "ceph_version": "20.2.4",
+  "domain_label": "topology.kubernetes.io/zone",
+  "nodes": [
+    {
+      "name": "storage-1",
+      "uid": "<LIVE_NODE_1_UID>",
+      "failure_domain": "rack-1",
+      "machine_id_sha256": "<LIVE_NODE_1_MACHINE_ID_SHA256>",
+      "boot_id": "<LIVE_NODE_1_BOOT_UUID>",
+      "devices": [
+        {
+          "by_id": "/dev/disk/by-id/<REVIEWED_WHOLE_DEVICE_ID_1>",
+          "major": 8,
+          "minor": 16,
+          "bytes": 68719476736,
+          "identity_sha256": "<REVIEWED_DEVICE_1_WWID_SERIAL_CANONICAL_SHA256>"
+        }
+      ]
+    },
+    {
+      "name": "storage-2",
+      "uid": "<LIVE_NODE_2_UID>",
+      "failure_domain": "rack-2",
+      "machine_id_sha256": "<LIVE_NODE_2_MACHINE_ID_SHA256>",
+      "boot_id": "<LIVE_NODE_2_BOOT_UUID>",
+      "devices": [
+        {
+          "by_id": "/dev/disk/by-id/<REVIEWED_WHOLE_DEVICE_ID_2>",
+          "major": 8,
+          "minor": 16,
+          "bytes": 68719476736,
+          "identity_sha256": "<REVIEWED_DEVICE_2_WWID_SERIAL_CANONICAL_SHA256>"
+        }
+      ]
+    },
+    {
+      "name": "storage-3",
+      "uid": "<LIVE_NODE_3_UID>",
+      "failure_domain": "rack-3",
+      "machine_id_sha256": "<LIVE_NODE_3_MACHINE_ID_SHA256>",
+      "boot_id": "<LIVE_NODE_3_BOOT_UUID>",
+      "devices": [
+        {
+          "by_id": "/dev/disk/by-id/<REVIEWED_WHOLE_DEVICE_ID_3>",
+          "major": 8,
+          "minor": 16,
+          "bytes": 68719476736,
+          "identity_sha256": "<REVIEWED_DEVICE_3_WWID_SERIAL_CANONICAL_SHA256>"
+        }
+      ]
+    },
+    {
+      "name": "storage-4",
+      "uid": "<LIVE_NODE_4_UID>",
+      "failure_domain": "rack-4",
+      "machine_id_sha256": "<LIVE_NODE_4_MACHINE_ID_SHA256>",
+      "boot_id": "<LIVE_NODE_4_BOOT_UUID>",
+      "devices": [
+        {
+          "by_id": "/dev/disk/by-id/<REVIEWED_WHOLE_DEVICE_ID_4>",
+          "major": 8,
+          "minor": 16,
+          "bytes": 68719476736,
+          "identity_sha256": "<REVIEWED_DEVICE_4_WWID_SERIAL_CANONICAL_SHA256>"
+        }
+      ]
+    }
+  ],
+  "resources": {
+    "mon": {
+      "requests": {
+        "cpu": "1",
+        "memory": "1Gi"
+      },
+      "limits": {
+        "cpu": "4",
+        "memory": "2Gi"
+      }
+    },
+    "mgr": {
+      "requests": {
+        "cpu": "1",
+        "memory": "1Gi"
+      },
+      "limits": {
+        "cpu": "4",
+        "memory": "2Gi"
+      }
+    },
+    "osd": {
+      "requests": {
+        "cpu": "1",
+        "memory": "4Gi"
+      },
+      "limits": {
+        "cpu": "4",
+        "memory": "8Gi"
+      }
+    }
+  },
+  "probe_timeout_seconds": 3600,
+  "admitted_sha256": null
+}

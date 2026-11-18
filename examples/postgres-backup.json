@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "runtime": "rke2",
+  "postgres_version": "<REVIEWED_POSTGRES_17_OR_18_PATCH>",
+  "system_identifier": null,
+  "source": {
+    "host": "postgres.example.com",
+    "hostaddr": "<REVIEWED_DATABASE_OR_TUNNEL_IP>",
+    "port": 5432,
+    "user": "platform_pg_backup"
+  },
+  "runner": {
+    "uid": 1001,
+    "gid": 1001,
+    "machine_id_sha256": "<BACKUP_HOST_MACHINE_ID_SHA256>",
+    "declared_database_machine_ids_sha256": ["<DATABASE_HOST_1_SHA256>", "<DATABASE_HOST_2_SHA256>", "<DATABASE_HOST_3_SHA256>"]
+  },
+  "client": {
+    "bin_dir": "/usr/lib/postgresql/18/bin",
+    "artifacts_sha256": {
+      "psql": "<REVIEWED_BINARY_SHA256>",
+      "pg_basebackup": "<REVIEWED_BINARY_SHA256>",
+      "pg_verifybackup": "<REVIEWED_BINARY_SHA256>",
+      "pg_waldump": "<REVIEWED_BINARY_SHA256>"
+    },
+    "library_dir": null,
+    "libraries_sha256": {}
+  },
+  "tls": {
+    "inputs_dir": "/etc/postgres-backup/inputs",
+    "ca_sha256": "<REVIEWED_SERVER_CA_SHA256>",
+    "client_certificate_sha256": "<REVIEWED_PUBLIC_CLIENT_CERTIFICATE_SHA256>"
+  },
+  "limits": {
+    "timeout_seconds": 3600,
+    "max_backup_bytes": 107374182400,
+    "max_files": 65536,
+    "max_rate_kib": 65536
+  }
+}

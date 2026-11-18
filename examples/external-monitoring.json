@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "monitor": "external-platform",
+  "targets": [
+    {"name": "kubernetes", "url": "https://api.example.invalid:6443/readyz", "status": 401, "owner": "platform"},
+    {"name": "forge", "url": "https://forge.example.invalid/", "status": 200, "owner": "platform"},
+    {"name": "registry", "url": "https://registry.example.invalid/v2/", "status": 401, "owner": "platform"},
+    {"name": "gitops", "url": "https://gitops.example.invalid/", "status": 200, "owner": "platform"}
+  ]
+}

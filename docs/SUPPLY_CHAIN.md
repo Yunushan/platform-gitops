@@ -27,8 +27,9 @@ pull request:
   HTTPS-only requests, verified before exact-member extraction, version-checked
   while staged, and atomically installed. CI never resolves their Go module
   graphs at runtime. Kustomize and Helm render every complete base and premium
-  application, then Kubeconform validates built-in Kubernetes objects against
-  the target schema.
+  application. Kubeconform checks built-in objects against the target
+  Kubernetes version and premium operator resources against the schemas
+  served by the CRDs in that profile.
 - Coverage.py traces Python subprocesses and enforces the measured 81.0% branch
   coverage ratchet across the forge migration, cutover, and transition engines.
 - The SBOM is retained as a workflow artifact for 30 days.
@@ -220,10 +221,12 @@ Successful raw manifests and render stdout are temporary because charts can
 generate ephemeral Secret material. Retained artifacts contain manifest hashes,
 sanitized render metadata, Kubeconform reports, and the aggregate summary only.
 
-Kubeconform validates built-in Kubernetes resources strictly and reports but
-does not fail on missing third-party CRD schemas. The live server-side checks
-in `platform-production-check` remain required because OpenAPI validation does
-not exercise admission webhooks or controller behavior.
+The schema gate checks CRD definitions against the pinned Kubernetes schema
+and matches each operator object to its exact API group, served version and
+kind. Complete premium profiles must validate every rendered object. The
+summary reports any skips by application and resource type, including those
+in explicitly incomplete template runs. Live `platform-production-check`
+provides separate evidence for admission decisions and controller behavior.
 
 The direct Longhorn bootstrap and CRD recovery paths are offline artifact
 consumers. They load the reviewed chart archive committed beside the vendored
@@ -450,6 +453,12 @@ The schema-v7 production evidence generator copies the exact image inventory
 report into its private packet and binds it by SHA-256. Retain that packet. Do not
 commit private registry inventories, internal identities, credentials, or
 private operational reports to this public repository.
+
+`make platform-image-inventory-verify` collects image references from the exact
+profile as the manifests are schema-checked. Reconciliation reads those
+references from the ignored `rendered/schema-validation/summary.json`; the
+full manifests stay in temporary storage. The synthetic CI report omits image
+references.
 
 ## Limitations
 

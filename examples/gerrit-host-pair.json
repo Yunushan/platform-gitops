@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "name": "review-pair",
+  "runtime": "raw",
+  "site_plan": {"replace_with_complete_reviewed_version_2_plan_from": "examples/gerrit-sites.json"},
+  "toolset_sha256": "<EXPORTED_CLOSED_AGENT_TOOLSET_SHA256>",
+  "ssh_binary_sha256": "<REVIEWED_LOCAL_SSH_EXECUTABLE_SHA256>",
+  "peers": [
+    {
+      "host": "gerrit-a",
+      "address": "192.0.2.31",
+      "port": 22,
+      "identity_env": "GERRIT_A_ROOT_SSH_KEY",
+      "known_hosts_env": "GERRIT_A_KNOWN_HOSTS",
+      "remote_root": "/opt/platform-gerrit",
+      "bundle": "/etc/gerrit",
+      "failure_domain": "zone-a",
+      "host_plan": {"replace_with_complete_reviewed_host_plan_from": "examples/gerrit-host-native.json"}
+    },
+    {
+      "host": "gerrit-b",
+      "address": "192.0.2.32",
+      "port": 22,
+      "identity_env": "GERRIT_B_ROOT_SSH_KEY",
+      "known_hosts_env": "GERRIT_B_KNOWN_HOSTS",
+      "remote_root": "/opt/platform-gerrit",
+      "bundle": "/etc/gerrit",
+      "failure_domain": "zone-b",
+      "host_plan": {"replace_with_complete_reviewed_host_plan_from": "examples/gerrit-host-native.json"}
+    }
+  ]
+}
