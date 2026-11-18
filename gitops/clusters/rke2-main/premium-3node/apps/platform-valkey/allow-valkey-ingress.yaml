@@ -20,6 +20,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: forgejo
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gitlab
       ports:
         - protocol: TCP
           port: 6380

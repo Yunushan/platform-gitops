@@ -220,7 +220,11 @@ def main() -> int:
 
     require(verifier, "platform-postgres-rw.platform-databases.svc.cluster.local", "live network verifier")
     require(verifier, "platform-valkey-primary.platform-cache.svc.cluster.local", "live network verifier")
-    require(verifier, "create_probe woodpecker", "live network verifier")
+    require(verifier, "ternary('gitlab', 'woodpecker')", "profile-specific PostgreSQL client")
+    require(verifier, 'create_probe "$PG_CLIENT"', "live network verifier")
+    require(verifier, "ternary('gitlab', 'forgejo')", "profile-specific Valkey client")
+    require(verifier, 'create_probe "$VALKEY_CLIENT"', "live network verifier")
+    require(verifier, "create_probe gitlab-runner", "GitLab Runner data-service isolation")
     require(verifier, "create_probe harbor", "live network verifier")
     require(verifier, "create_probe argocd", "live network verifier")
     require(verifier, "result=denied", "live network verifier")

@@ -281,11 +281,9 @@ def selected_application_documents(repo_root: Path, profile: str, repo_url: str)
     docs: list[str] = []
     for entry in includes:
         source_dir = repo_root / entry
-        if not is_application_source(source_dir):
-            continue
         if entry in doc_by_path:
             docs.append(doc_by_path[entry])
-        else:
+        elif is_application_source(source_dir):
             docs.append(generated_application_doc(repo_url, entry, source_dir))
     return docs
 

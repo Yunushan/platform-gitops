@@ -77,17 +77,27 @@
     platform_minio_root_secret_name_from_env: "{{ lookup('ansible.builtin.env', 'MINIO_ROOT_SECRET_NAME') }}"
     platform_app_health_connect_timeout_effective: "{{ platform_app_health_connect_timeout | default(platform_app_health_connect_timeout_from_env, true) | default(5, true) | string | regex_replace('s$', '') | int }}"
     platform_app_health_max_time_effective: "{{ platform_app_health_max_time | default(platform_app_health_max_time_from_env, true) | default(20, true) | string | regex_replace('s$', '') | int }}"
-    platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default('cert-manager trust-manager step-ca kyverno platform-policies platform-image-integrity tetragon external-secrets openbao metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak forgejo woodpecker harbor monitoring loki velero', true) }}"
+    platform_app_health_gitlab_required_apps: >-
+      cert-manager trust-manager step-ca kyverno platform-policies platform-image-integrity tetragon external-secrets openbao
+      metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak harbor monitoring loki velero
+      gitlab-ce gitlab-runner
+    platform_app_health_required_apps_effective: "{{ platform_app_health_required_apps | default(platform_app_health_required_apps_from_env, true) | default(platform_app_health_gitlab_required_apps if platform_gitlab_profile_enabled | bool else '', true) | default('cert-manager trust-manager step-ca kyverno platform-policies platform-image-integrity tetragon external-secrets openbao metallb traefik longhorn cloudnativepg platform-postgres platform-valkey minio argocd-ha keycloak forgejo woodpecker harbor monitoring loki velero', true) }}"
     platform_app_health_include_existing_apps_effective: "{{ platform_app_health_include_existing_apps | default(platform_app_health_include_existing_apps_from_env, true) | default(true, true) | bool }}"
     platform_app_health_forbid_temporary_repo_effective: "{{ platform_app_health_forbid_temporary_repo | default(platform_app_health_forbid_temporary_repo_from_env, true) | default(true, true) | bool }}"
     platform_app_health_openbao_ready_effective: "{{ platform_app_health_openbao_ready | default(platform_app_health_openbao_ready_from_env, true) | default(true, true) | bool }}"
     platform_app_health_expected_repo_url_effective: "{{ platform_app_health_expected_repo_url | default(platform_app_health_expected_repo_url_from_env, true) | default(platform_repo_url_from_env, true) | default('', true) }}"
-    platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default('argocd cert-manager step-ca kyverno tetragon external-secrets openbao cnpg-system platform-databases platform-cache object-storage keycloak forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
+    platform_app_health_gitlab_namespaces: >-
+      argocd cert-manager step-ca kyverno tetragon external-secrets openbao cnpg-system platform-databases platform-cache
+      object-storage keycloak harbor longhorn-system metallb-system monitoring logging traefik velero gitlab gitlab-runner
+    platform_app_health_namespaces_effective: "{{ platform_app_health_namespaces | default(platform_app_health_namespaces_from_env, true) | default(platform_app_health_gitlab_namespaces if platform_gitlab_profile_enabled | bool else '', true) | default('argocd cert-manager step-ca kyverno tetragon external-secrets openbao cnpg-system platform-databases platform-cache object-storage keycloak forgejo woodpecker harbor longhorn-system metallb-system monitoring logging traefik velero', true) }}"
     platform_app_health_storage_classes_effective: "{{ platform_app_health_storage_classes | default(platform_app_health_storage_classes_from_env, true) | default('longhorn-standard longhorn-critical longhorn-cache longhorn-standard-encrypted longhorn-critical-encrypted longhorn-cache-encrypted', true) }}"
     platform_app_health_certificates_effective: "{{ platform_app_health_certificates | default(platform_app_health_certificates_from_env, true) | default('auto', true) }}"
     platform_app_health_trust_bundles_effective: "{{ platform_app_health_trust_bundles | default(platform_app_health_trust_bundles_from_env, true) | default('auto', true) }}"
     platform_app_health_cnpg_clusters_effective: "{{ platform_app_health_cnpg_clusters | default(platform_app_health_cnpg_clusters_from_env, true) | default('auto', true) }}"
-    platform_app_health_gui_apps_effective: "{{ platform_app_health_gui_apps | default(platform_app_health_gui_apps_from_env, true) | default('argocd forgejo harbor woodpecker keycloak grafana prometheus', true) }}"
+    platform_app_health_gui_apps_effective: "{{ platform_app_health_gui_apps | default(platform_app_health_gui_apps_from_env, true) | default(('argocd gitlab harbor keycloak grafana prometheus' if platform_gitlab_profile_enabled | bool else ''), true) | default('argocd forgejo harbor woodpecker keycloak grafana prometheus', true) }}"
+    platform_app_health_gui_host_entries: >-
+      {{ platform_gui_host_entries + [{'app': 'gitlab', 'namespace': 'gitlab', 'host': platform_gitlab_host_effective}]
+         if platform_gitlab_profile_enabled | bool else platform_gui_host_entries }}
     platform_app_health_discover_live_hosts_effective: "{{ platform_app_health_discover_live_hosts | default(platform_app_health_discover_live_hosts_from_env, true) | default(false, true) | bool }}"
     platform_app_health_registry_api_effective: "{{ platform_app_health_registry_api | default(platform_app_health_registry_api_from_env, true) | default(true, true) | bool }}"
     platform_app_health_monitoring_api_effective: "{{ platform_app_health_monitoring_api | default(platform_app_health_monitoring_api_from_env, true) | default(true, true) | bool }}"
@@ -124,7 +134,8 @@
     platform_forgejo_redis_mode_effective: "{{ platform_forgejo_redis_mode | default(platform_forgejo_redis_mode_from_env, true) | default('redis', true) }}"
     platform_forgejo_redis_secret_name_effective: "{{ platform_forgejo_redis_secret_name | default(platform_forgejo_redis_secret_name_from_env, true) | default('forgejo-redis', true) }}"
     platform_forgejo_object_storage_secret_name_effective: "{{ platform_forgejo_object_storage_secret_name | default(platform_forgejo_object_storage_secret_name_from_env, true) | default('forgejo-object-storage', true) }}"
-    platform_woodpecker_oauth_secret_name_effective: "{{ platform_woodpecker_oauth_secret_name | default(platform_woodpecker_oauth_secret_name_from_env, true) | default('woodpecker-forgejo-oauth', true) }}"
+    platform_woodpecker_forge_provider_effective: "{{ platform_woodpecker_forge_provider | default(platform_woodpecker_forge_provider_from_env, true) | default('forgejo', true) | lower }}"
+    platform_woodpecker_oauth_secret_name_effective: "{{ (platform_woodpecker_gitea_oauth_secret_name | default(platform_woodpecker_gitea_oauth_secret_name_from_env, true) | default('woodpecker-gitea-oauth', true)) if platform_woodpecker_forge_provider_effective == 'gitea' else (platform_woodpecker_oauth_secret_name | default(platform_woodpecker_oauth_secret_name_from_env, true) | default('woodpecker-forgejo-oauth', true)) }}"
     platform_woodpecker_agent_secret_name_effective: "{{ platform_woodpecker_agent_secret_name | default(platform_woodpecker_agent_secret_name_from_env, true) | default('woodpecker-agent-secret', true) }}"
     platform_woodpecker_database_mode_effective: "{{ platform_woodpecker_database_mode | default(platform_woodpecker_database_mode_from_env, true) | default('auto', true) | lower }}"
     platform_woodpecker_database_secret_name_effective: "{{ platform_woodpecker_database_secret_name | default(platform_woodpecker_database_secret_name_from_env, true) | default('woodpecker-database', true) }}"
@@ -156,13 +167,16 @@
           - platform_app_health_connect_timeout_effective | int > 0
           - platform_app_health_max_time_effective | int > 0
           - platform_app_health_required_apps_effective | length > 0
+          - not (platform_gitlab_profile_enabled | bool) or ['gitlab-ce', 'gitlab-runner'] | difference(platform_app_health_required_apps_effective.split()) | length == 0
           - platform_app_health_namespaces_effective | length > 0
+          - not (platform_gitlab_profile_enabled | bool) or ['gitlab', 'gitlab-runner'] | difference(platform_app_health_namespaces_effective.split()) | length == 0
           - platform_app_health_storage_classes_effective | length > 0
           - platform_app_health_certificates_effective | length > 0
           - platform_app_health_trust_bundles_effective | length > 0
           - platform_app_health_cnpg_clusters_effective | length > 0
           - platform_app_health_app_secrets_effective | length > 0
           - platform_app_health_gui_apps_effective | length > 0
+          - not (platform_gitlab_profile_enabled | bool) or 'gitlab' in platform_app_health_gui_apps_effective.split()
           - platform_app_health_service_check_image_effective | length > 0
           - platform_app_health_service_check_timeout_effective | int > 0
           - platform_app_health_service_check_create_attempts_effective | int > 0
@@ -176,6 +190,8 @@
           - platform_forgejo_redis_secret_name_effective | length > 0
           - platform_forgejo_object_storage_secret_name_effective | length > 0
           - platform_woodpecker_oauth_secret_name_effective | length > 0
+          - platform_woodpecker_oauth_secret_name_effective is match('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$')
+          - platform_woodpecker_forge_provider_effective in ['forgejo', 'gitea']
           - platform_woodpecker_agent_secret_name_effective | length > 0
           - platform_woodpecker_database_secret_name_effective | length > 0
           - platform_keycloak_admin_secret_name_effective | length > 0
@@ -186,7 +202,10 @@
           - platform_velero_credentials_secret_name_effective | length > 0
           - platform_cnpg_object_store_secret_name_effective | length > 0
           - platform_minio_root_secret_name_effective | length > 0
-        fail_msg: "Set rke2_ingress_vip, platform_domain/rke2_platform_domain, platform_argocd_host, and platform_ci_host/platform_woodpecker_host."
+        fail_msg: >-
+          Set the ingress VIP and platform domain, and check the application health
+          settings for the selected profile. GitLab overrides must retain GitLab CE,
+          and the GitLab Runner application and namespace in the relevant checks.
       run_once: true
 
     - name: Record configured focused GUI hosts before optional discovery
@@ -2472,7 +2491,7 @@
         failed=0
         GUI_HOSTS_FILE="$(mktemp)"
         cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
-        {% for entry in platform_gui_host_entries %}
+        {% for entry in platform_app_health_gui_host_entries %}
         {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
         {% endfor %}
         GUIHOSTS
@@ -2617,7 +2636,7 @@
         failed=0
         GUI_HOSTS_FILE="$(mktemp)"
         cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
-        {% for entry in platform_gui_host_entries %}
+        {% for entry in platform_app_health_gui_host_entries %}
         {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
         {% endfor %}
         GUIHOSTS
@@ -2872,7 +2891,7 @@
         failed=0
         GUI_HOSTS_FILE="$(mktemp)"
         cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
-        {% for entry in platform_gui_host_entries %}
+        {% for entry in platform_app_health_gui_host_entries %}
         {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
         {% endfor %}
         GUIHOSTS
@@ -2972,7 +2991,7 @@
         failed=0
         GUI_HOSTS_FILE="$(mktemp)"
         cat >"${GUI_HOSTS_FILE}" <<'GUIHOSTS'
-        {% for entry in platform_gui_host_entries %}
+        {% for entry in platform_app_health_gui_host_entries %}
         {{ entry.app }}|{{ entry.namespace }}|{{ entry.host }}
         {% endfor %}
         GUIHOSTS
@@ -3042,7 +3061,7 @@
           - "Node-originated VIP ingress strict mode: {{ platform_app_health_node_ingress_strict_effective }}"
           - "{{ platform_app_health_ingress_probe.stdout_lines }}"
 
-    - name: Probe Argo CD and Woodpecker ClusterIP service paths from every RKE2 node
+    - name: Probe Argo CD and selected application ClusterIP service paths from every RKE2 node
       ansible.builtin.shell: |
         set -u
         K=/var/lib/rancher/rke2/bin/kubectl
@@ -3075,11 +3094,13 @@
           host="$2"
           port="$3"
           path="$4"
+          expected_code="${5:-}"
 
           echo "===== ${name} http service path from $(hostname -f 2>/dev/null || hostname) ====="
           echo "target=http://${host}:${port}${path}"
           if ! command -v curl >/dev/null 2>&1; then
             echo "result=skip reason=curl-not-installed"
+            [ -z "${expected_code}" ] || failed=1
             return
           fi
 
@@ -3093,6 +3114,11 @@
           echo "http_code=${code:-000}"
           if [ -n "${stderr}" ]; then
             printf '%s\n' "${stderr}" | sed 's/^/stderr=/'
+          fi
+          if [ -n "${expected_code}" ] && [ "${code}" != "${expected_code}" ]; then
+            echo "result=fail expected_http_code=${expected_code}"
+            failed=1
+            return
           fi
 
           case "${code}" in
@@ -3111,7 +3137,6 @@
           argocd_service=argo-cd-argocd-server
         fi
         argocd_ip="$("$K" --kubeconfig "$C" -n argocd get "service/${argocd_service}" -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
-        woodpecker_ip="$("$K" --kubeconfig "$C" -n woodpecker get service woodpecker-server -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
 
         if [ -z "${argocd_ip}" ] || [ "${argocd_ip}" = "None" ]; then
           echo "argocd service clusterIP missing service=${argocd_service}"
@@ -3121,6 +3146,16 @@
           http_probe "argocd-server" "${argocd_ip}" 80 /
         fi
 
+        {% if platform_gitlab_profile_enabled | bool %}
+        gitlab_ip="$("$K" --kubeconfig "$C" -n gitlab get service/gitlab-webservice-default -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+        if [ -z "${gitlab_ip}" ] || [ "${gitlab_ip}" = "None" ]; then
+          echo "gitlab webservice ClusterIP missing"
+          failed=1
+        else
+          http_probe gitlab-webservice "${gitlab_ip}" 8080 /-/readiness 200
+        fi
+        {% else %}
+        woodpecker_ip="$("$K" --kubeconfig "$C" -n woodpecker get service woodpecker-server -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
         if [ -z "${woodpecker_ip}" ] || [ "${woodpecker_ip}" = "None" ]; then
           echo "woodpecker service clusterIP missing"
           failed=1
@@ -3129,6 +3164,7 @@
           http_probe "woodpecker-http" "${woodpecker_ip}" 80 /
           tcp_probe "woodpecker-grpc" "${woodpecker_ip}" 9000
         fi
+        {% endif %}
 
         exit "${failed}"
       args:
@@ -3150,7 +3186,7 @@
           pod-pinned service probes remain enforced on every node.
       run_once: true
 
-    - name: Probe Argo CD and Woodpecker ClusterIP service paths from pods pinned to every RKE2 node
+    - name: Probe Argo CD and selected application ClusterIP service paths from pods pinned to every RKE2 node
       ansible.builtin.shell: |
         set -uo pipefail
         K=/var/lib/rancher/rke2/bin/kubectl
@@ -3248,6 +3284,7 @@
                         host="\$2"
                         port="\$3"
                         path="\$4"
+                        expected_code="\${5:-}"
                         echo "===== \${name} pod HTTP service path from \$(hostname) ====="
                         echo "target=http://\${host}:\${port}\${path}"
                         stderr=""
@@ -3274,7 +3311,8 @@
                         if [ -n "\${stderr}" ]; then
                           printf '%s\n' "\${stderr}" | sed 's/^/stderr=/'
                         fi
-                        if http_ok_code "\${code}"; then
+                        if [ "\${code}" = "\${expected_code:-200}" ] ||
+                          { [ -z "\${expected_code}" ] && http_ok_code "\${code}"; }; then
                           echo "result=ok"
                         else
                           echo "result=fail"
@@ -3326,8 +3364,12 @@
                       }
 
                       probe_http argocd-server "\${ARGOCD_SERVICE_DNS}" 80 /
+        {% if platform_gitlab_profile_enabled | bool %}
+                      probe_http gitlab-webservice gitlab-webservice-default.gitlab.svc.cluster.local 8080 /-/readiness 200
+        {% else %}
                       probe_http woodpecker-http woodpecker-server.woodpecker.svc.cluster.local 80 /
                       probe_tcp woodpecker-grpc woodpecker-server.woodpecker.svc.cluster.local 9000
+        {% endif %}
                       exit "\${failed}"
         YAML
           manifest_bytes="$(wc -c <"${job_manifest}" | tr -d '[:space:]')"
@@ -3638,8 +3680,8 @@
           request instead of redirecting or rejecting it, when Loki does not answer
           a known `/ready` endpoint, when Velero BackupStorageLocations are not
           Available, when no enabled Velero backup schedule exists, or when a
-          pod pinned to any RKE2 node cannot reach the Argo CD or Woodpecker
-          ClusterIP service.
+          pod pinned to any RKE2 node cannot reach Argo CD or the selected
+          profile's ClusterIP service.
 
           Recommended repair sequence:
           make platform-service-path-repair
@@ -3739,6 +3781,30 @@
           PLATFORM_APP_HEALTH_TRUST_BUNDLES="platform-public-roots" make platform-app-health
       run_once: true
       when: ansible_play_hosts | map('extract', hostvars, 'platform_app_health_failed') | map('bool') | select('equalto', true) | list | length > 0
+
+    - name: Verify active Argo CD sources match the reviewed platform release
+      ansible.builtin.shell: |
+        set -euo pipefail
+        /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
+          --request-timeout=20s -n argocd get applications.argoproj.io -o json | \
+          /usr/bin/python3 -c {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../scripts/verify_argocd_platform_revision.py') | quote }}
+      args:
+        executable: /bin/bash
+      environment:
+        PLATFORM_PROFILE: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') }}"
+        PLATFORM_APP_HEALTH_EXPECTED_REVISION: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REVISION') }}"
+        PLATFORM_APP_HEALTH_REVISION_PLAN: "{{ lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_REVISION_PLAN') }}"
+      register: platform_app_health_release_revision
+      changed_when: false
+      run_once: true
+      delegate_to: "{{ rke2_first_server }}"
+      when: lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REVISION') | length > 0
+
+    - name: Record verified Argo CD release revision
+      ansible.builtin.debug:
+        msg: "{{ platform_app_health_release_revision.stdout }}"
+      run_once: true
+      when: lookup('ansible.builtin.env', 'PLATFORM_APP_HEALTH_EXPECTED_REVISION') | length > 0
 
     - name: Show successful platform app health verification
       ansible.builtin.debug:

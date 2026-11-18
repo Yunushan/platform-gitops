@@ -42,7 +42,18 @@ require_value PLATFORM_EVIDENCE_APPROVER
 require_value PLATFORM_PRODUCTION_APPROVAL_APPROVER
 require_value PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE
 require_value PLATFORM_RESTORE_EVIDENCE_FILE
-require_value PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE
+profile="${PLATFORM_PROFILE:-premium-3node}"
+if [[ "${profile}" == premium-3node-gitlab-ce ]]; then
+  require_value PLATFORM_GITLAB_RECOVERY_EVIDENCE_FILE
+  recovery_input="${PLATFORM_GITLAB_RECOVERY_EVIDENCE_FILE}"
+  recovery_key="gitlabRecovery"
+  recovery_suffix="gitlab-recovery"
+else
+  require_value PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE
+  recovery_input="${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}"
+  recovery_key="forgejoRecovery"
+  recovery_suffix="forgejo-recovery"
+fi
 if [[ "${PLATFORM_EVIDENCE_OPERATOR,,}" == "${PLATFORM_EVIDENCE_APPROVER,,}" ]]; then
   printf '%s\n' 'PLATFORM_EVIDENCE_OPERATOR and PLATFORM_EVIDENCE_APPROVER must be different.' >&2
   exit 1
@@ -57,7 +68,6 @@ if [[ ! "${PLATFORM_RELEASE_ID}" =~ ^[A-Za-z0-9._-]+$ ]]; then
   exit 1
 fi
 
-profile="${PLATFORM_PROFILE:-premium-3node}"
 commit="$(git rev-parse HEAD)"
 if [[ ! -f "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" ]]; then
   printf 'OpenBao ceremony evidence file does not exist: %s\n' \
@@ -69,9 +79,8 @@ if [[ ! -f "${PLATFORM_RESTORE_EVIDENCE_FILE}" ]]; then
     "${PLATFORM_RESTORE_EVIDENCE_FILE}" >&2
   exit 1
 fi
-if [[ ! -f "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}" ]]; then
-  printf 'Forgejo recovery evidence file does not exist: %s\n' \
-    "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}" >&2
+if [[ ! -f "${recovery_input}" ]]; then
+  printf '%s evidence file does not exist: %s\n' "${recovery_suffix}" "${recovery_input}" >&2
   exit 1
 fi
 openbao_configuration_sha256="$(
@@ -147,13 +156,19 @@ set +e
   printf 'source_branch=%s\nsource_expected_ref=%s\nsource_tree=%s\nsource_remote=%s\nsource_remote_url_sha256=%s\n' \
     "${branch}" "${expected_ref}" "${tree}" "${remote_name}" "${remote_url_sha256}"
   printf '%s\n' '== platform-production-check =='
-  make platform-production-check
+  PLATFORM_PRODUCTION_SOURCE_COMMIT="${commit}" make platform-production-check
 } 2>&1 | tee "${log_path}"
 gate_status=${PIPESTATUS[0]}
 set -e
 if [[ "${gate_status}" -ne 0 ]]; then
   printf 'Production gate failed; no evidence record was created. Log: %s\n' "${log_path}" >&2
   exit "${gate_status}"
+fi
+verified_revision="$(git rev-parse HEAD)"
+worktree_status="$(git status --porcelain=v1 --untracked-files=all)"
+if [[ "${verified_revision}" != "${commit}" ]] || [[ -n "${worktree_status}" ]]; then
+  printf '%s\n' 'Production checkout changed during verification; no evidence record was created.' >&2
+  exit 1
 fi
 
 mapfile -t openbao_cluster_ids < <(
@@ -183,18 +198,18 @@ fi
 openbao_ceremony_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-openbao-ceremony.json"
 image_inventory_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-image-inventory.json"
 restore_evidence_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-restore-evidence.json"
-forgejo_recovery_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-forgejo-recovery.json"
+recovery_path="${evidence_dir}/${timestamp}-${PLATFORM_RELEASE_ID}-${recovery_suffix}.json"
 
 "${python_bin}" - \
   "${PLATFORM_OPENBAO_CEREMONY_EVIDENCE_FILE}" "${openbao_ceremony_path}" \
   "${image_inventory_source}" "${image_inventory_path}" \
   "${PLATFORM_RESTORE_EVIDENCE_FILE}" "${restore_evidence_path}" \
-  "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}" "${forgejo_recovery_path}" <<'PY'
+  "${recovery_input}" "${recovery_path}" <<'PY'
 import sys
 from pathlib import Path
 
-from scripts.atomic_file import atomic_write_text
-from scripts.bounded_file import read_bounded_text
+from scripts.atomic_file import atomic_write_bytes
+from scripts.bounded_file import read_bounded_bytes
 
 arguments = sys.argv[1:]
 if len(arguments) % 2:
@@ -202,17 +217,19 @@ if len(arguments) % 2:
 for index in range(0, len(arguments), 2):
     source = Path(arguments[index])
     destination = Path(arguments[index + 1])
-    atomic_write_text(destination, read_bounded_text(source))
+    atomic_write_bytes(destination, read_bounded_bytes(source))
 PY
 
 openbao_ceremony_hash="$(sha256sum "${openbao_ceremony_path}" | awk '{print $1}')"
 image_inventory_hash="$(sha256sum "${image_inventory_path}" | awk '{print $1}')"
 restore_evidence_hash="$(sha256sum "${restore_evidence_path}" | awk '{print $1}')"
-forgejo_recovery_hash="$(sha256sum "${forgejo_recovery_path}" | awk '{print $1}')"
+recovery_hash="$(sha256sum "${recovery_path}" | awk '{print $1}')"
 log_hash="$(sha256sum "${log_path}" | awk '{print $1}')"
 completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+candidate_path="$(mktemp "${evidence_dir}/.${timestamp}-${PLATFORM_RELEASE_ID}.XXXXXX")"
+trap 'rm -f -- "${candidate_path}"' EXIT
 PLATFORM_EVIDENCE_LOG_PATH="${log_path}" \
-PLATFORM_EVIDENCE_OUTPUT_PATH="${evidence_path}" \
+PLATFORM_EVIDENCE_OUTPUT_PATH="${candidate_path}" \
 PLATFORM_EVIDENCE_LOG_SHA256="${log_hash}" \
 PLATFORM_EVIDENCE_IMAGE_INVENTORY_PATH="${image_inventory_path}" \
 PLATFORM_EVIDENCE_IMAGE_INVENTORY_SHA256="${image_inventory_hash}" \
@@ -220,8 +237,9 @@ PLATFORM_EVIDENCE_OPENBAO_CEREMONY_PATH="${openbao_ceremony_path}" \
 PLATFORM_EVIDENCE_OPENBAO_CEREMONY_SHA256="${openbao_ceremony_hash}" \
 PLATFORM_EVIDENCE_RESTORE_PATH="${restore_evidence_path}" \
 PLATFORM_EVIDENCE_RESTORE_SHA256="${restore_evidence_hash}" \
-PLATFORM_EVIDENCE_FORGEJO_RECOVERY_PATH="${forgejo_recovery_path}" \
-PLATFORM_EVIDENCE_FORGEJO_RECOVERY_SHA256="${forgejo_recovery_hash}" \
+PLATFORM_EVIDENCE_RECOVERY_KEY="${recovery_key}" \
+PLATFORM_EVIDENCE_RECOVERY_PATH="${recovery_path}" \
+PLATFORM_EVIDENCE_RECOVERY_SHA256="${recovery_hash}" \
 PLATFORM_EVIDENCE_COMPLETED_AT="${completed_at}" \
 PLATFORM_EVIDENCE_COMMIT="${commit}" \
 PLATFORM_EVIDENCE_PROFILE="${profile}" \
@@ -237,8 +255,9 @@ from pathlib import Path
 
 from scripts.atomic_file import atomic_write_text
 
+recovery_key = os.environ["PLATFORM_EVIDENCE_RECOVERY_KEY"]
 document = {
-    "schemaVersion": 7,
+    "schemaVersion": 7 if recovery_key == "forgejoRecovery" else 8,
     "releaseId": os.environ["PLATFORM_RELEASE_ID"],
     "completedAt": os.environ["PLATFORM_EVIDENCE_COMPLETED_AT"],
     "operator": os.environ["PLATFORM_EVIDENCE_OPERATOR"],
@@ -260,9 +279,9 @@ document = {
         "path": os.environ["PLATFORM_EVIDENCE_RESTORE_PATH"],
         "sha256": os.environ["PLATFORM_EVIDENCE_RESTORE_SHA256"],
     },
-    "forgejoRecovery": {
-        "path": os.environ["PLATFORM_EVIDENCE_FORGEJO_RECOVERY_PATH"],
-        "sha256": os.environ["PLATFORM_EVIDENCE_FORGEJO_RECOVERY_SHA256"],
+    recovery_key: {
+        "path": os.environ["PLATFORM_EVIDENCE_RECOVERY_PATH"],
+        "sha256": os.environ["PLATFORM_EVIDENCE_RECOVERY_SHA256"],
     },
     "source": {
         "branch": os.environ["PLATFORM_EVIDENCE_SOURCE_BRANCH"],
@@ -301,5 +320,6 @@ PY
 
 PLATFORM_PROFILE="${profile}" \
 PLATFORM_EXPECTED_COMMIT="${commit}" \
-"${python_bin}" scripts/verify_production_evidence.py "${evidence_path}"
+"${python_bin}" scripts/verify_production_evidence.py "${candidate_path}"
+mv -f -- "${candidate_path}" "${evidence_path}"
 printf 'Production evidence file: %s\n' "${evidence_path}"
