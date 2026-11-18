@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "profile": "premium-3node-gitlab-ce",
+  "sourceCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "clusterUid": "example-cluster-uid",
+  "drillId": "example-gitlab-primary-loss",
+  "operator": "operator@example.test",
+  "approver": "reviewer@example.test",
+  "outageStartedAt": "2026-01-15T12:05:00Z",
+  "completedAt": "2026-01-15T12:20:00Z",
+  "rtoSeconds": 300,
+  "result": "passed",
+  "target": {
+    "projectId": 42,
+    "praefectRepositoryId": 19,
+    "ref": "refs/heads/recovery-drill",
+    "testProject": true,
+    "httpsTlsVerified": true,
+    "sshHostKeyVerified": true,
+    "sourceNodeRestored": true
+  },
+  "before": {
+    "observedAt": "2026-01-15T12:04:00Z",
+    "primaryStorage": "gitaly-0",
+    "generation": 19,
+    "httpsRef": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sshRef": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "replicas": {
+      "gitaly-0": {"node": "node-a", "podUid": "pod-a", "ref": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "generation": 19, "assigned": true, "healthy": true, "validPrimary": true},
+      "gitaly-1": {"node": "node-b", "podUid": "pod-b", "ref": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "generation": 19, "assigned": true, "healthy": true, "validPrimary": true},
+      "gitaly-2": {"node": "node-c", "podUid": "pod-c", "ref": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "generation": 19, "assigned": true, "healthy": true, "validPrimary": true}
+    },
+    "argocdApplications": {
+      "gitlab-ce": {"uid": "gitlab-app-uid", "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sync": "Synced", "health": "Healthy"},
+      "gitlab-runner": {"uid": "runner-app-uid", "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sync": "Synced", "health": "Healthy"}
+    }
+  },
+  "during": {
+    "observedAt": "2026-01-15T12:07:00Z",
+    "primaryStorage": "gitaly-1",
+    "generation": 21,
+    "httpsRefBeforeWrite": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sshRefBeforeWrite": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "sshPushedCommit": "cccccccccccccccccccccccccccccccccccccccc",
+    "httpsPushedCommit": "dddddddddddddddddddddddddddddddddddddddd",
+    "httpsRef": "dddddddddddddddddddddddddddddddddddddddd",
+    "sshRef": "dddddddddddddddddddddddddddddddddddddddd",
+    "replicas": {
+      "gitaly-1": {"node": "node-b", "podUid": "pod-b", "ref": "dddddddddddddddddddddddddddddddddddddddd", "generation": 21, "assigned": true, "healthy": true, "validPrimary": true},
+      "gitaly-2": {"node": "node-c", "podUid": "pod-c", "ref": "dddddddddddddddddddddddddddddddddddddddd", "generation": 21, "assigned": true, "healthy": true, "validPrimary": true}
+    }
+  },
+  "after": {
+    "observedAt": "2026-01-15T12:12:00Z",
+    "primaryStorage": "gitaly-1",
+    "generation": 21,
+    "httpsRef": "dddddddddddddddddddddddddddddddddddddddd",
+    "sshRef": "dddddddddddddddddddddddddddddddddddddddd",
+    "replicas": {
+      "gitaly-0": {"node": "node-a", "podUid": "pod-a-replacement", "ref": "dddddddddddddddddddddddddddddddddddddddd", "generation": 21, "assigned": true, "healthy": true, "validPrimary": true},
+      "gitaly-1": {"node": "node-b", "podUid": "pod-b", "ref": "dddddddddddddddddddddddddddddddddddddddd", "generation": 21, "assigned": true, "healthy": true, "validPrimary": true},
+      "gitaly-2": {"node": "node-c", "podUid": "pod-c", "ref": "dddddddddddddddddddddddddddddddddddddddd", "generation": 21, "assigned": true, "healthy": true, "validPrimary": true}
+    },
+    "argocdApplications": {
+      "gitlab-ce": {"uid": "gitlab-app-uid", "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sync": "Synced", "health": "Healthy"},
+      "gitlab-runner": {"uid": "runner-app-uid", "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "sync": "Synced", "health": "Healthy"}
+    }
+  },
+  "runnerPipeline": {
+    "projectId": 42,
+    "pipelineId": 51,
+    "runnerId": 73,
+    "jobId": 93,
+    "commit": "dddddddddddddddddddddddddddddddddddddddd",
+    "source": "push",
+    "status": "success"
+  },
+  "checks": {
+    "replicaChecksums": {"status": "passed", "evidence": {"uri": "evidence://example/replica-checksums", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "verifiedAt": "2026-01-15T12:13:00Z"}},
+    "repositoryFailover": {"status": "passed", "evidence": {"uri": "evidence://example/repository-failover", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "verifiedAt": "2026-01-15T12:13:00Z"}},
+    "runnerArtifact": {"status": "passed", "evidence": {"uri": "evidence://example/runner-artifact", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "verifiedAt": "2026-01-15T12:18:00Z"}}
+  }
+}

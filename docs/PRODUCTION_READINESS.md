@@ -180,6 +180,48 @@ the reviewed deployment ref, the expected-ref setting can be omitted and the
 upstream is used automatically. The runner uses `umask 077`, and the shared
 artifact writer flushes and atomically replaces JSON evidence with mode `0600`.
 
+### GitLab CE recovery evidence
+
+For `premium-3node-gitlab-ce`, the collector expects a schema-v8 acceptance
+packet containing GitLab recovery evidence. Use the Forgejo command above
+with the profile and recovery input shown here in place of the Forgejo input.
+The production check verifies that the selected Argo CD applications are
+healthy and synced to the commit under acceptance.
+
+```bash
+PLATFORM_PROFILE=premium-3node-gitlab-ce \
+PLATFORM_GITLAB_RECOVERY_EVIDENCE_FILE=private/gitlab-recovery-evidence.json \
+make platform-production-evidence
+```
+
+Use the [GitLab recovery record template](../examples/gitlab-recovery-evidence.example.json)
+to record an independently reviewed drill from a dedicated canary project.
+The primary-loss drill requires an already deployed three-replica Praefect
+topology on separate nodes. The default single-Gitaly values need a reviewed
+deployment overlay before they can satisfy this check. Schedule the drill
+in an approved maintenance window and retain evidence of these observations.
+
+1. Record the Kubernetes cluster UID, GitLab project and Praefect repository
+   IDs, and the GitLab and Runner Argo CD application UIDs and revisions.
+   Verify the baseline branch and all three current replicas before the outage.
+2. During the approved primary interruption, confirm the original primary
+   pod is absent. Verify HTTPS and SSH reads, then push distinct fast-forward
+   canary commits over SSH and HTTPS with the surviving replicas. Record the
+   recovery time and the approved recovery time objective.
+3. Confirm the replacement replica catches up, verify consistency across
+   all three replicas, and retain the successful Runner job and verified
+   artifact for the recovered branch. Use evidence URIs, SHA-256 digests,
+   and timestamps in the reviewed record.
+4. In the separate isolated restore record, use `checks.gitlab` and retain
+   proof that the database, repositories, and configured object storage
+   were restored and readable.
+
+The collector retains the exact GitLab record that passed and binds its
+SHA-256 into the acceptance log. The scorer checks the retained record
+against the reviewed commit and live inventory's cluster UID. The live
+acceptance packet still requires a detached signature from the approved
+independent signer. Existing Forgejo profiles continue to use schema v7.
+
 ## 100-Point Production Gate
 
 Repository checks, live cluster acceptance, GitHub governance, independently

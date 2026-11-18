@@ -25,12 +25,11 @@ from verify_openbao_ceremony_evidence import (
 )
 from verify_restore_evidence import (
     EvidenceError as RestoreEvidenceError,
+    GITLAB_PROFILE,
     validate_evidence as validate_restore_evidence,
 )
-from verify_forgejo_recovery_evidence import (
-    EvidenceError as ForgejoRecoveryEvidenceError,
-    validate_evidence as validate_forgejo_recovery,
-)
+from verify_forgejo_recovery_evidence import validate_evidence as validate_forgejo_recovery
+from verify_gitlab_recovery_evidence import validate_evidence as validate_gitlab_recovery
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,10 +95,6 @@ def retained_path(value: str, root: Path, label: str) -> Path:
     return root / relative
 
 
-def sha256_file(path: Path) -> str:
-    return hashlib.sha256(read_bounded_bytes(path)).hexdigest()
-
-
 def validate_evidence(
     document: Any,
     *,
@@ -109,16 +104,18 @@ def validate_evidence(
     openbao_recovery_max_age_days: int = 180,
     restore_max_age_days: int = 92,
     forgejo_recovery_max_age_days: int = 92,
+    gitlab_recovery_max_age_days: int = 92,
     expected_profile: str = "",
     expected_commit: str = "",
 ) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise EvidenceError("production evidence must be a JSON object")
-    if document.get("schemaVersion") != 7:
-        raise EvidenceError("schemaVersion must be 7")
-
     release_id = nonempty(document, "releaseId")
     profile = nonempty(document, "profile")
+    gitlab = profile == GITLAB_PROFILE
+    version = 8 if gitlab else 7
+    if type(document.get("schemaVersion")) is not int or document["schemaVersion"] != version:
+        raise EvidenceError(f"schemaVersion must be {version} for {profile}")
     commit = nonempty(document, "commit").lower()
     if not COMMIT_RE.fullmatch(commit):
         raise EvidenceError("commit must be a 40-character lowercase Git SHA")
@@ -185,9 +182,10 @@ def validate_evidence(
         raise EvidenceError("logSha256 must be a 64-character lowercase SHA-256")
     if not path.is_file():
         raise EvidenceError(f"retained production log is missing: {path}")
-    if sha256_file(path) != expected_hash:
+    log_bytes = read_bounded_bytes(path)
+    if hashlib.sha256(log_bytes).hexdigest() != expected_hash:
         raise EvidenceError("retained production log hash does not match logSha256")
-    text = read_bounded_text(path, errors="replace")
+    text = log_bytes.decode("utf-8", errors="replace")
     for marker in (
         "== platform production evidence ==",
         "== platform-production-check ==",
@@ -200,6 +198,9 @@ def validate_evidence(
     ):
         if marker not in text:
             raise EvidenceError(f"retained production log is missing marker: {marker}")
+    revision_marker = rf"\bargocd_revision=verified profile={re.escape(profile)} commit={commit} applications=[1-9][0-9]*\b"
+    if gitlab and not re.search(revision_marker, text):
+        raise EvidenceError("retained production log is missing the verified Argo CD release revision")
     openbao_cluster_ids = sorted(set(OPENBAO_CLUSTER_ID_RE.findall(text)))
     if len(openbao_cluster_ids) != 1:
         raise EvidenceError(
@@ -218,10 +219,11 @@ def validate_evidence(
     inventory_path = retained_path(inventory_path_value.strip(), root, "imageInventory.path")
     if not inventory_path.is_file():
         raise EvidenceError(f"retained image inventory evidence is missing: {inventory_path}")
-    if sha256_file(inventory_path) != inventory_hash:
+    inventory_bytes = read_bounded_bytes(inventory_path)
+    if hashlib.sha256(inventory_bytes).hexdigest() != inventory_hash:
         raise EvidenceError("retained image inventory hash does not match imageInventory.sha256")
     try:
-        inventory_document = loads_strict_json(read_bounded_text(inventory_path))
+        inventory_document = loads_strict_json(inventory_bytes.decode("utf-8"))
         inventory_summary = validate_image_inventory(
             inventory_document,
             now=now,
@@ -246,10 +248,11 @@ def validate_evidence(
     )
     if not ceremony_path.is_file():
         raise EvidenceError(f"retained OpenBao ceremony evidence is missing: {ceremony_path}")
-    if sha256_file(ceremony_path) != ceremony_hash:
+    ceremony_bytes = read_bounded_bytes(ceremony_path)
+    if hashlib.sha256(ceremony_bytes).hexdigest() != ceremony_hash:
         raise EvidenceError("retained OpenBao ceremony hash does not match openbaoCeremony.sha256")
     try:
-        ceremony_document = loads_strict_json(read_bounded_text(ceremony_path))
+        ceremony_document = loads_strict_json(ceremony_bytes.decode("utf-8"))
         ceremony_summary = validate_openbao_ceremony(
             ceremony_document,
             root=root,
@@ -276,10 +279,11 @@ def validate_evidence(
     )
     if not restore_path.is_file():
         raise EvidenceError(f"retained restore evidence is missing: {restore_path}")
-    if sha256_file(restore_path) != restore_hash:
+    restore_bytes = read_bounded_bytes(restore_path)
+    if hashlib.sha256(restore_bytes).hexdigest() != restore_hash:
         raise EvidenceError("retained restore evidence hash does not match restoreEvidence.sha256")
     try:
-        restore_document = loads_strict_json(read_bounded_text(restore_path))
+        restore_document = loads_strict_json(restore_bytes.decode("utf-8"))
         restore_summary = validate_restore_evidence(
             restore_document,
             now=now,
@@ -290,36 +294,41 @@ def validate_evidence(
     except (OSError, json.JSONDecodeError, RestoreEvidenceError) as exc:
         raise EvidenceError(f"retained restore evidence is invalid: {exc}") from exc
 
-    forgejo_reference = document.get("forgejoRecovery")
-    if not isinstance(forgejo_reference, dict):
-        raise EvidenceError("forgejoRecovery must be an object")
-    forgejo_path_value = forgejo_reference.get("path")
-    forgejo_hash = str(forgejo_reference.get("sha256", "")).lower()
-    if not isinstance(forgejo_path_value, str) or not forgejo_path_value.strip():
-        raise EvidenceError("forgejoRecovery.path must be a non-empty string")
-    if not SHA256_RE.fullmatch(forgejo_hash):
-        raise EvidenceError("forgejoRecovery.sha256 must be a lowercase SHA-256")
-    forgejo_path = retained_path(
-        forgejo_path_value.strip(), root, "forgejoRecovery.path"
+    recovery_key, other_key = (
+        ("gitlabRecovery", "forgejoRecovery") if gitlab else ("forgejoRecovery", "gitlabRecovery")
     )
-    if not forgejo_path.is_file():
-        raise EvidenceError(f"retained Forgejo recovery evidence is missing: {forgejo_path}")
-    if sha256_file(forgejo_path) != forgejo_hash:
-        raise EvidenceError(
-            "retained Forgejo recovery evidence hash does not match forgejoRecovery.sha256"
-        )
+    if other_key in document:
+        raise EvidenceError(f"{other_key} cannot certify {profile}")
+    recovery_reference = document.get(recovery_key)
+    if not isinstance(recovery_reference, dict):
+        raise EvidenceError(f"{recovery_key} must be an object")
+    recovery_hash = nonempty(recovery_reference, "sha256")
+    if not SHA256_RE.fullmatch(recovery_hash):
+        raise EvidenceError(f"{recovery_key}.sha256 must be a lowercase SHA-256")
+    if gitlab and f"GitLab recovery evidence accepted: sha256={recovery_hash}" not in text.splitlines():
+        raise EvidenceError("retained production log does not record verification of the GitLab recovery hash")
+    recovery_path = retained_path(nonempty(recovery_reference, "path"), root, f"{recovery_key}.path")
     try:
-        forgejo_document = loads_strict_json(read_bounded_text(forgejo_path))
-        forgejo_summary = validate_forgejo_recovery(
-            forgejo_document,
-            now=now,
-            max_age_days=forgejo_recovery_max_age_days,
-            expected_profile=profile,
-            expected_commit=commit,
-        )
-    except (OSError, json.JSONDecodeError, ForgejoRecoveryEvidenceError) as exc:
-        raise EvidenceError(f"retained Forgejo recovery evidence is invalid: {exc}") from exc
+        recovery_bytes = read_bounded_bytes(recovery_path)
+        if hashlib.sha256(recovery_bytes).hexdigest() != recovery_hash:
+            raise EvidenceError(f"retained {recovery_key} hash does not match {recovery_key}.sha256")
+        recovery_document = loads_strict_json(recovery_bytes.decode("utf-8"))
+        if gitlab:
+            recovery_summary = validate_gitlab_recovery(
+                recovery_document, now=now, max_age_days=gitlab_recovery_max_age_days,
+                expected_commit=commit, expected_cluster_uid=inventory_document["live"]["clusterUid"],
+            )
+            if recovery_summary["completed_at"] > completed_at:
+                raise EvidenceError("GitLab recovery evidence postdates production acceptance")
+        else:
+            recovery_summary = validate_forgejo_recovery(
+                recovery_document, now=now, max_age_days=forgejo_recovery_max_age_days,
+                expected_profile=profile, expected_commit=commit,
+            )
+    except (OSError, ValueError) as exc:
+        raise EvidenceError(f"retained {recovery_key} evidence is invalid: {exc}") from exc
 
+    forge = "gitlab" if gitlab else "forgejo"
     return {
         "release_id": release_id,
         "profile": profile,
@@ -337,8 +346,8 @@ def validate_evidence(
         "openbao_seal_mode": ceremony_summary["seal_mode"],
         "restore_evidence_path": restore_path,
         "restore_drill_id": restore_summary["drill_id"],
-        "forgejo_recovery_path": forgejo_path,
-        "forgejo_recovery_drill_id": forgejo_summary["drill_id"],
+        f"{forge}_recovery_path": recovery_path,
+        f"{forge}_recovery_drill_id": recovery_summary["drill_id"],
     }
 
 
@@ -365,6 +374,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("PLATFORM_FORGEJO_RECOVERY_MAX_AGE_DAYS", "92")),
     )
+    parser.add_argument(
+        "--gitlab-recovery-max-age-days",
+        type=int,
+        default=int(os.environ.get("PLATFORM_GITLAB_RECOVERY_MAX_AGE_DAYS", "92")),
+    )
     parser.add_argument("--expected-profile", default=os.environ.get("PLATFORM_PROFILE", ""))
     parser.add_argument("--expected-commit", default=os.environ.get("PLATFORM_EXPECTED_COMMIT", ""))
     return parser.parse_args()
@@ -384,6 +398,9 @@ def main() -> int:
     if args.forgejo_recovery_max_age_days <= 0:
         print("--forgejo-recovery-max-age-days must be greater than zero", file=sys.stderr)
         return 2
+    if args.gitlab_recovery_max_age_days <= 0:
+        print("--gitlab-recovery-max-age-days must be greater than zero", file=sys.stderr)
+        return 2
     if not args.evidence_file.is_file():
         print(f"Production evidence file does not exist: {args.evidence_file}", file=sys.stderr)
         return 1
@@ -397,10 +414,11 @@ def main() -> int:
             openbao_recovery_max_age_days=args.openbao_recovery_max_age_days,
             restore_max_age_days=args.restore_max_age_days,
             forgejo_recovery_max_age_days=args.forgejo_recovery_max_age_days,
+            gitlab_recovery_max_age_days=args.gitlab_recovery_max_age_days,
             expected_profile=args.expected_profile,
             expected_commit=args.expected_commit,
         )
-    except (OSError, json.JSONDecodeError, EvidenceError) as exc:
+    except (OSError, ValueError) as exc:
         print(f"Production evidence validation failed: {exc}", file=sys.stderr)
         return 1
     print(

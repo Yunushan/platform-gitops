@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from bounded_file import read_bounded_bytes, read_bounded_text
+from render_deployable_gitops_apps import PROFILE_APP_FILES, resolve_profile_entries
 from strict_json import loads_strict_json
 
 
@@ -77,6 +78,15 @@ def configuration_directory(root: Path, profile: str) -> Path:
     if not PROFILE_RE.fullmatch(profile):
         raise EvidenceError("profile is invalid")
     directory = root / "gitops" / "clusters" / "rke2-main" / profile / "apps" / "openbao"
+    if profile not in PROFILE_APP_FILES and (root / "profiles" / f"{profile}.yaml").is_file():
+        try:
+            entries, _ = resolve_profile_entries(root, profile)
+        except (OSError, ValueError) as exc:
+            raise EvidenceError(f"cannot resolve OpenBao application for {profile}: {exc}") from exc
+        candidates = [root / entry for entry in entries if Path(entry).name == "openbao"]
+        if len(candidates) != 1:
+            raise EvidenceError(f"profile {profile} must select exactly one OpenBao application")
+        directory = candidates[0]
     if not directory.is_dir():
         raise EvidenceError(f"OpenBao configuration directory is missing: {directory}")
     return directory

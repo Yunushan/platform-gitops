@@ -31,27 +31,37 @@ if [[ -z "${evidence_file}" ]]; then
   exit 1
 fi
 
-forgejo_recovery_evidence_file="${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE:-}"
-if [[ -z "${forgejo_recovery_evidence_file}" ]]; then
-  printf '%s\n' \
-    'PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE is required for production readiness.' \
-    'Run the explicit platform-forgejo-recovery-drill after reconciling the tested commit, then reference its ignored private JSON record.' >&2
-  exit 1
-fi
-
+profile="${PLATFORM_PROFILE:-premium-3node}"
 expected_commit="$(git rev-parse HEAD)"
 
 python3 scripts/verify_restore_evidence.py \
   "${evidence_file}" \
   --max-age-days "${PLATFORM_RESTORE_DRILL_MAX_AGE_DAYS:-92}" \
-  --expected-profile "${PLATFORM_PROFILE:-premium-3node}" \
+  --expected-profile "${profile}" \
   --expected-commit "${expected_commit}"
 
-python3 scripts/verify_forgejo_recovery_evidence.py \
-  "${forgejo_recovery_evidence_file}" \
-  --max-age-days "${PLATFORM_FORGEJO_RECOVERY_MAX_AGE_DAYS:-92}" \
-  --expected-profile "${PLATFORM_PROFILE:-premium-3node}" \
-  --expected-commit "${expected_commit}"
+if [[ "${profile}" == premium-3node-gitlab-ce ]]; then
+  if [[ -z "${PLATFORM_GITLAB_RECOVERY_EVIDENCE_FILE:-}" ]]; then
+    printf '%s\n' 'PLATFORM_GITLAB_RECOVERY_EVIDENCE_FILE is required for GitLab production readiness.' >&2
+    exit 1
+  fi
+  python3 scripts/verify_gitlab_recovery_evidence.py \
+    "${PLATFORM_GITLAB_RECOVERY_EVIDENCE_FILE}" \
+    --max-age-days "${PLATFORM_GITLAB_RECOVERY_MAX_AGE_DAYS:-92}" \
+    --expected-commit "${expected_commit}"
+else
+  if [[ -z "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE:-}" ]]; then
+    printf '%s\n' \
+      'PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE is required for production readiness.' \
+      'Run the explicit platform-forgejo-recovery-drill after reconciling the tested commit, then reference its ignored private JSON record.' >&2
+    exit 1
+  fi
+  python3 scripts/verify_forgejo_recovery_evidence.py \
+    "${PLATFORM_FORGEJO_RECOVERY_EVIDENCE_FILE}" \
+    --max-age-days "${PLATFORM_FORGEJO_RECOVERY_MAX_AGE_DAYS:-92}" \
+    --expected-profile "${profile}" \
+    --expected-commit "${expected_commit}"
+fi
 
 export ANSIBLE_TIMEOUT="${ANSIBLE_TIMEOUT:-20}"
 exec ansible-playbook \

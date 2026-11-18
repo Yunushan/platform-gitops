@@ -31,6 +31,7 @@ REQUIRED_CHECKS = (
     "ingress",
     "certificates",
 )
+GITLAB_PROFILE = "premium-3node-gitlab-ce"
 EVIDENCE_SCHEMES = {"evidence", "https", "s3", "ticket"}
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
@@ -190,10 +191,14 @@ def validate_evidence(
     checks = document.get("checks")
     if not isinstance(checks, dict):
         raise EvidenceError("checks must be an object")
-    unknown = sorted(set(checks) - set(REQUIRED_CHECKS))
+    required_checks = tuple(
+        "gitlab" if name == "forgejo" and profile == GITLAB_PROFILE else name
+        for name in REQUIRED_CHECKS
+    )
+    unknown = sorted(set(checks) - set(required_checks))
     if unknown:
         raise EvidenceError(f"checks contains unsupported entries: {', '.join(unknown)}")
-    for name in REQUIRED_CHECKS:
+    for name in required_checks:
         validate_proof(
             checks.get(name),
             label=f"checks.{name}",

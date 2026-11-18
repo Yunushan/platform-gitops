@@ -81,6 +81,7 @@
           namespace="$1"
           secret="$2"
           configured_host="$3"
+          require_host="${4:-false}"
           ingress_path="${temporary_directory}/${namespace}-ingresses.json"
           certificate_path="${temporary_directory}/${namespace}-${secret}.crt"
           served_path="${temporary_directory}/${namespace}-${secret}-served.crt"
@@ -88,28 +89,34 @@
           if [ ! -s "${ingress_path}" ]; then
             "$K" --kubeconfig "$C" -n "${namespace}" get ingress -o json >"${ingress_path}"
           fi
-          discovered_host="$(python3 - "${ingress_path}" "${secret}" <<'PY'
+          discovered_host="$(python3 - "${ingress_path}" "${secret}" "${configured_host}" "${require_host}" <<'PY'
         import json
         import sys
 
         with open(sys.argv[1], encoding="utf-8") as handle:
             ingresses = json.load(handle).get("items", [])
         wanted_secret = sys.argv[2]
+        configured_host = sys.argv[3]
+        require_host = sys.argv[4] == "true"
         for ingress in ingresses:
             spec = ingress.get("spec", {})
+            rules = [
+                str(rule.get("host") or "").strip()
+                for rule in spec.get("rules", [])
+                if str(rule.get("host") or "").strip()
+            ]
             for tls in spec.get("tls", []) or []:
                 if str(tls.get("secretName") or "") != wanted_secret:
                     continue
-                hosts = [str(host).strip() for host in tls.get("hosts", []) or [] if str(host).strip()]
-                if not hosts:
-                    hosts = [
-                        str(rule.get("host") or "").strip()
-                        for rule in spec.get("rules", [])
-                        if str(rule.get("host") or "").strip()
-                    ]
-                if hosts:
+                hosts = [str(host).strip() for host in tls.get("hosts", []) or [] if str(host).strip()] or rules
+                if require_host and configured_host in hosts and configured_host in rules:
+                    print(configured_host)
+                    raise SystemExit(0)
+                if hosts and not require_host:
                     print(hosts[0])
                     raise SystemExit(0)
+        if require_host:
+            raise SystemExit("GitLab ingress does not attach the required TLS secret to the configured host")
         PY
           )"
           host="${discovered_host:-${configured_host}}"
@@ -150,8 +157,14 @@
         }
 
         verify_certificate argocd argocd-server-tls "{{ platform_argocd_host_effective }}"
+        {% if platform_gitlab_profile_enabled | bool %}
+        verify_certificate gitlab gitlab-tls "{{ platform_gitlab_host_effective }}" true
+        verify_certificate gitlab gitlab-tls "{{ platform_gitlab_registry_host_effective }}" true
+        verify_certificate gitlab gitlab-tls "{{ platform_gitlab_kas_host_effective }}" true
+        {% else %}
         verify_certificate forgejo forgejo-tls "{{ platform_forgejo_host_effective }}"
         verify_certificate woodpecker woodpecker-tls "{{ platform_woodpecker_host_effective }}"
+        {% endif %}
         verify_certificate harbor harbor-tls "{{ platform_harbor_host_effective }}"
         verify_certificate keycloak keycloak-tls "{{ platform_keycloak_host_effective }}"
         verify_certificate monitoring grafana-tls "{{ platform_grafana_host_effective }}"

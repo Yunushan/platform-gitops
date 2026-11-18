@@ -2309,8 +2309,8 @@ def main() -> None:
         "Verify monitoring public authentication boundary from Ansible controller",
         "Probe configured GUI HTTP redirects from Ansible controller",
         "Probe configured GUI app ingress from every RKE2 node",
-        "Probe Argo CD and Woodpecker ClusterIP service paths from every RKE2 node",
-        "Probe Argo CD and Woodpecker ClusterIP service paths from pods pinned to every RKE2 node",
+        "Probe Argo CD and selected application ClusterIP service paths from every RKE2 node",
+        "Probe Argo CD and selected application ClusterIP service paths from pods pinned to every RKE2 node",
         "Stop when platform app health checks fail",
     ):
         require_text(health_text, f"- name: {task_name}", f"platform-app-health is missing task: {task_name}")

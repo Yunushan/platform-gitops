@@ -27,6 +27,13 @@ global:
       secretName: gitlab-tls
   shell:
     port: 22
+  extraEnv:
+    PGSSLMODE: verify-full
+    PGSSLROOTCERT: /etc/ssl/certs/ca-certificates.crt
+  certificates:
+    customCAs:
+      - configMap: platform-internal-roots
+        keys: [ca-certificates.crt]
   psql:
     host: platform-postgres-rw.platform-databases.svc.cluster.local
     port: 5432

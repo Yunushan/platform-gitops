@@ -58,6 +58,18 @@ export PLATFORM_APP_HEALTH_FORGEJO_SINGLETON_SAFETY=true
 export PLATFORM_APP_HEALTH_HTTP_REDIRECT=true
 export PLATFORM_APP_HEALTH_NODE_INGRESS_STRICT=true
 
+export PLATFORM_PROFILE="${PLATFORM_PROFILE:-premium-3node}"
+checked_revision="$(git rev-parse HEAD)"
+if [[ "${PLATFORM_PRODUCTION_SOURCE_COMMIT:-${checked_revision}}" != "${checked_revision}" ]]; then
+  printf '%s\n' 'Production checkout changed before deployment acceptance.' >&2
+  exit 1
+fi
+if [[ "${PLATFORM_PROFILE}" == premium-3node-gitlab-ce ]]; then
+  export PLATFORM_APP_HEALTH_EXPECTED_REVISION="${checked_revision}"
+  PLATFORM_APP_HEALTH_REVISION_PLAN="$("${PYTHON:-python3}" scripts/verify_argocd_platform_revision.py --plan "${PLATFORM_PROFILE}")"
+  export PLATFORM_APP_HEALTH_REVISION_PLAN
+fi
+
 make_command="${MAKE:-make}"
 
 "${make_command}" platform-profile-check
@@ -78,3 +90,7 @@ PLATFORM_CAPACITY_DEDICATED_STORAGE_REQUIRED=true "${make_command}" platform-cap
 # Keep the child health gate on the exact same selected private environment.
 PLATFORM_APP_HEALTH_ENV_FILE="${env_file}" PLATFORM_APP_HEALTH_MODE=production "${make_command}" platform-app-health
 "${make_command}" platform-data-protection
+if [[ "$(git rev-parse HEAD)" != "${checked_revision}" ]]; then
+  printf '%s\n' 'Production checkout changed during deployment acceptance.' >&2
+  exit 1
+fi

@@ -4,6 +4,10 @@
   become: true
   gather_facts: false
   vars:
+    platform_network_gitlab: "{{ lookup('ansible.builtin.env', 'PLATFORM_PROFILE') == 'premium-3node-gitlab-ce' }}"
+    platform_network_inactive_namespaces: >-
+      {{ ['forgejo', 'woodpecker'] if platform_network_gitlab | bool
+         else ['gitlab', 'gitlab-runner'] }}
     platform_network_probe_image_from_env: "{{ lookup('ansible.builtin.env', 'PLATFORM_NETWORK_PROBE_IMAGE') }}"
     platform_network_probe_image_effective: >-
       {{ platform_network_probe_image
@@ -12,6 +16,8 @@
     platform_network_isolated_namespaces:
       - argocd
       - forgejo
+      - gitlab
+      - gitlab-runner
       - harbor
       - keycloak
       - logging
@@ -37,6 +43,12 @@
         name: platform-allow-postgres-egress
       - namespace: forgejo
         name: platform-allow-valkey-egress
+      - namespace: gitlab
+        name: platform-allow-postgres-egress
+      - namespace: gitlab
+        name: platform-allow-valkey-egress
+      - namespace: gitlab
+        name: gitlab-allow-traefik-backends
       - namespace: harbor
         name: platform-allow-postgres-egress
       - namespace: harbor
@@ -61,6 +73,15 @@
         - platform-allow-external-web-egress
         - platform-allow-external-git-egress
         - platform-allow-external-database-egress
+        - platform-allow-kubernetes-api-egress
+      gitlab:
+        - platform-allow-external-web-egress
+        - platform-allow-external-git-egress
+        - platform-allow-external-smtp-egress
+        - platform-allow-external-object-storage-egress
+      gitlab-runner:
+        - platform-allow-external-web-egress
+        - platform-allow-external-git-egress
         - platform-allow-kubernetes-api-egress
       harbor:
         - platform-allow-external-web-egress
@@ -99,6 +120,7 @@
       loop: "{{ platform_network_isolated_namespaces | product(platform_network_required_policies) | list }}"
       loop_control:
         label: "{{ item.0 }}/{{ item.1 }}"
+      when: item.0 not in platform_network_inactive_namespaces
       changed_when: false
 
     - name: Require least-privilege data service policies
@@ -108,6 +130,7 @@
       loop: "{{ platform_network_required_data_policies }}"
       loop_control:
         label: "{{ item.namespace }}/{{ item.name }}"
+      when: item.namespace not in platform_network_inactive_namespaces
       changed_when: false
 
     - name: Require application-role egress policies
@@ -120,6 +143,7 @@
            | subelements('value') }}
       loop_control:
         label: "{{ item.0.key }}/{{ item.1 }}"
+      when: item.0.key not in platform_network_inactive_namespaces
       changed_when: false
 
     - name: Prove allowed and denied PostgreSQL and Valkey service paths
@@ -130,24 +154,32 @@
         IMAGE={{ platform_network_probe_image_effective | quote }}
         POSTGRES_TARGET=platform-postgres-rw.platform-databases.svc.cluster.local
         VALKEY_TARGET=platform-valkey-primary.platform-cache.svc.cluster.local
+        PG_CLIENT={{ (platform_network_gitlab | bool) | ternary('gitlab', 'woodpecker') }}
+        VALKEY_CLIENT={{ (platform_network_gitlab | bool) | ternary('gitlab', 'forgejo') }}
         RUN_ID="$(date +%s)-$$"
         PG_ALLOWED_POD="platform-net-pg-allow-${RUN_ID}"
         PG_DENIED_POD="platform-net-pg-deny-${RUN_ID}"
         VALKEY_ALLOWED_POD="platform-net-valkey-allow-${RUN_ID}"
-        VALKEY_FORGEJO_ALLOWED_POD="platform-net-valkey-forgejo-allow-${RUN_ID}"
+        VALKEY_FORGE_ALLOWED_POD="platform-net-valkey-forge-allow-${RUN_ID}"
         VALKEY_DENIED_POD="platform-net-valkey-deny-${RUN_ID}"
+        PG_JOB_DENIED_POD="platform-net-pg-job-deny-${RUN_ID}"
+        VALKEY_JOB_DENIED_POD="platform-net-valkey-job-deny-${RUN_ID}"
 
         cleanup() {
-          "$K" --kubeconfig "$C" -n woodpecker delete pod "$PG_ALLOWED_POD" \
+          "$K" --kubeconfig "$C" -n "$PG_CLIENT" delete pod "$PG_ALLOWED_POD" \
             --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
           "$K" --kubeconfig "$C" -n argocd delete pod "$PG_DENIED_POD" \
             --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
           "$K" --kubeconfig "$C" -n harbor delete pod "$VALKEY_ALLOWED_POD" \
             --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
-          "$K" --kubeconfig "$C" -n forgejo delete pod "$VALKEY_FORGEJO_ALLOWED_POD" \
+          "$K" --kubeconfig "$C" -n "$VALKEY_CLIENT" delete pod "$VALKEY_FORGE_ALLOWED_POD" \
             --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
           "$K" --kubeconfig "$C" -n argocd delete pod "$VALKEY_DENIED_POD" \
             --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+          if [ "$PG_CLIENT" = gitlab ]; then
+            "$K" --kubeconfig "$C" -n gitlab-runner delete pod "$PG_JOB_DENIED_POD" "$VALKEY_JOB_DENIED_POD" \
+              --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
+          fi
         }
         trap cleanup EXIT
 
@@ -245,19 +277,26 @@
         require_ready_service platform-databases platform-postgres-rw
         require_ready_service platform-cache platform-valkey-primary
 
-        create_probe woodpecker "$PG_ALLOWED_POD" allow "$POSTGRES_TARGET" 5432
-        wait_probe woodpecker "$PG_ALLOWED_POD" allowed
+        create_probe "$PG_CLIENT" "$PG_ALLOWED_POD" allow "$POSTGRES_TARGET" 5432
+        wait_probe "$PG_CLIENT" "$PG_ALLOWED_POD" allowed
         create_probe argocd "$PG_DENIED_POD" deny "$POSTGRES_TARGET" 5432
         wait_probe argocd "$PG_DENIED_POD" denied
 
         create_probe harbor "$VALKEY_ALLOWED_POD" allow "$VALKEY_TARGET" 6379
         wait_probe harbor "$VALKEY_ALLOWED_POD" allowed
-        create_probe forgejo "$VALKEY_FORGEJO_ALLOWED_POD" allow "$VALKEY_TARGET" 6379
-        wait_probe forgejo "$VALKEY_FORGEJO_ALLOWED_POD" allowed
+        create_probe "$VALKEY_CLIENT" "$VALKEY_FORGE_ALLOWED_POD" allow "$VALKEY_TARGET" 6379
+        wait_probe "$VALKEY_CLIENT" "$VALKEY_FORGE_ALLOWED_POD" allowed
         create_probe argocd "$VALKEY_DENIED_POD" deny "$VALKEY_TARGET" 6379
         wait_probe argocd "$VALKEY_DENIED_POD" denied
 
-        echo "platform_network_isolation=verified postgres_allowed=woodpecker postgres_denied=argocd valkey_allowed=harbor,forgejo valkey_denied=argocd"
+        if [ "$PG_CLIENT" = gitlab ]; then
+          create_probe gitlab-runner "$PG_JOB_DENIED_POD" deny "$POSTGRES_TARGET" 5432
+          wait_probe gitlab-runner "$PG_JOB_DENIED_POD" denied
+          create_probe gitlab-runner "$VALKEY_JOB_DENIED_POD" deny "$VALKEY_TARGET" 6379
+          wait_probe gitlab-runner "$VALKEY_JOB_DENIED_POD" denied
+          echo "gitlab_runner_job_data_services=denied postgres=5432 valkey=6379"
+        fi
+        echo "platform_network_isolation=verified postgres_allowed=${PG_CLIENT} postgres_denied=argocd valkey_allowed=harbor,${VALKEY_CLIENT} valkey_denied=argocd"
       args:
         executable: /bin/bash
       register: platform_network_isolation_probe
