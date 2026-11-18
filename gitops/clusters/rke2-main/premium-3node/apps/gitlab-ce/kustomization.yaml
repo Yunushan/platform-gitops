@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: gitlab
 resources:
   - namespace.yaml
+  - ingress-network-policy.yaml
 components:
   - ../../components/network-isolation
   - ../../components/postgres-client

@@ -58,7 +58,7 @@ The GitLab values are a starting budget for 100+ users on three 8-vCPU, 32-GiB n
 Before production registration:
 
 - Provision the `gitlabhq_production` database and `gitlab` role in `platform-postgres`.
-- Create the `gitlab-postgres`, `gitlab-redis`, `gitlab-redis-ca`, `gitlab-object-storage`, and `gitlab-registry-storage` secrets and the `gitlab-tls` certificate outside Git. Replace every `<...>` placeholder through the private values flow.
+- Create the `gitlab-postgres`, `gitlab-redis`, `gitlab-redis-ca`, `gitlab-object-storage`, `gitlab-registry-storage`, and `gitlab-backup-storage` secrets and the `gitlab-tls` certificate outside Git. Put the Toolbox S3 configuration in the backup secret's `config` key. Replace every `<...>` placeholder through the private values flow.
 - Create the runner registration credential through a private overlay or ExternalSecret.
 - Run `PLATFORM_PROFILE=premium-3node-gitlab-ce make platform-profile-check` after rendering private values.
 

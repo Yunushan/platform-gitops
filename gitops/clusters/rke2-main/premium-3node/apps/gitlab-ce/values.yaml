@@ -2,11 +2,15 @@
 # Externalizes PostgreSQL to CloudNativePG, Redis to platform Valkey, and artifacts,
 # LFS, uploads, backups, and registry storage to external S3-compatible object storage.
 # Secret object names are deployment-specific placeholders. Create the referenced
-# PostgreSQL, Redis, Redis CA, object-storage, and registry-storage secrets outside Git
+# PostgreSQL, Redis, Redis CA, object-storage, registry-storage, and backup-storage secrets outside Git
 # before syncing, then replace every <...> placeholder through the private values renderer
 # or a private overlay.
 global:
   edition: ce
+  gatewayApi:
+    enabled: false
+    installEnvoy: false
+    configureCertmanager: false
   hosts:
     domain: <PLATFORM_DOMAIN>
     https: true
@@ -33,7 +37,7 @@ global:
       secret: <GITLAB_POSTGRES_SECRET_NAME>
       key: psql-password
   redis:
-    host: platform-valkey.platform-cache.svc.cluster.local
+    host: platform-valkey-primary.platform-cache.svc.cluster.local
     port: 6379
     scheme: rediss
     auth:
@@ -58,8 +62,7 @@ global:
   monitoring:
     enabled: true
 
-certmanager:
-  install: false
+installCertmanager: false
 
 certmanager-issuer:
   install: false
@@ -137,6 +140,11 @@ gitlab:
         memory: 4Gi
   toolbox:
     backups:
+      objectStorage:
+        backend: s3
+        config:
+          secret: <GITLAB_BACKUP_STORAGE_SECRET_NAME>
+          key: config
       cron:
         enabled: true
         schedule: "0 2 * * *"
