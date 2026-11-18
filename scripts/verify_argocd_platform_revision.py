@@ -10,6 +10,10 @@ from pathlib import Path
 import re
 import sys
 
+from strict_json import loads_strict_json
+
+MAX_SNAPSHOT_BYTES = 32 * 1024 * 1024
+
 
 def application_plan(root: Path, profile: str) -> dict:
     from render_deployable_gitops_apps import selected_application_documents
@@ -95,8 +99,11 @@ def main() -> int:
     try:
         profile = os.environ["PLATFORM_PROFILE"]
         commit = os.environ["PLATFORM_APP_HEALTH_EXPECTED_REVISION"]
-        expected = json.loads(os.environ["PLATFORM_APP_HEALTH_REVISION_PLAN"])
-        verify_revision(json.load(sys.stdin), expected, commit)
+        expected = loads_strict_json(os.environ["PLATFORM_APP_HEALTH_REVISION_PLAN"])
+        snapshot = sys.stdin.buffer.read(MAX_SNAPSHOT_BYTES + 1)
+        if len(snapshot) > MAX_SNAPSHOT_BYTES:
+            raise ValueError("Argo CD snapshot exceeds the byte limit")
+        verify_revision(loads_strict_json(snapshot.decode("utf-8")), expected, commit)
     except ValueError as exc:
         print(f"Argo CD release revision verification failed: {exc}", file=sys.stderr)
         return 1

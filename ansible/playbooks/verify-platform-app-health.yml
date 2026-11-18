@@ -3785,9 +3785,18 @@
     - name: Verify active Argo CD sources match the reviewed platform release
       ansible.builtin.shell: |
         set -euo pipefail
+        umask 077
+        workdir="$(mktemp -d)"
+        trap 'rm -rf -- "${workdir}"' EXIT
+        cat > "${workdir}/strict_json.py" <<'STRICT_JSON'
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../scripts/strict_json.py') }}
+        STRICT_JSON
+        cat > "${workdir}/verify_argocd_platform_revision.py" <<'REVISION_CHECK'
+        {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../scripts/verify_argocd_platform_revision.py') }}
+        REVISION_CHECK
         /var/lib/rancher/rke2/bin/kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml \
           --request-timeout=20s -n argocd get applications.argoproj.io -o json | \
-          /usr/bin/python3 -c {{ lookup('ansible.builtin.file', playbook_dir ~ '/../../scripts/verify_argocd_platform_revision.py') | quote }}
+          /usr/bin/python3 "${workdir}/verify_argocd_platform_revision.py"
       args:
         executable: /bin/bash
       environment:
