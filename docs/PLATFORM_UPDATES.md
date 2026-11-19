@@ -37,6 +37,36 @@ them. Do not just extend the review date. Renovate already proposes dependency
 PRs in this project with automerge disabled; it is not a live deployment
 updater and does not certify database/chart compatibility or restore readiness.
 
+## Premium three-node staging selection
+
+`config/premium-3node-forgejo-staging.env` selects Forgejo 15.0.12-rootless,
+Woodpecker v3.20.1 for the server and agent, and the digest-pinned
+CloudNativePG PostgreSQL 18.7 operand. Load it in a private staging checkout
+with its site-specific inventory and environment already configured. Export
+the selections before a fresh private render, then preview the Forgejo digest
+pin with the image-only updater.
+
+```sh
+set -a
+. ./config/premium-3node-forgejo-staging.env
+set +a
+make platform-render-private-values
+python3 scripts/update_platform_versions.py \
+  --forgejo "$FORGEJO_UPDATE_CHANNEL" --forgejo-version "$FORGEJO_IMAGE_TAG" \
+  --forgejo-digest "$FORGEJO_REVIEWED_MANIFEST_DIGEST" \
+  --woodpecker "$WOODPECKER_UPDATE_CHANNEL" --woodpecker-version "$WOODPECKER_IMAGE_TAG"
+```
+
+After reviewing the plan, rerun the updater with `--write` to apply the image
+pin locally. Run `make platform-profile-check` against the resulting staging
+values. Woodpecker uses exact tags in its Helm values. Verify the registry
+manifest digests during image reconciliation.
+
+| Woodpecker v3.20.1 image | Reviewed registry manifest digest |
+| --- | --- |
+| Server | `sha256:0f31560e29d67ec4a06d6eeee4bac38d2a2697a6a741b8a0db3998180f3a3517` |
+| Agent | `sha256:a7d7299a13add0b3936fa0ac9ed23507fe283a7fc7d9596c4289d7e8206541eb` |
+
 ## Plan and edit existing private values
 
 Run inside the appropriate checkout. The default paths select the premium
